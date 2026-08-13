@@ -13,7 +13,10 @@ views, filters, display options, boards, subtasks и relations.
 
 Это анализ опубликованной модели продукта, а не reverse engineering. UI не
 тестировался в авторизованном workspace, внутренние API и детали реализации не
-исследовались.
+исследовались. Опубликованные UI screenshots и interaction docs были отдельно
+сверены 2026-08-14; принятое направление и проверяемый UI contract находятся в
+[ADR-0002](../decisions/0002-linear-interface-parity.md) и
+[спецификации интерфейса](../specs/interface.md).
 
 ## Что действительно образует ядро Linear
 

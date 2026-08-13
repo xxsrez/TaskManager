@@ -12,9 +12,13 @@
 
 ```mermaid
 erDiagram
-    USER_REF ||--o{ TASK : creates
-    USER_REF ||--o{ TASK : assigned_to
-    USER_REF ||--o{ PROJECT : leads
+    USER ||--o{ USER_IDENTITY : authenticates_with
+    USER ||--o{ TASK : owns
+    USER ||--o{ PROJECT : owns
+    USER ||--o{ SAVED_VIEW : owns
+    USER ||--o{ ACCESS_GRANT : grants
+    USER ||--o{ ACCESS_GRANT : receives
+    USER ||--o{ TASK : creates_or_is_assigned
     WORKFLOW_STATUS ||--o{ TASK : classifies
     PROJECT ||--o{ TASK : contains
     PROJECT ||--o{ RELEASE : defines
@@ -23,25 +27,92 @@ erDiagram
     TASK ||--o{ TASK_RELATION : source
     TASK ||--o{ TASK_RELATION : target
     TASK }o--o{ LABEL : tagged_with
-    USER_REF ||--o{ SAVED_VIEW : owns
     PROJECT ||--o{ SAVED_VIEW : scopes
+    PROJECT ||--o{ ACCESS_GRANT : share_target
+    TASK ||--o{ ACCESS_GRANT : share_target
+    SAVED_VIEW ||--o{ ACCESS_GRANT : share_target
 ```
 
-`UserRef` — минимальная внешняя ссылка для ownership metadata. Полная identity и
-permission model остаётся открытым решением.
+Связи `ACCESS_GRANT` с share targets полиморфны: одна запись grant указывает
+ровно на один `Project`, standalone `Task` или `SavedView`.
+
+## User
+
+| Поле | Семантика |
+|---|---|
+| `id` | Внутренний immutable UUID; основной subject authorization |
+| `primary_email` | Verified contact/login email, normalized для поиска sharing |
+| `display_name` | Отображаемое имя, optional |
+| `timezone`, `locale` | Пользовательские настройки представления |
+| `created_at`, `updated_at` | Технические timestamps |
+| `disabled_at` | Блокировка входа без удаления данных |
+
+`User` не равен аккаунту ChatGPT или Google. Все owner/assignee/lead/grantee
+ссылки указывают на внутренний `User.id`.
+
+## UserIdentity
+
+| Поле | Семантика |
+|---|---|
+| `id`, `user_id` | Identity record и связанный внутренний User |
+| `provider` | `chatgpt` или `google` |
+| `provider_account_key` | Проверенный account key, доступный от provider |
+| `email`, `email_verified` | Email, подтверждённый provider |
+| `display_name` | Последнее доступное имя profile, optional |
+| `created_at`, `last_seen_at` | Lifecycle metadata |
+
+Unique constraint: `(provider, provider_account_key)`. Для Google OAuth/OIDC
+adapter должен использовать проверенный `sub`, если его предоставляет выбранный
+provider contract. Sites `Sign in with ChatGPT` на текущем публичном contract
+передаёт `oai-authenticated-user-email` и optional
+`oai-authenticated-user-full-name` через trusted server headers; до появления
+отдельного immutable subject нормализованный authenticated email служит
+`provider_account_key` для `chatgpt`.
+
+Identity linking — отдельная аутентифицированная операция. Совпадающие emails
+от разных providers не объединяют Users автоматически.
+
+## AccessGrant
+
+| Поле | Семантика |
+|---|---|
+| `id` | Внутренний ID grant |
+| `resource_type` | `project`, `task` или `saved_view` |
+| `resource_id` | ID share target соответствующего типа |
+| `grantor_user_id` | User, создавший или изменивший grant |
+| `grantee_user_id` | User, получивший доступ |
+| `permission` | Единственное значение MVP: `full_access` |
+| `created_at`, `revoked_at` | Lifecycle grant |
+
+Один active grant уникален по `(resource_type, resource_id, grantee_user_id)`.
+Owner имеет implicit full access и не представлен grant. Grant самому owner
+запрещён.
+
+### Семантика share targets
+
+- Project grant распространяется на Project, его Tasks и Releases.
+- Release не является самостоятельным share target.
+- Прямой Task grant разрешён только для standalone Task.
+- Standalone Task с active direct grant нельзя добавить в Project до revoke
+  этих grants.
+- SavedView grant даёт доступ к определению view, но query возвращает только
+  records, отдельно доступные grantee.
+- `full_access` включает управление grants; owner identity и implicit access не
+  могут быть изменены collaborator.
 
 ## Task
 
 | Поле | Тип | Обязательность | Семантика |
 |---|---|---:|---|
 | `id` | UUID | да | Внутренний immutable ID |
+| `owner_user_id` | UUID | да | Владелец и tenant scope записи |
 | `identifier` | string | да | Immutable human ID, например `TM-123` |
 | `title` | string | да | Непустой заголовок |
 | `description` | Markdown/text | нет | Подробный контекст |
 | `status_id` | UUID | да | Ссылка на `WorkflowStatus` |
 | `priority` | enum | да | `none`, `low`, `medium`, `high`, `urgent` |
-| `assignee_id` | UUID | нет | Текущий исполнитель |
-| `creator_id` | UUID | да | Создатель |
+| `assignee_id` | UUID | нет | User с доступом к Task |
+| `creator_id` | UUID | да | Фактический создатель, может быть collaborator |
 | `project_id` | UUID | нет | Не более одного проекта |
 | `release_id` | UUID | нет | Не более одного совместимого релиза |
 | `parent_id` | UUID | нет | Родительская задача |
@@ -57,13 +128,16 @@ permission model остаётся открытым решением.
 | `version` | integer/token | да | Optimistic concurrency |
 
 Labels задаются связующей таблицей `task_labels(task_id, label_id)`. Relations
-и subtasks не кодируются labels.
+и subtasks не кодируются labels. Identifier уникален в owner scope; URL и API
+identity опираются на UUID, поскольку у разных owners возможен одинаковый
+`TM-123`.
 
 ## WorkflowStatus
 
 | Поле | Семантика |
 |---|---|
 | `id` | Внутренний ID |
+| `owner_user_id` | Владелец каталога workflow |
 | `name` | Пользовательское название |
 | `category` | `backlog`, `unstarted`, `started`, `completed`, `canceled` |
 | `color` | UI token/color |
@@ -79,10 +153,11 @@ status, на который ссылаются задачи, нельзя без
 | Поле | Семантика |
 |---|---|
 | `id`, `slug` | Внутренняя и URL identity |
+| `owner_user_id` | Владелец Project и его subtree |
 | `name` | Обязательное имя |
 | `summary`, `description` | Краткий и подробный контекст |
 | `status` | `planned`, `active`, `paused`, `completed`, `canceled` |
-| `lead_id` | Один ответственный `UserRef`, optional |
+| `lead_id` | Один ответственный User с доступом, optional |
 | `start_date`, `target_date` | Плановые даты, optional |
 | `icon`, `color` | Визуальная identity, optional |
 | `archived_at` | Soft archive |
@@ -97,6 +172,7 @@ Project progress вычисляется запросом по задачам, а
 |---|---|
 | `id` | Внутренний ID |
 | `project_id` | Обязательный owner project |
+| `owner_user_id` | Денормализованный owner, равный owner Project |
 | `name` | Обязательное имя/version label |
 | `description` | Scope и контекст |
 | `status` | `planned`, `active`, `released`, `canceled` |
@@ -114,6 +190,7 @@ Project progress вычисляется запросом по задачам, а
 | Поле | Семантика |
 |---|---|
 | `id`, `name` | Identity и уникальное в active scope имя |
+| `owner_user_id` | Владелец каталога labels |
 | `color`, `description` | Представление и правило применения |
 | `archived_at` | Запрет нового использования с сохранением истории |
 
@@ -137,8 +214,7 @@ Label — гибкая классификация, но не подмена stat
 | Поле | Семантика |
 |---|---|
 | `id`, `name` | Identity и имя |
-| `owner_id` | Создатель/владелец |
-| `visibility` | `private` или `shared`; rollout зависит от identity model |
+| `owner_user_id` | Создатель/владелец и tenant scope |
 | `scope_type` | `global` или `project` |
 | `scope_project_id` | Обязателен для project scope |
 | `layout` | `list` или `board` |
@@ -167,20 +243,37 @@ Label — гибкая классификация, но не подмена stat
 
 ## Инварианты и атомарные операции
 
-1. `task.release_id IS NULL` либо release существует и
+1. Каждый user-owned record имеет ровно одного immutable `owner_user_id`.
+   Repository/API читает record только в owner scope либо через действующий
+   grant и его inheritance rules.
+2. Project, его Tasks и Releases имеют одинакового owner. Task, созданная в
+   Project collaborator, наследует owner Project; creator остаётся фактическим.
+3. Перемещение record между owner scopes не является обычной mutation и не
+   входит в MVP.
+4. Status, Label, Project, Release, parent и обе стороны TaskRelation обязаны
+   принадлежать тому же owner scope, что и Task. Cross-owner hierarchy и
+   relations запрещены.
+5. `task.release_id IS NULL` либо release существует и
    `release.project_id = task.project_id`.
-2. Назначение release задаче без project в одной транзакции назначает и project.
-3. Смена project с несовместимым release либо отклоняется, либо в одной
+6. Назначение release задаче без project в одной транзакции назначает и project.
+7. Смена project с несовместимым release либо отклоняется, либо в одной
    подтверждённой операции очищает release; промежуточное неверное состояние не
    сохраняется.
-4. Terminal timestamps выводятся из status category и обновляются в одной
+8. Terminal timestamps выводятся из status category и обновляются в одной
    транзакции со status.
-5. Parent graph ацикличен; self-parent и self-relation запрещены.
-6. Архивирование project/release не удаляет задачи. Новое назначение в архивную
+9. Parent graph ацикличен; self-parent и self-relation запрещены.
+10. Архивирование project/release не удаляет задачи. Новое назначение в архивную
    сущность запрещено.
-7. SavedView выполняется в permission scope читателя и не расширяет его доступ.
-8. Любая mutation проверяет `version`; stale version возвращает conflict, а не
-   last-write-wins.
+11. Assignee и lead обязаны иметь owner либо granted access к соответствующему
+    resource.
+12. SavedView выполняется в permission scope читателя и не расширяет его доступ,
+    включая counts, groups и search suggestions.
+13. Standalone Task с active direct grant нельзя добавить в Project; сначала
+    все direct grants должны быть revoked.
+14. Revoke grant немедленно исключает resource из следующего authorized query;
+    owner implicit access неотзываем.
+15. Любая mutation проверяет `version`; stale version возвращает conflict, а не
+    last-write-wins.
 
 ## Намеренно не моделируется
 

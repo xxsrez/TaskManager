@@ -1,0 +1,531 @@
+# Спецификация интерфейса
+
+Статус: `Proposed`
+
+Последнее обновление: 2026-08-14
+
+## 1. Назначение
+
+Документ превращает принятое в
+[ADR-0002](../decisions/0002-linear-interface-parity.md) направление
+«максимально близко к Linear» в проверяемый UI/UX-контракт. Он описывает только
+поверхности и действия из [MVP](mvp.md); сходство с Linear не расширяет
+продуктовый scope автоматически.
+
+Точный визуальный baseline уточняется на первом UI-срезе по актуальной версии
+Linear. До появления приложения все размеры и tokens ниже являются исходной
+спецификацией, а не подтверждёнными runtime-характеристиками.
+
+## 2. Определение паритета
+
+Для каждого переносимого элемента паритет проверяется по шести измерениям:
+
+1. **Назначение** — control решает ту же пользовательскую задачу.
+2. **Композиция** — control находится в ожидаемой панели, строке или details
+   surface рядом с теми же по смыслу действиями.
+3. **Поведение** — click, hover, focus, keyboard, drag и dismiss соответствуют
+   ментальной модели Linear.
+4. **Состояния** — default, hover, active, selected, disabled, loading, error и
+   conflict визуально различимы и не меняют layout неожиданно.
+5. **Визуальный язык** — плотность, typography, icons, surfaces, borders,
+   radii, color hierarchy и motion выглядят как единая Linear-like система.
+6. **Доступность** — control сохраняет semantics, focus и contrast; сходство не
+   оправдывает недоступный UI.
+
+Функциональный паритет обязателен. Стилистическое сходство оценивается по
+целостности экрана, а не по копированию отдельного цвета или иконки.
+
+## 3. Общая структура приложения
+
+Desktop-first shell повторяет композицию Linear:
+
+```text
+┌────────────── left sidebar ──────────────┬──────── main surface ────────┐
+│ product/user switcher   search   create  │ breadcrumb / title / actions │
+│ My tasks                                 ├──────────────────────────────│
+│ Shared with me                           │ tabs / filters / display     │
+│ Views                                    ├──────────────────────────────│
+│ Projects                                 │ list | board | details       │
+│ Releases                                 │                              │
+│                                          │                              │
+│ profile / settings                       │                              │
+└──────────────────────────────────────────┴──────────────────────────────┘
+```
+
+### 3.1 Left sidebar
+
+- Ширина desktop по умолчанию — `240px`, compact state — `48px`.
+- Верхний ряд содержит product mark/user menu, search и primary create button.
+- Основная навигация: `My tasks`, `Shared with me`, `Views`, `Projects`,
+  `Releases`. Исключённые функции Linear не показываются даже disabled.
+- Sections можно сворачивать; chevron и overflow появляются на hover, если
+  действие относится ко всей section.
+- Активный пункт использует мягкую заливку и более яркий text/icon без тяжёлой
+  цветной плашки.
+- Sidebar полностью сворачивается; состояние сохраняется для пользователя.
+- Profile/settings находятся в нижней части или user menu и не смешиваются с
+  project navigation.
+
+### 3.2 Верхняя панель surface
+
+- Первая строка: breadcrumb/context, title, optional favorite, share, overflow
+  и details/sidebar toggle.
+- Вторая строка или продолжение первой: tabs, `Filter`, layout switch,
+  `Display`, save/update view и primary contextual create action.
+- Порядок и группировка не меняются произвольно между list и board.
+- Иконка без текста допустима только для общеизвестного действия и всегда имеет
+  tooltip с названием и shortcut.
+- Toolbar остаётся sticky, а содержимое surface прокручивается отдельно.
+
+### 3.3 Navigation behavior
+
+- Breadcrumb и back/forward сохраняют browser history и deep links.
+- Открытие task/project из списка не теряет filter, scroll и selection context.
+- `Esc` закрывает верхний dismissible layer: menu, popover, Peek, modal — ровно
+  один слой за нажатие.
+- Focus возвращается в control, открывший закрытый layer.
+
+## 4. Visual system
+
+### 4.1 Плотность и геометрия
+
+Начальные tokens:
+
+| Token | Значение | Назначение |
+|---|---:|---|
+| `space-unit` | `4px` | Базовая сетка |
+| `sidebar-width` | `240px` | Раскрытый sidebar |
+| `topbar-height` | `40px` | Основной toolbar row |
+| `control-height-sm` | `28px` | Icon buttons, chips, compact inputs |
+| `control-height-md` | `32px` | Buttons и form controls |
+| `task-row-height` | `36px` minimum | Однострочная list row |
+| `board-column-width` | `280px` | Допустимый диапазон `256–320px` |
+| `radius-sm` | `6px` | Buttons, inputs, chips |
+| `radius-md` | `8px` | Cards, popovers, dialogs |
+| `icon-sm` | `14px` | Inline metadata |
+| `icon-md` | `16px` | Navigation и actions |
+
+Отступы компактны, но click target интерактивного control не меньше `28px` на
+desktop и `40px` в touch layout.
+
+### 4.2 Typography
+
+- Основной font stack: `Inter`, `ui-sans-serif`, system sans-serif.
+- Базовый текст — `13px/20px`; secondary metadata — `12px/16px`.
+- Surface title — `18–20px`, task/project title в details — `22–24px`.
+- Веса преимущественно `400–550`; bold используется редко.
+- Task identifiers и shortcuts допускают tabular/monospace treatment, но не
+  должны выглядеть как code blocks.
+- Контраст строится тремя уровнями: primary text, secondary metadata, muted
+  placeholder/disabled.
+
+### 4.3 Цвет и surfaces
+
+- Обязательны `system`, `light` и `dark` theme; default — `system`.
+- Палитра нейтральная, с холодным серым оттенком и сдержанным
+  violet/blue accent, близким к Linear по характеру, но заданным собственными
+  semantic tokens.
+- Surface hierarchy: app background, sidebar, content, raised card/popover,
+  selected/hover overlay.
+- Разделители — тонкие `1px` low-contrast borders. Тяжёлые тени не
+  используются; elevation передаётся сочетанием border и небольшого shadow.
+- Status, priority, labels и destructive actions имеют semantic color, но
+  значение никогда не кодируется только цветом.
+- Theme должна проходить contrast review отдельно; простая инверсия палитры не
+  считается готовой light theme.
+
+### 4.4 Icons и motion
+
+- Один набор line icons с близкой к Linear геометрией, толщиной и optical size.
+- Status использует круг/кольцо с различимой формой; priority — компактный
+  bar/indicator; entity types имеют стабильные icons во всех surfaces.
+- Собственные product/logo assets не копируют Linear.
+- Hover/focus/press transitions — `100–160ms`; modal/popover — `140–200ms`.
+- Dragged item слегка поднимается и отделяется shadow; destination подсвечен,
+  но layout не прыгает.
+- `prefers-reduced-motion` отключает необязательные transitions.
+
+## 5. Общие controls
+
+### 5.1 Buttons
+
+- Primary button используется для единственного главного действия surface.
+- Secondary и ghost buttons визуально спокойны; icon buttons квадратные.
+- Destructive действие не становится primary только из-за места в dialog.
+- Loading сохраняет ширину button; repeated submit блокируется.
+
+### 5.2 Property control
+
+Один и тот же property control используется в composer, details и inline edit:
+
+- trigger показывает icon, текущий value и clear affordance, когда поле
+  optional;
+- popover содержит search input при длинном списке, keyboard navigation,
+  selected mark и empty state;
+- `Enter` выбирает, `Esc` закрывает, `Backspace` очищает пустой searchable
+  control;
+- недоступный по ACL value не показывается в picker;
+- server rejection возвращает подтверждённое значение и объясняет причину.
+
+Это применяется к status, priority, assignee, project, release, labels,
+estimate, due date и relations.
+
+### 5.3 Menus, popovers и dialogs
+
+- Overflow `…` и right-click открывают один и тот же action model.
+- Меню группирует actions по смыслу, показывает shortcuts справа и отделяет
+  destructive section.
+- Popover привязан к trigger и не блокирует остальной экран; dialog применяется
+  для создания, sharing, подтверждений и многошаговых действий.
+- Меню закрывается при выборе, outside click или `Esc`; form dialog не теряет
+  dirty data без подтверждения.
+
+### 5.4 Toasts и inline feedback
+
+- Успех обычно подтверждается изменением объекта; toast нужен для результата,
+  который иначе не виден, и для Undo, если оно поддерживается.
+- Validation error показывается рядом с control и кратко в общем error region.
+- Network/conflict error не маскируется optimistic state.
+- Toast не является единственным носителем критической информации.
+
+## 6. Задачи: list
+
+List повторяет плотную grouped-list модель Linear.
+
+### 6.1 Group header
+
+- Слева: collapse toggle, property icon/color, group name.
+- Рядом: task count; estimate total появится только после отдельного решения.
+- Справа на hover: add task и overflow menu.
+- Header sticky внутри длинной группы. Пустые группы следуют `Display` option.
+
+### 6.2 Task row
+
+Порядок данных слева направо:
+
+1. hover-revealed checkbox/selection state;
+2. priority indicator;
+3. immutable task identifier;
+4. status icon, если status не выражен group;
+5. title, занимающий оставшуюся ширину;
+6. выбранные display properties как компактные icons/chips;
+7. assignee avatar и overflow action на hover.
+
+Дополнительные правила:
+
+- row имеет одну основную строку; description в list не показывается;
+- title обрезается ellipsis, но полностью доступен в tooltip/Peek;
+- click открывает details, `Space` — Peek, double click не назначается
+  отдельному скрытому действию;
+- metadata, скрытые через `Display`, не резервируют место;
+- subtask использует indentation и parent affordance без отдельной карточной
+  визуальной системы.
+
+### 6.3 Highlight, selection и bulk actions
+
+- Hover либо `↑/↓`/`J/K` создаёт highlight, но не selection.
+- `X` выбирает highlighted task; `Shift+click` и `Shift+X` расширяют selection;
+  `Cmd/Ctrl+A` выбирает задачи текущего результата, а не всего хранилища.
+- Checkbox появляется у левого края на hover и остаётся видимым у выбранной
+  задачи.
+- Выбранные rows имеют единую accent-tinted заливку.
+- При selection появляется compact bottom action bar для status, priority,
+  assignee, project/release, labels и archive — только для действий,
+  поддержанных выбранным набором и authorization scope.
+- Batch mutation атомарна для одного действия; при отказе UI не оставляет
+  смешанное неподтверждённое состояние.
+- `Esc` очищает selection после закрытия более верхнего overlay.
+
+## 7. Задачи: Kanban board
+
+### 7.1 Board frame и columns
+
+- Board использует ту же toolbar, query и selected task set, что list.
+- Columns следуют текущему `group_by`; default — workflow status.
+- Column header показывает property icon/color, name, count, add и overflow.
+- Columns одинаковой ширины, прокручиваются горизонтально; vertical scroll
+  остаётся внутри board surface.
+- Пустую column можно скрыть из overflow; hidden groups доступны в крайнем
+  правом compact container.
+
+### 7.2 Task card
+
+- Card компактная: title — главный элемент, identifier и выбранные properties —
+  secondary.
+- Description не показывается; для неё используется `Peek` или details.
+- Status не дублируется на card, если он уже выражен column, кроме случаев,
+  когда это нужно для accessibility.
+- Priority, labels, project/release, due date и assignee используют те же
+  icons/chips, что list.
+- Hover показывает selection affordance и overflow без изменения высоты card.
+
+### 7.3 Drag-and-drop
+
+- Drag внутри column меняет manual rank только при manual ordering.
+- Drag между columns изменяет grouping property и rank одной server command.
+- Placeholder показывает точное место вставки; target column имеет мягкую
+  подсветку.
+- Optimistic move подтверждается server response. Validation/conflict
+  возвращает card на server position и показывает конкретную причину.
+- Keyboard alternative позволяет изменить property через shortcut/contextual
+  actions без drag.
+- Если grouping не допускает изменение либо пользователь не имеет доступа,
+  drag disabled и cursor/tooltip объясняют причину.
+
+## 8. Создание и details задачи
+
+### 8.1 Quick composer
+
+- `C` и global create button открывают centered modal composer.
+- Focus сразу в title. Для сохранения достаточно непустого title; status и
+  context defaults видимы до submit.
+- Верх/низ composer содержит compact property controls, а не длинную form grid.
+- Description редактируется Markdown-capable editor под title.
+- `Cmd/Ctrl+Enter` создаёт, `Esc` закрывает с защитой dirty draft.
+- Создание из project, release, group или board column предварительно заполняет
+  соответствующие properties и показывает их пользователю.
+- Полноценная система persisted drafts и templates не входит в MVP.
+
+### 8.2 Task details
+
+- Task открывается в устойчивой details surface: centered overlay на широком
+  desktop либо full-page route на узком viewport. URL всегда deep-linkable.
+- Header: identifier/breadcrumb, copy link, share для shareable standalone task,
+  overflow и close/open-full controls.
+- Main column: inline-editable title, description, subtasks и relations.
+- Metadata располагаются компактной полосой под title и/или правой property
+  column; один property не дублируется одновременно в двух местах.
+- Timestamps muted и доступны в нижней metadata section.
+- Activity/comments area не рисуется, поскольку эти функции вне MVP.
+- Изменение title/description происходит inline, с явными saving/error states и
+  version conflict handling.
+
+### 8.3 Peek
+
+- `Space` на highlighted task открывает non-editing preview поверх list/board;
+  удерживание `Space` показывает Peek только до отпускания.
+- `↑/↓` либо `J/K` меняет preview на соседнюю task, не закрывая Peek.
+- Preview показывает identifier, title, description excerpt и доступные
+  metadata без write controls.
+- `Esc` закрывает Peek. В text input shortcut не срабатывает.
+
+## 9. Projects и releases
+
+### 9.1 Project list/card
+
+- Project list использует тот же view toolbar, selection grammar и property
+  visuals, где они применимы.
+- Строка или compact card показывает icon/color, name, summary, status,
+  progress, lead и dates.
+- Progress имеет доступное числовое значение и tooltip с формулой подсчёта.
+
+### 9.2 Project details
+
+- Header содержит icon/color, inline-editable name, status, share, overflow и
+  details toggle.
+- Tabs: `Overview`, `Tasks`, `Releases` и project-scoped saved views. Пустые
+  tabs для Linear features вне scope не создаются.
+- Overview: summary, description, dates, lead и progress; без documents,
+  resources, activity и predictive graph.
+- `Tasks` использует общий list/board contract с project scope.
+- Details sidebar повторяет compact property panel Linear и открывается
+  button/`Cmd/Ctrl+I`, если shortcut не конфликтует с host.
+
+### 9.3 Release surfaces
+
+- Release визуально следует project entity pattern, а не имитирует CI/CD
+  pipeline Linear.
+- Project `Releases` tab показывает grouped list: status, name/version,
+  progress, target/released date и task count.
+- Release details содержит description, release notes, status/dates, progress и
+  общий task list/board в release scope.
+- Перевод в `released` и изменение выпущенного состава используют explicit
+  confirmation, как требует MVP.
+
+## 10. Views, filters и display options
+
+### 10.1 View toolbar
+
+- `Filter` открывается по click или `F`.
+- Segmented icon switch меняет list/board; `Cmd/Ctrl+B` выполняет то же действие.
+- `Display` открывается по click или `Shift+V`.
+- Save control появляется, когда временный filter/display state отличается от
+  сохранённого view. Доступны `Save as new`, `Update` и `Discard changes`
+  согласно ownership/ACL.
+- View title/overflow содержит rename, duplicate, share и delete, если action
+  входит в permission scope.
+
+### 10.2 Filter builder
+
+- Первый popover показывает searchable список properties.
+- Выбранное условие отображается читаемой формулой из отдельных clickable
+  tokens: property, operator, value.
+- Изменение любого token открывает соответствующий picker; удаление условия
+  доступно без открытия advanced editor.
+- MVP соединяет условия через `AND`; `OR` и nested groups не показываются как
+  disabled promises.
+- Active filters отражаются в URL и видимы в toolbar. `Clear all` возвращает
+  базовый view state.
+- Counts и suggestions формируются только в authorization scope пользователя.
+
+### 10.3 Display popover
+
+Порядок sections близок к Linear:
+
+1. layout `List` / `Board`;
+2. grouping;
+3. ordering и direction;
+4. display properties;
+5. show empty groups и show subtasks.
+
+Unavailable combinations disabled с кратким объяснением. Изменение применяется
+сразу; persisted state меняется только по правилам current/saved view.
+
+## 11. Search и contextual command actions
+
+- `/` или search icon открывает global search overlay по доступным tasks,
+  projects, releases и views.
+- `Cmd/Ctrl+F` ищет title/identifier внутри текущего view, не подменяя global
+  search.
+- Results сгруппированы по entity type, показывают icon, identifier/title и
+  минимальный context; keyboard arrows перемещают highlight, `Enter` открывает.
+- `Cmd/Ctrl+K` открывает contextual actions menu для focused/selected entity.
+  Оно содержит только уже реализованные actions из MVP и не является полной
+  command palette Linear.
+- Search и actions не подтверждают существование недоступного resource.
+
+## 12. Sharing, authentication и profile
+
+У этих surfaces нет прямого требования копировать конкретный account model
+Linear, но они обязаны использовать тот же visual language.
+
+### 12.1 Sign-in
+
+- Минимальный centered sign-in panel без application data за ним.
+- Два равноправных actions: `Continue with ChatGPT` и `Continue with Google`.
+- Loading, provider error и retry показаны внутри panel; identity никогда не
+  запрашивается произвольным email/password form.
+
+### 12.2 Share dialog
+
+- Trigger `Share` находится в header Project, standalone Task и SavedView.
+- Dialog содержит verified-email combobox зарегистрированных users, явный
+  единственный уровень `Full access` и список active collaborators.
+- Owner отмечен отдельно и не имеет revoke control.
+- Revoke требует подтверждения только когда последствия могут оборвать текущую
+  работу; результат обновляется сразу после server response.
+- Project dialog объясняет inheritance к tasks/releases; SavedView dialog — что
+  view не расширяет доступ к underlying data.
+
+### 12.3 Shared with me и profile
+
+- `Shared with me` — grouped list Projects, standalone Tasks и SavedViews с
+  owner avatar/name и обычными entity controls.
+- Profile/settings использует left settings navigation и compact form rows.
+- Доступны display name, verified email, timezone, linked providers, theme,
+  sidebar preference и sign out.
+
+## 13. Keyboard contract
+
+Shortcuts активны только когда focus не находится в text editor/input и host
+browser/Sites не перехватывает комбинацию.
+
+| Shortcut | Действие MVP |
+|---|---|
+| `C` | Открыть task composer |
+| `/` | Global search |
+| `F` | Filter |
+| `Shift+V` | Display options |
+| `Cmd/Ctrl+B` | Переключить list/board |
+| `↑/↓`, `J/K` | Переместить highlight |
+| `X`, `Shift+X` | Выбрать task / расширить selection |
+| `Space` | Peek highlighted task/project |
+| `Enter` | Открыть highlighted entity / подтвердить menu item |
+| `Cmd/Ctrl+K` | Contextual actions menu |
+| `Cmd/Ctrl+Enter` | Сохранить composer/form |
+| `Esc` | Закрыть верхний layer или очистить selection |
+| `Cmd/Ctrl+I` | Toggle details sidebar, где доступно |
+
+Tooltip и menus показывают platform-appropriate symbols (`⌘` на macOS,
+`Ctrl` на остальных платформах). Все shortcuts имеют mouse-accessible action.
+
+## 14. Responsive behavior
+
+- Основной acceptance viewport — desktop от `1280px`; Linear-like плотность
+  проектируется прежде всего для desktop web.
+- Ниже `1024px` sidebar по умолчанию compact либо overlay; details sidebar
+  становится drawer.
+- Ниже `768px` task/project details и composer открываются full-screen, toolbar
+  сворачивает secondary actions в overflow, list скрывает необязательные
+  display properties.
+- Kanban сохраняет горизонтальные columns, а не превращается автоматически в
+  другую сущность; touch drag имеет альтернативу через property picker.
+- Отдельные native mobile applications не входят в MVP.
+
+## 15. Accessibility и content rules
+
+- Полная keyboard navigation, видимый focus ring и логический tab order
+  обязательны до визуального sign-off.
+- Dialog имеет focus trap и accessible name; popover/menu использует
+  подходящую ARIA semantics.
+- Status, priority, progress и validation используют text/icon в дополнение к
+  color.
+- Target contrast: WCAG 2.2 AA для текста и essential controls.
+- Dynamic updates selection, save, error и drag result объявляются assistive
+  technologies без избыточного шума.
+- UI copy короткая и предметная. Не копируются фирменные тексты Linear; термины
+  Task Manager (`Task`, `Release`, `Shared with me`) используются последовательно.
+
+## 16. Parity matrix
+
+| Surface/паттерн Linear | Task Manager | Статус MVP | Осознанное отличие |
+|---|---|---|---|
+| Left application sidebar | My tasks, Shared, Views, Projects, Releases | Берём | Без teams/inbox/initiatives |
+| Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
+| Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
+| Filters | Searchable property formula | Берём ядро | Только `AND` |
+| Display options | Layout/group/order/properties/empty groups | Берём ядро | Без per-user defaults и subgrouping |
+| Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
+| Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
+| Peek | Preview task/project по `Space` | Берём | Без activity/comments |
+| Issue composer/details | Modal composer и details surface | Берём | Без templates, attachments, drafts system |
+| Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
+| Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
+| Themes | System/light/dark | Берём | Собственные tokens и branding |
+| Share controls | Linear-like compact dialog | Адаптируем | Наша модель `full_access` и inheritance |
+| Login/profile | Та же visual system | Адаптируем | ChatGPT/Google identity model |
+
+## 17. Проверка и приёмка
+
+Для каждой новой surface до sign-off должны быть:
+
+1. Ссылка на актуальный официальный Linear reference и дата наблюдения.
+2. Список перенесённых controls и задокументированных отклонений.
+3. Собственные screenshots Task Manager в light/dark theme на desktop.
+4. Visual regression baseline для default, hover/focus, selected, loading,
+   empty, error и conflict states.
+5. Interaction tests mouse + keyboard для основных действий.
+6. Accessibility check focus order, semantics и contrast.
+7. Проверка, что ни один видимый control не обещает функцию вне MVP.
+8. Проверка, что UI не обходит server authorization/domain validation.
+
+Критерий сходства: пользователь, знакомый с Linear, без обучения находит
+основные actions в ожидаемых местах и использует знакомые interaction patterns,
+при этом видит самостоятельный продукт Task Manager, а не копию бренда Linear.
+
+## 18. Официальные референсы Linear
+
+Проверены 2026-08-14; перед реализацией крупных surfaces требуется повторная
+сверка, потому что интерфейс Linear развивается.
+
+- [Board layout](https://linear.app/docs/board-layout)
+- [Display options](https://linear.app/docs/display-options)
+- [Select issues](https://linear.app/docs/select-issues)
+- [Peek preview](https://linear.app/docs/peek)
+- [Create issues](https://linear.app/docs/creating-issues)
+- [Edit issues](https://linear.app/docs/editing-issues)
+- [Filters](https://linear.app/docs/filters)
+- [Custom Views](https://linear.app/docs/custom-views)
+- [Search](https://linear.app/docs/search)
+- [Project overview](https://linear.app/docs/project-overview)
+- [Preferences](https://linear.app/docs/account-preferences)

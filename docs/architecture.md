@@ -2,33 +2,43 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-13
+Последнее обновление: 2026-08-14
 
-Архитектура намеренно остаётся логической: пользователь ещё не выбрал язык,
-framework, базу данных, hosting и модель аутентификации. До реализации эти
-решения должны быть приняты в ADR, а этот документ — обновлён.
+Архитектура остаётся логической в выборе framework и API style, но deployment
+и identity boundaries уже определены в
+[ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md): ChatGPT
+Sites, вход через ChatGPT или Google, раздельные owner scopes и sharing через
+единственный уровень `full_access`. Рабочей реализации пока нет.
 
 ## Архитектурные цели
 
 - одна транзакционная модель данных для list, board и saved views;
 - быстрые интерактивные mutations с явным разрешением конфликтов;
 - строгие project/release и workflow invariants на сервере;
+- server-side tenant isolation и authorization для любого data access;
+- две внешние identities вокруг одного внутреннего `User`;
 - возможность развивать фильтры и metadata без копирования query-логики по UI;
-- простой deployment и эксплуатация для небольшого продукта.
+- единая Linear-like interaction и component model для list, board, details,
+  filters, selection и contextual actions;
+- managed deployment и durable structured storage в ChatGPT Sites.
 
 ## Контекст
 
 ```mermaid
 flowchart LR
-    U[Пользователь] --> UI[Web UI]
-    UI --> API[Application API]
-    API --> D[Domain modules]
-    D --> DB[(Relational store)]
+    U[Пользователь] --> SITE[ChatGPT Site / Web UI]
+    CG[Sign in with ChatGPT] --> RT[Sites server runtime]
+    G[Google identity provider] --> RT
+    SITE --> RT
+    RT --> IA[Identity and Access]
+    IA --> D[Domain modules]
+    D --> DB[(Sites D1)]
 ```
 
-Relational store — обоснованный кандидат из-за ссылочной целостности,
-транзакций и сложных фильтров, но конкретная СУБД ещё не выбрана. Web UI также
-является предложением, а не принятым ограничением на все будущие клиенты.
+ChatGPT Sites — production target, а D1 — target relational binding для
+структурированных пользовательских данных. Это соответствует
+[официальной документации Sites](https://learn.chatgpt.com/docs/sites), но
+конкретные framework, query layer и migration tool ещё не выбраны.
 
 ## Логические модули
 
@@ -39,20 +49,77 @@ Relational store — обоснованный кандидат из-за ссы�
 | Releases | Release lifecycle, состав и project consistency |
 | Views | Filter AST, query compilation, grouping, ordering, display config |
 | Search | Identifier lookup и text search поверх разрешённого scope |
-| Identity | Current actor, ownership и permissions после выбора auth model |
+| Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User |
+| Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
+| UI shell | Linear-like navigation, shared controls, keyboard, themes и state |
 
 Модули — границы кода внутри одного приложения, а не отдельные сервисы. Для MVP
 предпочтителен modular monolith: независимое развёртывание этих частей пока не
 даёт подтверждённой пользы, но увеличивает транзакционную сложность.
 
+## Hosting и runtime boundary
+
+- Sites project связывается с локальным repository через
+  `.openai/hosting.json`, который создаётся/обновляется только provisioning
+  workflow и содержит binding metadata, а не secrets.
+- Structured records сохраняются через D1 binding. R2 не требуется, пока в
+  продукте нет uploads.
+- Provider credentials и session secrets задаются только в hosted environment
+  settings; локально перечисляются лишь имена переменных в `.env.example`.
+- Save version создаёт reviewable deployment candidate; Deploy version делает
+  выбранную версию production. Documentation-only изменение этого репозитория
+  не является deployment.
+- Site может быть доступен в интернете как sign-in shell, но application data
+  всегда требует authenticated User. Site audience и in-app authorization
+  проверяются независимо.
+- Sites находится в public beta, зависит от plan/region/workspace settings и на
+  старте не предоставляет data residency guarantees. Эти ограничения должны
+  быть повторно проверены перед production release.
+
 ## Основные потоки
+
+### Вход и identity linking
+
+1. Пользователь выбирает ChatGPT либо Google.
+2. Sites ChatGPT flow возвращает trusted email/name headers server runtime;
+   Google adapter завершает проверенный OAuth/OIDC flow.
+3. Identity module находит `UserIdentity` по `(provider, provider_account_key)`
+   либо создаёт новый User и identity.
+4. Связать второй provider можно только из authenticated session через flow,
+   доказывающий контроль над обеими identities; email match не достаточен.
+5. Session содержит internal `User.id`; client-provided user/email/owner claims
+   не участвуют в authorization.
+
+### Авторизованный доступ к данным
+
+1. Identity middleware устанавливает current User из server-verified session.
+2. Access строит predicate: `owner_user_id = current_user.id` либо active grant
+   на resource/shareable ancestor.
+3. Repository применяет predicate внутри SQL/query до pagination, aggregation,
+   grouping или full-text search.
+4. Mutation дополнительно проверяет `full_access`, inheritance и domain
+   invariants в одной транзакции.
+5. Unauthorized lookup возвращает ответ, не подтверждающий существование
+   чужого resource.
+
+### Share и revoke
+
+1. Grantor находит уже зарегистрированного User по verified email.
+2. Access проверяет, что grantor — owner либо имеет `full_access`, и что target
+   является разрешённым shareable root.
+3. Active grant создаётся идемпотентно с provenance grantor/timestamp.
+4. Revoke атомарно закрывает grant. Следующий query/mutation grantee больше не
+   включает resource subtree.
+5. Project grant наследуется Tasks/Releases; SavedView grant всегда
+   пересекается с собственным authorization scope grantee.
 
 ### Открытие view
 
-1. API загружает `SavedView` и проверяет доступ.
+1. API загружает `SavedView` только через Access scope и проверяет grant.
 2. Views валидирует versioned filter AST и объединяет его со scope и временными
    URL-фильтрами.
-3. Один query pipeline применяет фильтр, grouping, ordering и pagination.
+3. Один query pipeline сначала применяет authorization predicate, затем
+   фильтр, grouping, ordering и pagination.
 4. API возвращает records и metadata групп; UI рисует list либо board.
 
 Переключение layout не должно менять query semantics или состав task IDs.
@@ -84,6 +151,10 @@ Relational store — обоснованный кандидат из-за ссы�
 - Ошибки различают validation, not found, permission denied и version conflict.
 - Timestamps назначает сервер; клиент передаёт local date/timezone только там,
   где это часть семантики.
+- Любая endpoint/query abstraction требует current User и не предоставляет
+  unscoped repository methods application layer.
+- Authorization применяется до aggregates и error detail, чтобы исключить
+  утечки counts, identifiers и существования records.
 
 Конкретный REST/GraphQL/RPC стиль остаётся открытым.
 
@@ -91,7 +162,11 @@ Relational store — обоснованный кандидат из-за ссы�
 
 Предварительно нужны:
 
-- unique sequence/index для `Task.identifier`;
+- D1 migrations для User, UserIdentity, AccessGrant и доменных таблиц;
+- unique index `(provider, provider_account_key)` для identities;
+- unique active-grant constraint для resource/grantee;
+- owner-prefixed indexes для каждого user-owned query path;
+- owner-scoped sequence/index для `Task.identifier`;
 - индексы по status, project, release, assignee, priority, due/updated dates и
   `archived_at`;
 - join indexes для labels и task relations;
@@ -100,18 +175,27 @@ Relational store — обоснованный кандидат из-за ссы�
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
 
-Физическая схема и миграционный инструмент выбираются вместе со стеком.
+Физическая D1 schema и migration tool выбираются вместе со framework. Все
+foreign keys и compound indexes должны сохранять owner consistency либо
+проверяться атомарно в transaction boundary.
 
 ## Надёжность и проверка
 
 - Domain tests проверяют переходы статусов, timestamps, release consistency,
   parent cycles и relation uniqueness.
 - Repository/API integration tests проверяют транзакции, constraints, filters,
-  pagination и concurrency conflict.
-- UI tests проверяют одинаковый состав list/board, drag rollback и сохранение
-  views.
+  pagination, concurrency conflict и отсутствие cross-user data leakage.
+- Identity tests проверяют оба providers, forged headers/claims, explicit
+  linking и отсутствие automatic email merge.
+- Access tests покрывают project inheritance, standalone Task, SavedView
+  intersection, re-share, revoke и owner implicit access.
+- UI tests проверяют одинаковый состав list/board, selection/bulk actions,
+  keyboard controls, Peek, drag rollback и сохранение views.
+- Visual regression и accessibility checks следуют
+  [спецификации интерфейса](specs/interface.md); сравнение с Linear проверяет
+  composition и interaction parity, а не чужие assets.
 - End-to-end сценарии следуют разделу приёмки в
-  [спецификации MVP](specs/mvp.md#11-проверяемые-сценарии-приёмки).
+  [спецификации MVP](specs/mvp.md#13-проверяемые-сценарии-приёмки).
 
 ## Риски
 
@@ -121,16 +205,31 @@ Relational store — обоснованный кандидат из-за ссы�
   предусмотрен до оптимистичного DnD.
 - Одновременная редактируемость released scope ослабляет доверие к истории;
   безопасный первый вариант — запрещать её.
-- Multi-user permissions существенно меняют query layer; нельзя считать
-  `owner_id` полноценной моделью доступа.
+- Одна забытая unscoped query может раскрыть чужие данные; owner/ACL scope
+  должен быть частью repository API, schema indexes и integration tests.
+- Разрешённый re-share при `full_access` увеличивает blast radius ошибочного
+  grant; provenance и быстрый revoke обязательны.
+- Sites contract сегодня даёт ChatGPT identity через email/name headers, а не
+  отдельный immutable subject; account linking и provider key требуют
+  осторожной миграционной стратегии.
+- Google external auth должен быть доказан на реальном Sites runtime до
+  заявления о готовом login flow.
 - Project progress без effort weighting прост, но может вводить в заблуждение
   на задачах разного размера; UI должен явно показывать метод подсчёта.
+- Linear меняет UI независимо от Task Manager. Reference должен быть датирован,
+  а изменения не должны автоматически ломать наш contract или расширять scope.
+- Слишком буквальное сходство может стереть product identity или привести к
+  копированию чужих assets; ADR-0002 требует собственного брендинга и
+  документированных отклонений.
+- Sites public beta limits и отсутствие data residency могут потребовать
+  пересмотра hosting до обработки чувствительных или регулируемых данных.
 
 ## Решения до первой реализации
 
-1. Целевая среда: hosted web, local app или оба варианта.
-2. Персональная или многопользовательская identity/permission model.
-3. Язык, framework, database и миграционный инструмент.
-4. REST, GraphQL либо иной API contract.
-5. Нужны ли real-time updates в MVP или достаточно refresh/conflict handling.
-6. Политика `started_at` при повторном открытии и immutability released scope.
+1. Sites-compatible язык/framework, D1 query layer и migration tool.
+2. Конкретный Google OAuth/OIDC adapter и callback/session contract в Sites.
+3. REST, GraphQL либо иной API contract.
+4. Session lifetime, CSRF protection, audit event minimum и account recovery.
+5. UX explicit linking/unlinking providers и смены primary email.
+6. Нужны ли real-time updates в MVP или достаточно refresh/conflict handling.
+7. Политика `started_at` при повторном открытии и immutability released scope.
