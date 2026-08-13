@@ -1,0 +1,13 @@
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
+
+.env
+.env.*
+!.env.example
+
+# Machine-local Sites bindings; never commit account-specific project IDs.
+/.openai/hosting.json
+/.openai/hosting.production.json
