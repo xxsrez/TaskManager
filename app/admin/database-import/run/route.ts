@@ -272,8 +272,13 @@ async function importSnapshot(snapshot: DatabaseSnapshot) {
   const statements: D1PreparedStatement[] = [];
   for (const [tableName, columns] of Object.entries(tables)) {
     const rows = snapshot.tables[tableName].rows;
-    for (let offset = 0; offset < rows.length; offset += 20) {
-      const chunk = rows.slice(offset, offset + 20);
+    const rowsPerStatement = Math.max(1, Math.floor(96 / columns.length));
+    for (
+      let offset = 0;
+      offset < rows.length;
+      offset += rowsPerStatement
+    ) {
+      const chunk = rows.slice(offset, offset + rowsPerStatement);
       const rowPlaceholders = `(${columns.map(() => "?").join(", ")})`;
       const sql = `INSERT INTO ${tableName} (${columns.join(", ")}) VALUES ${chunk
         .map(() => rowPlaceholders)
