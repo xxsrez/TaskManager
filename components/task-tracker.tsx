@@ -70,6 +70,7 @@ import type {
   AccessRole,
   AppliedSystemBackup,
   AppSnapshot,
+  ExternalSourceRecord,
   Priority,
   ProjectRecord,
   ReleaseRecord,
@@ -116,6 +117,21 @@ export function resolveArchiveBulkAction(
   return shouldRestore
     ? ({ archived: false, label: "Restore" } as const)
     : ({ archived: true, label: "Archive" } as const);
+}
+
+type MutationResult = AppSnapshot | { task: TaskRecord };
+
+export function applyMutationResult(
+  current: AppSnapshot,
+  result: MutationResult,
+): AppSnapshot {
+  if (!("task" in result)) return result;
+  return {
+    ...current,
+    tasks: current.tasks.map((task) =>
+      task.id === result.task.id ? result.task : task,
+    ),
+  };
 }
 
 const builtInViews = [
@@ -370,11 +386,11 @@ export function TaskTracker({
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const value = (await response.json()) as AppSnapshot | { error: string };
+      const value = (await response.json()) as MutationResult | { error: string };
       if (!response.ok || "error" in value) {
         throw new Error("error" in value ? value.error : "Request failed");
       }
-      setData(value);
+      setData((current) => applyMutationResult(current, value));
       return true;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Request failed");
@@ -753,15 +769,11 @@ export function TaskTracker({
                   <Download size={14} />
                   <span>Project backup</span>
                 </a>
-                {data.admin && (
+                {data.isAdmin && (
                   <a
                     className="account-menu-item"
                     href={navigationPath({ surface: "admin", layout: "list", taskId: null }, data)}
                     role="menuitem"
-                    onClick={(event) => handleLocalLink(event, () => {
-                      navigateSurface("admin", "list");
-                      setAccountMenuOpen(false);
-                    })}
                   >
                     <ShieldCheck size={14} />
                     <span>Administration</span>
@@ -1125,8 +1137,9 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }:
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [estimate, setEstimate] = useState(task.estimate?.toString() ?? "");
+  const source = useTaskExternalSource(task);
   if (!canEditContent(task.accessRole)) {
-    return <ReadOnlyTaskDetails task={task} data={data} onClose={onClose} onOpenTask={onOpenTask} />;
+    return <ReadOnlyTaskDetails task={task} data={data} source={source} onClose={onClose} onOpenTask={onOpenTask} />;
   }
   const statuses = data.statuses.filter((status) => status.ownerUserId === task.ownerUserId);
   const projects = data.projects.filter(
@@ -1149,20 +1162,71 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }:
       relations.push({ relation, direction: "in", target: taskMap.get(relation.sourceTaskId) });
     }
   }
-  const source = data.externalSources.find(
-    (entry) => entry.targetType === "task" && entry.targetId === task.id,
-  );
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel"><header><div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div><div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div></header><div className="details-body"><input className="details-title" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => title.trim() && title !== task.title && void onSave({ title })} /><textarea className="details-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={8} /><button className="button secondary save-description" disabled={busy || description === task.description} onClick={() => void onSave({ description })}>{busy ? "Saving…" : "Save description"}</button><div className="properties-grid"><PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow><PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow><PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow><PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={!task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow><PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow><PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => setEstimate(event.target.value)} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (value !== task.estimate) void onSave({ estimate: value }); }} /></PropertyRow></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}{source && <DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open {source.sourceId} in Linear</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentEntries} archived comments</span><span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>}{source && source.comments.length > 0 && <DetailsSection title="Imported comments" icon={<MessageSquare size={14} />}><div className="comment-archive">{source.comments.map((comment) => <article key={comment.id}><header><b>{comment.authorName}</b><time dateTime={comment.createdAt}>{longDateTime(comment.createdAt)}</time>{comment.parentId && <small>Reply</small>}</header>{comment.quotedText && <blockquote>{comment.quotedText}</blockquote>}<p>{comment.body}</p></article>)}</div></DetailsSection>}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div><button className="button danger ghost archive-action" onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button></div></aside></div>;
+  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} full />;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel"><header><div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div><div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div></header><div className="details-body"><input className="details-title" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => title.trim() && title !== task.title && void onSave({ title })} /><textarea className="details-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={8} /><button className="button secondary save-description" disabled={busy || description === task.description} onClick={() => void onSave({ description })}>{busy ? "Saving…" : "Save description"}</button><div className="properties-grid"><PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow><PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow><PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow><PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={!task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow><PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow><PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => setEstimate(event.target.value)} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (value !== task.estimate) void onSave({ estimate: value }); }} /></PropertyRow></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div><button className="button danger ghost archive-action" onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button></div></aside></div>;
 }
 
-function ReadOnlyTaskDetails({ task, data, onClose, onOpenTask }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void }) {
+function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task: TaskRecord; data: AppSnapshot; source: ExternalSourceRecord | null | undefined; onClose: () => void; onOpenTask: (id: string) => void }) {
   const status = data.statuses.find((item) => item.id === task.statusId);
   const project = task.projectId ? data.projects.find((item) => item.id === task.projectId) : undefined;
   const release = task.releaseId ? data.releases.find((item) => item.id === task.releaseId) : undefined;
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
-  const source = data.externalSources.find((entry) => entry.targetType === "task" && entry.targetId === task.id);
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1><p className="read-only-description">{task.description || "No description"}</p><div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{source?.sourceUrl && <DetailsSection title="Imported source" icon={<Link2 size={14} />}><a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record</a></DetailsSection>}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} />;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1><p className="read-only-description">{task.description || "No description"}</p><div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+}
+
+function useTaskExternalSource(task: TaskRecord) {
+  const [loaded, setLoaded] = useState<{
+    taskId: string;
+    source: ExternalSourceRecord | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!task.hasExternalSource) return;
+    const controller = new AbortController();
+    void fetch(`/api/tasks/${encodeURIComponent(task.id)}/external-source`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const value = (await response.json()) as
+          | ExternalSourceRecord
+          | null
+          | { error: string };
+        if (!response.ok || (value && "error" in value)) {
+          throw new Error(value && "error" in value ? value.error : "Request failed");
+        }
+        setLoaded({ taskId: task.id, source: value });
+      })
+      .catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") {
+          return;
+        }
+        setLoaded({ taskId: task.id, source: null });
+      });
+    return () => controller.abort();
+  }, [task.hasExternalSource, task.id]);
+
+  if (!task.hasExternalSource) return null;
+  return loaded?.taskId === task.id ? loaded.source : undefined;
+}
+
+function ImportedSourceDetails({ source, hasExternalSource, full = false }: {
+  source: ExternalSourceRecord | null | undefined;
+  hasExternalSource: boolean;
+  full?: boolean;
+}) {
+  if (!hasExternalSource) return null;
+  if (source === undefined) {
+    return <DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><p className="inline-note">Loading imported context…</p></DetailsSection>;
+  }
+  if (source === null) {
+    return <DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><p className="inline-note">Imported context is unavailable.</p></DetailsSection>;
+  }
+  if (!full) {
+    return source.sourceUrl ? <DetailsSection title="Imported source" icon={<Link2 size={14} />}><a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record</a></DetailsSection> : null;
+  }
+  return <><DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open {source.sourceId} in Linear</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentEntries} archived comments</span><span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>{source.comments.length > 0 && <DetailsSection title="Imported comments" icon={<MessageSquare size={14} />}><div className="comment-archive">{source.comments.map((comment) => <article key={comment.id}><header><b>{comment.authorName}</b><time dateTime={comment.createdAt}>{longDateTime(comment.createdAt)}</time>{comment.parentId && <small>Reply</small>}</header>{comment.quotedText && <blockquote>{comment.quotedText}</blockquote>}<p>{comment.body}</p></article>)}</div></DetailsSection>}</>;
 }
 
 function PropertyValue({ label, value }: { label: string; value: string }) {

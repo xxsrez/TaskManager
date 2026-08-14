@@ -557,10 +557,14 @@ async function ensureDefaultStatuses(ownerUserId: string) {
   );
 }
 
-export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
+export async function getSnapshot(
+  user: UserRecord,
+  options: { includeAdminOverview?: boolean } = {},
+): Promise<AppSnapshot> {
   await ensureDatabase();
   const db = getD1();
   const configuredAdminEmails = adminEmailsFromEnvironment();
+  const isAdmin = isAdminEmail(user.email, configuredAdminEmails);
   const [
     tasks,
     projects,
@@ -572,7 +576,6 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
     labels,
     taskLabels,
     relations,
-    externalSources,
     admin,
   ] =
     await Promise.all([
@@ -580,6 +583,10 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
         .prepare(
           `WITH scoped AS (
              SELECT t.*,
+               EXISTS (
+                 SELECT 1 FROM external_records er
+                 WHERE er.target_type = 'task' AND er.target_id = t.id
+               ) AS has_external_source,
                CASE
                  WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
                  WHEN t.project_id IS NOT NULL THEN (
@@ -893,94 +900,14 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
           user.id,
         )
         .all<DbRow>(),
-      db
-        .prepare(
-          `SELECT target_type, target_id, source, source_id, source_url,
-                  metadata_json
-           FROM external_records er
-           WHERE er.owner_user_id = ?
-              OR (er.target_type = 'project' AND EXISTS (
-                SELECT 1 FROM projects p WHERE p.id = er.target_id AND (
-                  p.owner_user_id = ? OR EXISTS (
-                    SELECT 1 FROM access_grants ag
-                    WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                      AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                  )
-                )
-              ))
-              OR (er.target_type = 'release' AND EXISTS (
-                SELECT 1 FROM releases r JOIN projects p ON p.id = r.project_id
-                WHERE r.id = er.target_id AND (
-                  p.owner_user_id = ? OR EXISTS (
-                    SELECT 1 FROM access_grants ag
-                    WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                      AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                  )
-                )
-              ))
-              OR (er.target_type = 'task' AND EXISTS (
-                SELECT 1 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-                WHERE t.id = er.target_id AND (
-                  (t.project_id IS NOT NULL AND (
-                    p.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'project'
-                        AND ag.resource_id = t.project_id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  )) OR (t.project_id IS NULL AND (
-                    t.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  ))
-                )
-              ))
-              OR (er.target_type = 'saved_view' AND EXISTS (
-                SELECT 1 FROM saved_views v
-                LEFT JOIN projects p ON p.id = v.scope_project_id
-                WHERE v.id = er.target_id AND (
-                  (v.scope_project_id IS NOT NULL AND (
-                    p.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'project'
-                        AND ag.resource_id = v.scope_project_id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  )) OR (v.scope_project_id IS NULL AND (
-                    v.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  ))
-                )
-              ))`,
-        )
-        .bind(
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-        )
-        .all<DbRow>(),
-      isAdminEmail(user.email, configuredAdminEmails)
+      isAdmin && options.includeAdminOverview
         ? getAdminOverview(user, configuredAdminEmails)
         : Promise.resolve(null),
     ]);
 
   return {
     user,
+    isAdmin,
     admin,
     users: users.results.map(mapUser),
     statuses: statuses.results.map(mapStatus),
@@ -990,10 +917,28 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
     labels: labels.results.map(mapLabel),
     taskLabels: taskLabels.results.map(mapTaskLabel),
     relations: relations.results.map(mapRelation),
-    externalSources: externalSources.results.map(mapExternalSource),
     views: views.results.map(mapView),
     collaborators: collaborators.results.map(mapCollaborator),
   };
+}
+
+export async function getTaskExternalSource(
+  currentUser: UserRecord,
+  taskId: string,
+): Promise<ExternalSourceRecord | null> {
+  await ensureDatabase();
+  await loadAccessibleTask(currentUser.id, taskId);
+  const row = await getD1()
+    .prepare(
+      `SELECT target_type, target_id, source, source_id, source_url, metadata_json
+       FROM external_records
+       WHERE target_type = 'task' AND target_id = ? AND source = 'linear'
+       ORDER BY imported_at DESC
+       LIMIT 1`,
+    )
+    .bind(taskId)
+    .first<DbRow>();
+  return row ? mapExternalSource(row) : null;
 }
 
 export async function getAdminOverview(
@@ -1292,6 +1237,7 @@ export async function updateTask(
   if ((result.meta.changes ?? 0) !== 1) {
     throw new ConflictError("Task was changed in another session");
   }
+  return loadAccessibleTask(currentUser.id, taskId);
 }
 
 export async function bulkUpdateTasks(
@@ -1654,6 +1600,10 @@ async function loadAccessibleTask(userId: string, taskId: string) {
     .prepare(
       `WITH scoped AS (
          SELECT t.*,
+           EXISTS (
+             SELECT 1 FROM external_records er
+             WHERE er.target_type = 'task' AND er.target_id = t.id
+           ) AS has_external_source,
            CASE
              WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
              WHEN t.project_id IS NOT NULL THEN (
@@ -2022,6 +1972,7 @@ function mapTask(row: DbRow): TaskRecord {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     accessRole: effectiveRole(row.access_role),
+    hasExternalSource: Number(row.has_external_source ?? 0) === 1,
   };
 }
 

@@ -231,10 +231,21 @@ role checks, release/project validation и optimistic version.
   переиспользуется product surfaces: export читает полный logical state, а
   restore работает только через validated staging и atomic replace.
 
-Первый срез использует JSON HTTP route handlers: bootstrap snapshot и команды
-создания/изменения Task, Project, Release, SavedView и AccessGrant. Каждая
-команда возвращает новый authorization-scoped snapshot; дальнейшая pagination
-и command-specific responses будут добавлены при росте объёма данных.
+Первый срез использует JSON HTTP route handlers: bounded bootstrap snapshot и
+команды создания/изменения Task, Project, Release, SavedView и AccessGrant.
+`/api/bootstrap` не включает тяжёлый импортированный архив комментариев и
+attachments: при открытии details одной импортированной Task UI отдельно
+запрашивает `/api/tasks/{id}/external-source`, а server сначала повторно
+проверяет ACL этой Task. Content-free admin overview вычисляется только для
+прямого открытия `/admin`; обычный snapshot хранит лишь server-derived признак
+доступности admin surface.
+
+Частая команда изменения одной Task возвращает только подтверждённый
+`TaskRecord`, и client атомарно заменяет эту запись в текущем snapshot. Это не
+запускает заново все workspace queries и не пересылает весь набор Tasks после
+каждого property edit. Более редкие create, bulk и sharing commands пока могут
+возвращать новый authorization-scoped snapshot; дальнейшие command-specific
+responses и pagination добавляются по мере роста объёма данных.
 
 ## Хранение и индексы
 

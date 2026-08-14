@@ -90,7 +90,7 @@ export function resolveNavigationTarget(
     return { surface: "all", layout: "list", taskId: null };
   }
   if (target.kind === "admin") {
-    return data.admin
+    return data.isAdmin
       ? { surface: "admin", layout: "list", taskId: null }
       : null;
   }

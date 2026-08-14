@@ -71,6 +71,7 @@ test("admin navigation fails closed unless the server snapshot grants access", (
   assert.deepEqual(
     resolveNavigationTarget(target, {
       ...snapshot,
+      isAdmin: true,
       admin: {
         registeredUserCount: 1,
         activeUserCount: 1,

@@ -4,6 +4,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   CodexSetupDialog,
+  applyMutationResult,
   resolveArchiveBulkAction,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
@@ -19,6 +20,7 @@ const snapshot: AppSnapshot = {
     email: "test@example.com",
     timezone: "UTC",
   },
+  isAdmin: false,
   admin: null,
   users: [],
   statuses: [
@@ -61,12 +63,12 @@ const snapshot: AppSnapshot = {
       createdAt: now,
       updatedAt: now,
       accessRole: "owner",
+      hasExternalSource: false,
     },
   ],
   labels: [],
   taskLabels: [],
   relations: [],
-  externalSources: [],
   views: [],
   collaborators: [],
 };
@@ -83,6 +85,15 @@ test("bulk archive action archives an active selection", () => {
     archived: true,
     label: "Archive",
   });
+});
+
+test("a focused task mutation patches one record without replacing the snapshot", () => {
+  const updatedTask = { ...snapshot.tasks[0]!, title: "Updated", version: 2 };
+  const result = applyMutationResult(snapshot, { task: updatedTask });
+
+  assert.equal(result.tasks[0], updatedTask);
+  assert.equal(result.projects, snapshot.projects);
+  assert.equal(result.releases, snapshot.releases);
 });
 
 test("a direct task render has no controlled field warnings", () => {
@@ -143,11 +154,34 @@ test("viewer task details are read-only and expose no mutation controls", () => 
   assert.doesNotMatch(markup, /Members &amp; access/);
 });
 
+test("imported task details defer the heavy source archive until the panel opens", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        tasks: snapshot.tasks.map((task) => ({
+          ...task,
+          hasExternalSource: true,
+        })),
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: "task-1",
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /Loading imported context/);
+});
+
 test("an administrator sees registration and activity statistics", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
       initialData: {
         ...snapshot,
+        isAdmin: true,
         admin: {
           registeredUserCount: 1,
           activeUserCount: 1,

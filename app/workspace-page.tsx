@@ -16,18 +16,18 @@ import {
 import { getOrCreateUser, getSnapshot } from "@/lib/repository";
 import type { AppSnapshot } from "@/lib/types";
 
-const loadWorkspaceSnapshot = cache(async () => {
+const loadWorkspaceSnapshot = cache(async (includeAdminOverview: boolean) => {
   const actor = await getCurrentActor();
   if (!actor) return null;
   const user = await getOrCreateUser(actor);
-  return getSnapshot(user);
+  return getSnapshot(user, { includeAdminOverview });
 });
 
 export async function WorkspacePage({ pathname }: { pathname: string }) {
   const target = parseNavigationPath(pathname);
   if (!target) notFound();
 
-  const snapshot = await loadWorkspaceSnapshot();
+  const snapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!snapshot) return <SignInPage returnTo={pathname} />;
 
   const navigation = resolveNavigationTarget(target, snapshot);
@@ -48,7 +48,7 @@ export async function workspaceMetadata(pathname: string): Promise<Metadata> {
   const target = parseNavigationPath(pathname);
   if (!target) return notFoundMetadata();
 
-  const snapshot = await loadWorkspaceSnapshot();
+  const snapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!snapshot) return signedOutMetadata();
   const navigation = resolveNavigationTarget(target, snapshot);
   if (!navigation) return notFoundMetadata();

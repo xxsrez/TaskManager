@@ -89,6 +89,7 @@ export type TaskRecord = {
   createdAt: string;
   updatedAt: string;
   accessRole: AccessRole;
+  hasExternalSource: boolean;
 };
 
 export type LabelRecord = {
@@ -259,6 +260,7 @@ export type AppliedProjectBackup = {
 
 export type AppSnapshot = {
   user: UserRecord;
+  isAdmin: boolean;
   admin: AdminOverview | null;
   users: UserRecord[];
   statuses: WorkflowStatusRecord[];
@@ -268,7 +270,6 @@ export type AppSnapshot = {
   labels: LabelRecord[];
   taskLabels: TaskLabelAssignment[];
   relations: TaskRelationRecord[];
-  externalSources: ExternalSourceRecord[];
   views: SavedViewRecord[];
   collaborators: CollaboratorRecord[];
 };
