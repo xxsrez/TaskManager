@@ -13,6 +13,7 @@
 ```mermaid
 erDiagram
     USER ||--o{ USER_IDENTITY : authenticates_with
+    USER ||--o{ API_CREDENTIAL : authorizes_api
     USER ||--o{ TASK : owns
     USER ||--o{ PROJECT : owns
     USER ||--o{ SAVED_VIEW : owns
@@ -73,6 +74,21 @@ provider contract. Sites `Sign in with ChatGPT` на текущем публич
 
 Identity linking — отдельная аутентифицированная операция. Совпадающие emails
 от разных providers не объединяют Users автоматически.
+
+## API credential
+
+| Поле | Семантика |
+|---|---|
+| `id`, `owner_user_id` | Internal credential identity и User, от имени которого выполняется API request |
+| `name`, `token_prefix` | Пользовательская подпись и безопасный display prefix |
+| `token_hash` | SHA-256 полного token; исходный secret после выдачи не хранится |
+| `scopes_json` | `api:read` и optional `api:write` |
+| `expires_at`, `last_used_at`, `revoked_at`, `created_at` | Credential lifecycle |
+
+API credential не является `UserIdentity`, session, `AccessGrant` или admin
+role. Scope разрешает тип API operation, но resource access всё равно
+вычисляется по owner/project/direct grants. Logical backup credential не
+переносит; full restore отзывает все tokens.
 
 ## Application administrator
 

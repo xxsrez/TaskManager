@@ -10,25 +10,29 @@
    границы.
 2. [Спецификация MVP](specs/mvp.md) — пользовательское поведение и критерии
    приёмки.
-3. [Спецификация интерфейса](specs/interface.md) — Linear-like composition,
+3. [API для агентов](specs/agent-api.md) — progressive disclosure,
+   versioned HTTP contract, authentication, pagination и privacy boundary.
+4. [Спецификация интерфейса](specs/interface.md) — Linear-like composition,
    controls, interaction states, keyboard и критерии визуальной приёмки.
-4. [Доменная модель](reference/domain-model.md) — сущности, поля, связи и
+5. [Доменная модель](reference/domain-model.md) — сущности, поля, связи и
    инварианты.
-5. [ADR-0001: identity, sharing и Sites](decisions/0001-identity-sharing-and-sites-hosting.md)
+6. [ADR-0001: identity, sharing и Sites](decisions/0001-identity-sharing-and-sites-hosting.md)
    — принятые решения о пользователях, доступе и hosting.
-6. [ADR-0002: интерфейсный паритет с Linear](decisions/0002-linear-interface-parity.md)
+7. [ADR-0002: интерфейсный паритет с Linear](decisions/0002-linear-interface-parity.md)
    — принятое правило переноса controls и границы сходства.
-7. [ADR-0003: стек и authentication delivery](decisions/0003-implementation-stack-and-auth-delivery.md)
+8. [ADR-0003: стек и authentication delivery](decisions/0003-implementation-stack-and-auth-delivery.md)
    — выбранный Sites runtime, D1/migrations и граница Google auth.
-8. [ADR-0004: системный backup и restore](decisions/0004-system-backup-and-restore.md)
+9. [ADR-0004: системный backup и restore](decisions/0004-system-backup-and-restore.md)
    — полный logical snapshot, destructive replace, admin boundary и атомарность.
-9. [ADR-0005: роли проекта и передача ownership](decisions/0005-project-roles-and-ownership-transfer.md)
-   — Owner/Manager/Editor/Viewer, inheritance, scoped views и transfer.
-10. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+10. [ADR-0005: роли проекта и передача ownership](decisions/0005-project-roles-and-ownership-transfer.md)
+    — Owner/Manager/Editor/Viewer, inheritance, scoped views и transfer.
+11. [ADR-0006: самостоятельный agent API](decisions/0006-standalone-agent-api.md)
+    — bearer credentials, compact/detail REST и task-only write scope.
+12. [Начальная архитектура](architecture.md) — логические компоненты и решения,
    которые ещё предстоит принять.
-11. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+13. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
    продуктовых заимствований и осознанных упрощений.
-12. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+14. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -56,6 +60,12 @@ authentication через ChatGPT или Google, project roles и ownership tran
 [ADR-0002](decisions/0002-linear-interface-parity.md) принят интерфейсный
 паритет с Linear для всех функций в scope; точные UI contracts остаются
 `Proposed` в [спецификации интерфейса](specs/interface.md).
+Agent-facing HTTP API реализован отдельно от UI: bearer credentials,
+workspace/project/release reads, compact task search, task detail/external
+context и scoped task create/update описаны в
+[спецификации agent API](specs/agent-api.md) и
+[ADR-0006](decisions/0006-standalone-agent-api.md). Hosted smoke, rate limits,
+bulk/idempotency и специализированные clients в текущий срез не входят.
 
 ## Категории
 

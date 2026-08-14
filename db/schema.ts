@@ -32,6 +32,29 @@ export const userIdentities = sqliteTable(
   ],
 );
 
+export const apiCredentials = sqliteTable(
+  "api_credentials",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    name: text("name").notNull(),
+    tokenPrefix: text("token_prefix").notNull(),
+    tokenHash: text("token_hash").notNull(),
+    scopesJson: text("scopes_json").notNull(),
+    expiresAt: text("expires_at"),
+    lastUsedAt: text("last_used_at"),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_api_credentials_token_hash").on(table.tokenHash),
+    index("idx_api_credentials_owner_active").on(
+      table.ownerUserId,
+      table.revokedAt,
+    ),
+  ],
+);
+
 export const workflowStatuses = sqliteTable(
   "workflow_statuses",
   {

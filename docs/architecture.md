@@ -19,6 +19,8 @@ Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentica
 - server-side tenant isolation и authorization для любого data access;
 - две внешние identities вокруг одного внутреннего `User`;
 - возможность развивать фильтры и metadata без копирования query-логики по UI;
+- progressive-disclosure read model для агентов без загрузки task bodies в
+  групповых запросах;
 - единая Linear-like interaction и component model для list, board, details,
   filters, selection и contextual actions;
 - managed deployment и durable structured storage в ChatGPT Sites.
@@ -28,6 +30,7 @@ Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentica
 ```mermaid
 flowchart LR
     U[Пользователь] --> SITE[ChatGPT Site / Web UI]
+    AG[HTTP API client] --> RT
     CG[Sign in with ChatGPT] --> RT[Sites server runtime]
     G[Google identity provider] --> RT
     SITE --> RT
@@ -54,6 +57,7 @@ migrations. Это соответствует
 | Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User |
 | Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
 | Administration | Server allowlist, content-free overview и explicit full-state backup/restore |
+| Agent API | Compact/detail projections, pagination, versioned REST и API credential scopes |
 | UI shell | Linear-like navigation, shared controls, keyboard, themes и state |
 
 Модули — границы кода внутри одного приложения, а не отдельные сервисы. Для MVP
@@ -134,6 +138,25 @@ migrations. Это соответствует
 
 Переключение layout не должно менять query semantics или состав task IDs.
 
+### Чтение и task commands через agent API
+
+1. HTTP route проверяет отдельную API credential и сопоставляет её
+   внутреннему User; browser headers нельзя синтезировать client-side.
+2. Agent query service применяет тот же ownership/ACL predicate до filters,
+   counts, ambiguity resolution и cursor pagination.
+3. Collection use case строит фиксированный compact projection без description,
+   comments, attachments, internal IDs и user emails.
+4. Detail use case по canonical `public_id` загружает одну сущность; большой
+   imported archive остаётся отдельным paginated вызовом.
+5. REST возвращает versioned schema и request/as-of metadata. Любой client
+   переходит от summary к detail только через явный отдельный запрос.
+
+Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
+а credential/write boundary принят в
+[ADR-0006](decisions/0006-standalone-agent-api.md). Task commands транслируют
+external refs во внутренние IDs и вызывают те же domain repository methods с
+role checks, release/project validation и optimistic version.
+
 ### Открытие прямой ссылки
 
 1. Server route нормализует catch-all segments ровно через один
@@ -188,6 +211,11 @@ migrations. Это соответствует
   где это часть семантики.
 - Любая endpoint/query abstraction требует current User и не предоставляет
   unscoped repository methods application layer.
+- UI snapshot и agent API используют разные response projections и query
+  methods, но одинаковые server-side ownership/ACL semantics и domain command
+  repositories. `/api/bootstrap` не является versioned внешним контрактом.
+- Agent collection endpoints имеют fixed compact representation и cursor
+  pagination; task bodies доступны только detail use case.
 - Authorization применяется до aggregates и error detail, чтобы исключить
   утечки counts, identifiers и существования records.
 - Единственное исключение cross-user aggregation — отдельный admin query,
@@ -289,8 +317,14 @@ saved-view query/display и полный provider metadata в `external_records`
 - System backup содержит весь cross-user content и identity metadata. Файл
   следует считать чувствительным, import ограничивать same-origin admin
   operation, а invalid snapshot отклонять до staging/cutover.
-- Разрешённый re-share при `full_access` увеличивает blast radius ошибочного
-  grant; provenance и быстрый revoke обязательны.
+- Если agent API не отделить от UI snapshot, рост descriptions/imported archive
+  создаст большой token и privacy blast radius. Summary/detail boundary должна
+  проверяться schema и integration tests, а не только дисциплиной клиента.
+- API token добавляет новую identity boundary. Нельзя считать
+  Sites browser session переносимой во внешний client или выдавать API
+  credential implicit admin access.
+- Ошибка в role ceiling увеличивает blast radius grant; server-side hierarchy,
+  provenance и быстрый revoke обязательны.
 - Sites contract сегодня даёт ChatGPT identity через email/name headers, а не
   отдельный immutable subject; account linking и provider key требуют
   осторожной миграционной стратегии.
@@ -314,3 +348,5 @@ saved-view query/display и полный provider metadata в `external_records`
 3. UX explicit linking/unlinking providers и смены primary email.
 4. Порог перехода snapshot API к cursor pagination и точечным responses.
 5. Политика immutability released scope и нормализация manual ranks.
+6. Server-side idempotency task create, bulk command contract, rate limits и
+   retention API audit events.

@@ -7,7 +7,8 @@
 ## 1. Цель
 
 MVP должен позволить вести задачи от backlog до поставленного релиза, используя
-проекты, метаданные, сохранённые представления и Kanban. Спецификация описывает
+проекты, метаданные, сохранённые представления и Kanban, а также безопасно
+читать и менять задачи через compact list/detail API. Спецификация описывает
 поведение, а не выбранную реализацию.
 
 ## 2. Термины
@@ -27,6 +28,11 @@ MVP должен позволить вести задачи от backlog до п
 - **Application administrator** — пользователь из server-side allowlist,
   которому доступна operational статистика системы без доступа к содержимому
   чужих user-owned resources.
+- **Agent API** — versioned интерфейс progressive disclosure: групповые запросы
+  возвращают компактные metadata, а полный контекст читается по одной сущности.
+- **API credential** — отдельно выданная и отзываемая capability, которая
+  сопоставляется внутреннему User и не является Sites browser session или
+  application-admin permission.
 
 ### 2.1 Интерфейсный принцип
 
@@ -318,6 +324,29 @@ completed dates и archived state.
 
 ## 12. Сквозные требования
 
+### 12.1 Доступ агентов
+
+- Task Manager предоставляет agent API для workspace summary, Projects,
+  Releases, compact task lists, одной полной Task и task create/update.
+- List response не содержит task description, release notes, imported comments,
+  attachments или полного provenance. Большой imported archive читается
+  отдельным paginated запросом.
+- Versioned HTTP API применяет те же server-side ownership/ACL rules и domain
+  repository commands, что и product UI.
+  `/api/bootstrap` остаётся внутренним UI snapshot и не является agent API.
+- Canonical external reference сущности — immutable `public_id`; human task
+  identifier используется для общения и только для однозначного lookup.
+- Filters, pagination, counts и ambiguity resolution применяются после
+  ownership/ACL scope и не раскрывают недоступные records.
+- API credential не наследует admin capability. Внешний API не предоставляет
+  backup/restore, sharing, ownership transfer, workflow или credential
+  management operations.
+- Reads требуют `api:read`; task create/update — `api:write`. Update требует
+  optimistic version и проходит те же role/domain checks, что UI.
+
+Точные representations, routes, OpenAPI contract, authentication и acceptance
+описаны в [спецификации agent API](agent-api.md).
+
 - Все изменения проходят одинаковую серверную валидацию независимо от экрана.
 - Authentication и authorization выполняются server-side. Клиентские owner,
   email, provider и permission claims не считаются доверенными.
@@ -391,6 +420,18 @@ completed dates и archived state.
     identities, owner/ACL, catalogs, content, archived records и provenance.
     Повреждённый, несовместимый или invariant-invalid файл не меняет ни одной
     live row; обычный User не может вызвать export/import API.
+22. Через agent API получить active/planned releases и compact задачи
+    выбранного release: ответы содержат identifiers, titles, statuses и
+    небольшие metadata, но не descriptions, comments или release notes.
+23. По canonical task reference загрузить одну Task с description, связями и
+    provenance summary; imported archive появляется только после отдельного
+    запроса. Недоступная Task возвращает тот же `not found`, что неизвестная.
+24. Отозвать API credential и Project grant: следующий API request
+    немедленно теряет соответствующий доступ. Read-only credential не может
+    вызвать task write или admin operation.
+25. Через write credential создать Task в выбранном Release, перевести её в
+    completed и получить обновлённые timestamps/version; повторить PATCH со
+    старой version и получить полный отказ без last-write-wins.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -409,3 +450,7 @@ completed dates и archived state.
     расширения доступа к user-owned content.
 11. Server-gated logical system backup/restore с staging, полным preflight и
     атомарным replace.
+12. Agent API query/command service, compact/detail projections, revocable
+    read/write credential, REST v1, OpenAPI и authorization/pagination tests.
+13. Hosted API smoke, rate limits, task-create idempotency и отдельно
+    спроектированные bulk/metadata commands.

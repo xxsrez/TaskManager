@@ -102,6 +102,10 @@ export async function applySystemBackup(
   if (!session) throw new ValidationError("Staged backup is missing, expired, or belongs to another administrator");
 
   const statements: D1PreparedStatement[] = [];
+  // API credentials are deliberately excluded from logical backups. A full
+  // restore revokes them instead of carrying authentication capabilities into
+  // the restored state.
+  statements.push(db.prepare("DELETE FROM api_credentials"));
   for (const table of liveTableDeleteOrder) statements.push(db.prepare(`DELETE FROM ${table}`));
   for (const table of tableDefinitions) {
     statements.push(

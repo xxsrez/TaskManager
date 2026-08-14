@@ -88,6 +88,22 @@ const schemaStatements = [
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (provider, provider_account_key)
   )`,
+  `CREATE TABLE IF NOT EXISTS api_credentials (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    token_prefix TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    expires_at TEXT,
+    last_used_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_credentials_token_hash
+    ON api_credentials(token_hash)`,
+  `CREATE INDEX IF NOT EXISTS idx_api_credentials_owner_active
+    ON api_credentials(owner_user_id, revoked_at)`,
   `CREATE TABLE IF NOT EXISTS workflow_statuses (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,
@@ -960,6 +976,8 @@ export async function createTask(
     { startedAt: null, completedAt: null, canceledAt: null },
     now,
   );
+  const taskId = `task_${crypto.randomUUID()}`;
+  const publicId = crypto.randomUUID();
 
   await db
     .prepare(
@@ -971,8 +989,8 @@ export async function createTask(
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
-      `task_${crypto.randomUUID()}`,
-      crypto.randomUUID(),
+      taskId,
+      publicId,
       ownerUserId,
       currentUser.id,
       `TM-${sequence}`,
@@ -994,6 +1012,7 @@ export async function createTask(
       now,
     )
     .run();
+  return { id: taskId, publicId };
 }
 
 export async function updateTask(

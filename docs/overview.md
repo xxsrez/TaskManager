@@ -28,6 +28,8 @@ scope controls должны быть функционально и стилис�
 - планируемые и завершённые релизы;
 - быстрые срезы по метаданным;
 - list и Kanban без сложной настройки процессов;
+- компактный API для task-oriented clients с загрузкой полной сути только
+  выбранной задачи и scoped task commands;
 - приватное личное пространство с возможностью точечно поделиться работой.
 
 Пользователь входит через ChatGPT или Google. Его задачи, проекты, релизы,
@@ -56,6 +58,9 @@ labels, workflow statuses и views по умолчанию отделены от
 9. **Linear parity в пределах scope.** Знакомые controls, композиция,
    клавиатура, selection, menus, drag-and-drop и visual density переносятся для
    реализуемых функций; собственные branding и accessibility сохраняются.
+10. **Progressive disclosure для агентов.** Групповые запросы возвращают
+    компактные metadata, а description и большой внешний контекст загружаются
+    только для явно выбранной задачи.
 
 ## Границы MVP
 
@@ -77,6 +82,8 @@ labels, workflow statuses и views по умолчанию отделены от
   actions, Peek и keyboard controls для действий в scope;
 - фильтры, группировка, сортировка, видимые поля и сохранённые views;
 - базовый поиск по идентификатору, заголовку и описанию;
+- agent API для чтения проектов/релизов, compact task search, отдельного task
+  detail и создания/изменения задач поверх того же authorization scope;
 - production hosting на ChatGPT Sites с durable structured storage.
 
 Не входят в MVP:
@@ -85,7 +92,8 @@ labels, workflow statuses и views по умолчанию отделены от
 - project milestones как отдельная от release сущность;
 - inbox/triage, комментарии, документы и вложения;
 - уведомления, подписки и activity feed;
-- Git/CI/CD, Slack, email и другие интеграции;
+- Git/CI/CD, Slack, email и другие domain-specific integrations; first-party
+  agent API из списка выше является отдельной surface продукта;
 - analytics, forecasting, AI-фильтры и генерация release notes;
 - public resource links, anonymous sharing и workspace/team roles;
 - мобильные приложения, offline-first и real-time collaboration;

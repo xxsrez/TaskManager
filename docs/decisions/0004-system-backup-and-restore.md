@@ -27,7 +27,8 @@ admin boundary.
    SQLite/SQL dump. Он включает все product, identity, ownership, ACL,
    provenance и archived records, но не schema/migrations, hosted secrets,
    Sites audience/deployments/analytics, browser-local preferences и
-   operational import staging.
+   operational import staging и API credentials. Token hash является
+   authentication capability, а не переносимым product data.
 3. Export выполняет server-side admin check до чтения cross-user данных,
    считывает все включённые таблицы в одной D1 batch transaction и отдаёт файл
    с `Cache-Control: no-store`.
@@ -52,6 +53,8 @@ admin boundary.
 10. System backup capability выдаётся тому же hosted allowlist, что и текущий
     application administrator. Она не становится `AccessGrant` и не даёт
     обычным repository methods возможность просматривать чужие records.
+11. Успешный replace удаляет все API credentials в той же D1 batch transaction.
+    После restore каждый User обязан выдать новый token.
 
 ## Последствия
 
