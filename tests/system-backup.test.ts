@@ -65,6 +65,34 @@ test("snapshot validation rejects cyclic task hierarchy", async () => {
   await assert.rejects(validateSystemBackup(backup), /contains a cycle/i);
 });
 
+test("snapshot validation accepts transferred project ownership without rewriting child provenance", async () => {
+  const tables = validTables();
+  tables.projects[0]!.owner_user_id = "user-collaborator";
+  tables.access_grants[0]!.owner_user_id = "user-collaborator";
+  tables.access_grants[0]!.grantee_user_id = "user-admin";
+  tables.access_grants[0]!.permission = "manager";
+  const backup = await createSystemBackup(tables, now);
+
+  const validated = await validateSystemBackup(backup);
+  assert.equal(validated.tables.projects[0]?.owner_user_id, "user-collaborator");
+  assert.equal(validated.tables.tasks[0]?.owner_user_id, "user-admin");
+  assert.equal(validated.tables.access_grants[0]?.permission, "manager");
+});
+
+test("snapshot validation rejects manager on a standalone resource", async () => {
+  const tables = validTables();
+  tables.projects[0]!.lead_user_id = null;
+  tables.tasks[0]!.project_id = null;
+  tables.tasks[0]!.release_id = null;
+  tables.tasks[0]!.assignee_user_id = null;
+  tables.access_grants[0]!.resource_type = "task";
+  tables.access_grants[0]!.resource_id = "task-1";
+  tables.access_grants[0]!.permission = "manager";
+  const backup = await createSystemBackup(tables, now);
+
+  await assert.rejects(validateSystemBackup(backup), /unsupported grant permission/i);
+});
+
 test("restore requires the current administrator identity in the snapshot", async () => {
   const backup = await createSystemBackup(validTables(), now);
 
@@ -322,6 +350,7 @@ function migratedDatabase() {
     "0001_wide_skreet.sql",
     "0002_stiff_madame_hydra.sql",
     "0003_green_white_queen.sql",
+    "0004_large_rocket_racer.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

@@ -50,6 +50,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { canAssignRole, canEditContent, canManageGrant } from "@/lib/access";
 import {
   navigationHistoryState,
   navigationPath,
@@ -63,6 +64,7 @@ import {
 } from "@/lib/navigation";
 import type {
   AdminOverview,
+  AccessRole,
   AppliedSystemBackup,
   AppSnapshot,
   Priority,
@@ -75,6 +77,15 @@ import type {
   ViewQuery,
   WorkflowStatusRecord,
 } from "@/lib/types";
+
+type ShareTarget = {
+  resourceType: "project" | "task" | "saved_view";
+  resourceId: string;
+  label: string;
+  accessRole: AccessRole;
+  ownerUserId: string;
+  inherited: boolean;
+};
 
 type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | null;
 
@@ -226,7 +237,7 @@ export function TaskTracker({
     let tasks = data.tasks;
     const query: ViewQuery = activeSavedView?.query ?? {};
     if (surface === "shared") {
-      tasks = tasks.filter((task) => task.ownerUserId !== data.user.id);
+      tasks = tasks.filter((task) => task.accessRole !== "owner");
     } else if (surface.startsWith("project:")) {
       tasks = tasks.filter((task) => task.projectId === surface.slice(8));
     } else if (surface.startsWith("release:")) {
@@ -281,7 +292,6 @@ export function TaskTracker({
   }, [
     activeSavedView,
     data.tasks,
-    data.user.id,
     priorityFilter,
     search,
     statusFilter,
@@ -303,10 +313,16 @@ export function TaskTracker({
   const projectReleaseSurfaceId = surface.startsWith("project-releases:")
     ? surface.slice("project-releases:".length)
     : null;
+  const contextRelease = surface.startsWith("release:") ? surface.slice(8) : null;
+  const contextReleaseRecord = contextRelease
+    ? data.releases.find((release) => release.id === contextRelease)
+    : undefined;
   const contextProject = surface.startsWith("project:")
     ? surface.slice(8)
-    : projectReleaseSurfaceId;
-  const contextRelease = surface.startsWith("release:") ? surface.slice(8) : null;
+    : projectReleaseSurfaceId ??
+      contextReleaseRecord?.projectId ??
+      activeSavedView?.scopeProjectId ??
+      null;
   const scopedReleases = projectReleaseSurfaceId
     ? data.releases.filter((release) => release.projectId === projectReleaseSurfaceId)
     : data.releases;
@@ -320,6 +336,15 @@ export function TaskTracker({
   const contextProjectRecord = contextProject
     ? data.projects.find((project) => project.id === contextProject)
     : undefined;
+  const currentShareTarget = shareTarget(surface, activeTask, data);
+  const canCreateTask = contextProjectRecord
+    ? canEditContent(contextProjectRecord.accessRole)
+    : true;
+  const canSaveView = contextProjectRecord
+    ? canEditContent(contextProjectRecord.accessRole)
+    : activeSavedView
+      ? canEditContent(activeSavedView.accessRole)
+      : true;
   const sidebarCompact = sidebarCollapsed && !mobileSidebarOpen;
   const hasViewChanges = Boolean(
     search || priorityFilter !== "all" || statusFilter !== "all",
@@ -445,6 +470,7 @@ export function TaskTracker({
   }
 
   function openCreate(statusId?: string) {
+    if (!canCreateTask) return;
     setMobileSidebarOpen(false);
     setMobileActionsOpen(false);
     setDialog("task");
@@ -463,6 +489,8 @@ export function TaskTracker({
   }
 
   function toggleSelection(id: string, additive = true) {
+    const task = data.tasks.find((item) => item.id === id);
+    if (!task || !canEditContent(task.accessRole)) return;
     setSelected((current) => {
       const next = additive ? new Set(current) : new Set<string>();
       if (next.has(id)) next.delete(id);
@@ -523,7 +551,7 @@ export function TaskTracker({
       if (surface === "admin") return;
       if (event.key.toLowerCase() === "c") {
         event.preventDefault();
-        openCreate();
+        if (canCreateTask) openCreate();
       } else if (event.key === "/") {
         event.preventDefault();
         searchRef.current?.focus();
@@ -556,12 +584,15 @@ export function TaskTracker({
         setPeekTaskId(visibleTasks[highlighted].id);
       } else if (event.key.toLowerCase() === "a" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        setSelected(new Set(visibleTasks.map((task) => task.id)));
+        setSelected(new Set(visibleTasks.filter((task) => canEditContent(task.accessRole)).map((task) => task.id)));
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [accountMenuOpen, activeTaskId, data, dialog, highlighted, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, selected.size, surface, systemBackupBusy, visibleTasks]);
+    // The handlers close over the state listed below; adding the local wrapper
+    // functions themselves would recreate this listener on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountMenuOpen, activeTaskId, canCreateTask, data, dialog, highlighted, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, selected.size, surface, systemBackupBusy, visibleTasks]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -768,7 +799,7 @@ export function TaskTracker({
               {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadSystemBackup()}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Export"}</button>}
               {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Import</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
-              {shareTarget(surface, activeTask, data) && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Share</button>}
+              {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>
           </div>
@@ -793,7 +824,7 @@ export function TaskTracker({
                     <button className={`button ghost ${displayOpen ? "active" : ""}`} onClick={() => setDisplayOpen((value) => !value)}><SlidersHorizontal size={14} />Display</button>
                     {displayOpen && <DisplayPopover layout={layout} groupBy={activeSavedView?.display.groupBy ?? "status"} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={changeLayout} onClose={() => setDisplayOpen(false)} />}
                   </div>
-                  {hasViewChanges && <button className="button ghost save-view" onClick={() => setDialog("view")}><Save size={13} />Save view</button>}
+                  {hasViewChanges && canSaveView && <button className="button ghost save-view" onClick={() => setDialog("view")}><Save size={13} />Save view</button>}
                 </div>
                 <div className="mobile-view-controls-anchor" ref={mobileActionsRef}>
                   <button
@@ -844,12 +875,12 @@ export function TaskTracker({
                     </section>
                     <div className="mobile-controls-footer">
                       <button className="button ghost" type="button" onClick={() => { setPriorityFilter("all"); setStatusFilter("all"); }}>Clear filters</button>
-                      {hasViewChanges && <button className="button secondary" type="button" onClick={() => { setMobileActionsOpen(false); setDialog("view"); }}><Save size={14} />Save view</button>}
+                      {hasViewChanges && canSaveView && <button className="button secondary" type="button" onClick={() => { setMobileActionsOpen(false); setDialog("view"); }}><Save size={14} />Save view</button>}
                     </div>
                   </div>
                 </div>
               </div>
-              <button className="button primary" onClick={() => openCreate()}><Plus size={14} />New task</button>
+              {canCreateTask && <button className="button primary" onClick={() => openCreate()}><Plus size={14} />New task</button>}
             </div>
           )}
         </header>
@@ -864,11 +895,11 @@ export function TaskTracker({
         ) : surface === "projects" ? (
           <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
         ) : surface === "releases" || projectReleaseSurfaceId ? (
-          <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => setDialog("release")} />
+          <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => canCreateTask && setDialog("release")} />
         ) : layout === "board" ? (
-          <TaskBoard tasks={visibleTasks} statuses={visibleStatuses} projects={projectMap} releases={releaseMap} selected={selected} onSelect={toggleSelection} onOpen={openTask} onCreate={openCreate} onMove={async (task, statusId, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, statusId, rank })} />
+          <TaskBoard tasks={visibleTasks} statuses={visibleStatuses} projects={projectMap} releases={releaseMap} selected={selected} canCreate={canCreateTask} onSelect={toggleSelection} onOpen={openTask} onCreate={openCreate} onMove={async (task, statusId, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, statusId, rank })} />
         ) : (
-          <TaskList tasks={visibleTasks} statuses={visibleStatuses} groupBy={activeSavedView?.display.groupBy ?? "status"} projects={projectMap} releases={releaseMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onPeek={setPeekTaskId} onCreate={openCreate} />
+          <TaskList tasks={visibleTasks} statuses={visibleStatuses} groupBy={activeSavedView?.display.groupBy ?? "status"} projects={projectMap} releases={releaseMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onPeek={setPeekTaskId} onCreate={openCreate} />
         )}
       </section>
 
@@ -876,13 +907,13 @@ export function TaskTracker({
         <BulkBar count={selected.size} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
-      {activeTask && <TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} />}
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}><TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} /></div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
-      {dialog === "task" && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "project" && <EntityDialog title="Create project" icon={<FolderKanban size={17} />} fields={[{ name: "name", label: "Project name", required: true }, { name: "summary", label: "Short summary" }, { name: "targetDate", label: "Target date", type: "date" }]} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "release" && <ReleaseDialog projects={data.projects} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "view" && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "share" && <ShareDialog target={shareTarget(surface, activeTask, data)} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} busy={busy} />}
+      {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => canEditContent(project.accessRole))} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "view" && canSaveView && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} scopeProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
     </main>
   );
@@ -896,8 +927,8 @@ function SidebarSection({ title, action, children }: { title: string; action: ()
   return <section className="sidebar-section"><div className="section-label"><span>{title}</span><button onClick={action} title={`Add ${title.toLowerCase()}`}><Plus size={12} /></button></div>{children}</section>;
 }
 
-function TaskList({ tasks, statuses, groupBy, projects, releases, selected, highlighted, collapsed, onToggleGroup, onSelect, onHighlight, onOpen, onPeek, onCreate }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onPeek: (id: string) => void; onCreate: (statusId?: string) => void }) {
-  if (!tasks.length) return <EmptyState onCreate={() => onCreate()} />;
+function TaskList({ tasks, statuses, groupBy, projects, releases, selected, highlighted, collapsed, canCreate, onToggleGroup, onSelect, onHighlight, onOpen, onPeek, onCreate }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onPeek: (id: string) => void; onCreate: (statusId?: string) => void }) {
+  if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   if (groupBy === "none") {
     const statusMap = new Map(statuses.map((status) => [status.id, status]));
     return <div className="task-list ungrouped">{tasks.map((task, index) => { const status = statusMap.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onPeek={() => onPeek(task.id)} /> : null; })}</div>;
@@ -907,15 +938,16 @@ function TaskList({ tasks, statuses, groupBy, projects, releases, selected, high
     const groupTasks = tasks.filter((task) => task.statusId === status.id);
     if (!groupTasks.length) return null;
     const isCollapsed = collapsed.has(status.id);
-    return <section className="task-group" key={status.id}><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(status.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><StatusIcon status={status} /><span>{status.name}</span><small>{groupTasks.length}</small></button><button className="icon-button quiet" onClick={() => onCreate(status.id)} title={`Add to ${status.name}`}><Plus size={13} /></button></div>{!isCollapsed && groupTasks.map((task) => { flatIndex += 1; const index = flatIndex; return <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onPeek={() => onPeek(task.id)} />; })}</section>;
+    return <section className="task-group" key={status.id}><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(status.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><StatusIcon status={status} /><span>{status.name}</span><small>{groupTasks.length}</small></button>{canCreate && <button className="icon-button quiet" onClick={() => onCreate(status.id)} title={`Add to ${status.name}`}><Plus size={13} /></button>}</div>{!isCollapsed && groupTasks.map((task) => { flatIndex += 1; const index = flatIndex; return <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onPeek={() => onPeek(task.id)} />; })}</section>;
   })}</div>;
 }
 
 function TaskRow({ task, status, project, release, selected, highlighted, onSelect, onHighlight, onOpen, onPeek }: { task: TaskRecord; status: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; selected: boolean; highlighted: boolean; onSelect: () => void; onHighlight: () => void; onOpen: () => void; onPeek: () => void }) {
-  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight} onDoubleClick={onPeek}><button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button><span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}<span className="avatar" title="Assignee">{initials("Me")}</span><button className="row-more" title="More"><MoreHorizontal size={14} /></button></div></div>;
+  const editable = canEditContent(task.accessRole);
+  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight} onDoubleClick={onPeek}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}<span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}<span className="avatar" title="Assignee">{initials("Me")}</span>{editable && <button className="row-more" title="More"><MoreHorizontal size={14} /></button>}</div></div>;
 }
 
-function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void; onMove: (task: TaskRecord, statusId: string, rank: number) => Promise<unknown> }) {
+function TaskBoard({ tasks, statuses, projects, releases, selected, canCreate, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; canCreate: boolean; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void; onMove: (task: TaskRecord, statusId: string, rank: number) => Promise<unknown> }) {
   const [over, setOver] = useState<string | null>(null);
   return (
     <div className="board">
@@ -935,7 +967,7 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
               const id = event.dataTransfer.getData("text/task-id");
               const task = tasks.find((item) => item.id === id);
               setOver(null);
-              if (task && task.statusId !== status.id) {
+              if (task && canEditContent(task.accessRole) && task.statusId !== status.id) {
                 const lastRank = cards.at(-1)?.rank ?? 0;
                 void onMove(task, status.id, lastRank + 1000);
               }
@@ -947,9 +979,9 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                 <span>{status.name}</span>
                 <small>{cards.length}</small>
               </div>
-              <button className="icon-button quiet" onClick={() => onCreate(status.id)}>
+              {canCreate && <button className="icon-button quiet" onClick={() => onCreate(status.id)}>
                 <Plus size={13} />
-              </button>
+              </button>}
             </div>
             <div className="column-cards">
               {cards.map((task) => (
@@ -958,7 +990,7 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                   role="button"
                   tabIndex={0}
                   className={`task-card ${selected.has(task.id) ? "selected" : ""}`}
-                  draggable
+                  draggable={canEditContent(task.accessRole)}
                   onDragStart={(event) => {
                     event.dataTransfer.setData("text/task-id", task.id);
                     event.dataTransfer.effectAllowed = "move";
@@ -971,7 +1003,7 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                     }
                   }}
                 >
-                  <button
+                  {canEditContent(task.accessRole) && <button
                     className={`card-check ${selected.has(task.id) ? "checked" : ""}`}
                     onClick={(event) => {
                       event.stopPropagation();
@@ -980,7 +1012,7 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                     aria-label={selected.has(task.id) ? "Deselect task" : "Select task"}
                   >
                     {selected.has(task.id) ? <Check size={11} /> : <span />}
-                  </button>
+                  </button>}
                   <a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, () => onOpen(task.id)); }}>
                   <h3>{task.title}</h3>
                   <div className="card-meta">
@@ -1000,9 +1032,9 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                 </div>
               ))}
             </div>
-            <button className="add-card" onClick={() => onCreate(status.id)}>
+            {canCreate && <button className="add-card" onClick={() => onCreate(status.id)}>
               <Plus size={13} />Add task
-            </button>
+            </button>}
           </section>
         );
       })}
@@ -1015,6 +1047,7 @@ function StatusIcon({ status }: { status: WorkflowStatusRecord }) {
 }
 
 function TaskComposer({ data, contextProject, contextRelease, onClose, onSubmit, busy }: { data: AppSnapshot; contextProject: string | null; contextRelease: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
+  const editableProjects = data.projects.filter((project) => canEditContent(project.accessRole));
   const [projectId, setProjectId] = useState(contextProject ?? (contextRelease ? data.releases.find((release) => release.id === contextRelease)?.projectId ?? "" : ""));
   const ownerId = data.projects.find((project) => project.id === projectId)?.ownerUserId ?? data.user.id;
   const statuses = data.statuses.filter((status) => status.ownerUserId === ownerId);
@@ -1025,15 +1058,22 @@ function TaskComposer({ data, contextProject, contextRelease, onClose, onSubmit,
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const submit = (event?: FormEvent) => { event?.preventDefault(); if (title.trim()) void onSubmit({ title, description, projectId: projectId || null, releaseId: releaseId || null, statusId, priority }); };
-  return <Modal onClose={onClose} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">New task</span><button type="button" className="icon-button" onClick={onClose}><X size={15} /></button></div><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="">No project</option>{data.projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><div className="modal-footer"><span className="shortcut-hint"><kbd>⌘</kbd><kbd>Enter</kbd> to create</span><button className="button primary" disabled={busy || !title.trim()}>{busy ? "Creating…" : "Create task"}</button></div></form></Modal>;
+  return <Modal onClose={onClose} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">New task</span><button type="button" className="icon-button" onClick={onClose}><X size={15} /></button></div><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="">No project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><div className="modal-footer"><span className="shortcut-hint"><kbd>⌘</kbd><kbd>Enter</kbd> to create</span><button className="button primary" disabled={busy || !title.trim()}>{busy ? "Creating…" : "Create task"}</button></div></form></Modal>;
 }
 
 function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [estimate, setEstimate] = useState(task.estimate?.toString() ?? "");
+  if (!canEditContent(task.accessRole)) {
+    return <ReadOnlyTaskDetails task={task} data={data} onClose={onClose} onOpenTask={onOpenTask} />;
+  }
   const statuses = data.statuses.filter((status) => status.ownerUserId === task.ownerUserId);
-  const projects = data.projects.filter((project) => project.ownerUserId === task.ownerUserId);
+  const projects = data.projects.filter(
+    (project) =>
+      project.id === task.projectId ||
+      (project.ownerUserId === task.ownerUserId && canEditContent(project.accessRole)),
+  );
   const taskMap = new Map(data.tasks.map((item) => [item.id, item]));
   const labels = data.taskLabels
     .filter((assignment) => assignment.taskId === task.id)
@@ -1055,6 +1095,20 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }:
   return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel"><header><div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div><div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div></header><div className="details-body"><input className="details-title" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => title.trim() && title !== task.title && void onSave({ title })} /><textarea className="details-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={8} /><button className="button secondary save-description" disabled={busy || description === task.description} onClick={() => void onSave({ description })}>{busy ? "Saving…" : "Save description"}</button><div className="properties-grid"><PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow><PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow><PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow><PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={!task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow><PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow><PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => setEstimate(event.target.value)} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (value !== task.estimate) void onSave({ estimate: value }); }} /></PropertyRow></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}{source && <DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open {source.sourceId} in Linear</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentEntries} archived comments</span><span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>}{source && source.comments.length > 0 && <DetailsSection title="Imported comments" icon={<MessageSquare size={14} />}><div className="comment-archive">{source.comments.map((comment) => <article key={comment.id}><header><b>{comment.authorName}</b><time dateTime={comment.createdAt}>{longDateTime(comment.createdAt)}</time>{comment.parentId && <small>Reply</small>}</header>{comment.quotedText && <blockquote>{comment.quotedText}</blockquote>}<p>{comment.body}</p></article>)}</div></DetailsSection>}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div><button className="button danger ghost archive-action" onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button></div></aside></div>;
 }
 
+function ReadOnlyTaskDetails({ task, data, onClose, onOpenTask }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void }) {
+  const status = data.statuses.find((item) => item.id === task.statusId);
+  const project = task.projectId ? data.projects.find((item) => item.id === task.projectId) : undefined;
+  const release = task.releaseId ? data.releases.find((item) => item.id === task.releaseId) : undefined;
+  const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
+  const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
+  const source = data.externalSources.find((entry) => entry.targetType === "task" && entry.targetId === task.id);
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1><p className="read-only-description">{task.description || "No description"}</p><div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{source?.sourceUrl && <DetailsSection title="Imported source" icon={<Link2 size={14} />}><a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record</a></DetailsSection>}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+}
+
+function PropertyValue({ label, value }: { label: string; value: string }) {
+  return <div className="property-row read-only"><span>{label}</span><b>{value}</b></div>;
+}
+
 function DetailsSection({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) { return <section className="details-section"><h2>{icon}{title}</h2>{children}</section>; }
 function TaskReference({ label, task, onOpen }: { label: string; task: TaskRecord; onOpen: (id: string) => void }) { return <a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, () => onOpen(task.id))}><small>{label}</small><span>{task.identifier}</span><b>{task.title}</b></a>; }
 
@@ -1067,9 +1121,57 @@ function Popover({ title, onClose, children }: { title: string; onClose: () => v
 
 function EntityDialog({ title, icon, fields, onClose, onSubmit, busy }: { title: string; icon: React.ReactNode; fields: Array<{ name: string; label: string; type?: string; required?: boolean }>; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title={title} icon={icon} onClose={onClose} /><div className="form-stack">{fields.map((field) => <label key={field.name}><span>{field.label}</span><input name={field.name} type={field.type ?? "text"} required={field.required} autoFocus={field === fields[0]} /></label>)}</div><DialogFooter busy={busy} label="Create" /></form></Modal>; }
 function ReleaseDialog({ projects, initialProjectId, onClose, onSubmit, busy }: { projects: ProjectRecord[]; initialProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title="Create release" icon={<Rocket size={17} />} onClose={onClose} /><div className="form-stack"><label><span>Release name</span><input name="name" required autoFocus placeholder="v1.0" /></label><label><span>Project</span><select name="projectId" required defaultValue={initialProjectId ?? ""}><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Target date</span><input name="targetDate" type="date" /></label></div>{!projects.length && <p className="inline-note">Create a project before adding a release.</p>}<DialogFooter busy={busy} label="Create release" disabled={!projects.length} /></form></Modal>; }
-function ViewDialog({ search, status, priority, layout, onClose, onSubmit, busy }: { search: string; status: string; priority: Priority | "all"; layout: Layout; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { const query: ViewQuery = { ...(search && { search }), ...(status !== "all" && { statusIds: [status] }), ...(priority !== "all" && { priorities: [priority] }) }; const display: ViewDisplay = { layout, groupBy: "status", orderBy: "manual", direction: "asc", showEmptyGroups: true, visibleFields: ["priority", "project", "release", "dueDate", "assignee"] }; return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ name: values.name, query, display }); }}><DialogHeader title="Save as view" icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" /></label></div><div className="view-summary"><span>{layout === "list" ? "List" : "Board"}</span><span>{Object.keys(query).length || "No"} active filters</span></div><DialogFooter busy={busy} label="Save view" /></form></Modal>; }
+function ViewDialog({ search, status, priority, layout, scopeProjectId, onClose, onSubmit, busy }: { search: string; status: string; priority: Priority | "all"; layout: Layout; scopeProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
+  const query: ViewQuery = {
+    ...(search && { search }),
+    ...(status !== "all" && { statusIds: [status] }),
+    ...(priority !== "all" && { priorities: [priority] }),
+  };
+  const display: ViewDisplay = {
+    layout,
+    groupBy: "status",
+    orderBy: "manual",
+    direction: "asc",
+    showEmptyGroups: true,
+    visibleFields: ["priority", "project", "release", "dueDate", "assignee"],
+  };
+  return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ name: values.name, query, display, scopeProjectId }); }}><DialogHeader title="Save as view" icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" /></label></div>{scopeProjectId && <p className="dialog-copy">This view is limited to the current project and inherits its access.</p>}<div className="view-summary"><span>{layout === "list" ? "List" : "Board"}</span><span>{Object.keys(query).length || "No"} active filters</span></div><DialogFooter busy={busy} label="Save view" /></form></Modal>;
+}
 
-function ShareDialog({ target, collaborators, onClose, onShare, onRevoke, busy }: { target: { resourceType: "project" | "task" | "saved_view"; resourceId: string; label: string } | null; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; busy: boolean }) { if (!target) return null; const grants = collaborators.filter((grant) => grant.resourceType === target.resourceType && grant.resourceId === target.resourceId); return <Modal onClose={onClose}><form onSubmit={async (event) => { event.preventDefault(); const email = String(new FormData(event.currentTarget).get("email") ?? ""); const ok = await onShare({ ...target, email }); if (ok) event.currentTarget.reset(); }}><DialogHeader title={`Share ${target.label}`} icon={<Share2 size={17} />} onClose={onClose} /><p className="dialog-copy">People you add get full access. They must have signed in once with their verified email.</p><div className="share-input"><input name="email" type="email" required placeholder="name@example.com" autoFocus /><button className="button primary" disabled={busy}>{busy ? "Adding…" : "Add"}</button></div><div className="access-list"><div className="access-row"><span className="avatar">{initials("You")}</span><span><b>You</b><small>Owner</small></span><em>Full access</em></div>{grants.map((grant) => <div className="access-row" key={grant.grantId}><span className="avatar">{initials(grant.displayName)}</span><span><b>{grant.displayName}</b><small>{grant.email}</small></span><button type="button" onClick={() => void onRevoke(grant.grantId)}>Remove</button></div>)}</div></form></Modal>; }
+function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
+  if (!target) return null;
+  const grants = collaborators.filter((grant) => grant.resourceType === target.resourceType && grant.resourceId === target.resourceId);
+  const assignableRoles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
+  const owner = target.ownerUserId === currentUser.id
+    ? currentUser
+    : users.find((user) => user.id === target.ownerUserId);
+  const ownerName = owner?.displayName ?? "Project owner";
+  const inheritanceCopy = target.inherited
+    ? "Access applies to every task, release, and project-scoped saved view."
+    : target.resourceType === "task"
+      ? "Access applies only to this standalone task."
+      : "A shared view still shows only tasks the person can already access.";
+
+  return <Modal onClose={onClose}><form onSubmit={async (event) => {
+    event.preventDefault();
+    const values = new FormData(event.currentTarget);
+    const ok = await onShare({
+      resourceType: target.resourceType,
+      resourceId: target.resourceId,
+      email: String(values.get("email") ?? ""),
+      permission: String(values.get("permission") ?? "viewer"),
+    });
+    if (ok) event.currentTarget.reset();
+  }}><DialogHeader title={`Members & access · ${target.label}`} icon={<UsersRound size={17} />} onClose={onClose} /><p className="dialog-copy">Add a registered user by verified email. They must have signed in once; no email is sent. {inheritanceCopy}</p><div className="role-guide">{target.resourceType === "project" && <><span><b>Owner</b> has full control and can transfer ownership.</span><span><b>Manager</b> edits work and manages Editors/Viewers.</span></>}<span><b>Editor</b> creates, changes, moves, archives, and restores work.</span><span><b>Viewer</b> can only read.</span></div><div className="share-input"><input name="email" type="email" required placeholder="name@example.com" autoFocus /><select name="permission" defaultValue={assignableRoles.includes("editor") ? "editor" : assignableRoles[0]} aria-label="Role">{assignableRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><button className="button primary" disabled={busy || assignableRoles.length === 0}>{busy ? "Adding…" : "Add"}</button></div><div className="access-list"><div className="access-row"><span className="avatar">{initials(ownerName)}</span><span><b>{ownerName}</b><small>{owner?.email ?? "Current project owner"}</small></span><em>Owner</em></div>{grants.map((grant) => {
+    const manageable = canManageGrant(target.accessRole, target.resourceType, grant.permission);
+    const roles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
+    return <div className="access-row" key={grant.grantId}><span className="avatar">{initials(grant.displayName)}</span><span><b>{grant.displayName}</b><small>{grant.email}</small></span><select aria-label={`Role for ${grant.displayName}`} value={grant.permission} disabled={busy || !manageable} onChange={(event) => void onRoleChange(grant.grantId, event.target.value as "manager" | "editor" | "viewer")}><option value={grant.permission}>{roleLabel(grant.permission)}</option>{roles.filter((role) => role !== grant.permission).map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{target.resourceType === "project" && target.accessRole === "owner" && <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Transfer ownership of ${target.label} to ${grant.displayName}? You will become Manager.`)) void onTransfer(target.resourceId, grant.userId); }}>Make owner</button>}{manageable && <button type="button" disabled={busy} onClick={() => void onRevoke(grant.grantId)}>Remove</button>}</div></div>;
+  })}</div></form></Modal>;
+}
+
+function roleLabel(role: "owner" | "manager" | "editor" | "viewer") {
+  return role === "owner" ? "Owner" : role === "manager" ? "Manager" : role === "editor" ? "Editor" : "Viewer";
+}
 
 function SystemImportDialog({
   onClose,
@@ -1291,7 +1393,7 @@ function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZon
   );
 }
 function AdminMetric({ label, value, note, icon }: { label: string; value: number; note: string; icon: React.ReactNode }) { return <article className="admin-metric"><span className="admin-metric-icon">{icon}</span><div><span>{label}</span><b>{value}</b><small>{note}</small></div></article>; }
-function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate: () => void }) { const labels = { task: ["No tasks here", "Create the first task and give this view a starting point."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "Create a release to plan what ships together."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p><button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button></div>; }
+function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate?: () => void }) { const labels = { task: ["No tasks here", "There is no work in this view yet."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "There are no releases in this scope yet."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button>}</div>; }
 function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
 function BulkBar({ count, statuses, archiveAction, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; archiveAction: ReturnType<typeof resolveArchiveBulkAction>; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}>{archiveAction.archived ? <Archive size={14} /> : <ArchiveRestore size={14} />}{archiveAction.label}</button><button onClick={onClose}><X size={14} /></button></div>; }
 
@@ -1389,7 +1491,63 @@ function surfaceBreadcrumbs(
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
 function isCollectionSurface(surface: string) { return surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
-function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot) { if (activeTask) { if (activeTask.projectId) { const project = data.projects.find((item) => item.id === activeTask.projectId); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } return { resourceType: "task" as const, resourceId: activeTask.id, label: activeTask.identifier }; } if (surface.startsWith("project:")) { const project = data.projects.find((item) => item.id === surface.slice(8)); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } if (surface.startsWith("view:")) { const view = data.views.find((item) => item.id === surface.slice(5)); return view ? { resourceType: "saved_view" as const, resourceId: view.id, label: view.name } : null; } return null; }
+function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot): ShareTarget | null {
+  const projectTarget = (project: ProjectRecord | undefined): ShareTarget | null => {
+    if (!project || (project.accessRole !== "owner" && project.accessRole !== "manager")) return null;
+    return {
+      resourceType: "project",
+      resourceId: project.id,
+      label: project.name,
+      accessRole: project.accessRole,
+      ownerUserId: project.ownerUserId,
+      inherited: true,
+    };
+  };
+
+  if (activeTask) {
+    if (activeTask.projectId) {
+      return projectTarget(data.projects.find((item) => item.id === activeTask.projectId));
+    }
+    return activeTask.accessRole === "owner"
+      ? {
+          resourceType: "task",
+          resourceId: activeTask.id,
+          label: activeTask.identifier,
+          accessRole: activeTask.accessRole,
+          ownerUserId: activeTask.ownerUserId,
+          inherited: false,
+        }
+      : null;
+  }
+  if (surface.startsWith("project:")) {
+    return projectTarget(data.projects.find((item) => item.id === surface.slice(8)));
+  }
+  if (surface.startsWith("project-releases:")) {
+    return projectTarget(data.projects.find((item) => item.id === surface.slice("project-releases:".length)));
+  }
+  if (surface.startsWith("release:")) {
+    const release = data.releases.find((item) => item.id === surface.slice(8));
+    return projectTarget(release ? data.projects.find((item) => item.id === release.projectId) : undefined);
+  }
+  if (surface.startsWith("view:")) {
+    const view = data.views.find((item) => item.id === surface.slice(5));
+    if (!view) return null;
+    if (view.scopeProjectId) {
+      return projectTarget(data.projects.find((item) => item.id === view.scopeProjectId));
+    }
+    return view.accessRole === "owner"
+      ? {
+          resourceType: "saved_view",
+          resourceId: view.id,
+          label: view.name,
+          accessRole: view.accessRole,
+          ownerUserId: view.ownerUserId,
+          inherited: false,
+        }
+      : null;
+  }
+  return null;
+}
 function statusGroupsForTasks(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const owners = new Set(tasks.map((task) => task.ownerUserId)); return statuses.filter((status) => owners.has(status.ownerUserId) || tasks.length === 0).sort((a, b) => a.position - b.position); }
 function sortTasks(tasks: TaskRecord[], display?: ViewDisplay) {
   const orderBy = display?.orderBy ?? "manual";

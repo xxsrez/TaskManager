@@ -9,6 +9,9 @@
 content-free, но тот же server-gated administrator получает отдельные явные
 операции полного системного backup и restore.
 
+Решения 6–8 о единственном `full_access`, inheritance и неизменяемом owner
+заменены [ADR-0005](0005-project-roles-and-ownership-transfer.md).
+
 ## Контекст
 
 Продукту нужны реальные пользователи, раздельные данные и простая совместная

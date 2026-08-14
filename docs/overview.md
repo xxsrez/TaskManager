@@ -51,8 +51,8 @@ labels, workflow statuses и views по умолчанию отделены от
    быть обратимым; необратимое удаление — отдельное подтверждаемое действие.
 7. **Private by default.** Наличие аккаунта или URL не даёт доступа к чужой
    записи; authorization проверяется сервером для каждого чтения и изменения.
-8. **Одна простая роль.** В MVP нет матрицы ролей: collaborator получает
-   `full_access` к явно расшаренному resource subtree.
+8. **Ясные resource roles.** Project имеет одного Owner и grant-роли Manager,
+   Editor, Viewer; права дочерних records наследуются от Project.
 9. **Linear parity в пределах scope.** Знакомые controls, композиция,
    клавиатура, selection, menus, drag-and-drop и visual density переносятся для
    реализуемых функций; собственные branding и accessibility сохраняются.
@@ -63,8 +63,9 @@ labels, workflow statuses и views по умолчанию отделены от
 
 - вход через ChatGPT либо Google и единый внутренний профиль пользователя;
 - полная изоляция пользовательских данных по умолчанию;
-- sharing проекта, standalone task или saved view с уровнем `full_access`,
-  отзыв доступа и экран `Shared with me`;
+- sharing проекта с ролями Manager/Editor/Viewer, ownership transfer,
+  Editor/Viewer для standalone task или global saved view, отзыв доступа и
+  экран `Shared with me`;
 - создание, редактирование, архивирование и восстановление задач;
 - настраиваемый workflow и системные категории статусов;
 - task metadata: приоритет, исполнитель, проект, релиз, labels, estimate,
@@ -86,8 +87,7 @@ labels, workflow statuses и views по умолчанию отделены от
 - уведомления, подписки и activity feed;
 - Git/CI/CD, Slack, email и другие интеграции;
 - analytics, forecasting, AI-фильтры и генерация release notes;
-- granular roles (`viewer`, `editor`, `admin`), public resource links и
-  незарегистрированные приглашения;
+- public resource links, anonymous sharing и workspace/team roles;
 - мобильные приложения, offline-first и real-time collaboration;
 - буквальное копирование Linear logo, brand copy, illustration assets или
   controls для исключённых из MVP функций.
@@ -101,8 +101,8 @@ labels, workflow statuses и views по умолчанию отделены от
 4. Открывает готовый либо сохранённый view.
 5. Работает в list или Kanban; фильтры определяют состав, display options —
    способ показа.
-6. Даёт другому зарегистрированному пользователю полный доступ к проекту либо
-   продолжает работать приватно.
+6. Добавляет зарегистрированного пользователя в проект как Manager, Editor или
+   Viewer либо продолжает работать приватно.
 7. Перемещает задачи по workflow и видит прогресс проекта и релиза.
 8. Завершает релиз отдельно от перевода отдельных задач в Done.
 
@@ -110,7 +110,7 @@ labels, workflow statuses и views по умолчанию отделены от
 
 Пользователь может вести реальный небольшой проект только в Task Manager:
 добавить backlog, сформировать релиз, ежедневно работать с Kanban, открыть
-несколько сохранённых срезов, безопасно дать collaborator полный доступ и по
+несколько сохранённых срезов, безопасно дать collaborator подходящую роль и по
 завершении точно увидеть состав выпущенного релиза. Другой пользователь без
 grant не может увидеть или изменить эти данные. Пользователь, знакомый с
 Linear, находит основные действия в ожидаемых местах и применяет знакомые

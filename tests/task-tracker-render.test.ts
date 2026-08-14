@@ -57,6 +57,7 @@ const snapshot: AppSnapshot = {
       version: 1,
       createdAt: now,
       updatedAt: now,
+      accessRole: "owner",
     },
   ],
   labels: [],
@@ -105,6 +106,38 @@ test("a direct task render has no controlled field warnings", () => {
     errors.filter((message) => message.includes("without an `onChange` handler")),
     [],
   );
+});
+
+test("viewer task details are read-only and expose no mutation controls", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        user: {
+          id: "user-viewer",
+          displayName: "View Only",
+          email: "viewer@example.com",
+          timezone: "UTC",
+        },
+        tasks: snapshot.tasks.map((task) => ({
+          ...task,
+          accessRole: "viewer" as const,
+        })),
+      },
+      initialNavigation: {
+        surface: "shared",
+        layout: "list",
+        taskId: "task-1",
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /class="role-badge">Viewer/);
+  assert.match(markup, /Direct task/);
+  assert.doesNotMatch(markup, /Archive task/);
+  assert.doesNotMatch(markup, /Save description/);
+  assert.doesNotMatch(markup, /Members &amp; access/);
 });
 
 test("an administrator sees registration and activity statistics", () => {
@@ -247,6 +280,7 @@ test("release breadcrumbs expose every ancestor and leave the current level stat
     version: 1,
     createdAt: now,
     updatedAt: now,
+    accessRole: "owner" as const,
   };
   const release = {
     id: "release-1",
@@ -263,6 +297,7 @@ test("release breadcrumbs expose every ancestor and leave the current level stat
     version: 1,
     createdAt: now,
     updatedAt: now,
+    accessRole: "owner" as const,
   };
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {

@@ -22,11 +22,13 @@
    — выбранный Sites runtime, D1/migrations и граница Google auth.
 8. [ADR-0004: системный backup и restore](decisions/0004-system-backup-and-restore.md)
    — полный logical snapshot, destructive replace, admin boundary и атомарность.
-9. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+9. [ADR-0005: роли проекта и передача ownership](decisions/0005-project-roles-and-ownership-transfer.md)
+   — Owner/Manager/Editor/Viewer, inheritance, scoped views и transfer.
+10. [Начальная архитектура](architecture.md) — логические компоненты и решения,
    которые ещё предстоит принять.
-10. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+11. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
    продуктовых заимствований и осознанных упрощений.
-11. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+12. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -46,10 +48,11 @@ parent/subtasks и task relations, а также идемпотентный Line
 labels/hierarchy/relations/comments, assignee picker, настройка
 workflow, полный filter AST, Google sign-in и исчерпывающая acceptance matrix
 ещё не реализованы. В
-[ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md) зафиксированы
+[ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md) и
+[ADR-0005](decisions/0005-project-roles-and-ownership-transfer.md) зафиксированы
 `Accepted`-решения пользователя: отдельные данные каждого пользователя,
-authentication через ChatGPT или Google, sharing с единственным уровнем
-`full_access` и hosting на ChatGPT Sites. В
+authentication через ChatGPT или Google, project roles и ownership transfer,
+а также hosting на ChatGPT Sites. В
 [ADR-0002](decisions/0002-linear-interface-parity.md) принят интерфейсный
 паритет с Linear для всех функций в scope; точные UI contracts остаются
 `Proposed` в [спецификации интерфейса](specs/interface.md).

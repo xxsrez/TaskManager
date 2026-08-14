@@ -35,7 +35,7 @@ erDiagram
 ```
 
 Связи `ACCESS_GRANT` с share targets полиморфны: одна запись grant указывает
-ровно на один `Project`, standalone `Task` или `SavedView`.
+ровно на один `Project`, standalone `Task` или global `SavedView`.
 
 ## User
 
@@ -126,24 +126,29 @@ session metadata остаётся как минимальный audit record.
 | `resource_id` | ID share target соответствующего типа |
 | `grantor_user_id` | User, создавший или изменивший grant |
 | `grantee_user_id` | User, получивший доступ |
-| `permission` | Единственное значение MVP: `full_access` |
+| `permission` | Project: `manager`, `editor`, `viewer`; standalone Task/global SavedView: `editor`, `viewer` |
 | `created_at`, `revoked_at` | Lifecycle grant |
 
 Один active grant уникален по `(resource_type, resource_id, grantee_user_id)`.
-Owner имеет implicit full access и не представлен grant. Grant самому owner
-запрещён.
+Project Owner имеет implicit highest access и не представлен grant. Grant
+самому owner запрещён.
 
 ### Семантика share targets
 
-- Project grant распространяется на Project, его Tasks и Releases.
+- Project grant распространяется на Project, его Tasks, Releases и SavedViews с
+  явным `scope_project_id`.
 - Release не является самостоятельным share target.
 - Прямой Task grant разрешён только для standalone Task.
 - Standalone Task с active direct grant нельзя добавить в Project до revoke
   этих grants.
-- SavedView grant даёт доступ к определению view, но query возвращает только
-  records, отдельно доступные grantee.
-- `full_access` включает управление grants; owner identity и implicit access не
-  могут быть изменены collaborator.
+- Прямой SavedView grant разрешён только для global View без
+  `scope_project_id`; query возвращает только records, отдельно доступные
+  grantee.
+- `viewer` читает; `editor` дополнительно изменяет content и archive state;
+  `manager` дополнительно управляет только grants `editor`/`viewer`.
+- Project Owner управляет grant вплоть до `manager` и атомарно передаёт
+  ownership уже добавленному участнику. Target становится Owner, прежний Owner
+  — Manager; подтверждение target не требуется.
 
 ## Task
 
@@ -284,9 +289,9 @@ Task details как read-only archive. Это не означает наличи
 |---|---|
 | `id`, `name` | Внутренний immutable primary key и имя |
 | `public_id` | Стабильная непрозрачная UUID identity публичного URL |
-| `owner_user_id` | Создатель/владелец и tenant scope |
+| `owner_user_id` | Исходный tenant/catalog и provenance scope |
 | `scope_type` | `global` или `project` |
-| `scope_project_id` | Обязателен для project scope |
+| `scope_project_id` | Обязателен для project scope; является access boundary |
 | `layout` | `list` или `board` |
 | `filter_ast` | Версионированный сериализованный фильтр |
 | `group_by` | Поле основной группировки либо `none` |
@@ -313,13 +318,14 @@ Task details как read-only archive. Это не означает наличи
 
 ## Инварианты и атомарные операции
 
-1. Каждый user-owned record имеет ровно одного immutable `owner_user_id`.
-   Repository/API читает record только в owner scope либо через действующий
-   grant и его inheritance rules.
-2. Project, его Tasks и Releases имеют одинакового owner. Task, созданная в
-   Project collaborator, наследует owner Project; creator остаётся фактическим.
-3. Перемещение record между owner scopes не является обычной mutation и не
-   входит в MVP.
+1. Каждый Project имеет ровно одного current `owner_user_id`; он меняется
+   только атомарным ownership transfer. Owner имеет implicit highest access.
+2. `owner_user_id` Task/Release/SavedView хранит исходный tenant/catalog и
+   provenance scope. Для project child он не является access root: effective
+   role вычисляется только через current Project owner/grant.
+3. Task/Release, созданные в Project collaborator, наследуют его исходный
+   catalog scope; creator остаётся фактическим. Ownership transfer Project не
+   меняет immutable task identifier или catalog references.
 4. Status, Label, Project, Release, parent и обе стороны TaskRelation обязаны
    принадлежать тому же owner scope, что и Task. Cross-owner hierarchy и
    relations запрещены.
@@ -337,17 +343,22 @@ Task details как read-only archive. Это не означает наличи
 11. Assignee и lead обязаны иметь owner либо granted access к соответствующему
     resource.
 12. SavedView выполняется в permission scope читателя и не расширяет его доступ,
-    включая counts, groups и search suggestions.
+    включая counts, groups и search suggestions. Project-scoped View жёстко
+    ограничен `scope_project_id` и наследует Project role; global View не имеет
+    `scope_project_id`, даже если его filter содержит Project.
 13. Standalone Task с active direct grant нельзя добавить в Project; сначала
     все direct grants должны быть revoked.
-14. Revoke grant немедленно исключает resource из следующего authorized query;
-    owner implicit access неотзываем.
-15. Любая mutation проверяет `version`; stale version возвращает conflict, а не
+14. Revoke grant немедленно исключает resource из следующего authorized query.
+    Viewer не выполняет mutation; Editor меняет content; Manager управляет
+    только Editor/Viewer; Project Owner управляет вплоть до Manager.
+15. Ownership transfer допускает только active Project grantee, атомарно делает
+    его Owner, отзывает его grant и создаёт прежнему Owner grant Manager.
+16. Любая mutation проверяет `version`; stale version возвращает conflict, а не
     last-write-wins.
-16. Admin aggregate query выполняется только после server-side allowlist check
+17. Admin aggregate query выполняется только после server-side allowlist check
     и не возвращает содержимое user-owned records. System backup/restore
     проверяет ту же boundary отдельно и не переиспользует unscoped product query.
-17. Restore применяет только полностью валидный snapshot, содержащий identity
+18. Restore применяет только полностью валидный snapshot, содержащий identity
     текущего администратора. Replace всех live tables атомарен; ошибка оставляет
     предыдущее состояние без частичного удаления или импорта.
 

@@ -404,7 +404,8 @@ List повторяет плотную grouped-list модель Linear.
   сохранённого view. Доступны `Save as new`, `Update` и `Discard changes`
   согласно ownership/ACL.
 - View title/overflow содержит rename, duplicate, share и delete, если action
-  входит в permission scope.
+  входит в effective role. Project-scoped View не имеет отдельного Share:
+  участники и роль управляются у Project.
 
 ### 10.2 Filter builder
 
@@ -459,14 +460,26 @@ Linear, но они обязаны использовать тот же visual l
 
 ### 12.2 Share dialog
 
-- Trigger `Share` находится в header Project, standalone Task и SavedView.
-- Dialog содержит verified-email combobox зарегистрированных users, явный
-  единственный уровень `Full access` и список active collaborators.
-- Owner отмечен отдельно и не имеет revoke control.
+- Trigger `Share` находится в header Project, standalone Task и global
+  SavedView. Для project Task, Release и project-scoped SavedView он открывает
+  access surface родительского Project либо не дублируется.
+- Compact dialog `Members & access` содержит verified-email input, role picker,
+  Owner отдельной первой строкой и список active grants с inline role picker.
+- Для Project доступны `Manager`, `Editor`, `Viewer`; для standalone Task и
+  global SavedView — `Editor`, `Viewer`. Copy рядом с email явно говорит, что
+  User должен уже войти и письмо не отправляется.
+- Manager видит и изменяет только Editor/Viewer. Owner может назначать Manager,
+  Editor, Viewer и получает action `Transfer ownership` только для уже
+  добавленного участника. Transfer требует подтверждения последствий, но не
+  подтверждения получателя; после server response роли обновляются сразу.
+- Viewer не видит write/share controls. Editor видит content mutations, но не
+  member management. Disabled option не используется как единственная защита:
+  server повторно проверяет actor role и role ceiling.
+- Project dialog объясняет inheritance к Tasks, Releases и project-scoped
+  SavedViews; global SavedView dialog — что view не расширяет доступ к
+  underlying data.
 - Revoke требует подтверждения только когда последствия могут оборвать текущую
-  работу; результат обновляется сразу после server response.
-- Project dialog объясняет inheritance к tasks/releases; SavedView dialog — что
-  view не расширяет доступ к underlying data.
+  работу; результат обновляется после server response.
 
 ### 12.3 Shared with me и profile
 
@@ -588,7 +601,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
 | Themes | System/light/dark | Берём | Собственные tokens и branding |
-| Share controls | Linear-like compact dialog | Адаптируем | Наша модель `full_access` и inheritance |
+| Share controls | Linear-like compact members dialog | Адаптируем | Owner/Manager/Editor/Viewer и inheritance |
 | Login/profile | Та же visual system | Адаптируем | ChatGPT/Google identity model |
 | Administration | Compact metrics + dense user table | Адаптируем | Operational aggregates, не Linear analytics |
 
@@ -618,6 +631,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 - [Board layout](https://linear.app/docs/board-layout)
 - [Display options](https://linear.app/docs/display-options)
 - [Select issues](https://linear.app/docs/select-issues)
+- [Members and roles](https://linear.app/docs/members-roles)
+- [Custom Views](https://linear.app/docs/custom-views)
 - [Peek preview](https://linear.app/docs/peek)
 - [Create issues](https://linear.app/docs/creating-issues)
 - [Edit issues](https://linear.app/docs/editing-issues)

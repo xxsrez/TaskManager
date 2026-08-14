@@ -1,6 +1,16 @@
 import type { Actor } from "./auth";
 import { env } from "cloudflare:workers";
 import {
+  canAssignRole,
+  canEditContent,
+  canManageGrant,
+  canTransferOwnership,
+  normalizeGrantRole,
+  type AccessRole,
+  type GrantRole,
+  type ShareableResourceType,
+} from "./access";
+import {
   assertAdmin,
   buildAdminOverview,
   isAdminEmail,
@@ -12,6 +22,7 @@ import {
   NotFoundError,
   optionalDate,
   optionalText,
+  PermissionError,
   priority,
   requireTitle,
   statusTimestamps,
@@ -38,6 +49,27 @@ import type {
 import { getD1 } from "@/db";
 
 type DbRow = Record<string, unknown>;
+
+const editableTaskWhere = `(
+  (tasks.project_id IS NOT NULL AND (
+    EXISTS (
+      SELECT 1 FROM projects p
+      WHERE p.id = tasks.project_id AND p.owner_user_id = ?
+    ) OR EXISTS (
+      SELECT 1 FROM access_grants ag
+      WHERE ag.resource_type = 'project' AND ag.resource_id = tasks.project_id
+        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+        AND ag.permission IN ('editor', 'manager', 'full_access')
+    )
+  )) OR (tasks.project_id IS NULL AND (
+    tasks.owner_user_id = ? OR EXISTS (
+      SELECT 1 FROM access_grants ag
+      WHERE ag.resource_type = 'task' AND ag.resource_id = tasks.id
+        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+        AND ag.permission IN ('editor', 'full_access')
+    )
+  ))
+)`;
 
 const schemaStatements = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -177,6 +209,8 @@ const schemaStatements = [
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE INDEX IF NOT EXISTS idx_saved_views_scope_project
+    ON saved_views(scope_project_id)`,
   `CREATE TABLE IF NOT EXISTS external_records (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,
@@ -198,13 +232,16 @@ const schemaStatements = [
     owner_user_id TEXT NOT NULL,
     grantee_user_id TEXT NOT NULL,
     granted_by_user_id TEXT NOT NULL,
-    permission TEXT NOT NULL DEFAULT 'full_access',
+    permission TEXT NOT NULL DEFAULT 'viewer',
     revoked_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(resource_type, resource_id, grantee_user_id)
   )`,
   `CREATE INDEX IF NOT EXISTS idx_access_grants_grantee_active
     ON access_grants(grantee_user_id, resource_type, resource_id)
+    WHERE revoked_at IS NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_access_grants_owner_resource_active
+    ON access_grants(owner_user_id, resource_type, resource_id)
     WHERE revoked_at IS NULL`,
   `CREATE TABLE IF NOT EXISTS admin_import_sessions (
     id TEXT PRIMARY KEY,
@@ -243,6 +280,16 @@ export async function ensureDatabase() {
   schemaPromise ??= (async () => {
     const db = getD1();
     await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+    await db
+      .prepare(
+        `UPDATE access_grants
+         SET permission = CASE
+           WHEN resource_type = 'project' THEN 'manager'
+           ELSE 'editor'
+         END
+         WHERE permission = 'full_access'`,
+      )
+      .run();
     await ensurePublicIds(db);
     await db.prepare("PRAGMA optimize").run();
   })();
@@ -393,52 +440,130 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
     await Promise.all([
       db
         .prepare(
-          `SELECT t.* FROM tasks t
-           WHERE t.owner_user_id = ?
-              OR EXISTS (
-                SELECT 1 FROM access_grants ag
-                WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                  AND ((ag.resource_type = 'task' AND ag.resource_id = t.id)
-                    OR (ag.resource_type = 'project' AND ag.resource_id = t.project_id))
-              )
-           ORDER BY t.rank ASC, t.created_at DESC`,
+          `WITH scoped AS (
+             SELECT t.*,
+               CASE
+                 WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+                 WHEN t.project_id IS NOT NULL THEN (
+                   SELECT CASE ag.permission
+                     WHEN 'full_access' THEN 'manager'
+                     WHEN 'manager' THEN 'manager'
+                     WHEN 'editor' THEN 'editor'
+                     WHEN 'viewer' THEN 'viewer'
+                   END
+                   FROM access_grants ag
+                   WHERE ag.resource_type = 'project'
+                     AND ag.resource_id = t.project_id
+                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                   LIMIT 1
+                 )
+                 WHEN t.owner_user_id = ? THEN 'owner'
+                 ELSE (
+                   SELECT CASE ag.permission
+                     WHEN 'full_access' THEN 'editor'
+                     WHEN 'editor' THEN 'editor'
+                     WHEN 'viewer' THEN 'viewer'
+                   END
+                   FROM access_grants ag
+                   WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                   LIMIT 1
+                 )
+               END AS access_role
+             FROM tasks t
+             LEFT JOIN projects p ON p.id = t.project_id
+           )
+           SELECT * FROM scoped WHERE access_role IS NOT NULL
+           ORDER BY rank ASC, created_at DESC`,
+        )
+        .bind(user.id, user.id, user.id, user.id)
+        .all<DbRow>(),
+      db
+        .prepare(
+          `WITH scoped AS (
+             SELECT p.*,
+               CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'manager'
+                   WHEN 'manager' THEN 'manager'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               ) END AS access_role
+             FROM projects p WHERE p.archived_at IS NULL
+           )
+           SELECT * FROM scoped WHERE access_role IS NOT NULL
+           ORDER BY updated_at DESC`,
         )
         .bind(user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
-          `SELECT p.* FROM projects p
-           WHERE p.archived_at IS NULL AND (
-             p.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           ) ORDER BY p.updated_at DESC`,
+          `WITH scoped AS (
+             SELECT r.*,
+               CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'manager'
+                   WHEN 'manager' THEN 'manager'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'project'
+                   AND ag.resource_id = r.project_id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               ) END AS access_role
+             FROM releases r JOIN projects p ON p.id = r.project_id
+           )
+           SELECT * FROM scoped WHERE access_role IS NOT NULL
+           ORDER BY created_at DESC`,
         )
         .bind(user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
-          `SELECT r.* FROM releases r
-           WHERE r.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           ) ORDER BY r.created_at DESC`,
+          `WITH scoped AS (
+             SELECT v.*,
+               CASE
+                 WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+                 WHEN v.scope_project_id IS NOT NULL THEN (
+                   SELECT CASE ag.permission
+                     WHEN 'full_access' THEN 'manager'
+                     WHEN 'manager' THEN 'manager'
+                     WHEN 'editor' THEN 'editor'
+                     WHEN 'viewer' THEN 'viewer'
+                   END
+                   FROM access_grants ag
+                   WHERE ag.resource_type = 'project'
+                     AND ag.resource_id = v.scope_project_id
+                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                   LIMIT 1
+                 )
+                 WHEN v.owner_user_id = ? THEN 'owner'
+                 ELSE (
+                   SELECT CASE ag.permission
+                     WHEN 'full_access' THEN 'editor'
+                     WHEN 'editor' THEN 'editor'
+                     WHEN 'viewer' THEN 'viewer'
+                   END
+                   FROM access_grants ag
+                   WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                   LIMIT 1
+                 )
+               END AS access_role
+             FROM saved_views v
+             LEFT JOIN projects p ON p.id = v.scope_project_id
+           )
+           SELECT * FROM scoped WHERE access_role IS NOT NULL
+           ORDER BY updated_at DESC`,
         )
-        .bind(user.id, user.id)
-        .all<DbRow>(),
-      db
-        .prepare(
-          `SELECT v.* FROM saved_views v
-           WHERE v.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           ) ORDER BY v.updated_at DESC`,
-        )
-        .bind(user.id, user.id)
+        .bind(user.id, user.id, user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
@@ -446,15 +571,45 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
            WHERE s.owner_user_id = ?
               OR EXISTS (
                 SELECT 1 FROM projects p
-                WHERE p.owner_user_id = s.owner_user_id AND EXISTS (
-                  SELECT 1 FROM access_grants ag
-                  WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                WHERE p.owner_user_id = s.owner_user_id AND (
+                  p.owner_user_id = ? OR EXISTS (
+                    SELECT 1 FROM access_grants ag
+                    WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                      AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                  )
+                )
+              )
+              OR EXISTS (
+                SELECT 1 FROM tasks t
+                LEFT JOIN projects p ON p.id = t.project_id
+                WHERE t.status_id = s.id AND (
+                  (t.project_id IS NOT NULL AND (
+                    p.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'project'
+                        AND ag.resource_id = t.project_id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  )) OR (t.project_id IS NULL AND (
+                    t.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  ))
                 )
               )
            ORDER BY s.owner_user_id, s.position`,
         )
-        .bind(user.id, user.id)
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+        )
         .all<DbRow>(),
       db
         .prepare(
@@ -471,14 +626,38 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
         .all<DbRow>(),
       db
         .prepare(
-          `SELECT ag.id, ag.resource_type, ag.resource_id,
+          `SELECT ag.id, ag.resource_type, ag.resource_id, ag.permission,
                   u.id AS user_id, u.display_name, u.email
            FROM access_grants ag
            JOIN users u ON u.id = ag.grantee_user_id
-           WHERE ag.owner_user_id = ? AND ag.revoked_at IS NULL
+           WHERE ag.revoked_at IS NULL AND (
+             (ag.resource_type = 'project' AND EXISTS (
+               SELECT 1 FROM projects p
+               WHERE p.id = ag.resource_id AND (
+                 p.owner_user_id = ? OR EXISTS (
+                   SELECT 1 FROM access_grants actor_grant
+                   WHERE actor_grant.resource_type = 'project'
+                     AND actor_grant.resource_id = p.id
+                     AND actor_grant.grantee_user_id = ?
+                     AND actor_grant.revoked_at IS NULL
+                     AND actor_grant.permission IN ('manager', 'full_access')
+                 )
+               )
+             )) OR
+             (ag.resource_type = 'task' AND EXISTS (
+               SELECT 1 FROM tasks t
+               WHERE t.id = ag.resource_id AND t.project_id IS NULL
+                 AND t.owner_user_id = ?
+             )) OR
+             (ag.resource_type = 'saved_view' AND EXISTS (
+               SELECT 1 FROM saved_views v
+               WHERE v.id = ag.resource_id AND v.scope_project_id IS NULL
+                 AND v.owner_user_id = ?
+             ))
+           )
            ORDER BY ag.created_at DESC`,
         )
-        .bind(user.id)
+        .bind(user.id, user.id, user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
@@ -487,30 +666,47 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
               OR EXISTS (
                 SELECT 1 FROM task_labels tl
                 JOIN tasks t ON t.id = tl.task_id
-                JOIN access_grants ag ON (
-                  (ag.resource_type = 'task' AND ag.resource_id = t.id)
-                  OR (ag.resource_type = 'project' AND ag.resource_id = t.project_id)
-                )
+                LEFT JOIN projects p ON p.id = t.project_id
                 WHERE tl.label_id = l.id
-                  AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                  AND ((t.project_id IS NOT NULL AND (
+                    p.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'project'
+                        AND ag.resource_id = t.project_id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  )) OR (t.project_id IS NULL AND (
+                    t.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  )))
               )
            ORDER BY l.name`,
         )
-        .bind(user.id, user.id)
+        .bind(user.id, user.id, user.id, user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
           `SELECT tl.* FROM task_labels tl
            JOIN tasks t ON t.id = tl.task_id
-           WHERE t.owner_user_id = ?
-              OR EXISTS (
+           LEFT JOIN projects p ON p.id = t.project_id
+           WHERE (t.project_id IS NOT NULL AND (
+             p.owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             )
+           )) OR (t.project_id IS NULL AND (
+             t.owner_user_id = ? OR EXISTS (
                 SELECT 1 FROM access_grants ag
-                WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                  AND ((ag.resource_type = 'task' AND ag.resource_id = t.id)
-                    OR (ag.resource_type = 'project' AND ag.resource_id = t.project_id))
-              )`,
+                WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                  AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+              )
+           ))`,
         )
-        .bind(user.id, user.id)
+        .bind(user.id, user.id, user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
@@ -518,32 +714,127 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
            FROM task_relations tr
            JOIN tasks source_task ON source_task.id = tr.source_task_id
            JOIN tasks target_task ON target_task.id = tr.target_task_id
-           WHERE (
+           LEFT JOIN projects source_project ON source_project.id = source_task.project_id
+           LEFT JOIN projects target_project ON target_project.id = target_task.project_id
+           WHERE ((source_task.project_id IS NOT NULL AND (
+             source_project.owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'project'
+                 AND ag.resource_id = source_task.project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             )
+           )) OR (source_task.project_id IS NULL AND (
              source_task.owner_user_id = ? OR EXISTS (
                SELECT 1 FROM access_grants ag
-               WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 AND ((ag.resource_type = 'task' AND ag.resource_id = source_task.id)
-                   OR (ag.resource_type = 'project' AND ag.resource_id = source_task.project_id))
+               WHERE ag.resource_type = 'task' AND ag.resource_id = source_task.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
              )
-           ) AND (
+           ))) AND ((target_task.project_id IS NOT NULL AND (
+             target_project.owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'project'
+                 AND ag.resource_id = target_task.project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             )
+           )) OR (target_task.project_id IS NULL AND (
              target_task.owner_user_id = ? OR EXISTS (
                SELECT 1 FROM access_grants ag
-               WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 AND ((ag.resource_type = 'task' AND ag.resource_id = target_task.id)
-                   OR (ag.resource_type = 'project' AND ag.resource_id = target_task.project_id))
+               WHERE ag.resource_type = 'task' AND ag.resource_id = target_task.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
              )
-           )`,
+           )))`,
         )
-        .bind(user.id, user.id, user.id, user.id)
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+        )
         .all<DbRow>(),
       db
         .prepare(
           `SELECT target_type, target_id, source, source_id, source_url,
                   metadata_json
-           FROM external_records
-           WHERE owner_user_id = ?`,
+           FROM external_records er
+           WHERE er.owner_user_id = ?
+              OR (er.target_type = 'project' AND EXISTS (
+                SELECT 1 FROM projects p WHERE p.id = er.target_id AND (
+                  p.owner_user_id = ? OR EXISTS (
+                    SELECT 1 FROM access_grants ag
+                    WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                      AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                  )
+                )
+              ))
+              OR (er.target_type = 'release' AND EXISTS (
+                SELECT 1 FROM releases r JOIN projects p ON p.id = r.project_id
+                WHERE r.id = er.target_id AND (
+                  p.owner_user_id = ? OR EXISTS (
+                    SELECT 1 FROM access_grants ag
+                    WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                      AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                  )
+                )
+              ))
+              OR (er.target_type = 'task' AND EXISTS (
+                SELECT 1 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+                WHERE t.id = er.target_id AND (
+                  (t.project_id IS NOT NULL AND (
+                    p.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'project'
+                        AND ag.resource_id = t.project_id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  )) OR (t.project_id IS NULL AND (
+                    t.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  ))
+                )
+              ))
+              OR (er.target_type = 'saved_view' AND EXISTS (
+                SELECT 1 FROM saved_views v
+                LEFT JOIN projects p ON p.id = v.scope_project_id
+                WHERE v.id = er.target_id AND (
+                  (v.scope_project_id IS NOT NULL AND (
+                    p.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'project'
+                        AND ag.resource_id = v.scope_project_id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  )) OR (v.scope_project_id IS NULL AND (
+                    v.owner_user_id = ? OR EXISTS (
+                      SELECT 1 FROM access_grants ag
+                      WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                    )
+                  ))
+                )
+              ))`,
         )
-        .bind(user.id)
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+        )
         .all<DbRow>(),
       isAdminEmail(user.email, configuredAdminEmails)
         ? getAdminOverview(user, configuredAdminEmails)
@@ -638,6 +929,7 @@ export async function createTask(
   const project = input.projectId
     ? await loadAccessibleProject(currentUser.id, String(input.projectId))
     : null;
+  if (project) requireContentEdit(project.accessRole);
   const ownerUserId = project?.ownerUserId ?? currentUser.id;
   const status = await loadStatus(
     ownerUserId,
@@ -646,6 +938,7 @@ export async function createTask(
   const release = input.releaseId
     ? await loadAccessibleRelease(currentUser.id, String(input.releaseId))
     : null;
+  if (release) requireContentEdit(release.accessRole);
   assertReleaseProject(project?.id ?? null, release?.projectId ?? null);
 
   const sequenceRow = await db
@@ -709,6 +1002,7 @@ export async function updateTask(
   input: Record<string, unknown>,
 ) {
   const task = await loadAccessibleTask(currentUser.id, taskId);
+  requireContentEdit(task.accessRole);
   const expectedVersion = Number(input.version);
   if (!Number.isInteger(expectedVersion) || expectedVersion !== task.version) {
     throw new ConflictError("Task was changed in another session");
@@ -719,6 +1013,27 @@ export async function updateTask(
     const targetProject = input.projectId
       ? await loadAccessibleProject(currentUser.id, String(input.projectId))
       : null;
+    if (targetProject) requireContentEdit(targetProject.accessRole);
+    if (task.projectId && !targetProject) {
+      throw new ValidationError(
+        "Moving a project task back to standalone is not supported",
+      );
+    }
+    if (task.projectId && targetProject?.id !== task.projectId) {
+      const sourceProject = await loadAccessibleProject(
+        currentUser.id,
+        task.projectId,
+      );
+      requireContentEdit(sourceProject.accessRole);
+      if (
+        sourceProject.ownerUserId !== targetProject?.ownerUserId ||
+        task.ownerUserId !== sourceProject.ownerUserId
+      ) {
+        throw new ValidationError(
+          "Moving work across project ownership boundaries is not supported",
+        );
+      }
+    }
     if (targetProject && targetProject.ownerUserId !== task.ownerUserId) {
       throw new ValidationError("Moving work between owners is not supported");
     }
@@ -745,6 +1060,7 @@ export async function updateTask(
     const release = input.releaseId
       ? await loadAccessibleRelease(currentUser.id, String(input.releaseId))
       : null;
+    if (release) requireContentEdit(release.accessRole);
     assertReleaseProject(projectId, release?.projectId ?? null);
     releaseId = release?.id ?? null;
   } else if (task.projectId !== projectId && task.releaseId) {
@@ -788,12 +1104,25 @@ export async function updateTask(
         started_at = ?, completed_at = ?, canceled_at = ?, archived_at = ?,
         version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND (
-         owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             AND ((ag.resource_type = 'task' AND ag.resource_id = tasks.id)
-               OR (ag.resource_type = 'project' AND ag.resource_id = tasks.project_id))
-         )
+         (tasks.project_id IS NOT NULL AND (
+           EXISTS (
+             SELECT 1 FROM projects p
+             WHERE p.id = tasks.project_id AND p.owner_user_id = ?
+           ) OR EXISTS (
+             SELECT 1 FROM access_grants ag
+             WHERE ag.resource_type = 'project'
+               AND ag.resource_id = tasks.project_id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               AND ag.permission IN ('editor', 'manager', 'full_access')
+           )
+         )) OR (tasks.project_id IS NULL AND (
+           owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants ag
+             WHERE ag.resource_type = 'task' AND ag.resource_id = tasks.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               AND ag.permission IN ('editor', 'full_access')
+           )
+         ))
        )`,
     )
     .bind(
@@ -813,6 +1142,8 @@ export async function updateTask(
       now,
       taskId,
       expectedVersion,
+      currentUser.id,
+      currentUser.id,
       currentUser.id,
       currentUser.id,
     )
@@ -837,6 +1168,7 @@ export async function bulkUpdateTasks(
   const tasks = await Promise.all(
     ids.map((id) => loadAccessibleTask(currentUser.id, id)),
   );
+  tasks.forEach((task) => requireContentEdit(task.accessRole));
   const now = new Date().toISOString();
   const db = getD1();
   const statements = [];
@@ -846,18 +1178,36 @@ export async function bulkUpdateTasks(
         db
           .prepare(
             `UPDATE tasks SET priority = ?, version = version + 1, updated_at = ?
-             WHERE id = ? AND version = ?`,
+             WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
           )
-          .bind(priority(input.value), now, task.id, task.version),
+          .bind(
+            priority(input.value),
+            now,
+            task.id,
+            task.version,
+            currentUser.id,
+            currentUser.id,
+            currentUser.id,
+            currentUser.id,
+          ),
       );
     } else if (field === "archived") {
       statements.push(
         db
           .prepare(
             `UPDATE tasks SET archived_at = ?, version = version + 1, updated_at = ?
-             WHERE id = ? AND version = ?`,
+             WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
           )
-          .bind(input.value ? now : null, now, task.id, task.version),
+          .bind(
+            input.value ? now : null,
+            now,
+            task.id,
+            task.version,
+            currentUser.id,
+            currentUser.id,
+            currentUser.id,
+            currentUser.id,
+          ),
       );
     } else {
       const status = await loadStatus(task.ownerUserId, String(input.value));
@@ -867,7 +1217,7 @@ export async function bulkUpdateTasks(
           .prepare(
             `UPDATE tasks SET status_id = ?, started_at = ?, completed_at = ?,
               canceled_at = ?, version = version + 1, updated_at = ?
-             WHERE id = ? AND version = ?`,
+             WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
           )
           .bind(
             status.id,
@@ -877,6 +1227,10 @@ export async function bulkUpdateTasks(
             now,
             task.id,
             task.version,
+            currentUser.id,
+            currentUser.id,
+            currentUser.id,
+            currentUser.id,
           ),
       );
     }
@@ -924,6 +1278,7 @@ export async function createRelease(
     currentUser.id,
     String(input.projectId),
   );
+  requireContentEdit(project.accessRole);
   const now = new Date().toISOString();
   await getD1()
     .prepare(
@@ -954,6 +1309,10 @@ export async function createSavedView(
 ) {
   const query = validateViewQuery(input.query);
   const display = validateViewDisplay(input.display);
+  const project = input.scopeProjectId
+    ? await loadAccessibleProject(currentUser.id, String(input.scopeProjectId))
+    : null;
+  if (project) requireContentEdit(project.accessRole);
   await getD1()
     .prepare(
       `INSERT INTO saved_views
@@ -963,9 +1322,9 @@ export async function createSavedView(
     .bind(
       `view_${crypto.randomUUID()}`,
       crypto.randomUUID(),
-      currentUser.id,
+      project?.ownerUserId ?? currentUser.id,
       requireTitle(input.name),
-      input.scopeProjectId ? String(input.scopeProjectId) : null,
+      project?.id ?? null,
       JSON.stringify(query),
       JSON.stringify(display),
     )
@@ -976,77 +1335,214 @@ export async function grantAccess(
   currentUser: UserRecord,
   input: Record<string, unknown>,
 ) {
-  const resourceType = String(input.resourceType ?? "");
-  if (!["project", "task", "saved_view"].includes(resourceType)) {
-    throw new ValidationError("Unsupported share target");
-  }
+  const resourceType = shareableResourceType(input.resourceType);
   const resourceId = String(input.resourceId ?? "");
-  const ownerUserId = await requireSharePermission(
-    currentUser.id,
-    resourceType,
-    resourceId,
-  );
-  if (resourceType === "task") {
-    const task = await loadAccessibleTask(currentUser.id, resourceId);
-    if (task.projectId) {
-      throw new ValidationError("Share the project instead of a project task");
-    }
+  const target = await loadShareTarget(currentUser.id, resourceType, resourceId);
+  const permission = requestedGrantRole(input.permission);
+  if (!canAssignRole(target.actorRole, resourceType, permission)) {
+    throw new PermissionError("You cannot assign that role");
   }
   const email = String(input.email ?? "").trim().toLowerCase();
-  const grantee = await getD1()
-    .prepare("SELECT id FROM users WHERE lower(email) = ? LIMIT 1")
+  const matches = await getD1()
+    .prepare("SELECT id FROM users WHERE lower(email) = ? ORDER BY id LIMIT 2")
     .bind(email)
-    .first<{ id: string }>();
-  if (!grantee) {
+    .all<{ id: string }>();
+  if (matches.results.length === 0) {
     throw new NotFoundError("That user must sign in once before you can share");
   }
-  if (grantee.id === ownerUserId) {
+  if (matches.results.length > 1) {
+    throw new ValidationError("More than one account uses that email");
+  }
+  const grantee = matches.results[0]!;
+  if (grantee.id === target.ownerUserId) {
     throw new ValidationError("The owner already has access");
+  }
+  const existing = await getD1()
+    .prepare(
+      `SELECT permission FROM access_grants
+       WHERE resource_type = ? AND resource_id = ? AND grantee_user_id = ?
+         AND revoked_at IS NULL`,
+    )
+    .bind(resourceType, resourceId, grantee.id)
+    .first<{ permission: string }>();
+  const existingRole = existing
+    ? normalizeGrantRole(resourceType, existing.permission)
+    : null;
+  if (
+    existingRole &&
+    !canManageGrant(target.actorRole, resourceType, existingRole)
+  ) {
+    throw new PermissionError("You cannot change that participant");
   }
   await getD1()
     .prepare(
       `INSERT INTO access_grants
         (id, resource_type, resource_id, owner_user_id, grantee_user_id,
          granted_by_user_id, permission, revoked_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'full_access', NULL)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
        ON CONFLICT(resource_type, resource_id, grantee_user_id)
-       DO UPDATE SET revoked_at = NULL, granted_by_user_id = excluded.granted_by_user_id`,
+       DO UPDATE SET owner_user_id = excluded.owner_user_id,
+         permission = excluded.permission, revoked_at = NULL,
+         granted_by_user_id = excluded.granted_by_user_id`,
     )
     .bind(
       `grant_${crypto.randomUUID()}`,
       resourceType,
       resourceId,
-      ownerUserId,
+      target.ownerUserId,
       grantee.id,
       currentUser.id,
+      permission,
     )
     .run();
 }
 
 export async function revokeAccess(currentUser: UserRecord, grantId: string) {
+  const grant = await loadGrantForManagement(currentUser.id, grantId);
+  if (!canManageGrant(grant.actorRole, grant.resourceType, grant.permission)) {
+    throw new PermissionError("You cannot remove that participant");
+  }
   const result = await getD1()
     .prepare(
       `UPDATE access_grants SET revoked_at = CURRENT_TIMESTAMP
        WHERE id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
     )
-    .bind(grantId, currentUser.id)
+    .bind(grantId, grant.ownerUserId)
     .run();
   if ((result.meta.changes ?? 0) !== 1) throw new NotFoundError("Grant not found");
+}
+
+export async function updateAccessRole(
+  currentUser: UserRecord,
+  grantId: string,
+  input: Record<string, unknown>,
+) {
+  const grant = await loadGrantForManagement(currentUser.id, grantId);
+  const permission = requestedGrantRole(input.permission);
+  if (
+    !canManageGrant(grant.actorRole, grant.resourceType, grant.permission) ||
+    !canAssignRole(grant.actorRole, grant.resourceType, permission)
+  ) {
+    throw new PermissionError("You cannot change that participant");
+  }
+  const result = await getD1()
+    .prepare(
+      `UPDATE access_grants
+       SET permission = ?, granted_by_user_id = ?
+       WHERE id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
+    )
+    .bind(permission, currentUser.id, grantId, grant.ownerUserId)
+    .run();
+  if ((result.meta.changes ?? 0) !== 1) throw new NotFoundError("Grant not found");
+}
+
+export async function transferProjectOwnership(
+  currentUser: UserRecord,
+  projectId: string,
+  targetUserId: string,
+) {
+  const project = await loadAccessibleProject(currentUser.id, projectId);
+  if (!canTransferOwnership(project.accessRole)) {
+    throw new PermissionError("Only the project owner can transfer ownership");
+  }
+  const targetGrant = await getD1()
+    .prepare(
+      `SELECT id FROM access_grants
+       WHERE resource_type = 'project' AND resource_id = ?
+         AND grantee_user_id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
+    )
+    .bind(project.id, targetUserId, currentUser.id)
+    .first<{ id: string }>();
+  if (!targetGrant) {
+    throw new ValidationError("Ownership can only be transferred to a project member");
+  }
+
+  const now = new Date().toISOString();
+  const db = getD1();
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE projects
+         SET owner_user_id = ?, version = version + 1, updated_at = ?
+         WHERE id = ? AND owner_user_id = ?`,
+      )
+      .bind(targetUserId, now, project.id, currentUser.id),
+    db
+      .prepare(
+        `UPDATE access_grants SET owner_user_id = ?
+         WHERE resource_type = 'project' AND resource_id = ?
+           AND owner_user_id = ?`,
+      )
+      .bind(targetUserId, project.id, currentUser.id),
+    db
+      .prepare(
+        `UPDATE access_grants SET revoked_at = ?
+         WHERE id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
+      )
+      .bind(now, targetGrant.id, targetUserId),
+    db
+      .prepare(
+        `INSERT INTO access_grants
+          (id, resource_type, resource_id, owner_user_id, grantee_user_id,
+           granted_by_user_id, permission, revoked_at, created_at)
+         SELECT ?, 'project', ?, ?, ?, ?, 'manager', NULL, ?
+         FROM projects WHERE id = ? AND owner_user_id = ?
+         ON CONFLICT(resource_type, resource_id, grantee_user_id)
+         DO UPDATE SET owner_user_id = excluded.owner_user_id,
+           permission = 'manager', revoked_at = NULL,
+           granted_by_user_id = excluded.granted_by_user_id`,
+      )
+      .bind(
+        `grant_${crypto.randomUUID()}`,
+        project.id,
+        targetUserId,
+        currentUser.id,
+        currentUser.id,
+        now,
+        project.id,
+        targetUserId,
+      ),
+  ]);
+  if ((results[0]?.meta.changes ?? 0) !== 1) {
+    throw new ConflictError("Project ownership changed in another session");
+  }
 }
 
 async function loadAccessibleTask(userId: string, taskId: string) {
   const row = await getD1()
     .prepare(
-      `SELECT t.* FROM tasks t WHERE t.id = ? AND (
-        t.owner_user_id = ? OR EXISTS (
-          SELECT 1 FROM access_grants ag
-          WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-            AND ((ag.resource_type = 'task' AND ag.resource_id = t.id)
-              OR (ag.resource_type = 'project' AND ag.resource_id = t.project_id))
-        )
-      )`,
+      `WITH scoped AS (
+         SELECT t.*,
+           CASE
+             WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+             WHEN t.project_id IS NOT NULL THEN (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'manager'
+                 WHEN 'manager' THEN 'manager'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
+               WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+             )
+             WHEN t.owner_user_id = ? THEN 'owner'
+             ELSE (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'editor'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
+               WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+             )
+           END AS access_role
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         WHERE t.id = ?
+       ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(taskId, userId, userId)
+    .bind(userId, userId, userId, userId, taskId)
     .first<DbRow>();
   if (!row) throw new NotFoundError("Task not found");
   return mapTask(row);
@@ -1055,15 +1551,23 @@ async function loadAccessibleTask(userId: string, taskId: string) {
 async function loadAccessibleProject(userId: string, projectId: string) {
   const row = await getD1()
     .prepare(
-      `SELECT p.* FROM projects p WHERE p.id = ? AND (
-        p.owner_user_id = ? OR EXISTS (
-          SELECT 1 FROM access_grants ag
-          WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-            AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-        )
-      )`,
+      `WITH scoped AS (
+         SELECT p.*,
+           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+             SELECT CASE ag.permission
+               WHEN 'full_access' THEN 'manager'
+               WHEN 'manager' THEN 'manager'
+               WHEN 'editor' THEN 'editor'
+               WHEN 'viewer' THEN 'viewer'
+             END
+             FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+           ) END AS access_role
+         FROM projects p WHERE p.id = ?
+       ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(projectId, userId, userId)
+    .bind(userId, userId, projectId)
     .first<DbRow>();
   if (!row) throw new NotFoundError("Project not found");
   return mapProject(row);
@@ -1072,18 +1576,74 @@ async function loadAccessibleProject(userId: string, projectId: string) {
 async function loadAccessibleRelease(userId: string, releaseId: string) {
   const row = await getD1()
     .prepare(
-      `SELECT r.* FROM releases r WHERE r.id = ? AND (
-        r.owner_user_id = ? OR EXISTS (
-          SELECT 1 FROM access_grants ag
-          WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
-            AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-        )
-      )`,
+      `WITH scoped AS (
+         SELECT r.*,
+           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+             SELECT CASE ag.permission
+               WHEN 'full_access' THEN 'manager'
+               WHEN 'manager' THEN 'manager'
+               WHEN 'editor' THEN 'editor'
+               WHEN 'viewer' THEN 'viewer'
+             END
+             FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+           ) END AS access_role
+         FROM releases r JOIN projects p ON p.id = r.project_id
+         WHERE r.id = ?
+       ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(releaseId, userId, userId)
+    .bind(userId, userId, releaseId)
     .first<DbRow>();
   if (!row) throw new NotFoundError("Release not found");
   return mapRelease(row);
+}
+
+async function loadAccessibleView(userId: string, viewId: string) {
+  const row = await getD1()
+    .prepare(
+      `WITH scoped AS (
+         SELECT v.*,
+           CASE
+             WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+             WHEN v.scope_project_id IS NOT NULL THEN (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'manager'
+                 WHEN 'manager' THEN 'manager'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
+               WHERE ag.resource_type = 'project'
+                 AND ag.resource_id = v.scope_project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+             )
+             WHEN v.owner_user_id = ? THEN 'owner'
+             ELSE (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'editor'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
+               WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+             )
+           END AS access_role
+         FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
+         WHERE v.id = ?
+       ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+    )
+    .bind(userId, userId, userId, userId, viewId)
+    .first<DbRow>();
+  if (!row) throw new NotFoundError("View not found");
+  return mapView(row);
+}
+
+function requireContentEdit(role: AccessRole) {
+  if (!canEditContent(role)) {
+    throw new PermissionError("Editor access is required");
+  }
 }
 
 async function loadStatus(ownerUserId: string, statusId: string | null) {
@@ -1107,33 +1667,71 @@ async function loadStatus(ownerUserId: string, statusId: string | null) {
   return mapStatus(row);
 }
 
-async function requireSharePermission(
-  currentUserId: string,
-  resourceType: string,
+function shareableResourceType(value: unknown): ShareableResourceType {
+  if (value === "project" || value === "task" || value === "saved_view") {
+    return value;
+  }
+  throw new ValidationError("Unsupported share target");
+}
+
+function requestedGrantRole(value: unknown): GrantRole {
+  if (value === "manager" || value === "editor" || value === "viewer") {
+    return value;
+  }
+  throw new ValidationError("Choose a valid access role");
+}
+
+async function loadShareTarget(
+  userId: string,
+  resourceType: ShareableResourceType,
   resourceId: string,
 ) {
-  const table =
-    resourceType === "project"
-      ? "projects"
-      : resourceType === "task"
-        ? "tasks"
-        : "saved_views";
+  if (resourceType === "project") {
+    const project = await loadAccessibleProject(userId, resourceId);
+    return {
+      ownerUserId: project.ownerUserId,
+      actorRole: project.accessRole,
+    };
+  }
+  if (resourceType === "task") {
+    const task = await loadAccessibleTask(userId, resourceId);
+    if (task.projectId) {
+      throw new ValidationError("Manage access on the project instead");
+    }
+    return { ownerUserId: task.ownerUserId, actorRole: task.accessRole };
+  }
+  const view = await loadAccessibleView(userId, resourceId);
+  if (view.scopeProjectId) {
+    throw new ValidationError("Manage access on the project instead");
+  }
+  return { ownerUserId: view.ownerUserId, actorRole: view.accessRole };
+}
+
+async function loadGrantForManagement(userId: string, grantId: string) {
   const row = await getD1()
     .prepare(
-      `SELECT owner_user_id FROM ${table} resource
-       WHERE id = ? AND (
-         owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.resource_type = ? AND ag.resource_id = resource.id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             AND ag.permission = 'full_access'
-         )
-       )`,
+      `SELECT resource_type, resource_id, owner_user_id, permission
+       FROM access_grants WHERE id = ? AND revoked_at IS NULL`,
     )
-    .bind(resourceId, currentUserId, resourceType, currentUserId)
-    .first<{ owner_user_id: string }>();
-  if (!row) throw new NotFoundError("Resource not found");
-  return row.owner_user_id;
+    .bind(grantId)
+    .first<{
+      resource_type: string;
+      resource_id: string;
+      owner_user_id: string;
+      permission: string;
+    }>();
+  if (!row) throw new NotFoundError("Grant not found");
+  const resourceType = shareableResourceType(row.resource_type);
+  const permission = normalizeGrantRole(resourceType, row.permission);
+  if (!permission) throw new PermissionError("Grant role is invalid");
+  const target = await loadShareTarget(userId, resourceType, row.resource_id);
+  return {
+    resourceType,
+    resourceId: row.resource_id,
+    ownerUserId: target.ownerUserId,
+    actorRole: target.actorRole,
+    permission,
+  };
 }
 
 function optionalEstimate(value: unknown): number | null {
@@ -1232,6 +1830,7 @@ function mapProject(row: DbRow): ProjectRecord {
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    accessRole: effectiveRole(row.access_role),
   };
 }
 
@@ -1251,6 +1850,7 @@ function mapRelease(row: DbRow): ReleaseRecord {
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    accessRole: effectiveRole(row.access_role),
   };
 }
 
@@ -1280,6 +1880,7 @@ function mapTask(row: DbRow): TaskRecord {
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    accessRole: effectiveRole(row.access_role),
   };
 }
 
@@ -1411,6 +2012,7 @@ function mapView(row: DbRow): SavedViewRecord {
     query: safeJson<ViewQuery>(row.query_json, {}),
     display: safeJson<ViewDisplay>(row.display_json, validateViewDisplay(null)),
     version: Number(row.version),
+    accessRole: effectiveRole(row.access_role),
   };
 }
 
@@ -1422,7 +2024,24 @@ function mapCollaborator(row: DbRow): CollaboratorRecord {
     userId: String(row.user_id),
     displayName: String(row.display_name),
     email: String(row.email),
+    permission:
+      normalizeGrantRole(
+        String(row.resource_type) as ShareableResourceType,
+        row.permission,
+      ) ?? "viewer",
   };
+}
+
+function effectiveRole(value: unknown): AccessRole {
+  if (
+    value === "owner" ||
+    value === "manager" ||
+    value === "editor" ||
+    value === "viewer"
+  ) {
+    return value;
+  }
+  return "viewer";
 }
 
 function nullableString(value: unknown): string | null {

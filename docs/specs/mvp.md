@@ -23,7 +23,7 @@ MVP должен позволить вести задачи от backlog до п
 - **User** — внутренний пользователь Task Manager, не зависящий от конкретного
   login provider.
 - **User identity** — подтверждённая связь User с аккаунтом ChatGPT или Google.
-- **Access grant** — явный полный доступ другого User к shareable resource.
+- **Access grant** — явная роль другого User на shareable resource.
 - **Application administrator** — пользователь из server-side allowlist,
   которому доступна operational статистика системы без доступа к содержимому
   чужих user-owned resources.
@@ -89,30 +89,38 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 
 ## 4. Изоляция данных и sharing
 
-- Все Tasks, Projects, Releases, SavedViews, Labels и WorkflowStatuses имеют
-  одного владельца и приватны по умолчанию.
-- Любой query, search, lookup и mutation возвращает только собственные records
-  текущего User и resources с действующим `AccessGrant`.
-- Единственная resource permission collaborator в MVP — `full_access`;
-  read-only/editor/resource-admin ролей пока нет. Application administrator из
-  раздела 3.1 не является resource permission.
-- `full_access` включает чтение, редактирование, создание дочерних records,
-  архивирование, восстановление и управление sharing в пределах выданного
-  resource subtree. Владелец остаётся владельцем и всегда сохраняет доступ.
-- Пользователь может выдать или отозвать grant только уже зарегистрированному
-  User, найденному по verified email. Отправка email invitation не входит в
-  MVP.
-- Share Project распространяется на его Tasks и Releases. Release отдельно не
-  шарится. Task внутри Project доступна collaborator только через grant Project.
-- Напрямую можно поделиться standalone Task. Пока у неё есть direct grants, её
-  нельзя переместить в Project; сначала grants должны быть отозваны.
-- SavedView можно расшарить отдельно, но grant view не предоставляет доступ к
-  найденным им Tasks. Получатель видит пересечение view с уже доступными ему
-  данными.
+- Все Tasks, Projects, Releases, SavedViews, Labels и WorkflowStatuses приватны
+  по умолчанию. Наличие URL или аккаунта не даёт доступ к чужому content.
+- Любой query, search, lookup и mutation сначала вычисляет effective role на
+  сервере и только затем читает либо изменяет resource.
+- У Project ровно один `Owner` и три grant-роли: `Manager`, `Editor`, `Viewer`.
+  Каждый более сильный уровень включает полномочия более слабого. Application
+  administrator из раздела 3.1 не является project role.
+- `Viewer` читает Project и его subtree, но не меняет их. `Editor` дополнительно
+  создаёт и изменяет Tasks, Releases и project-scoped SavedViews, двигает Tasks
+  по workflow, архивирует и восстанавливает records.
+- `Manager` дополнительно приглашает Users и назначает/изменяет только роли
+  `Editor` и `Viewer`. `Owner` может назначать вплоть до `Manager`, отзывать
+  grants и передать ownership уже добавленному участнику.
+- Ownership transfer не требует подтверждения получателя: target немедленно
+  становится Owner, прежний Owner — Manager. Owner grant не хранится, поэтому
+  Owner всегда ровно один.
+- Пользователь может выдать grant только уже зарегистрированному User,
+  однозначно найденному по verified email. Email invitation не отправляется.
+- Project role распространяется на Project, его Tasks, Releases и SavedViews с
+  явным `scope_project_id`. Release и project child отдельно не шарятся.
+- Для project child effective access определяется текущим Project owner/grant,
+  а не историческим `owner_user_id`. Передача ownership не меняет immutable
+  task identifiers и provenance/catalog scope дочерних records.
+- Standalone Task и global SavedView можно расшарить напрямую с ролью `Editor`
+  или `Viewer`. Пока standalone Task имеет direct grants, её нельзя переместить
+  в Project; сначала grants должны быть отозваны.
+- Global SavedView не расширяет доступ к попавшим в query Tasks. Получатель
+  видит пересечение view с уже доступными ему данными.
 - Resources, которыми поделились с User, доступны в `Shared with me`. Revoke
   прекращает новые чтения и mutations немедленно после завершения транзакции.
-- Task/Release, созданные collaborator внутри shared Project, наследуют
-  `owner_user_id` Project; `creator_id` сохраняет фактического автора.
+- Необратимое удаление допускается только для Owner после отдельного
+  подтверждения; первый срез может ограничиться обратимым archive/restore.
 
 ## 5. Задачи
 
@@ -233,8 +241,12 @@ Assignee обязан быть владельцем Task либо пользов
 - Встроенные views: `All tasks`, `Active`, `Backlog`, `My tasks` и `Archived`.
 - Пользователь может сохранить изменённый view под новым именем, обновить его
   или удалить.
-- View может иметь global scope либо scope одного project.
-- View приватен по умолчанию и может получить отдельный `AccessGrant`.
+- View может иметь global scope либо явный scope одного Project.
+- Project-scoped View имеет обязательный `scope_project_id`, жёстко ограничен
+  этим Project и наследует его role. Он не получает отдельный `AccessGrant`.
+- View без `scope_project_id` является global, может пересекать все доступные
+  Projects и standalone Tasks и может получить прямой `Editor`/`Viewer` grant.
+  Обычный filter по `project_id` внутри global View не меняет его access scope.
 - Исполнение view всегда пересекает filter с authorization scope читателя;
   shared view не раскрывает недоступные records и их aggregate counts.
 
@@ -332,43 +344,49 @@ completed dates и archived state.
    возможности подменить User клиентским header/parameter.
 2. Создать два User с одинаковыми task identifiers и убедиться, что каждый без
    grant видит только собственные records, search results и counts.
-3. Поделиться Project с зарегистрированным User: он видит и меняет Project,
-   Tasks и Releases, а созданная им Task наследует owner Project.
-4. Отозвать Project grant и подтвердить, что бывший collaborator больше не
+3. Добавить Viewer в Project: он видит Project, Tasks, Releases и
+   project-scoped SavedViews, но все content mutations отклоняются сервером.
+4. Повысить User до Editor: он меняет Tasks и workflow, но не управляет
+   участниками. Manager добавляет/меняет только Editor/Viewer; попытка назначить
+   Manager отклоняется. Owner может назначить любую grant-role.
+5. Передать ownership уже добавленному User без его подтверждения: target сразу
+   становится Owner, прежний Owner — Manager; immutable task IDs сохраняются.
+6. Отозвать Project grant и подтвердить, что бывший collaborator больше не
    может читать или менять subtree даже по сохранённому URL.
-5. Поделиться SavedView без underlying Project grant и убедиться, что view не
-   раскрывает чужие Tasks или aggregate counts.
-6. Создать project, release и task из колонки `Todo`; задача получает project,
+7. Поделиться global SavedView без underlying Project grant и убедиться, что
+   view не раскрывает чужие Tasks или aggregate counts; project-scoped View
+   отдельно не шарится и не выходит за свой Project.
+8. Создать project, release и task из колонки `Todo`; задача получает project,
    release и status без дополнительного редактирования.
-7. Сохранить view «Urgent release» с фильтрами по project, active release и
+9. Сохранить view «Urgent release» с фильтрами по project, active release и
    priority; после изменения задачи она появляется или исчезает без ручного
    добавления во view.
-8. Переключить один view между list и board и увидеть одинаковые task IDs.
-9. Перетащить task из `Todo` в `In Progress`; status и `started_at` меняются,
+10. Переключить один view между list и board и увидеть одинаковые task IDs.
+11. Перетащить task из `Todo` в `In Progress`; status и `started_at` меняются,
    а задача остаётся видна во всех подходящих views.
-10. Попытаться назначить release другого project и получить отказ без частично
+12. Попытаться назначить release другого project и получить отказ без частично
    сохранённых изменений.
-11. Завершить release при наличии открытых задач: release становится released,
+13. Завершить release при наличии открытых задач: release становится released,
    задачи не становятся Done автоматически.
-12. Заархивировать и восстановить task; идентификатор и metadata сохраняются.
-13. Создать parent chain и убедиться, что попытка замкнуть цикл отклоняется.
-14. Переключить list/board через toolbar и `Cmd/Ctrl+B`, открыть `Filter` через
+14. Заархивировать и восстановить task; идентификатор и metadata сохраняются.
+15. Создать parent chain и убедиться, что попытка замкнуть цикл отклоняется.
+16. Переключить list/board через toolbar и `Cmd/Ctrl+B`, открыть `Filter` через
     `F`, `Display` через `Shift+V` и Peek через `Space`; shortcuts не
     срабатывают внутри text input/editor.
-15. Выбрать несколько Tasks мышью и клавиатурой, применить разрешённое bulk
+17. Выбрать несколько Tasks мышью и клавиатурой, применить разрешённое bulk
     action и подтвердить атомарное server update либо полный rollback.
-16. Проверить основные surfaces в light/dark theme и сверить composition,
+18. Проверить основные surfaces в light/dark theme и сверить composition,
     controls и interaction states с актуальным Linear reference по
     [UI-спецификации](interface.md), не используя бренд или assets Linear.
-17. Открыть индексы `/issues`, `/views`, `/projects`, `/releases`, список
+19. Открыть индексы `/issues`, `/views`, `/projects`, `/releases`, список
     releases внутри Project и скопировать прямые URL saved view, его board,
     Project, Release и Task; открыть каждый в новой вкладке, получить ту же
     entity/layout, проверить редирект старого internal-ID URL, Back/Forward и
     одинаковый `not found` для неизвестного и недоступного ID.
-18. Войти администратором, открыть `/admin` и увидеть актуальные user/activity
+20. Войти администратором, открыть `/admin` и увидеть актуальные user/activity
     aggregates; повторить прямой запрос обычным User и получить fail-closed
     результат без email, counts или подтверждения существования admin surface.
-19. Экспортировать полный system backup, импортировать его через preview и
+21. Экспортировать полный system backup, импортировать его через preview и
     explicit `RESTORE`, затем подтвердить точное восстановление Users,
     identities, owner/ACL, catalogs, content, archived records и provenance.
     Повреждённый, несовместимый или invariant-invalid файл не меняет ни одной

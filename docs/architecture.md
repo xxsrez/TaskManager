@@ -98,11 +98,13 @@ migrations. Это соответствует
 ### Авторизованный доступ к данным
 
 1. Identity middleware устанавливает current User из server-verified session.
-2. Access строит predicate: `owner_user_id = current_user.id` либо active grant
-   на resource/shareable ancestor.
+2. Access вычисляет effective role: для Project и его subtree — через current
+   Project owner/active Project grant; для standalone Task/global SavedView —
+   через собственный owner/active direct grant.
 3. Repository применяет predicate внутри SQL/query до pagination, aggregation,
    grouping или full-text search.
-4. Mutation дополнительно проверяет `full_access`, inheritance и domain
+4. Mutation дополнительно требует minimum role (`editor` для content,
+   `manager`/`owner` для разрешённого member management), inheritance и domain
    invariants в одной транзакции.
 5. Unauthorized lookup возвращает ответ, не подтверждающий существование
    чужого resource.
@@ -110,13 +112,16 @@ migrations. Это соответствует
 ### Share и revoke
 
 1. Grantor находит уже зарегистрированного User по verified email.
-2. Access проверяет, что grantor — owner либо имеет `full_access`, и что target
-   является разрешённым shareable root.
-3. Active grant создаётся идемпотентно с provenance grantor/timestamp.
+2. Access проверяет role actor, допустимый shareable root и ceiling: Owner
+   назначает Manager/Editor/Viewer, Manager — только Editor/Viewer.
+3. Active grant с выбранной role создаётся или обновляется идемпотентно с
+   provenance grantor/timestamp. Verified email обязан разрешаться однозначно.
 4. Revoke атомарно закрывает grant. Следующий query/mutation grantee больше не
    включает resource subtree.
-5. Project grant наследуется Tasks/Releases; SavedView grant всегда
-   пересекается с собственным authorization scope grantee.
+5. Project grant наследуется Tasks/Releases/project-scoped SavedViews. Direct
+   Task/global SavedView grant поддерживает только Editor/Viewer.
+6. Ownership transfer одним batch обновляет Project owner, отзывает grant нового
+   owner и создаёт прежнему owner grant Manager.
 
 ### Открытие view
 
@@ -252,8 +257,9 @@ saved-view query/display и полный provider metadata в `external_records`
   pagination, concurrency conflict и отсутствие cross-user data leakage.
 - Identity tests проверяют оба providers, forged headers/claims, explicit
   linking и отсутствие automatic email merge.
-- Access tests покрывают project inheritance, standalone Task, SavedView
-  intersection, re-share, revoke и owner implicit access.
+- Access tests покрывают role hierarchy/ceiling, viewer mutation denial,
+  project inheritance к Task/Release/scoped View, global View intersection,
+  revoke и atomic ownership transfer.
 - Admin tests покрывают allowlist normalization, отказ обычному User и
   registration/activity aggregates при изменении source counts.
 - Backup tests покрывают format/domain validation, identity continuity,

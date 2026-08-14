@@ -29,6 +29,13 @@
       "when": 1786717220148,
       "tag": "0003_green_white_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786719840124,
+      "tag": "0004_large_rocket_racer",
+      "breakpoints": true
     }
   ]
 }

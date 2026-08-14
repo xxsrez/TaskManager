@@ -297,21 +297,34 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .dialog-header h2 { margin: 0; font-size: 14px; font-weight: 570; }
 .form-stack { display: grid; gap: 13px; padding: 18px; }
 .form-stack label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 11px; }
-.form-stack input, .form-stack select, .share-input input { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; outline: 0; background: var(--surface-subtle); color: var(--text); }
-.form-stack input:focus, .form-stack select:focus, .share-input input:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
+.form-stack input, .form-stack select, .share-input input, .share-input select { width: 100%; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; outline: 0; background: var(--surface-subtle); color: var(--text); }
+.form-stack input:focus, .form-stack select:focus, .share-input input:focus, .share-input select:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
 .inline-note, .dialog-copy { margin: 0; padding: 0 18px 12px; color: var(--muted); font-size: 11px; }
 .view-summary { display: flex; gap: 6px; padding: 0 18px 17px; }
 .view-summary span { padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 10px; }
+.role-guide { display: grid; gap: 4px; padding: 0 18px 12px; color: var(--muted); font-size: 10px; }
+.role-guide b { color: var(--text-secondary); font-weight: 600; }
 .share-input { display: flex; gap: 7px; padding: 4px 18px 16px; }
 .share-input input { flex: 1; }
+.share-input select { width: 116px; }
 .access-list { border-top: 1px solid var(--border); padding: 8px 10px 13px; }
-.access-row { min-height: 44px; display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 8px; padding: 4px 7px; border-radius: 6px; }
+.access-row { min-height: 48px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 4px 7px; border-radius: 6px; }
 .access-row:hover { background: var(--hover); }
 .access-row > span:nth-child(2) { display: grid; line-height: 15px; }
 .access-row b { font-size: 12px; font-weight: 530; }
 .access-row small { color: var(--muted); font-size: 10px; }
 .access-row em { color: var(--muted); font-size: 10px; font-style: normal; }
 .access-row button { background: transparent; color: var(--danger); cursor: pointer; font-size: 11px; }
+.access-row select { min-width: 92px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); color: var(--text); font-size: 11px; padding: 0 7px; }
+.access-actions { display: flex; align-items: center; gap: 5px; }
+.access-actions button:first-child:not(:last-child) { color: var(--text-secondary); }
+.row-check-spacer { width: 20px; height: 20px; }
+.role-badge { border: 1px solid var(--border); border-radius: 999px; padding: 2px 7px; color: var(--muted); font-size: 10px; }
+.read-only-title { margin: 0; font-size: 24px; line-height: 1.25; }
+.read-only-description { min-height: 80px; white-space: pre-wrap; color: var(--text-secondary); line-height: 1.55; }
+.property-row.read-only { cursor: default; }
+.property-row.read-only b { color: var(--text); font-size: 12px; font-weight: 500; }
+.details-no-share .details-panel > header .button.ghost { display: none; }
 .modal.system-import-modal { width: min(540px, calc(100vw - 28px)); }
 .system-import-body { display: grid; gap: 15px; padding: 18px; }
 .system-import-body > p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 18px; }
@@ -551,6 +564,11 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .admin-surface { padding: 10px; }
   .admin-metrics { grid-template-columns: 1fr 1fr; }
   .admin-metric { min-height: 96px; padding: 12px; }
+  .share-input { display: grid; grid-template-columns: 1fr 106px; }
+  .share-input input { grid-column: 1 / -1; }
+  .share-input select { width: 100%; }
+  .access-row { grid-template-columns: 28px minmax(0, 1fr) auto; }
+  .access-row .access-actions { grid-column: 2 / -1; justify-content: flex-end; }
 }
 
 @media (prefers-reduced-motion: reduce) {

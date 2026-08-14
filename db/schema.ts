@@ -214,7 +214,10 @@ export const savedViews = sqliteTable(
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
-  (table) => [uniqueIndex("idx_saved_views_public_id").on(table.publicId)],
+  (table) => [
+    uniqueIndex("idx_saved_views_public_id").on(table.publicId),
+    index("idx_saved_views_scope_project").on(table.scopeProjectId),
+  ],
 );
 
 export const externalRecords = sqliteTable(
@@ -252,7 +255,7 @@ export const accessGrants = sqliteTable(
     ownerUserId: text("owner_user_id").notNull(),
     granteeUserId: text("grantee_user_id").notNull(),
     grantedByUserId: text("granted_by_user_id").notNull(),
-    permission: text("permission").notNull().default("full_access"),
+    permission: text("permission").notNull().default("viewer"),
     revokedAt: text("revoked_at"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
@@ -264,6 +267,9 @@ export const accessGrants = sqliteTable(
     ),
     index("idx_access_grants_grantee_active")
       .on(table.granteeUserId, table.resourceType, table.resourceId)
+      .where(sql`${table.revokedAt} IS NULL`),
+    index("idx_access_grants_owner_resource_active")
+      .on(table.ownerUserId, table.resourceType, table.resourceId)
       .where(sql`${table.revokedAt} IS NULL`),
   ],
 );

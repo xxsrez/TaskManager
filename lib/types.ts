@@ -6,6 +6,8 @@ export type StatusCategory =
   | "canceled";
 
 export type Priority = "urgent" | "high" | "medium" | "low" | "none";
+export type AccessRole = "owner" | "manager" | "editor" | "viewer";
+export type GrantRole = Exclude<AccessRole, "owner">;
 
 export type UserRecord = {
   id: string;
@@ -40,6 +42,7 @@ export type ProjectRecord = {
   version: number;
   createdAt: string;
   updatedAt: string;
+  accessRole: AccessRole;
 };
 
 export type ReleaseRecord = {
@@ -57,6 +60,7 @@ export type ReleaseRecord = {
   version: number;
   createdAt: string;
   updatedAt: string;
+  accessRole: AccessRole;
 };
 
 export type TaskRecord = {
@@ -84,6 +88,7 @@ export type TaskRecord = {
   version: number;
   createdAt: string;
   updatedAt: string;
+  accessRole: AccessRole;
 };
 
 export type LabelRecord = {
@@ -138,6 +143,7 @@ export type SavedViewRecord = {
   query: ViewQuery;
   display: ViewDisplay;
   version: number;
+  accessRole: AccessRole;
 };
 
 export type ViewQuery = {
@@ -166,6 +172,7 @@ export type CollaboratorRecord = {
   userId: string;
   displayName: string;
   email: string;
+  permission: GrantRole;
 };
 
 export type AdminUserActivityRecord = {

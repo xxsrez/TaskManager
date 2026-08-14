@@ -58,19 +58,28 @@ Application-level admin overview реализован отдельно от reso
 
 - Каждая задача имеет неизменяемый человекочитаемый идентификатор, заголовок и
   статус; остальные пользовательские поля опциональны.
-- Каждый user-owned resource или catalog record принадлежит одному
-  `owner_user_id`. Запрос или mutation разрешены только владельцу либо
-  пользователю с действующим `AccessGrant`.
-- Ресурс приватен по умолчанию. Единственная collaborator-permission в MVP —
-  `full_access`; она не меняет владельца и не может лишить владельца доступа.
-- Share проекта распространяется на его tasks и releases. Release отдельно не
-  шарится; задача внутри проекта доступна через grant проекта. SharedView не
-  расширяет доступ к данным, попадающим в его query.
+- Каждый Project имеет ровно одного current owner. Project роли — `owner`,
+  `manager`, `editor`, `viewer`; higher role включает полномочия lower role.
+  Owner implicit, остальные роли хранятся в действующем `AccessGrant`.
+- Ресурс приватен по умолчанию. Project grant распространяется на его tasks,
+  releases и SavedViews с явным `scope_project_id`; для этих child records
+  access определяется только через current Project owner/grant, а их
+  исторический `owner_user_id` не даёт implicit access.
+- Owner может назначать вплоть до manager и атомарно передать ownership уже
+  добавленному участнику; прежний owner становится manager. Manager управляет
+  только editor/viewer. Standalone Task и global SavedView поддерживают только
+  editor/viewer. Release отдельно не шарится.
+- Project-scoped SavedView жёстко ограничен своим Project. Global SavedView без
+  `scope_project_id` выполняется над ACL-пересечением всех доступных данных и не
+  становится project-scoped из-за обычного filter по Project.
 - Задача относится максимум к одному проекту и одному релизу.
 - Релиз всегда принадлежит проекту; релиз задачи обязан принадлежать тому же
   проекту, что и задача.
 - `completed_at` и `canceled_at` следуют категории статуса и меняются на
   сервере атомарно со статусом.
+- Viewer не может выполнять mutation; Editor может изменять content и
+  архивировать/восстанавливать; необратимый purge требует owner и отдельного
+  подтверждения.
 - Иерархия parent/subtask не может содержать циклы. Задача не может иметь
   отношение сама с собой.
 - Представление хранит запрос и параметры отображения, но не владеет задачами и

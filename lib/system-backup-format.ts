@@ -240,11 +240,11 @@ function validateRelationships(tables: BackupTables) {
   const releases = uniqueIndex(tables.releases, ["id"], "releases");
   uniqueIndex(tables.releases, ["public_id"], "release public IDs");
   for (const release of tables.releases) {
-    const project = requireReference(projects, release.project_id, "Release project");
+    requireReference(projects, release.project_id, "Release project");
+    requireReference(users, release.owner_user_id, "Release catalog owner");
     requireReference(users, release.creator_user_id, "Release creator");
     publicId(release.public_id, "Release public ID");
     boundedTitle(release.name, "Release name");
-    if (release.owner_user_id !== project.owner_user_id) throw new ValidationError("Release owner must match its project owner");
     oneOf(release.status, ["planned", "active", "released", "canceled"], "Release status");
     positiveVersion(release.version, "Release version");
   }
@@ -264,16 +264,16 @@ function validateRelationships(tables: BackupTables) {
     const status = requireReference(statuses, task.status_id, "Task status");
     if (status.owner_user_id !== task.owner_user_id) throw new ValidationError("Task status must belong to the task owner");
     const project = task.project_id === null ? null : requireReference(projects, task.project_id, "Task project");
-    if (project && project.owner_user_id !== task.owner_user_id) throw new ValidationError("Task project must belong to the task owner");
     if (task.release_id !== null) {
       const release = requireReference(releases, task.release_id, "Task release");
-      if (release.project_id !== task.project_id || release.owner_user_id !== task.owner_user_id) throw new ValidationError("Task release must belong to its project and owner");
+      if (release.project_id !== task.project_id) throw new ValidationError("Task release must belong to its project");
     }
     if (task.assignee_user_id !== null) {
       requireReference(users, task.assignee_user_id, "Task assignee");
       const accessType = project ? "project" : "task";
       const accessId = project ? project.id : task.id;
-      if (!hasAccess(activeGrants, task.assignee_user_id, task.owner_user_id, accessType, accessId)) {
+      const accessOwnerId = project ? project.owner_user_id : task.owner_user_id;
+      if (!hasAccess(activeGrants, task.assignee_user_id, accessOwnerId, accessType, accessId)) {
         throw new ValidationError("Task assignee must have access to the task");
       }
     }
@@ -322,8 +322,7 @@ function validateRelationships(tables: BackupTables) {
     publicId(view.public_id, "Saved view public ID");
     boundedTitle(view.name, "Saved view name");
     if (view.scope_project_id !== null) {
-      const project = requireReference(projects, view.scope_project_id, "Saved view project");
-      if (project.owner_user_id !== view.owner_user_id) throw new ValidationError("Saved view project must belong to its owner");
+      requireReference(projects, view.scope_project_id, "Saved view project");
     }
     jsonObject(view.query_json, "Saved view query");
     jsonObject(view.display_json, "Saved view display");
@@ -352,9 +351,15 @@ function validateRelationships(tables: BackupTables) {
     requireReference(users, grant.owner_user_id, "Grant owner");
     requireReference(users, grant.grantee_user_id, "Grant recipient");
     requireReference(users, grant.granted_by_user_id, "Grant author");
-    if (target.owner_user_id !== grant.owner_user_id || grant.grantee_user_id === grant.owner_user_id) throw new ValidationError("Grant owner/recipient is invalid");
+    const effectiveOwnerId = target.owner_user_id;
+    if (effectiveOwnerId !== grant.owner_user_id || grant.grantee_user_id === effectiveOwnerId) throw new ValidationError("Grant owner/recipient is invalid");
     if (grant.resource_type === "task" && target.project_id !== null) throw new ValidationError("Only standalone tasks can have direct grants");
-    if (grant.permission !== "full_access") throw new ValidationError("Unsupported grant permission");
+    if (grant.resource_type === "saved_view" && target.scope_project_id !== null) throw new ValidationError("Project-scoped views inherit project access");
+    const allowedPermissions =
+      grant.resource_type === "project"
+        ? ["manager", "editor", "viewer", "full_access"]
+        : ["editor", "viewer", "full_access"];
+    if (!allowedPermissions.includes(String(grant.permission))) throw new ValidationError("Unsupported grant permission");
   }
 }
 
