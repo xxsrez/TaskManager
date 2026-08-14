@@ -14,6 +14,9 @@
 erDiagram
     USER ||--o{ USER_IDENTITY : authenticates_with
     USER ||--o{ API_CREDENTIAL : authorizes_api
+    USER ||--o{ OAUTH_GRANT : authorizes_connector
+    OAUTH_GRANT ||--o{ OAUTH_ACCESS_TOKEN : issues
+    OAUTH_GRANT ||--o{ OAUTH_REFRESH_TOKEN : rotates
     USER ||--o{ TASK : owns
     USER ||--o{ PROJECT : owns
     USER ||--o{ SAVED_VIEW : owns
@@ -90,6 +93,21 @@ API credential не является `UserIdentity`, session, `AccessGrant` ил
 role. Scope разрешает тип API operation, но resource access всё равно
 вычисляется по owner/project/direct grants. Logical backup credential не
 переносит; full restore отзывает все tokens.
+
+## OAuth connector grant и tokens
+
+| Сущность | Семантика |
+|---|---|
+| `OAuthAuthorizationRequest` | Короткоживущий consent request: User, CIMD client, redirect, resource, scopes, state и PKCE challenge |
+| `OAuthGrant` | Отзываемая связь User ↔ client ↔ MCP resource с approved scopes и lifecycle metadata |
+| `OAuthAuthorizationCode` | Одноразовый hashed code, буквально связанный с client, redirect, resource и PKCE challenge |
+| `OAuthAccessToken` | Hashed bearer capability с коротким expiry, audience/resource и scopes |
+| `OAuthRefreshToken` | Hashed rotating token family с parent/used/revoked lifecycle для reuse detection |
+
+OAuth grant не является `UserIdentity` или `AccessGrant`: он разрешает client
+действовать как уже сопоставленный внутренний User, но каждый query/mutation
+по-прежнему вычисляет текущий resource ACL. Full restore удаляет grants, codes
+и tokens; logical backup их не переносит.
 
 ## Application administrator
 

@@ -1,8 +1,6 @@
 import type { ApiScope } from "./api-credential-crypto";
-import {
-  authenticateApiCredential,
-  type ApiCredentialContext,
-} from "./api-credentials";
+import type { AgentAuthorizationContext } from "./agent-api-context";
+import { authenticateAgentRequest } from "./agent-auth";
 import {
   AGENT_API_VERSION,
   AgentApiError,
@@ -14,6 +12,8 @@ import {
   PermissionError,
   ValidationError,
 } from "./domain";
+import { oauthProtectedResourceMetadataUrl } from "./oauth-contract";
+import { publicOrigin } from "./oauth";
 
 export type AgentApiPage = {
   nextCursor: string | null;
@@ -30,12 +30,12 @@ export async function withAgentApi<T>(
   request: Request,
   requiredScope: ApiScope,
   action: (
-    context: ApiCredentialContext,
+    context: AgentAuthorizationContext,
   ) => Promise<AgentApiResult<T>>,
 ): Promise<Response> {
   const requestId = `req_${crypto.randomUUID()}`;
   try {
-    const context = await authenticateApiCredential(request, requiredScope);
+    const context = await authenticateAgentRequest(request, requiredScope);
     const result = await action(context);
     return agentJson(
       {
@@ -67,10 +67,11 @@ export async function withAgentApi<T>(
       mapped.status,
       requestId,
     );
-    if (mapped.status === 401) {
+    if (mapped.status === 401 || mapped.code === "insufficient_scope") {
+      const error = mapped.status === 401 ? "invalid_token" : "insufficient_scope";
       response.headers.set(
         "WWW-Authenticate",
-        'Bearer realm="task-manager", error="invalid_token"',
+        `Bearer resource_metadata="${oauthProtectedResourceMetadataUrl(publicOrigin(request))}", scope="${requiredScope}", error="${error}"`,
       );
     }
     return response;

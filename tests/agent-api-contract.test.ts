@@ -90,4 +90,12 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     agentApiOpenApi.components.schemas.TaskUpdate.required,
     ["version"],
   );
+  assert.deepEqual(agentApiOpenApi.security, [
+    { oauth2: ["api:read"] },
+    { personalToken: [] },
+  ]);
+  assert.deepEqual(agentApiOpenApi.paths["/tasks"].post.security, [
+    { oauth2: ["api:write"] },
+    { personalToken: [] },
+  ]);
 });

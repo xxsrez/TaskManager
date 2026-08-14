@@ -108,6 +108,17 @@ export const liveTableDeleteOrder: BackupTableName[] = [
   "users",
 ];
 
+// Authentication capabilities are intentionally outside logical backups.
+// A full restore revokes them before replacing application data.
+export const authenticationCapabilityDeleteOrder = [
+  "oauth_authorization_requests",
+  "oauth_authorization_codes",
+  "oauth_access_tokens",
+  "oauth_refresh_tokens",
+  "oauth_grants",
+  "api_credentials",
+] as const;
+
 export function restoreInsertSql(table: TableDefinition): string {
   const extracts = table.columns
     .map((column) => `json_extract(row_json, '$.${column}')`)

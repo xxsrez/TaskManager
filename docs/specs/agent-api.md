@@ -6,8 +6,8 @@
 
 ## 1. Назначение и граница
 
-Task Manager предоставляет самостоятельный versioned HTTP API, через который
-обычный HTTPS client может без Web UI:
+Task Manager предоставляет самостоятельный versioned data plane, через который
+обычный HTTPS client или native MCP connector может без Web UI:
 
 - получить карту доступной работы и каталог workflow statuses;
 - найти проекты и готовящиеся релизы;
@@ -21,18 +21,21 @@ API не является обёрткой над `/api/bootstrap`: list queries
 
 Administration, system backup/restore, sharing, ownership transfer, настройка
 workflow и управление credentials во внешний API не входят. Это control-plane,
-а не task-oriented operations. Специализированные клиенты поверх API также не
-входят в текущий scope.
+а не task-oriented operations. В текущий scope входит один официальный Task
+Manager plugin/skill для Codex и ChatGPT.
 
-Решение о transport, credential boundary и write scope зафиксировано в
-[ADR-0006](../decisions/0006-standalone-agent-api.md).
+REST/write boundary зафиксирован в
+[ADR-0006](../decisions/0006-standalone-agent-api.md), OAuth/MCP delivery — в
+[ADR-0008](../decisions/0008-oauth-mcp-connector.md).
 
 ## 2. Архитектура и progressive disclosure
 
 ```mermaid
 flowchart LR
-    C["HTTP client"] --> R["REST /api/agent/v1"]
-    R --> I["Bearer credential и scopes"]
+    C["Codex / ChatGPT"] --> M["Remote MCP /api/mcp"]
+    H["HTTP client"] --> R["REST /api/agent/v1"]
+    M --> I["OAuth token и scopes"]
+    R --> I
     I --> Q["ACL-scoped query/command service"]
     Q --> D["Domain repositories"]
     D --> DB[("Sites D1")]
@@ -47,27 +50,42 @@ flowchart LR
 - Большой imported archive читается отдельным paginated endpoint.
 - `fields=*` и `include=description` не поддерживаются и отклоняются.
 
-## 3. Authentication и credentials
+## 3. Authentication, OAuth и credentials
 
-Data plane принимает только:
+Основной connector flow:
 
-```http
-Authorization: Bearer tm_pat_...
-```
+1. Client читает Protected Resource Metadata для `https://<site>/api/mcp` и
+   Authorization Server Metadata на том же site origin.
+2. Client публикует HTTPS Client ID Metadata Document (CIMD), генерирует PKCE
+   S256 и передаёт точный `resource=https://<site>/api/mcp`.
+3. `/oauth/authorize` использует Sites `Sign in with ChatGPT`, показывает
+   consent и выдаёт одноразовый authorization code.
+4. `/oauth/token` проверяет client ID, redirect, resource и verifier, затем
+   возвращает непрозрачные access/refresh tokens.
+5. MCP принимает `Authorization: Bearer tm_oat_...`, повторно проверяет expiry,
+   revoke, resource audience и scopes до создания tool context.
 
 Sites browser cookie и `oai-authenticated-user-*` headers не являются API
-authentication. После получения token все `/api/agent/v1` operations работают
-независимо от Web UI и browser session.
+authentication от client. Они доверяются только authorization endpoint на
+server boundary и сопоставляют OAuth grant тому же внутреннему User, что UI.
 
-Personal token:
+OAuth lifecycle:
 
-- создаётся самим authenticated User и показывается только один раз;
-- хранится в D1 только как SHA-256 hash и безопасный prefix;
-- имеет `api:read` и, при явном запросе, `api:write`;
+- authorization request — 10 минут, code — 5 минут, access token — 15 минут;
+- refresh token — до 30 дней с rotation; reuse старого refresh token отзывает
+  всю token family и grant;
+- поддерживаются scopes `api:read` и `api:write`; write автоматически включает
+  read;
+- token/code/refresh secrets сохраняются только как SHA-256 hashes;
+- client secret, implicit flow и password grant не поддерживаются;
+- CIMD origin разрешается server allowlist, redirect должен совпасть буквально.
+
+Personal token `tm_pat_...` сохранён для scripts, local smoke и REST clients:
+
+- создаётся authenticated User и показывается только один раз;
+- хранится как SHA-256 hash и безопасный prefix;
 - по умолчанию действует 90 дней, допустимый срок — 1–365 дней;
-- повторно применяет owner/ACL scope на каждом request;
-- revoke прекращает следующий request;
-- не наследует application-admin capability.
+- повторно применяет owner/ACL scope и не наследует admin capability.
 
 Browser-authenticated control plane, не входящий во внешний OpenAPI contract:
 
@@ -76,9 +94,12 @@ Browser-authenticated control plane, не входящий во внешний O
 | `GET /api/settings/api-credentials` | Metadata личных credentials без token/hash |
 | `POST /api/settings/api-credentials` | Выдать token: `name`, `scopes`, `expiresInDays` |
 | `DELETE /api/settings/api-credentials/{id}` | Отозвать личный token |
+| `GET /api/settings/oauth-connections` | Активные OAuth grants без secrets |
+| `DELETE /api/settings/oauth-connections/{id}` | Отозвать grant и его tokens |
 
-Logical backup не переносит credentials. Full restore атомарно отзывает все
-tokens, чтобы authentication capability не пережила замену identity/data state.
+Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
+restore атомарно отзывает все authentication capabilities, чтобы они не
+пережили замену identity/data state.
 
 ## 4. References
 
@@ -114,7 +135,33 @@ Project/Release endpoints read-only: они нужны для ориентаци
 SavedViews не входят в v1; task query принимает явные filters и не зависит от
 UI display configuration.
 
-### 5.1 Pagination и envelope
+### 5.1 Remote MCP connector
+
+Endpoint: `/api/mcp` (Streamable HTTP; stateless compatibility для актуальных
+protocol revisions).
+
+| Tool | Scope | Назначение |
+|---|---|---|
+| `get_workspace` | `api:read` | User, capabilities, counts и status catalog |
+| `list_projects`, `get_project` | `api:read` | Найти Project, releases и допустимые statuses |
+| `list_releases`, `get_release` | `api:read` | Найти Release и его task scope |
+| `list_tasks` | `api:read` | Все доступные Tasks или filters Project/Release/status/priority/assignee/search |
+| `get_task` | `api:read` | Полный контекст выбранной Task и актуальная version |
+| `get_task_external_context` | `api:read` | Отдельный paginated imported archive |
+| `create_task` | `api:write` | Создать Task по canonical refs |
+| `update_task` | `api:write` | Изменить Task с optimistic version |
+
+Рекомендуемый agent flow: `get_workspace` → разрешить Project/Release через
+list/get → вызвать compact `list_tasks` → выбрать candidate → `get_task` → при
+явном намерении пользователя create/update. Если пользователь просит «все» и
+`hasMore=true`, agent продолжает с `nextCursor`; иначе не загружает страницы
+без необходимости.
+
+Каждый tool публикует read/write annotations и OAuth security metadata. При
+недостаточном scope write tool возвращает `mcp/www_authenticate`, чтобы client
+мог повторно запустить Connect flow с `api:write`.
+
+### 5.2 Pagination и envelope
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
 External context имеет maximum `100`. Cursor связан с filters, sort и limit;
@@ -135,7 +182,7 @@ cursor другого query отклоняется.
 Data responses используют `Cache-Control: private, no-store` и
 `X-Request-Id`.
 
-### 5.2 Filters
+### 5.3 Filters
 
 `GET /tasks` поддерживает:
 
@@ -159,13 +206,15 @@ compact project/release/assignee/labels, dueDate, updatedAt, version и
 `TaskDetail` добавляет description, estimate, rank, lifecycle timestamps,
 access role/canEdit, расширенный project/release context, parent, subtasks,
 relations и provenance counts. Comment bodies и attachment URLs остаются в
-`/external-context`.
+`/external-context`. Detail также возвращает `availableStatuses`, валидные для
+изменения именно этой Task.
 
 `ProjectSummary` возвращает name, summary, status, dates, task counts,
 progress, release count, updatedAt и version. Detail добавляет description и
 compact releases. `ReleaseSummary` возвращает project, name, status, dates,
 task counts, progress, updatedAt и version; detail добавляет description и
-release notes. Задачи release читаются через
+release notes. Project/Release detail возвращают `workflowStatuses`, валидные
+для создания Task в этом scope. Задачи release читаются через
 `GET /tasks?release_ref=...`.
 
 ## 7. Task commands
@@ -217,7 +266,7 @@ Codes: `unauthenticated`, `insufficient_scope`, `invalid_argument`,
 
 Authorization invariants:
 
-1. Credential сопоставляется внутреннему User до data query.
+1. OAuth grant или personal credential сопоставляется внутреннему User до data query.
 2. ACL применяется до filters, pagination, counts, ambiguity и relations.
 3. Project roles распространяются на Tasks/Releases как в UI; standalone Task
    использует owner/direct grant.
@@ -235,14 +284,18 @@ Authorization invariants:
 
 Обязательные сценарии:
 
-1. Read/write token выполняет `workspace → create → compact search → detail →
+1. OAuth Connect выполняет `workspace → create → compact search → detail →
    status update` без Sites headers.
 2. Marker из description отсутствует в list и появляется только в detail.
 3. Status transition меняет timestamps/version; stale version даёт `409`.
-4. Read-only и revoked/expired token получают соответственно `403` и `401`.
+4. Read-only и revoked/expired token получают соответственно `403` и `401`;
+   refresh rotation не допускает reuse.
 5. Owner/Editor/Viewer и post-revoke access совпадают с UI.
 6. Project/release filters не раскрывают недоступный resource.
-7. Full restore отзывает credentials, не включая token/hash в backup.
+7. Full restore отзывает personal/OAuth capabilities, не включая secrets или
+   hashes в backup.
+8. MCP `tools/list` показывает только task-oriented surface; `list_tasks`
+   фильтрует по Project и Release, сохраняет compact/detail boundary и cursor.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются
 проверенными локальной реализацией.

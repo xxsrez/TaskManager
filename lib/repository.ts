@@ -104,6 +104,93 @@ const schemaStatements = [
     ON api_credentials(token_hash)`,
   `CREATE INDEX IF NOT EXISTS idx_api_credentials_owner_active
     ON api_credentials(owner_user_id, revoked_at)`,
+  `CREATE TABLE IF NOT EXISTS oauth_authorization_requests (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    state TEXT,
+    code_challenge TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_oauth_auth_requests_expires
+    ON oauth_authorization_requests(expires_at)`,
+  `CREATE TABLE IF NOT EXISTS oauth_grants (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_grants_owner_client_resource
+    ON oauth_grants(owner_user_id, client_id, resource)`,
+  `CREATE INDEX IF NOT EXISTS idx_oauth_grants_owner_active
+    ON oauth_grants(owner_user_id, revoked_at)`,
+  `CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
+    id TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    grant_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    redirect_uri TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    code_challenge TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_auth_codes_hash
+    ON oauth_authorization_codes(code_hash)`,
+  `CREATE INDEX IF NOT EXISTS idx_oauth_auth_codes_expires
+    ON oauth_authorization_codes(expires_at)`,
+  `CREATE TABLE IF NOT EXISTS oauth_access_tokens (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL,
+    grant_id TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_access_tokens_hash
+    ON oauth_access_tokens(token_hash)`,
+  `CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_grant_active
+    ON oauth_access_tokens(grant_id, revoked_at)`,
+  `CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
+    id TEXT PRIMARY KEY,
+    token_hash TEXT NOT NULL,
+    grant_id TEXT NOT NULL,
+    family_id TEXT NOT NULL,
+    parent_id TEXT,
+    owner_user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    scopes_json TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash
+    ON oauth_refresh_tokens(token_hash)`,
+  `CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_family
+    ON oauth_refresh_tokens(family_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_grant_active
+    ON oauth_refresh_tokens(grant_id, revoked_at)`,
   `CREATE TABLE IF NOT EXISTS workflow_statuses (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,

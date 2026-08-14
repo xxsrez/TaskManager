@@ -4,6 +4,10 @@
 
 Дата решения: 2026-08-14
 
+Дополнение: authentication и connector transport расширены
+[ADR-0008](0008-oauth-mcp-connector.md). Personal bearer token сохранён для
+scripts, но основной Codex/ChatGPT flow теперь использует OAuth + remote MCP.
+
 ## Контекст
 
 Web UI использует Sites-authenticated JSON routes и полный

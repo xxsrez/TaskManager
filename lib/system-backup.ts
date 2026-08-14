@@ -11,6 +11,7 @@ import { getD1 } from "@/db";
 import { ensureDatabase } from "./repository";
 import {
   assertBackupContainsIdentity,
+  authenticationCapabilityDeleteOrder,
   createSystemBackup,
   liveTableDeleteOrder,
   normalizeDbRow,
@@ -102,10 +103,12 @@ export async function applySystemBackup(
   if (!session) throw new ValidationError("Staged backup is missing, expired, or belongs to another administrator");
 
   const statements: D1PreparedStatement[] = [];
-  // API credentials are deliberately excluded from logical backups. A full
-  // restore revokes them instead of carrying authentication capabilities into
-  // the restored state.
-  statements.push(db.prepare("DELETE FROM api_credentials"));
+  // OAuth grants/tokens and personal API credentials are deliberately excluded
+  // from logical backups. A full restore revokes every authentication
+  // capability instead of carrying it into the restored state.
+  for (const table of authenticationCapabilityDeleteOrder) {
+    statements.push(db.prepare(`DELETE FROM ${table}`));
+  }
   for (const table of liveTableDeleteOrder) statements.push(db.prepare(`DELETE FROM ${table}`));
   for (const table of tableDefinitions) {
     statements.push(

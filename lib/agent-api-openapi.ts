@@ -42,10 +42,10 @@ export const agentApiOpenApi = {
     title: "Task Manager Agent API",
     version: "1.0.0",
     description:
-      "Standalone bearer-token API for compact task discovery and task execution. Administrative, backup, sharing, and credential-management operations are intentionally absent.",
+      "OAuth-first API for compact task discovery and task execution. Personal tokens remain available for development and scripts. Administrative, backup, sharing, and credential-management operations are intentionally absent.",
   },
   servers: [{ url: "/api/agent/v1" }],
-  security: [{ bearerAuth: [] }],
+  security: [{ oauth2: ["api:read"] }, { personalToken: [] }],
   paths: {
     "/workspace": {
       get: {
@@ -177,6 +177,7 @@ export const agentApiOpenApi = {
       post: {
         operationId: "createTask",
         summary: "Create a task using canonical project, release, and status refs",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         requestBody: jsonRequest("#/components/schemas/TaskCreate"),
         responses: {
           "201": envelopeResponse("Created task", {
@@ -201,6 +202,7 @@ export const agentApiOpenApi = {
       patch: {
         operationId: "updateTask",
         summary: "Update or move a task with optimistic version checking",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter()],
         requestBody: jsonRequest("#/components/schemas/TaskUpdate"),
         responses: {
@@ -236,7 +238,21 @@ export const agentApiOpenApi = {
   },
   components: {
     securitySchemes: {
-      bearerAuth: { type: "http", scheme: "bearer", bearerFormat: "tm_pat" },
+      oauth2: {
+        type: "oauth2",
+        flows: {
+          authorizationCode: {
+            authorizationUrl: "/oauth/authorize",
+            tokenUrl: "/oauth/token",
+            refreshUrl: "/oauth/token",
+            scopes: {
+              "api:read": "Read accessible tasks, projects, releases, and catalogs",
+              "api:write": "Create and update accessible tasks",
+            },
+          },
+        },
+      },
+      personalToken: { type: "http", scheme: "bearer", bearerFormat: "tm_pat" },
     },
     responses: {
       Error: {
@@ -339,6 +355,10 @@ export const agentApiOpenApi = {
           subtasks: { type: "array", items: { type: "object" } },
           relations: { type: "array", items: { type: "object" } },
           provenance: { type: ["object", "null"] },
+          availableStatuses: {
+            type: "array",
+            items: { $ref: "#/components/schemas/StatusSummary" },
+          },
         },
         additionalProperties: true,
       },
@@ -368,6 +388,10 @@ export const agentApiOpenApi = {
           description: { type: "string" },
           startDate: { type: ["string", "null"] },
           releases: { type: "array", items: { type: "object" } },
+          workflowStatuses: {
+            type: "array",
+            items: { $ref: "#/components/schemas/StatusSummary" },
+          },
         },
         additionalProperties: true,
       },
@@ -397,6 +421,10 @@ export const agentApiOpenApi = {
           description: { type: "string" },
           releaseNotes: { type: "string" },
           createdAt: { type: "string" },
+          workflowStatuses: {
+            type: "array",
+            items: { $ref: "#/components/schemas/StatusSummary" },
+          },
         },
         additionalProperties: true,
       },

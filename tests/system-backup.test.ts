@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   assertBackupContainsIdentity,
+  authenticationCapabilityDeleteOrder,
   createSystemBackup,
   liveTableDeleteOrder,
   restoreInsertSql,
@@ -117,6 +118,7 @@ test("staged restore SQL replaces every live table on the current schema", () =>
   assert.equal(database.prepare("SELECT display_name FROM users WHERE id = 'old-user'").get()!.display_name, "Old state");
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM tasks").get()!.count, 0);
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM api_credentials").get()!.count, 1);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM oauth_grants").get()!.count, 1);
 
   applyStagedTables(database, importId);
 
@@ -125,6 +127,9 @@ test("staged restore SQL replaces every live table on the current schema", () =>
   assert.equal(database.prepare("SELECT title FROM tasks WHERE id = 'task-1'").get()!.title, "Ship backup support");
   assert.equal(database.prepare("SELECT permission FROM access_grants WHERE id = 'grant-1'").get()!.permission, "full_access");
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM api_credentials").get()!.count, 0);
+  for (const table of authenticationCapabilityDeleteOrder) {
+    assert.equal(database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()!.count, 0);
+  }
   database.close();
 });
 
@@ -139,6 +144,7 @@ test("restore SQL rolls back deletion if any staged insert fails", () => {
   assert.equal(database.prepare("SELECT display_name FROM users WHERE id = 'old-user'").get()!.display_name, "Old state");
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM tasks").get()!.count, 0);
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM api_credentials").get()!.count, 1);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM oauth_grants").get()!.count, 1);
   database.close();
 });
 
@@ -356,6 +362,7 @@ function migratedDatabase() {
     "0004_large_rocket_racer.sql",
     "0005_mixed_bruce_banner.sql",
     "0006_complex_reavers.sql",
+    "0007_curious_sharon_carter.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }
@@ -379,6 +386,33 @@ function insertOldState(database: DatabaseSync) {
     '["api:read"]',
     "2027-08-14T00:00:00.000Z",
   );
+  database.prepare(
+    `INSERT INTO oauth_grants
+      (id, owner_user_id, client_id, client_name, resource, scopes_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "oauth-grant-old",
+    "old-user",
+    "https://chatgpt.com/client.json",
+    "Codex Desktop",
+    "https://tasks.example.test/api/mcp",
+    '["api:read"]',
+  );
+  database.prepare(
+    `INSERT INTO oauth_access_tokens
+      (id, token_hash, grant_id, owner_user_id, client_id, resource,
+       scopes_json, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    "oauth-access-old",
+    "oauth-access-hash",
+    "oauth-grant-old",
+    "old-user",
+    "https://chatgpt.com/client.json",
+    "https://tasks.example.test/api/mcp",
+    '["api:read"]',
+    "2027-08-14T00:00:00.000Z",
+  );
 }
 
 function stageTables(database: DatabaseSync, tables: BackupTables) {
@@ -397,7 +431,9 @@ function stageTables(database: DatabaseSync, tables: BackupTables) {
 function applyStagedTables(database: DatabaseSync, importId: string) {
   database.exec("BEGIN");
   try {
-    database.exec("DELETE FROM api_credentials");
+    for (const table of authenticationCapabilityDeleteOrder) {
+      database.exec(`DELETE FROM ${table}`);
+    }
     for (const table of liveTableDeleteOrder) database.exec(`DELETE FROM ${table}`);
     for (const table of tableDefinitions) {
       database.prepare(restoreInsertSql(table)).run(importId, table.name);

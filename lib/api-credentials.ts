@@ -7,6 +7,7 @@ import {
   parseStoredApiScopes,
   type ApiScope,
 } from "./api-credential-crypto";
+import type { AgentAuthorizationContext } from "./agent-api-context";
 import { AgentApiError } from "./agent-api-contract";
 import { NotFoundError, ValidationError } from "./domain";
 import { ensureDatabase } from "./repository";
@@ -23,12 +24,6 @@ export type ApiCredentialSummary = {
   lastUsedAt: string | null;
   revokedAt: string | null;
   createdAt: string;
-};
-
-export type ApiCredentialContext = {
-  credentialId: string;
-  scopes: ApiScope[];
-  user: UserRecord;
 };
 
 export async function issueApiCredential(
@@ -123,9 +118,23 @@ export async function revokeApiCredential(
 export async function authenticateApiCredential(
   request: Request,
   requiredScope: ApiScope,
-): Promise<ApiCredentialContext> {
+): Promise<AgentAuthorizationContext> {
   const token = apiTokenFromAuthorization(request.headers.get("authorization"));
-  if (!token || !token.startsWith("tm_pat_")) {
+  if (!token) {
+    throw new AgentApiError(
+      "unauthenticated",
+      "A valid bearer API token is required",
+      401,
+    );
+  }
+  return authenticatePersonalApiToken(token, requiredScope);
+}
+
+export async function authenticatePersonalApiToken(
+  token: string,
+  requiredScope?: ApiScope,
+): Promise<AgentAuthorizationContext> {
+  if (!token.startsWith("tm_pat_")) {
     throw new AgentApiError(
       "unauthenticated",
       "A valid bearer API token is required",
@@ -137,7 +146,7 @@ export async function authenticateApiCredential(
   const tokenHash = await hashApiToken(token);
   const row = await getD1()
     .prepare(
-      `SELECT c.id AS credential_id, c.scopes_json,
+      `SELECT c.id AS credential_id, c.scopes_json, c.expires_at,
               u.id, u.display_name, u.email, u.timezone
        FROM api_credentials c
        JOIN users u ON u.id = c.owner_user_id
@@ -156,7 +165,7 @@ export async function authenticateApiCredential(
   }
 
   const scopes = parseStoredApiScopes(row.scopes_json);
-  if (!scopes.includes(requiredScope)) {
+  if (requiredScope && !scopes.includes(requiredScope)) {
     throw new AgentApiError(
       "insufficient_scope",
       `The API token requires ${requiredScope}`,
@@ -175,7 +184,9 @@ export async function authenticateApiCredential(
     .run();
 
   return {
-    credentialId: String(row.credential_id),
+    authorizationId: String(row.credential_id),
+    authorizationType: "personal_token",
+    clientId: "task-manager-personal-token",
     scopes,
     user: {
       id: String(row.id),
@@ -183,6 +194,10 @@ export async function authenticateApiCredential(
       email: String(row.email),
       timezone: String(row.timezone),
     },
+    expiresAt: row.expires_at
+      ? Math.floor(new Date(String(row.expires_at)).getTime() / 1000)
+      : null,
+    resource: null,
   };
 }
 

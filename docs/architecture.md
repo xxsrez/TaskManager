@@ -58,7 +58,7 @@ migrations. Это соответствует
 | Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
 | Administration | Server allowlist, content-free overview и explicit full-state backup/restore |
 | Portability | Owner Project bundles, validation/preview и atomic exact restore |
-| Agent API | Compact/detail projections, pagination, versioned REST и API credential scopes |
+| Agent API | Compact/detail projections, versioned REST, remote MCP и OAuth/personal credential scopes |
 | UI shell | Linear-like navigation, shared controls, keyboard, themes и state |
 
 Модули — границы кода внутри одного приложения, а не отдельные сервисы. Для MVP
@@ -141,20 +141,24 @@ migrations. Это соответствует
 
 ### Чтение и task commands через agent API
 
-1. HTTP route проверяет отдельную API credential и сопоставляет её
-   внутреннему User; browser headers нельзя синтезировать client-side.
+1. Codex/ChatGPT подключается к `/api/mcp` через OAuth Authorization Code +
+   PKCE/CIMD; scripts могут использовать переходную personal API credential.
+   Оба способа сопоставляются внутреннему User до data query; browser headers
+   нельзя синтезировать client-side.
 2. Agent query service применяет тот же ownership/ACL predicate до filters,
    counts, ambiguity resolution и cursor pagination.
 3. Collection use case строит фиксированный compact projection без description,
    comments, attachments, internal IDs и user emails.
 4. Detail use case по canonical `public_id` загружает одну сущность; большой
    imported archive остаётся отдельным paginated вызовом.
-5. REST возвращает versioned schema и request/as-of metadata. Любой client
-   переходит от summary к detail только через явный отдельный запрос.
+5. REST возвращает versioned schema и request/as-of metadata. MCP публикует
+   task-oriented tools с теми же projections. Любой client переходит от summary
+   к detail только через явный отдельный запрос.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в
-[ADR-0006](decisions/0006-standalone-agent-api.md). Task commands транслируют
+[ADR-0006](decisions/0006-standalone-agent-api.md), а OAuth/MCP delivery — в
+[ADR-0008](decisions/0008-oauth-mcp-connector.md). Task commands транслируют
 external refs во внутренние IDs и вызывают те же domain repository methods с
 role checks, release/project validation и optimistic version.
 
@@ -343,9 +347,10 @@ saved-view query/display и полный provider metadata в `external_records`
 - Если agent API не отделить от UI snapshot, рост descriptions/imported archive
   создаст большой token и privacy blast radius. Summary/detail boundary должна
   проверяться schema и integration tests, а не только дисциплиной клиента.
-- API token добавляет новую identity boundary. Нельзя считать
+- OAuth/token connector добавляет новую identity boundary. Нельзя считать
   Sites browser session переносимой во внешний client или выдавать API
-  credential implicit admin access.
+  credential implicit admin access. CIMD, exact redirect/resource, PKCE,
+  expiry, refresh rotation и revoke должны проверяться server-side.
 - Ошибка в role ceiling увеличивает blast radius grant; server-side hierarchy,
   provenance и быстрый revoke обязательны.
 - Sites contract сегодня даёт ChatGPT identity через email/name headers, а не
@@ -371,5 +376,6 @@ saved-view query/display и полный provider metadata в `external_records`
 3. UX explicit linking/unlinking providers и смены primary email.
 4. Порог перехода snapshot API к cursor pagination и точечным responses.
 5. Политика immutability released scope и нормализация manual ranks.
-6. Server-side idempotency task create, bulk command contract, rate limits и
-   retention API audit events.
+6. Server-side idempotency task create, bulk command contract, OAuth/API rate
+   limits, retention audit events и критерии перехода на managed IdP перед
+   публичным каталогом.

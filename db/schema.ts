@@ -55,6 +55,124 @@ export const apiCredentials = sqliteTable(
   ],
 );
 
+export const oauthAuthorizationRequests = sqliteTable(
+  "oauth_authorization_requests",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    clientId: text("client_id").notNull(),
+    clientName: text("client_name").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    resource: text("resource").notNull(),
+    scopesJson: text("scopes_json").notNull(),
+    state: text("state"),
+    codeChallenge: text("code_challenge").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("idx_oauth_auth_requests_expires").on(table.expiresAt)],
+);
+
+export const oauthGrants = sqliteTable(
+  "oauth_grants",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    clientId: text("client_id").notNull(),
+    clientName: text("client_name").notNull(),
+    resource: text("resource").notNull(),
+    scopesJson: text("scopes_json").notNull(),
+    lastUsedAt: text("last_used_at"),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_oauth_grants_owner_client_resource").on(
+      table.ownerUserId,
+      table.clientId,
+      table.resource,
+    ),
+    index("idx_oauth_grants_owner_active").on(
+      table.ownerUserId,
+      table.revokedAt,
+    ),
+  ],
+);
+
+export const oauthAuthorizationCodes = sqliteTable(
+  "oauth_authorization_codes",
+  {
+    id: text("id").primaryKey(),
+    codeHash: text("code_hash").notNull(),
+    grantId: text("grant_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    clientId: text("client_id").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    resource: text("resource").notNull(),
+    scopesJson: text("scopes_json").notNull(),
+    codeChallenge: text("code_challenge").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    consumedAt: text("consumed_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_oauth_auth_codes_hash").on(table.codeHash),
+    index("idx_oauth_auth_codes_expires").on(table.expiresAt),
+  ],
+);
+
+export const oauthAccessTokens = sqliteTable(
+  "oauth_access_tokens",
+  {
+    id: text("id").primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    grantId: text("grant_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    clientId: text("client_id").notNull(),
+    resource: text("resource").notNull(),
+    scopesJson: text("scopes_json").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    lastUsedAt: text("last_used_at"),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_oauth_access_tokens_hash").on(table.tokenHash),
+    index("idx_oauth_access_tokens_grant_active").on(
+      table.grantId,
+      table.revokedAt,
+    ),
+  ],
+);
+
+export const oauthRefreshTokens = sqliteTable(
+  "oauth_refresh_tokens",
+  {
+    id: text("id").primaryKey(),
+    tokenHash: text("token_hash").notNull(),
+    grantId: text("grant_id").notNull(),
+    familyId: text("family_id").notNull(),
+    parentId: text("parent_id"),
+    ownerUserId: text("owner_user_id").notNull(),
+    clientId: text("client_id").notNull(),
+    resource: text("resource").notNull(),
+    scopesJson: text("scopes_json").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+    revokedAt: text("revoked_at"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_oauth_refresh_tokens_hash").on(table.tokenHash),
+    index("idx_oauth_refresh_tokens_family").on(table.familyId),
+    index("idx_oauth_refresh_tokens_grant_active").on(
+      table.grantId,
+      table.revokedAt,
+    ),
+  ],
+);
+
 export const workflowStatuses = sqliteTable(
   "workflow_statuses",
   {

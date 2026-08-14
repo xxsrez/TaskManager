@@ -10,7 +10,7 @@ import {
 } from "./agent-api-contract";
 import { NotFoundError, ValidationError } from "./domain";
 import { createTask, updateTask } from "./repository";
-import type { ApiCredentialContext } from "./api-credentials";
+import type { AgentAuthorizationContext } from "./agent-api-context";
 import type { AccessRole, UserRecord } from "./types";
 
 type DbRow = Record<string, unknown>;
@@ -206,11 +206,12 @@ export async function getAgentTaskDetail(
 ) {
   const row = await loadAccessibleTaskRow(currentUser.id, reference);
   const summary = await mapTaskSummary(row, currentUser);
-  const [parent, subtasks, relations, provenance] = await Promise.all([
+  const [parent, subtasks, relations, provenance, availableStatuses] = await Promise.all([
     loadParentTask(currentUser, nullableString(row.parent_task_id)),
     loadSubtasks(currentUser, String(row.id)),
     loadRelations(currentUser, String(row.id)),
     loadProvenanceSummary(String(row.id), String(row.owner_user_id)),
+    loadStatusSummaries(String(row.owner_user_id)),
   ]);
   return {
     ...summary,
@@ -251,6 +252,7 @@ export async function getAgentTaskDetail(
     subtasks,
     relations,
     provenance,
+    availableStatuses,
   };
 }
 
@@ -341,17 +343,20 @@ export async function getAgentProjectDetail(
   reference: string,
 ) {
   const project = await loadAccessibleProjectRow(currentUser.id, reference, true);
-  const releases = await getD1()
-    .prepare(
-      `SELECT r.* FROM releases r
+  const [releases, workflowStatuses] = await Promise.all([
+    getD1()
+      .prepare(
+        `SELECT r.* FROM releases r
        WHERE r.project_id = ?
        ORDER BY CASE r.status
          WHEN 'active' THEN 0 WHEN 'planned' THEN 1
          WHEN 'released' THEN 2 ELSE 3 END,
          COALESCE(r.target_date, '9999-12-31'), r.name`,
-    )
-    .bind(project.id)
-    .all<DbRow>();
+      )
+      .bind(project.id)
+      .all<DbRow>(),
+    loadStatusSummaries(String(project.owner_user_id)),
+  ]);
   return {
     ...mapProjectSummary(project),
     description: String(project.description ?? ""),
@@ -364,6 +369,7 @@ export async function getAgentProjectDetail(
       releasedAt: nullableString(row.released_at),
       version: Number(row.version),
     })),
+    workflowStatuses,
   };
 }
 
@@ -425,11 +431,12 @@ export async function getAgentReleaseDetail(
     description: String(release.description ?? ""),
     releaseNotes: String(release.release_notes ?? ""),
     createdAt: String(release.created_at),
+    workflowStatuses: await loadStatusSummaries(String(release.owner_user_id)),
   };
 }
 
 export async function getAgentWorkspace(
-  context: ApiCredentialContext,
+  context: AgentAuthorizationContext,
 ) {
   const user = context.user;
   const [taskCounts, projectCount, releaseCount, statuses] = await Promise.all([
@@ -887,6 +894,17 @@ async function mapStatusSummary(row: DbRow) {
     position: Number(row.position),
     isDefault: Boolean(row.is_default),
   };
+}
+
+async function loadStatusSummaries(ownerUserId: string) {
+  const rows = await getD1()
+    .prepare(
+      `SELECT * FROM workflow_statuses
+       WHERE owner_user_id = ? ORDER BY position, name`,
+    )
+    .bind(ownerUserId)
+    .all<DbRow>();
+  return Promise.all(rows.results.map(mapStatusSummary));
 }
 
 function taskCategoryCounts(projectExpression: string, releaseExpression?: string) {

@@ -30,11 +30,13 @@
     — bearer credentials, compact/detail REST и task-only write scope.
 12. [ADR-0007: Project backup](decisions/0007-project-backup.md)
     — owner-only logical bundle, staged preview и atomic exact restore.
-13. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+13. [ADR-0008: OAuth-first MCP connector](decisions/0008-oauth-mcp-connector.md)
+    — native Connect flow, PKCE/CIMD, remote MCP tools и отдельный marketplace.
+14. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-14. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+15. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-15. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+16. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -62,12 +64,14 @@ authentication через ChatGPT или Google, project roles и ownership tran
 [ADR-0002](decisions/0002-linear-interface-parity.md) принят интерфейсный
 паритет с Linear для всех функций в scope; точные UI contracts остаются
 `Proposed` в [спецификации интерфейса](specs/interface.md).
-Agent-facing HTTP API реализован отдельно от UI: bearer credentials,
+Agent-facing data plane реализован отдельно от UI: OAuth-first remote MCP,
+переходные personal bearer credentials,
 workspace/project/release reads, compact task search, task detail/external
 context и scoped task create/update описаны в
 [спецификации agent API](specs/agent-api.md) и
-[ADR-0006](decisions/0006-standalone-agent-api.md). Hosted smoke, rate limits,
-bulk/idempotency и специализированные clients в текущий срез не входят.
+[ADR-0006](decisions/0006-standalone-agent-api.md), а connector/auth delivery —
+в [ADR-0008](decisions/0008-oauth-mcp-connector.md). Hosted smoke, rate limits и
+bulk/idempotency в текущий срез не входят.
 ADR-0007 и текущая реализация добавляют portability slice: current Project
 Owner получает logical export, staged preview и atomic exact restore.
 

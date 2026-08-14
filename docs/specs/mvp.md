@@ -33,6 +33,8 @@ MVP должен позволить вести задачи от backlog до п
 - **API credential** — отдельно выданная и отзываемая capability, которая
   сопоставляется внутреннему User и не является Sites browser session или
   application-admin permission.
+- **MCP connector** — remote task-oriented tool surface для Codex/ChatGPT;
+  основной Connect flow использует OAuth 2.1 Authorization Code + PKCE.
 
 ### 2.1 Интерфейсный принцип
 
@@ -364,6 +366,10 @@ completed dates и archived state.
   management operations.
 - Reads требуют `api:read`; task create/update — `api:write`. Update требует
   optimistic version и проходит те же role/domain checks, что UI.
+- Native connector устанавливается одним plugin и подключается через OAuth
+  consent без ручной передачи API secret. Он умеет получать все доступные
+  Tasks, фильтровать их по Project/Release и загружать detail только после
+  выбора.
 
 Точные representations, routes, OpenAPI contract, authentication и acceptance
 описаны в [спецификации agent API](agent-api.md).
@@ -447,12 +453,14 @@ completed dates и archived state.
 23. По canonical task reference загрузить одну Task с description, связями и
     provenance summary; imported archive появляется только после отдельного
     запроса. Недоступная Task возвращает тот же `not found`, что неизвестная.
-24. Отозвать API credential и Project grant: следующий API request
+24. Отозвать OAuth connection или API credential и Project grant: следующий API request
     немедленно теряет соответствующий доступ. Read-only credential не может
     вызвать task write или admin operation.
 25. Через write credential создать Task в выбранном Release, перевести её в
     completed и получить обновлённые timestamps/version; повторить PATCH со
     старой version и получить полный отказ без last-write-wins.
+    Тот же сценарий доступен через MCP tools после OAuth consent с
+    `api:write`; read-only connection получает scope challenge.
 26. Current Project Owner скачивает bundle, меняет и удаляет часть subtree,
     проходит preview и exact restore; Project IDs, Tasks, Releases, scoped
     Views, labels, hierarchy и provenance возвращаются. Manager/Editor/Viewer
@@ -478,9 +486,9 @@ completed dates и archived state.
     расширения доступа к user-owned content.
 11. Server-gated logical system backup/restore с staging, полным preflight и
     атомарным replace.
-12. Agent API query/command service, compact/detail projections, revocable
-    read/write credential, REST v1, OpenAPI и authorization/pagination tests.
-13. Hosted API smoke, rate limits, task-create idempotency и отдельно
+12. Agent API query/command service, compact/detail projections, OAuth-first
+    remote MCP, revocable read/write credentials, REST v1, OpenAPI и tests.
+13. Hosted OAuth/MCP smoke, rate limits, task-create idempotency и отдельно
     спроектированные bulk/metadata commands.
 14. Owner-only Project bundle export/staging/exact restore с preview,
     confirmation, sharing opt-in и rollback tests.
