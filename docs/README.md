@@ -24,6 +24,8 @@
    которые ещё предстоит принять.
 9. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
    продуктовых заимствований и осознанных упрощений.
+10. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+    mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
 
