@@ -81,6 +81,31 @@ Desktop-first shell повторяет композицию Linear:
 
 - Breadcrumb и back/forward сохраняют browser history и deep links.
 - Открытие task/project из списка не теряет filter, scroll и selection context.
+- Entity identity и layout кодируются path segments, а не query parameters:
+
+  | Surface | Прямой URL |
+  |---|---|
+  | Built-in view | `/views/{all|active|backlog|archived}` |
+  | Saved view | `/views/{view-id}` |
+  | Явный layout view | `/views/{view-id}/{list|board}` |
+  | Projects / Project | `/projects`, `/projects/{project-id}` |
+  | Project board | `/projects/{project-id}/board` |
+  | Releases / Release | `/releases`, `/releases/{release-id}` |
+  | Release board | `/releases/{release-id}/board` |
+  | Task details | `/tasks/{task-id}` |
+  | Shared with me | `/shared` |
+
+- URL saved view без layout открывает сохранённый `display.layout`; суффикс
+  `/list` или `/board` переопределяет layout только для текущего открытия и не
+  меняет определение view.
+- Переключение list/board меняет path через browser history. Back/forward
+  восстанавливают entity, layout и открытую Task без повторного входа через
+  sidebar.
+- Навигационные items и ссылки на records остаются настоящими anchors: их
+  можно копировать, открыть в новой вкладке или активировать modifier-click.
+- Copy-link action копирует текущий абсолютный deep link.
+- Синтаксически неверный URL, неизвестный либо недоступный ID возвращает
+  одинаковый fail-closed `not found`, не раскрывая существование чужого record.
 - `Esc` закрывает верхний dismissible layer: menu, popover, Peek, modal — ровно
   один слой за нажатие.
 - Focus возвращается в control, открывший закрытый layer.

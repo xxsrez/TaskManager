@@ -39,11 +39,22 @@ import {
 import {
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
   useEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import {
+  navigationHistoryState,
+  navigationPath,
+  parseNavigationPath,
+  resolveNavigationHistoryState,
+  resolveNavigationTarget,
+  taskPath,
+  type Layout,
+  type ResolvedNavigation,
+} from "@/lib/navigation";
 import type {
   AppSnapshot,
   Priority,
@@ -56,7 +67,6 @@ import type {
   WorkflowStatusRecord,
 } from "@/lib/types";
 
-type Layout = "list" | "board";
 type Dialog = "task" | "project" | "release" | "view" | "share" | null;
 
 const priorityMeta: Record<Priority, { label: string; glyph: string }> = {
@@ -76,19 +86,23 @@ const builtInViews = [
 
 export function TaskTracker({
   initialData,
+  initialNavigation,
   signOutPath,
 }: {
   initialData: AppSnapshot;
+  initialNavigation: ResolvedNavigation;
   signOutPath: string;
 }) {
   const [data, setData] = useState(initialData);
-  const [surface, setSurface] = useState("all");
-  const [layout, setLayout] = useState<Layout>("list");
+  const [surface, setSurface] = useState(initialNavigation.surface);
+  const [layout, setLayout] = useState<Layout>(initialNavigation.layout);
   const [search, setSearch] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialog, setDialog] = useState<Dialog>(null);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(
+    initialNavigation.taskId,
+  );
   const [peekTaskId, setPeekTaskId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [highlighted, setHighlighted] = useState(0);
@@ -101,6 +115,9 @@ export function TaskTracker({
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
+  const taskReturnPath = useRef(
+    navigationPath({ ...initialNavigation, taskId: null }),
+  );
 
   const statusMap = useMemo(
     () => new Map(data.statuses.map((status) => [status.id, status])),
@@ -138,17 +155,17 @@ export function TaskTracker({
     );
   }, [sidebarCollapsed]);
 
+  useEffect(() => {
+    window.history.replaceState(
+      navigationHistoryState(initialNavigation),
+      "",
+      window.location.href,
+    );
+  }, [initialNavigation]);
+
   const activeSavedView = surface.startsWith("view:")
     ? data.views.find((view) => view.id === surface.slice(5))
     : undefined;
-
-  useEffect(() => {
-    if (activeSavedView) {
-      // A saved view owns its persisted layout preference.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLayout(activeSavedView.display.layout);
-    }
-  }, [activeSavedView]);
 
   const visibleTasks = useMemo(() => {
     let tasks = data.tasks;
@@ -250,6 +267,63 @@ export function TaskTracker({
     }
   }
 
+  function applyNavigation(
+    next: ResolvedNavigation,
+    historyMode: "push" | "replace" | "none" = "push",
+  ) {
+    setSurface(next.surface);
+    setLayout(next.layout);
+    setActiveTaskId(next.taskId);
+    if (!next.taskId) taskReturnPath.current = navigationPath(next);
+    if (historyMode === "push") {
+      window.history.pushState(
+        navigationHistoryState(next),
+        "",
+        navigationPath(next),
+      );
+    } else if (historyMode === "replace") {
+      window.history.replaceState(
+        navigationHistoryState(next),
+        "",
+        navigationPath(next),
+      );
+    }
+  }
+
+  function navigateSurface(nextSurface: string, nextLayout?: Layout) {
+    applyNavigation({
+      surface: nextSurface,
+      layout: nextLayout ?? defaultLayoutForSurface(nextSurface, data),
+      taskId: null,
+    });
+  }
+
+  function changeLayout(nextLayout: Layout) {
+    applyNavigation({ surface, layout: nextLayout, taskId: null });
+  }
+
+  function openTask(taskId: string) {
+    if (!activeTaskId) {
+      taskReturnPath.current = navigationPath({ surface, layout, taskId: null });
+    }
+    applyNavigation({ surface, layout, taskId });
+  }
+
+  function closeTask() {
+    setActiveTaskId(null);
+    const target = parseNavigationPath(taskReturnPath.current);
+    const next = target ? resolveNavigationTarget(target, data) : null;
+    window.history.replaceState(
+      next ? navigationHistoryState(next) : null,
+      "",
+      taskReturnPath.current,
+    );
+  }
+
+  async function copyCurrentLink() {
+    await navigator.clipboard.writeText(window.location.href);
+  }
+
   function openCreate(statusId?: string) {
     setDialog("task");
     if (statusId) window.sessionStorage.setItem("tm-create-status", statusId);
@@ -266,12 +340,36 @@ export function TaskTracker({
   }
 
   useEffect(() => {
+    function handlePopState(event: PopStateEvent) {
+      const target = parseNavigationPath(window.location.pathname);
+      const resolved =
+        resolveNavigationHistoryState(
+          event.state,
+          window.location.pathname,
+          data,
+        ) ?? (target ? resolveNavigationTarget(target, data) : null);
+      if (resolved) applyNavigation(resolved, "none");
+    }
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [data]);
+
+  useEffect(() => {
     function handleKey(event: KeyboardEvent) {
       const target = event.target as HTMLElement;
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
       if (event.key === "Escape") {
         if (dialog) setDialog(null);
-        else if (activeTaskId) setActiveTaskId(null);
+        else if (activeTaskId) {
+          setActiveTaskId(null);
+          const target = parseNavigationPath(taskReturnPath.current);
+          const next = target ? resolveNavigationTarget(target, data) : null;
+          window.history.replaceState(
+            next ? navigationHistoryState(next) : null,
+            "",
+            taskReturnPath.current,
+          );
+        }
         else if (peekTaskId) setPeekTaskId(null);
         else if (selected.size) setSelected(new Set());
         return;
@@ -288,7 +386,16 @@ export function TaskTracker({
         setFilterOpen((value) => !value);
       } else if (event.key.toLowerCase() === "b" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        setSidebarCollapsed((value) => !value);
+        const nextLayout = layout === "list" ? "board" : "list";
+        const next: ResolvedNavigation = { surface, layout: nextLayout, taskId: null };
+        setLayout(nextLayout);
+        setActiveTaskId(null);
+        taskReturnPath.current = navigationPath(next);
+        window.history.pushState(
+          navigationHistoryState(next),
+          "",
+          navigationPath(next),
+        );
       } else if (["j", "ArrowDown"].includes(event.key)) {
         event.preventDefault();
         setHighlighted((value) => Math.min(value + 1, visibleTasks.length - 1));
@@ -308,7 +415,7 @@ export function TaskTracker({
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [activeTaskId, dialog, highlighted, peekTaskId, selected.size, visibleTasks]);
+  }, [activeTaskId, data, dialog, highlighted, layout, peekTaskId, selected.size, surface, visibleTasks]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -338,29 +445,29 @@ export function TaskTracker({
           </button>
         )}
         <nav className="nav-scroll" aria-label="Workspace">
-          <NavItem compact={sidebarCollapsed} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} onClick={() => setSurface("all")} />
-          <NavItem compact={sidebarCollapsed} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} onClick={() => setSurface("shared")} />
+          <NavItem compact={sidebarCollapsed} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} href="/views/all" onNavigate={() => navigateSurface("all", "list")} />
+          <NavItem compact={sidebarCollapsed} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
 
           {!sidebarCollapsed && (
             <>
               <SidebarSection title="Views" action={() => setDialog("view")}>
                 {builtInViews.map((view) => (
-                  <NavItem key={view.id} compact={false} icon={<Circle size={9} />} label={view.label} active={surface === view.id} onClick={() => setSurface(view.id)} count={taskCountForView(view.id, data, statusMap)} />
+                  <NavItem key={view.id} compact={false} icon={<Circle size={9} />} label={view.label} active={surface === view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null })} onNavigate={() => navigateSurface(view.id, "list")} count={taskCountForView(view.id, data, statusMap)} />
                 ))}
                 {data.views.map((view) => (
-                  <NavItem key={view.id} compact={false} icon={<Zap size={13} />} label={view.name} active={surface === `view:${view.id}`} onClick={() => { setSurface(`view:${view.id}`); setLayout(view.display.layout); }} />
+                  <NavItem key={view.id} compact={false} icon={<Zap size={13} />} label={view.name} active={surface === `view:${view.id}`} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null })} onNavigate={() => navigateSurface(`view:${view.id}`, view.display.layout)} />
                 ))}
               </SidebarSection>
               <SidebarSection title="Projects" action={() => setDialog("project")}>
-                <NavItem compact={false} icon={<Boxes size={13} />} label="All projects" active={surface === "projects"} onClick={() => setSurface("projects")} />
+                <NavItem compact={false} icon={<Boxes size={13} />} label="All projects" active={surface === "projects"} href="/projects" onNavigate={() => navigateSurface("projects", "list")} />
                 {data.projects.map((project) => (
-                  <NavItem key={project.id} compact={false} icon={<span className="project-dot" style={{ background: project.color }} />} label={project.name} active={surface === `project:${project.id}`} onClick={() => setSurface(`project:${project.id}`)} />
+                  <NavItem key={project.id} compact={false} icon={<span className="project-dot" style={{ background: project.color }} />} label={project.name} active={surface === `project:${project.id}`} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null })} onNavigate={() => navigateSurface(`project:${project.id}`, "list")} />
                 ))}
               </SidebarSection>
               <SidebarSection title="Releases" action={() => setDialog("release")}>
-                <NavItem compact={false} icon={<Rocket size={13} />} label="All releases" active={surface === "releases"} onClick={() => setSurface("releases")} />
+                <NavItem compact={false} icon={<Rocket size={13} />} label="All releases" active={surface === "releases"} href="/releases" onNavigate={() => navigateSurface("releases", "list")} />
                 {data.releases.slice(0, 6).map((release) => (
-                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={release.name} active={surface === `release:${release.id}`} onClick={() => setSurface(`release:${release.id}`)} />
+                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={release.name} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null })} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
                 ))}
               </SidebarSection>
             </>
@@ -392,7 +499,7 @@ export function TaskTracker({
             </div>
             <div className="title-actions">
               {shareTarget(surface, activeTask, data) && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Share</button>}
-              <button className="icon-button" title="More actions"><MoreHorizontal size={16} /></button>
+              <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>
           </div>
           {!isCollectionSurface(surface) && (
@@ -408,12 +515,12 @@ export function TaskTracker({
                   {filterOpen && <FilterPopover statuses={data.statuses} priority={priorityFilter} status={statusFilter} onPriority={setPriorityFilter} onStatus={setStatusFilter} onClose={() => setFilterOpen(false)} />}
                 </div>
                 <div className="segmented" aria-label="Layout">
-                  <button className={layout === "list" ? "active" : ""} onClick={() => setLayout("list")} title="List"><LayoutList size={14} /></button>
-                  <button className={layout === "board" ? "active" : ""} onClick={() => setLayout("board")} title="Board"><Columns3 size={14} /></button>
+                  <button className={layout === "list" ? "active" : ""} onClick={() => changeLayout("list")} title="List"><LayoutList size={14} /></button>
+                  <button className={layout === "board" ? "active" : ""} onClick={() => changeLayout("board")} title="Board"><Columns3 size={14} /></button>
                 </div>
                 <div className="popover-anchor display-anchor">
                   <button className={`button ghost ${displayOpen ? "active" : ""}`} onClick={() => setDisplayOpen((value) => !value)}><SlidersHorizontal size={14} />Display</button>
-                  {displayOpen && <DisplayPopover layout={layout} groupBy={activeSavedView?.display.groupBy ?? "status"} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={setLayout} onClose={() => setDisplayOpen(false)} />}
+                  {displayOpen && <DisplayPopover layout={layout} groupBy={activeSavedView?.display.groupBy ?? "status"} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={changeLayout} onClose={() => setDisplayOpen(false)} />}
                 </div>
                 {(search || priorityFilter !== "all" || statusFilter !== "all") && <button className="button ghost save-view" onClick={() => setDialog("view")}><Save size={13} />Save view</button>}
               </div>
@@ -426,13 +533,13 @@ export function TaskTracker({
         {busy && <div className="progress-line" aria-label="Saving" />}
 
         {surface === "projects" ? (
-          <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => setSurface(`project:${id}`)} onCreate={() => setDialog("project")} />
+          <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
         ) : surface === "releases" ? (
-          <ReleasesSurface releases={data.releases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => setSurface(`release:${id}`)} onCreate={() => setDialog("release")} />
+          <ReleasesSurface releases={data.releases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => setDialog("release")} />
         ) : layout === "board" ? (
-          <TaskBoard tasks={visibleTasks} statuses={visibleStatuses} projects={projectMap} releases={releaseMap} selected={selected} onSelect={toggleSelection} onOpen={setActiveTaskId} onCreate={openCreate} onMove={async (task, statusId, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, statusId, rank })} />
+          <TaskBoard tasks={visibleTasks} statuses={visibleStatuses} projects={projectMap} releases={releaseMap} selected={selected} onSelect={toggleSelection} onOpen={openTask} onCreate={openCreate} onMove={async (task, statusId, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, statusId, rank })} />
         ) : (
-          <TaskList tasks={visibleTasks} statuses={visibleStatuses} groupBy={activeSavedView?.display.groupBy ?? "status"} projects={projectMap} releases={releaseMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={setActiveTaskId} onPeek={setPeekTaskId} onCreate={openCreate} />
+          <TaskList tasks={visibleTasks} statuses={visibleStatuses} groupBy={activeSavedView?.display.groupBy ?? "status"} projects={projectMap} releases={releaseMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onPeek={setPeekTaskId} onCreate={openCreate} />
         )}
       </section>
 
@@ -440,8 +547,8 @@ export function TaskTracker({
         <BulkBar count={selected.size} statuses={statusGroupsForTasks([...selected].map((id) => data.tasks.find((task) => task.id === id)).filter(Boolean) as TaskRecord[], data.statuses)} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: true }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
-      {activeTask && <TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={() => setActiveTaskId(null)} onOpenTask={setActiveTaskId} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} />}
-      {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { setActiveTaskId(peekTask.id); setPeekTaskId(null); }} />}
+      {activeTask && <TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} />}
+      {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "project" && <EntityDialog title="Create project" icon={<FolderKanban size={17} />} fields={[{ name: "name", label: "Project name", required: true }, { name: "summary", label: "Short summary" }, { name: "targetDate", label: "Target date", type: "date" }]} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
@@ -451,8 +558,8 @@ export function TaskTracker({
   );
 }
 
-function NavItem({ compact, icon, label, active, onClick, count }: { compact: boolean; icon: React.ReactNode; label: string; active: boolean; onClick: () => void; count?: number }) {
-  return <button className={`nav-item ${active ? "active" : ""}`} onClick={onClick} title={compact ? label : undefined}><span className="nav-icon">{icon}</span>{!compact && <><span>{label}</span>{count !== undefined && <small className="nav-count">{count}</small>}</>}</button>;
+function NavItem({ compact, icon, label, active, href, onNavigate, count }: { compact: boolean; icon: React.ReactNode; label: string; active: boolean; href: string; onNavigate: () => void; count?: number }) {
+  return <a className={`nav-item ${active ? "active" : ""}`} href={href} aria-current={active ? "page" : undefined} onClick={(event) => handleLocalLink(event, onNavigate)} title={compact ? label : undefined}><span className="nav-icon">{icon}</span>{!compact && <><span>{label}</span>{count !== undefined && <small className="nav-count">{count}</small>}</>}</a>;
 }
 
 function SidebarSection({ title, action, children }: { title: string; action: () => void; children: React.ReactNode }) {
@@ -475,7 +582,7 @@ function TaskList({ tasks, statuses, groupBy, projects, releases, selected, high
 }
 
 function TaskRow({ task, status, project, release, selected, highlighted, onSelect, onHighlight, onOpen, onPeek }: { task: TaskRecord; status: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; selected: boolean; highlighted: boolean; onSelect: () => void; onHighlight: () => void; onOpen: () => void; onPeek: () => void }) {
-  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight} onDoubleClick={onPeek}><button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button><span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><button className="task-identity" onClick={onOpen}>{task.identifier}</button><button className="task-title" onClick={onOpen} title={task.title}>{task.title}</button><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}<span className="avatar" title="Assignee">{initials("Me")}</span><button className="row-more" title="More"><MoreHorizontal size={14} /></button></div></div>;
+  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight} onDoubleClick={onPeek}><button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button><span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}<span className="avatar" title="Assignee">{initials("Me")}</span><button className="row-more" title="More"><MoreHorizontal size={14} /></button></div></div>;
 }
 
 function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void; onMove: (task: TaskRecord, statusId: string, rank: number) => Promise<unknown> }) {
@@ -544,6 +651,7 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                   >
                     {selected.has(task.id) ? <Check size={11} /> : <span />}
                   </button>
+                  <a href={taskPath(task.id)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, () => onOpen(task.id)); }}>
                   <h3>{task.title}</h3>
                   <div className="card-meta">
                     <span>{task.identifier}</span>
@@ -558,6 +666,7 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                     )}
                     {task.releaseId && releases.get(task.releaseId) && <Rocket size={12} />}
                   </div>
+                  </a>
                 </div>
               ))}
             </div>
@@ -616,7 +725,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }:
 }
 
 function DetailsSection({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) { return <section className="details-section"><h2>{icon}{title}</h2>{children}</section>; }
-function TaskReference({ label, task, onOpen }: { label: string; task: TaskRecord; onOpen: (id: string) => void }) { return <button onClick={() => onOpen(task.id)}><small>{label}</small><span>{task.identifier}</span><b>{task.title}</b></button>; }
+function TaskReference({ label, task, onOpen }: { label: string; task: TaskRecord; onOpen: (id: string) => void }) { return <a href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, () => onOpen(task.id))}><small>{label}</small><span>{task.identifier}</span><b>{task.title}</b></a>; }
 
 function PropertyRow({ label, icon, children }: { label: string; icon: React.ReactNode; children: React.ReactNode }) { return <label className="property-row"><span>{icon}{label}</span>{children}</label>; }
 function PropertySelect({ icon, value, onChange, children, disabled }: { icon: React.ReactNode; value: string; onChange: (value: string) => void; children: React.ReactNode; disabled?: boolean }) { return <label className="property-select">{icon}<select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>{children}</select><ChevronDown size={11} /></label>; }
@@ -635,11 +744,31 @@ function DialogHeader({ title, icon, onClose }: { title: string; icon: React.Rea
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }
 function Modal({ onClose, children, className = "" }: { onClose: () => void; children: React.ReactNode; className?: string }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal ${className}`} role="dialog" aria-modal="true">{children}</div></div>; }
 
-function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <button className="entity-card" key={project.id} onClick={() => onOpen(project.id)}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></button>; })}</div>; }
-function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); return <button className="release-row" key={release.id} onClick={() => onOpen(release.id)}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{release.name}</b><small>{projects.get(release.projectId)?.name}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></button>; })}</div>; }
+function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null })} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
+function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="release-row" key={release.id} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null })} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{release.name}</b><small>{projects.get(release.projectId)?.name}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate: () => void }) { const labels = { task: ["No tasks here", "Create the first task and give this view a starting point."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "Create a release to plan what ships together."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p><button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button></div>; }
-function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><button onClick={onOpen}>Open</button><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
+function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
 function BulkBar({ count, statuses, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}><Archive size={14} />Archive</button><button onClick={onClose}><X size={14} /></button></div>; }
+
+function handleLocalLink(event: ReactMouseEvent<HTMLAnchorElement>, navigate: () => void) {
+  if (
+    event.defaultPrevented ||
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  ) {
+    return;
+  }
+  event.preventDefault();
+  navigate();
+}
+
+function defaultLayoutForSurface(surface: string, data: AppSnapshot): Layout {
+  if (!surface.startsWith("view:")) return "list";
+  return data.views.find((view) => view.id === surface.slice(5))?.display.layout ?? "list";
+}
 
 function surfaceTitle(surface: string, data: AppSnapshot, view?: SavedViewRecord) { if (surface === "projects") return "Projects"; if (surface === "releases") return "Releases"; if (surface === "shared") return "Shared with me"; if (surface.startsWith("project:")) return data.projects.find((project) => project.id === surface.slice(8))?.name ?? "Project"; if (surface.startsWith("release:")) return data.releases.find((release) => release.id === surface.slice(8))?.name ?? "Release"; if (view) return view.name; return builtInViews.find((item) => item.id === surface)?.label ?? "My tasks"; }
 function isCollectionSurface(surface: string) { return surface === "projects" || surface === "releases"; }

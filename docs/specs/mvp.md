@@ -218,6 +218,10 @@ completed dates и archived state.
   должен препятствовать последующему добавлению `OR` и вложенных групп.
 - Временные фильтры меняют URL/session state, но не сохранённый view, пока
   пользователь явно не нажал Save.
+- Identity view/project/release/task и layout `list|board` кодируются
+  стабильными path segments по контракту
+  [интерфейсной навигации](interface.md#33-navigation-behavior); query
+  parameters зарезервированы для временного filter state, а не выбора entity.
 
 ### 9.3 Display options
 
@@ -322,6 +326,10 @@ completed dates и archived state.
 16. Проверить основные surfaces в light/dark theme и сверить composition,
     controls и interaction states с актуальным Linear reference по
     [UI-спецификации](interface.md), не используя бренд или assets Linear.
+17. Скопировать прямые URL saved view, его board, Project, Release и Task;
+    открыть каждый в новой вкладке, получить ту же entity/layout, затем
+    проверить Back/Forward и одинаковый `not found` для неизвестного и
+    недоступного ID.
 
 ## 14. Рекомендуемые вертикальные срезы
 

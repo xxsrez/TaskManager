@@ -126,6 +126,25 @@ migrations. Это соответствует
 
 Переключение layout не должно менять query semantics или состав task IDs.
 
+### Открытие прямой ссылки
+
+1. Server route разбирает allowlisted path contract для views, projects,
+   releases, tasks и layout `list|board`; неизвестные extra segments
+   отклоняются.
+2. Repository строит один ACL-scoped snapshot до разрешения route ID, поэтому
+   неизвестный и недоступный record имеют одинаковый `not found` результат.
+3. Route разрешается в UI state `{surface, layout, taskId}`. Task URL открывает
+   details поверх доступного project/release context, но сам остаётся
+   каноническим `/tasks/{task-id}`.
+4. Client-side переходы используют `history.pushState`; для `/tasks/{id}`
+   history entry дополнительно хранит проверяемый background surface/layout,
+   чтобы Back/Forward возвращали исходный board без добавления query parameter.
+   При отсутствии или подмене state path разрешается заново. Синтаксис и ACL
+   снова проверяются server-side при прямой загрузке или refresh.
+5. Metadata независимо шаримой route формируются из уже авторизованного record;
+   inherited social image очищается, чтобы приватная entity не получала
+   вводящий в заблуждение общий preview.
+
 ### Перетаскивание карточки
 
 1. UI оптимистично показывает новое положение и отправляет target group,

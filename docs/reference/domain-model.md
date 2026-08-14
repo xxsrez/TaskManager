@@ -153,7 +153,7 @@ status, на который ссылаются задачи, нельзя без
 
 | Поле | Семантика |
 |---|---|
-| `id`, `slug` | Внутренняя и URL identity |
+| `id`, `slug` | `id` — каноническая URL/API identity; `slug` — читаемый alias |
 | `owner_user_id` | Владелец Project и его subtree |
 | `name` | Обязательное имя |
 | `summary`, `description` | Краткий и подробный контекст |
@@ -171,7 +171,7 @@ Project progress вычисляется запросом по задачам, а
 
 | Поле | Семантика |
 |---|---|
-| `id` | Внутренний ID |
+| `id` | Каноническая URL/API identity Release |
 | `project_id` | Обязательный owner project |
 | `owner_user_id` | Денормализованный owner, равный owner Project |
 | `name` | Обязательное имя/version label |
@@ -233,7 +233,7 @@ Task details как read-only archive. Это не означает наличи
 
 | Поле | Семантика |
 |---|---|
-| `id`, `name` | Identity и имя |
+| `id`, `name` | Каноническая URL/API identity и имя |
 | `owner_user_id` | Создатель/владелец и tenant scope |
 | `scope_type` | `global` или `project` |
 | `scope_project_id` | Обязателен для project scope |
