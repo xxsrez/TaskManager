@@ -1,4 +1,11 @@
 import type { Actor } from "./auth";
+import { env } from "cloudflare:workers";
+import {
+  assertAdmin,
+  buildAdminOverview,
+  isAdminEmail,
+  type AdminUserAggregate,
+} from "./admin";
 import {
   assertReleaseProject,
   ConflictError,
@@ -346,6 +353,7 @@ async function ensureDefaultStatuses(ownerUserId: string) {
 export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
   await ensureDatabase();
   const db = getD1();
+  const configuredAdminEmails = adminEmailsFromEnvironment();
   const [
     tasks,
     projects,
@@ -358,6 +366,7 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
     taskLabels,
     relations,
     externalSources,
+    admin,
   ] =
     await Promise.all([
       db
@@ -514,10 +523,14 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
         )
         .bind(user.id)
         .all<DbRow>(),
+      isAdminEmail(user.email, configuredAdminEmails)
+        ? getAdminOverview(user, configuredAdminEmails)
+        : Promise.resolve(null),
     ]);
 
   return {
     user,
+    admin,
     users: users.results.map(mapUser),
     statuses: statuses.results.map(mapStatus),
     projects: projects.results.map(mapProject),
@@ -530,6 +543,68 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
     views: views.results.map(mapView),
     collaborators: collaborators.results.map(mapCollaborator),
   };
+}
+
+export async function getAdminOverview(
+  currentUser: UserRecord,
+  configuredAdminEmails = adminEmailsFromEnvironment(),
+) {
+  assertAdmin(currentUser, configuredAdminEmails);
+  await ensureDatabase();
+  const rows = await getD1()
+    .prepare(
+      `SELECT
+         u.id, u.display_name, u.email, u.created_at, u.updated_at,
+         COALESCE(task_stats.task_count, 0) AS task_count,
+         COALESCE(task_stats.recent_task_count, 0) AS recent_task_count,
+         task_stats.last_task_activity_at,
+         COALESCE(project_stats.project_count, 0) AS project_count,
+         project_stats.last_project_activity_at,
+         COALESCE(release_stats.release_count, 0) AS release_count,
+         release_stats.last_release_activity_at,
+         COALESCE(view_stats.view_count, 0) AS view_count,
+         view_stats.last_view_activity_at
+       FROM users u
+       LEFT JOIN (
+         SELECT owner_user_id,
+                COUNT(*) AS task_count,
+                SUM(CASE
+                  WHEN datetime(updated_at) >= datetime('now', '-7 days')
+                  THEN 1 ELSE 0
+                END) AS recent_task_count,
+                MAX(updated_at) AS last_task_activity_at
+         FROM tasks
+         GROUP BY owner_user_id
+       ) task_stats ON task_stats.owner_user_id = u.id
+       LEFT JOIN (
+         SELECT owner_user_id,
+                COUNT(*) AS project_count,
+                MAX(updated_at) AS last_project_activity_at
+         FROM projects
+         GROUP BY owner_user_id
+       ) project_stats ON project_stats.owner_user_id = u.id
+       LEFT JOIN (
+         SELECT owner_user_id,
+                COUNT(*) AS release_count,
+                MAX(updated_at) AS last_release_activity_at
+         FROM releases
+         GROUP BY owner_user_id
+       ) release_stats ON release_stats.owner_user_id = u.id
+       LEFT JOIN (
+         SELECT owner_user_id,
+                COUNT(*) AS view_count,
+                MAX(updated_at) AS last_view_activity_at
+         FROM saved_views
+         GROUP BY owner_user_id
+       ) view_stats ON view_stats.owner_user_id = u.id
+       ORDER BY datetime(u.updated_at) DESC, datetime(u.created_at) DESC`,
+    )
+    .all<DbRow>();
+
+  return buildAdminOverview(
+    rows.results.map(mapAdminUserAggregate),
+    configuredAdminEmails,
+  );
 }
 
 export async function createTask(
@@ -1079,6 +1154,31 @@ function mapUser(row: DbRow): UserRecord {
     email: String(row.email),
     timezone: String(row.timezone),
   };
+}
+
+function mapAdminUserAggregate(row: DbRow): AdminUserAggregate {
+  return {
+    id: String(row.id),
+    displayName: String(row.display_name),
+    email: String(row.email),
+    registeredAt: String(row.created_at),
+    lastSeenAt: String(row.updated_at),
+    taskCount: Number(row.task_count ?? 0),
+    recentTaskCount: Number(row.recent_task_count ?? 0),
+    projectCount: Number(row.project_count ?? 0),
+    releaseCount: Number(row.release_count ?? 0),
+    viewCount: Number(row.view_count ?? 0),
+    lastTaskActivityAt: nullableString(row.last_task_activity_at),
+    lastProjectActivityAt: nullableString(row.last_project_activity_at),
+    lastReleaseActivityAt: nullableString(row.last_release_activity_at),
+    lastViewActivityAt: nullableString(row.last_view_activity_at),
+  };
+}
+
+function adminEmailsFromEnvironment(): string {
+  return (
+    env as unknown as { TASK_MANAGER_ADMIN_EMAILS?: string }
+  ).TASK_MANAGER_ADMIN_EMAILS ?? "";
 }
 
 function mapStatus(row: DbRow): WorkflowStatusRecord {

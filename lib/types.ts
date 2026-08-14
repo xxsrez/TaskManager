@@ -168,8 +168,34 @@ export type CollaboratorRecord = {
   email: string;
 };
 
+export type AdminUserActivityRecord = {
+  id: string;
+  displayName: string;
+  email: string;
+  isAdmin: boolean;
+  registeredAt: string;
+  lastSeenAt: string;
+  lastContentActivityAt: string | null;
+  taskCount: number;
+  recentTaskCount: number;
+  projectCount: number;
+  releaseCount: number;
+  viewCount: number;
+};
+
+export type AdminOverview = {
+  registeredUserCount: number;
+  activeUserCount: number;
+  taskCount: number;
+  projectCount: number;
+  releaseCount: number;
+  viewCount: number;
+  users: AdminUserActivityRecord[];
+};
+
 export type AppSnapshot = {
   user: UserRecord;
+  admin: AdminOverview | null;
   users: UserRecord[];
   statuses: WorkflowStatusRecord[];
   projects: ProjectRecord[];

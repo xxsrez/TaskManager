@@ -48,6 +48,10 @@ ChatGPT`. Она также подчёркивает, что audience Site и au
 9. `.openai/hosting.json` создаётся или обновляется Sites при provisioning и
    хранит только project/binding metadata. Provider secrets задаются через
    hosted environment settings и не коммитятся.
+10. Application administrator задаётся отдельным hosted verified-email
+    allowlist. Он видит только registration/activity metadata и owner-scoped
+    aggregate counts; capability не является `AccessGrant`, не даёт доступа к
+    содержимому чужих resources и не вводит granular collaborator roles.
 
 ## Последствия
 
@@ -68,7 +72,7 @@ ChatGPT`. Она также подчёркивает, что audience Site и au
 
 ## Отложено
 
-- роли viewer/editor/admin и resource-specific permissions;
+- роли viewer/editor/resource-admin и resource-specific permissions;
 - приглашения незарегистрированных пользователей;
 - ownership transfer и перенос records между владельцами;
 - public share links и anonymous access к данным;

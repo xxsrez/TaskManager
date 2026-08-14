@@ -45,7 +45,8 @@ erDiagram
 | `primary_email` | Verified contact/login email, normalized для поиска sharing |
 | `display_name` | Отображаемое имя, optional |
 | `timezone`, `locale` | Пользовательские настройки представления |
-| `created_at`, `updated_at` | Технические timestamps |
+| `created_at` | Время регистрации внутреннего User |
+| `updated_at` | В первом срезе — последний успешный authenticated request и обновление profile projection |
 | `disabled_at` | Блокировка входа без удаления данных |
 
 `User` не равен аккаунту ChatGPT или Google. Все owner/assignee/lead/grantee
@@ -72,6 +73,25 @@ provider contract. Sites `Sign in with ChatGPT` на текущем публич
 
 Identity linking — отдельная аутентифицированная операция. Совпадающие emails
 от разных providers не объединяют Users автоматически.
+
+## Application administrator
+
+Application administrator не является отдельной доменной сущностью или ролью
+`AccessGrant`. Server boundary сопоставляет нормализованный verified email
+current User с hosted allowlist. Эта capability разрешает только operational
+aggregate query по Users и owner-scoped counts.
+
+Admin projection содержит:
+
+- `User.id`, display name, verified email, registration и last-seen timestamps;
+- counts принадлежащих User Tasks, Projects, Releases и SavedViews;
+- число Tasks, изменённых за последние 7 дней;
+- максимум `updated_at` среди принадлежащих User Tasks, Projects, Releases и
+  SavedViews как `last_content_activity_at`.
+
+Projection не включает content полей этих records и не меняет ownership/ACL
+predicate обычных repository methods. Application admin не получает implicit
+доступ к чужим resources.
 
 ## AccessGrant
 
@@ -300,6 +320,8 @@ Task details как read-only archive. Это не означает наличи
     owner implicit access неотзываем.
 15. Любая mutation проверяет `version`; stale version возвращает conflict, а не
     last-write-wins.
+16. Admin aggregate query выполняется только после server-side allowlist check
+    и не возвращает содержимое user-owned records.
 
 ## Намеренно не моделируется
 

@@ -47,6 +47,7 @@ Desktop-first shell повторяет композицию Linear:
 │ Views                                    ├──────────────────────────────│
 │ Projects                                 │ list | board | details       │
 │ Releases                                 │                              │
+│ Administration (admin only)              │                              │
 │                                          │                              │
 │ profile / settings                       │                              │
 └──────────────────────────────────────────┴──────────────────────────────┘
@@ -65,6 +66,8 @@ Desktop-first shell повторяет композицию Linear:
 - Sidebar полностью сворачивается; состояние сохраняется для пользователя.
 - Profile/settings находятся в нижней части или user menu и не смешиваются с
   project navigation.
+- `Administration` видит только application administrator. Пункт располагается
+  рядом с верхней workspace navigation, а не внутри user-owned Views/Projects.
 
 ### 3.2 Верхняя панель surface
 
@@ -97,6 +100,7 @@ Desktop-first shell повторяет композицию Linear:
   | Release / board | `/projects/{project-id}/releases/{release-id}`, `…/board` |
   | Issue details | `/issues/{issue-public-id}` |
   | Shared with me | `/shared` |
+  | Administration | `/admin` |
 
 - URL saved view без layout открывает сохранённый `display.layout`; суффикс
   `/list` или `/board` переопределяет layout только для текущего открытия и не
@@ -460,6 +464,21 @@ Linear, но они обязаны использовать тот же visual l
 - Доступны display name, verified email, timezone, linked providers, theme,
   sidebar preference и sign out.
 
+### 12.4 Administration
+
+- Surface открывается только из server-authorized snapshot; отсутствие пункта
+  в sidebar не является единственной защитой.
+- Верхний ряд содержит compact metric cards: registered users, active users за
+  7 дней, Tasks и SavedViews; secondary notes показывают Projects/Releases.
+- Основная dense table содержит User, registration, last active, last content
+  activity и owner-scoped counts Tasks/Projects/Releases/Views.
+- Display name/email не смешиваются с resource content. Admin surface не
+  показывает title, description или query чужих records.
+- Пояснение рядом с таблицей явно отличает latest authenticated request от
+  отдельного login event, которого первый срез не записывает.
+- `/admin` обычного User разрешается так же fail-closed, как неизвестная или
+  недоступная entity route.
+
 ## 13. Keyboard contract
 
 Shortcuts активны только когда focus не находится в text editor/input и host
@@ -529,6 +548,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Themes | System/light/dark | Берём | Собственные tokens и branding |
 | Share controls | Linear-like compact dialog | Адаптируем | Наша модель `full_access` и inheritance |
 | Login/profile | Та же visual system | Адаптируем | ChatGPT/Google identity model |
+| Administration | Compact metrics + dense user table | Адаптируем | Operational aggregates, не Linear analytics |
 
 ## 17. Проверка и приёмка
 

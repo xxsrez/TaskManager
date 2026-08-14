@@ -44,6 +44,7 @@ const snapshot = {
 } as AppSnapshot;
 
 test("short REST paths cover issue, view, project, and release collections", () => {
+  assert.deepEqual(parseNavigationPath("/admin"), { kind: "admin" });
   assert.deepEqual(parseNavigationPath("/issues"), {
     kind: "issues",
     filter: "all",
@@ -60,6 +61,27 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(
     parseNavigationPath(`/projects/${projectPublicId}/releases`),
     { kind: "projectReleases", projectId: projectPublicId },
+  );
+});
+
+test("admin navigation fails closed unless the server snapshot grants access", () => {
+  const target = parseNavigationPath("/admin");
+  assert.ok(target);
+  assert.equal(resolveNavigationTarget(target, snapshot), null);
+  assert.deepEqual(
+    resolveNavigationTarget(target, {
+      ...snapshot,
+      admin: {
+        registeredUserCount: 1,
+        activeUserCount: 1,
+        taskCount: 0,
+        projectCount: 0,
+        releaseCount: 0,
+        viewCount: 0,
+        users: [],
+      },
+    }),
+    { surface: "admin", layout: "list", taskId: null },
   );
 });
 

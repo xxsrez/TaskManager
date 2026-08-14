@@ -29,6 +29,7 @@ import {
   Save,
   Search,
   Share2,
+  ShieldCheck,
   SlidersHorizontal,
   Sun,
   Tag,
@@ -57,6 +58,7 @@ import {
   type ResolvedNavigation,
 } from "@/lib/navigation";
 import type {
+  AdminOverview,
   AppSnapshot,
   Priority,
   ProjectRecord,
@@ -254,6 +256,8 @@ export function TaskTracker({
     : data.releases;
   const surfaceCount = surface === "views"
     ? builtInViews.length + data.views.length
+    : surface === "admin" && data.admin
+      ? data.admin.registeredUserCount
     : projectReleaseSurfaceId
       ? scopedReleases.length
       : visibleTasks.length;
@@ -402,6 +406,7 @@ export function TaskTracker({
         return;
       }
       if (typing) return;
+      if (surface === "admin") return;
       if (event.key.toLowerCase() === "c") {
         event.preventDefault();
         openCreate();
@@ -474,6 +479,7 @@ export function TaskTracker({
         <nav className="nav-scroll" aria-label="Workspace">
           <NavItem compact={sidebarCollapsed} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} href="/issues" onNavigate={() => navigateSurface("all", "list")} />
           <NavItem compact={sidebarCollapsed} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
+          {data.admin && <NavItem compact={sidebarCollapsed} icon={<ShieldCheck size={15} />} label="Administration" active={surface === "admin"} href="/admin" onNavigate={() => navigateSurface("admin", "list")} />}
 
           {!sidebarCollapsed && (
             <>
@@ -561,7 +567,9 @@ export function TaskTracker({
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")}><X size={14} /></button></div>}
         {busy && <div className="progress-line" aria-label="Saving" />}
 
-        {surface === "views" ? (
+        {surface === "admin" && data.admin ? (
+          <AdminSurface overview={data.admin} timeZone={data.user.timezone} />
+        ) : surface === "views" ? (
           <ViewsSurface data={data} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} />
         ) : surface === "projects" ? (
           <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
@@ -779,6 +787,64 @@ function Modal({ onClose, children, className = "" }: { onClose: () => void; chi
 function ViewsSurface({ data, statusMap, onOpen }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void }) { return <div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{data.views.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>; }
 function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
 function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); return <a className="release-row" key={release.id} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{release.name}</b><small>{project?.name}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
+function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZone: string }) {
+  return (
+    <div className="admin-surface">
+      <section className="admin-metrics" aria-label="System overview">
+        <AdminMetric label="Registered users" value={overview.registeredUserCount} note="All accounts" icon={<UsersRound size={16} />} />
+        <AdminMetric label="Active users" value={overview.activeUserCount} note="Last 7 days" icon={<Zap size={16} />} />
+        <AdminMetric label="Tasks" value={overview.taskCount} note={`${overview.projectCount} projects`} icon={<Inbox size={16} />} />
+        <AdminMetric label="Saved views" value={overview.viewCount} note={`${overview.releaseCount} releases`} icon={<Boxes size={16} />} />
+      </section>
+      <section className="admin-panel">
+        <header>
+          <div>
+            <h2>Users</h2>
+            <p>Last active reflects the latest authenticated request. Content activity is the latest owned record change. Times are shown in {timeZone}.</p>
+          </div>
+          <span className="status-badge">Live totals</span>
+        </header>
+        <div className="admin-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Registered</th>
+                <th>Last active</th>
+                <th>Content activity</th>
+                <th>Tasks</th>
+                <th>Projects</th>
+                <th>Releases</th>
+                <th>Views</th>
+              </tr>
+            </thead>
+            <tbody>
+              {overview.users.map((user) => (
+                <tr key={user.id}>
+                  <td>
+                    <span className="admin-user">
+                      <span className="avatar">{initials(user.displayName)}</span>
+                      <span><b>{user.displayName}</b><small>{user.email}</small></span>
+                      {user.isAdmin && <span className="status-badge admin-badge">Admin</span>}
+                    </span>
+                  </td>
+                  <td><time dateTime={user.registeredAt}>{zonedDateTime(user.registeredAt, timeZone)}</time></td>
+                  <td><time dateTime={user.lastSeenAt}>{zonedDateTime(user.lastSeenAt, timeZone)}</time></td>
+                  <td>{user.lastContentActivityAt ? <time dateTime={user.lastContentActivityAt}>{zonedDateTime(user.lastContentActivityAt, timeZone)}</time> : <span className="muted-value">—</span>}</td>
+                  <td><span className="admin-task-count"><b>{user.taskCount}</b><small>{user.recentTaskCount} changed in 7d</small></span></td>
+                  <td>{user.projectCount}</td>
+                  <td>{user.releaseCount}</td>
+                  <td>{user.viewCount}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+function AdminMetric({ label, value, note, icon }: { label: string; value: number; note: string; icon: React.ReactNode }) { return <article className="admin-metric"><span className="admin-metric-icon">{icon}</span><div><span>{label}</span><b>{value}</b><small>{note}</small></div></article>; }
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate: () => void }) { const labels = { task: ["No tasks here", "Create the first task and give this view a starting point."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "Create a release to plan what ships together."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p><button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button></div>; }
 function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
 function BulkBar({ count, statuses, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}><Archive size={14} />Archive</button><button onClick={onClose}><X size={14} /></button></div>; }
@@ -803,8 +869,8 @@ function defaultLayoutForSurface(surface: string, data: AppSnapshot): Layout {
   return data.views.find((view) => view.id === surface.slice(5))?.display.layout ?? "list";
 }
 
-function surfaceTitle(surface: string, data: AppSnapshot, view?: SavedViewRecord) { if (surface === "views") return "Views"; if (surface === "projects") return "Projects"; if (surface === "releases") return "Releases"; if (surface === "shared") return "Shared with me"; if (surface.startsWith("project-releases:")) { const project = data.projects.find((item) => item.id === surface.slice("project-releases:".length)); return project ? `${project.name} releases` : "Project releases"; } if (surface.startsWith("project:")) return data.projects.find((project) => project.id === surface.slice(8))?.name ?? "Project"; if (surface.startsWith("release:")) return data.releases.find((release) => release.id === surface.slice(8))?.name ?? "Release"; if (view) return view.name; return builtInViews.find((item) => item.id === surface)?.label ?? "My tasks"; }
-function isCollectionSurface(surface: string) { return surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
+function surfaceTitle(surface: string, data: AppSnapshot, view?: SavedViewRecord) { if (surface === "admin") return "Administration"; if (surface === "views") return "Views"; if (surface === "projects") return "Projects"; if (surface === "releases") return "Releases"; if (surface === "shared") return "Shared with me"; if (surface.startsWith("project-releases:")) { const project = data.projects.find((item) => item.id === surface.slice("project-releases:".length)); return project ? `${project.name} releases` : "Project releases"; } if (surface.startsWith("project:")) return data.projects.find((project) => project.id === surface.slice(8))?.name ?? "Project"; if (surface.startsWith("release:")) return data.releases.find((release) => release.id === surface.slice(8))?.name ?? "Release"; if (view) return view.name; return builtInViews.find((item) => item.id === surface)?.label ?? "My tasks"; }
+function isCollectionSurface(surface: string) { return surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
 function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot) { if (activeTask) { if (activeTask.projectId) { const project = data.projects.find((item) => item.id === activeTask.projectId); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } return { resourceType: "task" as const, resourceId: activeTask.id, label: activeTask.identifier }; } if (surface.startsWith("project:")) { const project = data.projects.find((item) => item.id === surface.slice(8)); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } if (surface.startsWith("view:")) { const view = data.views.find((item) => item.id === surface.slice(5)); return view ? { resourceType: "saved_view" as const, resourceId: view.id, label: view.name } : null; } return null; }
 function statusGroupsForTasks(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const owners = new Set(tasks.map((task) => task.ownerUserId)); return statuses.filter((status) => owners.has(status.ownerUserId) || tasks.length === 0).sort((a, b) => a.position - b.position); }
 function sortTasks(tasks: TaskRecord[], display?: ViewDisplay) {
@@ -831,4 +897,5 @@ function initials(value: string) { return value.split(/\s+/).filter(Boolean).sli
 function shortDate(value: string) { return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${value}T00:00:00`)); }
 function longDate(value: string) { return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric" }).format(new Date(value)); }
 function longDateTime(value: string) { return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value)); }
+function zonedDateTime(value: string, timeZone: string) { try { return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone }).format(new Date(value)); } catch { return new Intl.DateTimeFormat("en", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", timeZone: "UTC" }).format(new Date(value)); } }
 function isOverdue(value: string, category: string) { return new Date(`${value}T23:59:59`) < new Date() && category !== "completed" && category !== "canceled"; }

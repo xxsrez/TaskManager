@@ -5,6 +5,7 @@ export type IssueFilter = "all" | "active" | "backlog" | "archived";
 
 export type NavigationTarget =
   | { kind: "root" }
+  | { kind: "admin" }
   | { kind: "shared" }
   | { kind: "issues"; filter: IssueFilter; layout: Layout }
   | { kind: "issue"; id: string }
@@ -52,6 +53,9 @@ export function parseNavigationSegments(
   segments: string[],
 ): NavigationTarget | null {
   if (segments.length === 0) return { kind: "root" };
+  if (segments.length === 1 && segments[0] === "admin") {
+    return { kind: "admin" };
+  }
   if (segments.length === 1 && segments[0] === "shared") {
     return { kind: "shared" };
   }
@@ -84,6 +88,11 @@ export function resolveNavigationTarget(
 ): ResolvedNavigation | null {
   if (target.kind === "root") {
     return { surface: "all", layout: "list", taskId: null };
+  }
+  if (target.kind === "admin") {
+    return data.admin
+      ? { surface: "admin", layout: "list", taskId: null }
+      : null;
   }
   if (target.kind === "shared") {
     return { surface: "shared", layout: "list", taskId: null };
@@ -175,6 +184,7 @@ export function navigationPath(
   }
 
   const { surface, layout } = navigation;
+  if (surface === "admin") return "/admin";
   if (surface === "views" || surface === "projects" || surface === "releases") {
     return `/${surface}`;
   }

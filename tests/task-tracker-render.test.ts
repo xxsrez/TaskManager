@@ -13,6 +13,7 @@ const snapshot: AppSnapshot = {
     email: "test@example.com",
     timezone: "UTC",
   },
+  admin: null,
   users: [],
   statuses: [
     {
@@ -87,4 +88,49 @@ test("a direct task render has no controlled field warnings", () => {
     errors.filter((message) => message.includes("without an `onChange` handler")),
     [],
   );
+});
+
+test("an administrator sees registration and activity statistics", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        admin: {
+          registeredUserCount: 1,
+          activeUserCount: 1,
+          taskCount: 1,
+          projectCount: 0,
+          releaseCount: 0,
+          viewCount: 2,
+          users: [
+            {
+              id: "user-1",
+              displayName: "Test User",
+              email: "test@example.com",
+              isAdmin: true,
+              registeredAt: now,
+              lastSeenAt: now,
+              lastContentActivityAt: now,
+              taskCount: 1,
+              recentTaskCount: 1,
+              projectCount: 0,
+              releaseCount: 0,
+              viewCount: 2,
+            },
+          ],
+        },
+      },
+      initialNavigation: {
+        surface: "admin",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /Administration/);
+  assert.match(markup, /Registered users/);
+  assert.match(markup, /test@example\.com/);
+  assert.match(markup, /1 changed in 7d/);
 });

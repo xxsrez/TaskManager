@@ -10,6 +10,9 @@ D1. Реализованы ChatGPT identity boundary, owner/ACL-scoped repositor
 подтверждайте кодом и проверками. Google sign-in, labels UI, hierarchy,
 relations, настройка workflow и полный filter contract пока не реализованы.
 Не описывайте весь MVP как завершённый.
+Application-level admin overview реализован отдельно от resource permissions:
+он показывает регистрации, activity timestamps и агрегаты owned records, но не
+даёт администратору читать содержимое чужих Tasks/Projects/Views.
 
 ## Источники истины
 
@@ -40,15 +43,16 @@ relations, настройка workflow и полный filter contract пока 
   `Label`, `TaskRelation`.
 - Основные поверхности: список задач, Kanban-доска, карточка задачи, список и
   карточка проекта, управление релизами, сохранённые представления, вход и
-  `Shared with me`.
+  `Shared with me`; отдельная server-gated поверхность — `Administration`.
 - Для функций в scope повторяйте актуальные Linear patterns по composition,
   controls, keyboard, selection, menus, drag-and-drop, density и visual states,
   как определено в `docs/specs/interface.md`.
 - Целевая среда: authentication-enabled ChatGPT Site с durable structured data;
   не добавляйте альтернативный production hosting без нового принятого ADR.
 - Не добавляйте teams, initiatives, cycles/sprints, roadmap/timeline,
-  комментарии, документы, inbox/triage, уведомления, аналитику, AI-функции или
-  CI/CD-интеграции без явного расширения спецификации.
+  комментарии, документы, inbox/triage, уведомления, product analytics сверх
+  принятого admin overview, AI-функции или CI/CD-интеграции без явного
+  расширения спецификации.
 
 ## Обязательные доменные инварианты
 

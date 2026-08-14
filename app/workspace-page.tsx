@@ -152,6 +152,9 @@ function metadataForNavigation(
   } else if (navigation.surface === "shared") {
     title = "Shared with me – Task Manager";
     description = "Task Manager resources shared with the current user.";
+  } else if (navigation.surface === "admin") {
+    title = "Administration – Task Manager";
+    description = "Registration and activity overview for Task Manager administrators.";
   }
 
   return {

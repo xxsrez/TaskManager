@@ -53,6 +53,7 @@ migrations. Это соответствует
 | Search | Identifier lookup и text search поверх разрешённого scope |
 | Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User |
 | Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
+| Administration | Server allowlist, registrations, activity и owner-scoped aggregate counts без content access |
 | UI shell | Linear-like navigation, shared controls, keyboard, themes и state |
 
 Модули — границы кода внутри одного приложения, а не отдельные сервисы. Для MVP
@@ -68,6 +69,8 @@ migrations. Это соответствует
   продукте нет uploads.
 - Provider credentials и session secrets задаются только в hosted environment
   settings; локально перечисляются лишь имена переменных в `.env.example`.
+- `TASK_MANAGER_ADMIN_EMAILS` хранится в hosted environment и разбирается как
+  нормализованный comma-separated allowlist. Значение не коммитится в source.
 - Save version создаёт reviewable deployment candidate; Deploy version делает
   выбранную версию production. Documentation-only изменение этого репозитория
   не является deployment.
@@ -182,6 +185,9 @@ migrations. Это соответствует
   unscoped repository methods application layer.
 - Authorization применяется до aggregates и error detail, чтобы исключить
   утечки counts, identifiers и существования records.
+- Единственное исключение cross-user aggregation — отдельный admin query,
+  который сначала проверяет hosted allowlist и возвращает только User metadata
+  и counts без content user-owned records.
 
 Первый срез использует JSON HTTP route handlers: bootstrap snapshot и команды
 создания/изменения Task, Project, Release, SavedView и AccessGrant. Каждая
@@ -227,6 +233,8 @@ saved-view query/display и полный provider metadata в `external_records`
   linking и отсутствие automatic email merge.
 - Access tests покрывают project inheritance, standalone Task, SavedView
   intersection, re-share, revoke и owner implicit access.
+- Admin tests покрывают allowlist normalization, отказ обычному User и
+  registration/activity aggregates при изменении source counts.
 - UI tests проверяют одинаковый состав list/board, selection/bulk actions,
   keyboard controls, Peek, drag rollback и сохранение views.
 - Visual regression и accessibility checks следуют
@@ -245,6 +253,9 @@ saved-view query/display и полный provider metadata в `external_records`
   безопасный первый вариант — запрещать её.
 - Одна забытая unscoped query может раскрыть чужие данные; owner/ACL scope
   должен быть частью repository API, schema indexes и integration tests.
+- Admin query намеренно cross-user и поэтому должен оставаться отдельным,
+  content-free и server-gated; повторное использование его projection в
+  обычных user surfaces увеличит риск утечки email и aggregate activity.
 - Разрешённый re-share при `full_access` увеличивает blast radius ошибочного
   grant; provenance и быстрый revoke обязательны.
 - Sites contract сегодня даёт ChatGPT identity через email/name headers, а не

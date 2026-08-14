@@ -24,6 +24,9 @@ MVP должен позволить вести задачи от backlog до п
   login provider.
 - **User identity** — подтверждённая связь User с аккаунтом ChatGPT или Google.
 - **Access grant** — явный полный доступ другого User к shareable resource.
+- **Application administrator** — пользователь из server-side allowlist,
+  которому доступна operational статистика системы без доступа к содержимому
+  чужих user-owned resources.
 
 ### 2.1 Интерфейсный принцип
 
@@ -55,14 +58,34 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - В профиле доступны display name, verified email, timezone, список связанных
   providers и sign out. Пароли Task Manager не хранит.
 
+### 3.1 Администрирование
+
+- Application administrator определяется только на сервере по нормализованному
+  verified email из hosted allowlist. Клиентский флаг или URL не предоставляет
+  admin access.
+- Для администратора доступен `/admin`; навигация скрыта для остальных, а
+  прямой запрос fail-closed и не возвращает user statistics.
+- Overview показывает число зарегистрированных и активных за последние 7 дней
+  пользователей, суммарные Tasks, Projects, Releases и SavedViews.
+- Таблица пользователей показывает display name, verified email, дату
+  регистрации, время последнего authenticated request, последнее изменение
+  owned Task/Project/Release/SavedView и owner-scoped counts по этим entities.
+- Admin overview не предоставляет доступ к title, description, filter query или
+  другому содержимому чужих records. Shared resources считаются по owner и не
+  дублируются у collaborator.
+- Отдельный login-event или audit-event log пока не моделируется. Поэтому
+  «last active» означает последний подтверждённый запрос, а не доказанный новый
+  sign-in внутри уже действующей Sites session.
+
 ## 4. Изоляция данных и sharing
 
 - Все Tasks, Projects, Releases, SavedViews, Labels и WorkflowStatuses имеют
   одного владельца и приватны по умолчанию.
 - Любой query, search, lookup и mutation возвращает только собственные records
   текущего User и resources с действующим `AccessGrant`.
-- Единственная permission в MVP — `full_access`; read-only/editor/admin ролей
-  пока нет.
+- Единственная resource permission collaborator в MVP — `full_access`;
+  read-only/editor/resource-admin ролей пока нет. Application administrator из
+  раздела 3.1 не является resource permission.
 - `full_access` включает чтение, редактирование, создание дочерних records,
   архивирование, восстановление и управление sharing в пределах выданного
   resource subtree. Владелец остаётся владельцем и всегда сохраняет доступ.
@@ -332,6 +355,9 @@ completed dates и archived state.
     Project, Release и Task; открыть каждый в новой вкладке, получить ту же
     entity/layout, проверить редирект старого internal-ID URL, Back/Forward и
     одинаковый `not found` для неизвестного и недоступного ID.
+18. Войти администратором, открыть `/admin` и увидеть актуальные user/activity
+    aggregates; повторить прямой запрос обычным User и получить fail-closed
+    результат без email, counts или подтверждения существования admin surface.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -346,3 +372,5 @@ completed dates и archived state.
 8. Labels, assignee, dates, estimates, subtasks и relations.
 9. Search, archive, concurrency conflicts, responsive/accessibility и visual
    parity hardening.
+10. Server-gated admin overview с registration/activity aggregates без
+    расширения доступа к user-owned content.
