@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useState } from "react";
-import Link from "next/link";
 import type { LinearImportReport } from "@/lib/linear-import";
 
 type JsonObject = Record<string, unknown>;
@@ -81,7 +80,9 @@ export function LinearImporter() {
                 <div key={label}><dt>{label}</dt><dd>{value}</dd></div>
               ))}
             </dl>
-            <Link className="button secondary" href="/">Open Task Manager</Link>
+            {/* Vinext's RSC prefetch currently throws on this isolated utility route. */}
+            {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+            <a className="button secondary" href="/">Open Task Manager</a>
           </section>
         )}
       </section>
