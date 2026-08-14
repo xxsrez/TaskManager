@@ -4,12 +4,12 @@
 
 ## Состояние проекта
 
-Проект находится в documentation-first стадии. Рабочего приложения,
-развёртывания и подтверждённых runtime-характеристик пока нет. ChatGPT Sites,
-вход через ChatGPT или Google, изоляция пользовательских данных и sharing с
-`full_access`, а также Linear-like интерфейс для функций в scope уже приняты
-как требования; прикладной стек ещё не выбран. Не
-описывайте предложенное поведение как реализованное.
+Проект имеет первый рабочий вертикальный срез на React/Vinext, Sites Worker и
+D1. Реализованы ChatGPT identity boundary, owner/ACL-scoped repository,
+задачи, проекты, релизы, views, sharing, list/board и details; точное состояние
+подтверждайте кодом и проверками. Google sign-in, labels UI, hierarchy,
+relations, настройка workflow и полный filter contract пока не реализованы.
+Не описывайте весь MVP как завершённый.
 
 ## Источники истины
 
@@ -24,8 +24,10 @@
    решения об identity, authorization, sharing и hosting;
 6. `docs/decisions/0002-linear-interface-parity.md` — принятое направление
    сходства с Linear и его границы;
-7. `docs/architecture.md` — логические границы и открытые технические решения;
-8. `docs/reports/2026-08-13-linear-product-study.md` — исследовательский
+7. `docs/decisions/0003-implementation-stack-and-auth-delivery.md` — выбранный
+   Sites runtime, D1/migrations и текущая граница Google auth;
+8. `docs/architecture.md` — логические границы и открытые технические решения;
+9. `docs/reports/2026-08-13-linear-product-study.md` — исследовательский
    контекст, но не самостоятельная спецификация продукта.
 
 При противоречии остановитесь, явно опишите его и обновите канонический
@@ -74,9 +76,9 @@
 
 ## Правила работы
 
-- Не переоткрывайте решения ADR-0001 без нового запроса пользователя. До начала
-  реализации зафиксируйте оставшийся выбор framework, Google OAuth/OIDC
-  integration и migrations отдельным ADR.
+- Не переоткрывайте решения ADR-0001 без нового запроса пользователя. Выбор
+  framework, Google OAuth/OIDC boundary и migrations зафиксирован в ADR-0003;
+  не переоткрывайте его без нового запроса.
 - Не переоткрывайте ADR-0002 и не заменяйте Linear-like controls произвольным
   UI без нового запроса. Перед реализацией крупной surface повторно сверяйте
   датированные официальные Linear references и фиксируйте отклонения.
@@ -108,14 +110,17 @@
 
 ## Проверка
 
-Пока кодовой базы нет, обязательный минимум перед коммитом:
+Обязательный минимум перед коммитом:
 
 ```bash
+npm run typecheck
+npm run lint
+npm test
+npm run build
 git diff --check
 ruby /Users/andrey/.codex/skills/project-docs/scripts/validate_docs.rb . \
   --strict-navigation
 ```
 
-После появления toolchain замените этот раздел точными командами форматирования,
-тестирования, сборки и проверки миграций. Не заявляйте о проверке, которую не
-запускали.
+При изменении `db/schema.ts` также запустите `npm run db:generate` и проверьте
+сгенерированную SQL migration. Не заявляйте о проверке, которую не запускали.

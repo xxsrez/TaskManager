@@ -1,7 +1,8 @@
 # Документация Task Manager
 
-Документация описывает предлагаемый продукт до начала реализации. Слова
-«должен» и «MVP» задают требования, но не означают, что функция уже существует.
+Документация описывает целевой MVP и первый реализованный вертикальный срез.
+Слова «должен» и «MVP» задают требования и не означают, что весь scope уже
+существует; подтверждённое состояние перечислено ниже отдельно.
 
 ## Рекомендуемый маршрут
 
@@ -17,9 +18,11 @@
    — принятые решения о пользователях, доступе и hosting.
 6. [ADR-0002: интерфейсный паритет с Linear](decisions/0002-linear-interface-parity.md)
    — принятое правило переноса controls и границы сходства.
-7. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+7. [ADR-0003: стек и authentication delivery](decisions/0003-implementation-stack-and-auth-delivery.md)
+   — выбранный Sites runtime, D1/migrations и граница Google auth.
+8. [Начальная архитектура](architecture.md) — логические компоненты и решения,
    которые ещё предстоит принять.
-8. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+9. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
    продуктовых заимствований и осознанных упрощений.
 
 ## Статусы документов
@@ -28,7 +31,12 @@
 - `Accepted` — решение, явно принятое пользователем или зафиксированное ADR.
 - `Implemented` — поведение подтверждено кодом и проверками.
 
-Текущие продуктовые и технические документы остаются `Proposed`. В
+Спецификации целевого MVP остаются `Proposed`. Первый срез уже реализует вход
+через ChatGPT, D1 persistence, owner/ACL-scoped задачи, проекты, релизы,
+сохранённые views, sharing, list/board, details, filters, selection и основные
+keyboard actions. Labels, assignee picker, hierarchy/relations, настройка
+workflow, полный filter AST, Google sign-in и исчерпывающая acceptance matrix
+ещё не реализованы. В
 [ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md) зафиксированы
 `Accepted`-решения пользователя: отдельные данные каждого пользователя,
 authentication через ChatGPT или Google, sharing с единственным уровнем

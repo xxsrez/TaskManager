@@ -4,11 +4,12 @@
 
 Последнее обновление: 2026-08-14
 
-Архитектура остаётся логической в выборе framework и API style, но deployment
-и identity boundaries уже определены в
-[ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md): ChatGPT
-Sites, вход через ChatGPT или Google, раздельные owner scopes и sharing через
-единственный уровень `full_access`. Рабочей реализации пока нет.
+Архитектура реализована первым вертикальным срезом на TypeScript, React 19,
+Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentication
+зафиксированы в
+[ADR-0003](decisions/0003-implementation-stack-and-auth-delivery.md). Документ
+также содержит целевые модули следующих срезов; их наличие здесь не означает,
+что весь MVP уже реализован.
 
 ## Архитектурные цели
 
@@ -35,10 +36,11 @@ flowchart LR
     D --> DB[(Sites D1)]
 ```
 
-ChatGPT Sites — production target, а D1 — target relational binding для
-структурированных пользовательских данных. Это соответствует
-[официальной документации Sites](https://learn.chatgpt.com/docs/sites), но
-конкретные framework, query layer и migration tool ещё не выбраны.
+ChatGPT Sites — production target, D1 — relational binding для
+структурированных пользовательских данных. Приложение использует Vinext/Vite,
+prepared D1 queries за repository boundary и Drizzle Kit для versioned SQL
+migrations. Это соответствует
+[официальной документации Sites](https://learn.chatgpt.com/docs/sites).
 
 ## Логические модули
 
@@ -156,28 +158,30 @@ ChatGPT Sites — production target, а D1 — target relational binding для
 - Authorization применяется до aggregates и error detail, чтобы исключить
   утечки counts, identifiers и существования records.
 
-Конкретный REST/GraphQL/RPC стиль остаётся открытым.
+Первый срез использует JSON HTTP route handlers: bootstrap snapshot и команды
+создания/изменения Task, Project, Release, SavedView и AccessGrant. Каждая
+команда возвращает новый authorization-scoped snapshot; дальнейшая pagination
+и command-specific responses будут добавлены при росте объёма данных.
 
 ## Хранение и индексы
 
-Предварительно нужны:
+В migration baseline уже входят:
 
 - D1 migrations для User, UserIdentity, AccessGrant и доменных таблиц;
 - unique index `(provider, provider_account_key)` для identities;
 - unique active-grant constraint для resource/grantee;
 - owner-prefixed indexes для каждого user-owned query path;
 - owner-scoped sequence/index для `Task.identifier`;
-- индексы по status, project, release, assignee, priority, due/updated dates и
-  `archived_at`;
-- join indexes для labels и task relations;
-- полнотекстовый индекс title/description;
+- индексы по owner/status/archive, project/release и updated time;
+- join table для labels;
 - constraint или transactional validation project/release consistency;
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
 
-Физическая D1 schema и migration tool выбираются вместе со framework. Все
-foreign keys и compound indexes должны сохранять owner consistency либо
-проверяться атомарно в transaction boundary.
+Полнотекстовый индекс, relations schema, дополнительные assignee/priority/due
+indexes и database-level foreign keys остаются следующими schema slices.
+Owner consistency и project/release invariants в текущем срезе проверяются на
+server mutation boundary.
 
 ## Надёжность и проверка
 
@@ -224,12 +228,11 @@ foreign keys и compound indexes должны сохранять owner consisten
 - Sites public beta limits и отсутствие data residency могут потребовать
   пересмотра hosting до обработки чувствительных или регулируемых данных.
 
-## Решения до первой реализации
+## Открытые решения следующих срезов
 
-1. Sites-compatible язык/framework, D1 query layer и migration tool.
-2. Конкретный Google OAuth/OIDC adapter и callback/session contract в Sites.
-3. REST, GraphQL либо иной API contract.
-4. Session lifetime, CSRF protection, audit event minimum и account recovery.
-5. UX explicit linking/unlinking providers и смены primary email.
-6. Нужны ли real-time updates в MVP или достаточно refresh/conflict handling.
-7. Политика `started_at` при повторном открытии и immutability released scope.
+1. Конкретный Google OAuth/OIDC adapter и callback/session contract в Sites.
+2. CSRF hardening сверх Sites session boundary, audit event minimum и account
+   recovery.
+3. UX explicit linking/unlinking providers и смены primary email.
+4. Порог перехода snapshot API к cursor pagination и точечным responses.
+5. Политика immutability released scope и нормализация manual ranks.

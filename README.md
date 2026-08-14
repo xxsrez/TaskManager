@@ -8,9 +8,21 @@ Task Manager — компактная система управления раб
 функционально и стилистически максимально близко к Linear, но с собственным
 брендингом.
 
-Сейчас репозиторий находится на стадии проектирования: приложение ещё не
-реализовано, а прикладной стек не выбран. Целевая площадка — ChatGPT Sites;
-вход должен работать через ChatGPT или Google.
+В репозитории уже есть первый рабочий вертикальный срез для ChatGPT Sites:
+React/Vinext UI, server routes, D1 schema и migrations, вход через ChatGPT,
+изолированные owner scopes и sharing с `full_access`. Google sign-in остаётся
+обязательным, но ещё не реализован: доступный Sites contract пока не даёт
+подтверждённого external-provider adapter.
+
+## Локальный запуск
+
+```bash
+npm install
+npm run dev
+```
+
+Основные проверки: `npm run typecheck`, `npm run lint`, `npm test` и
+`npm run build`.
 
 ## Документация
 
@@ -22,4 +34,5 @@ Task Manager — компактная система управления раб
 - [Начальная архитектура](docs/architecture.md)
 - [Решение об identity, sharing и Sites](docs/decisions/0001-identity-sharing-and-sites-hosting.md)
 - [Решение об интерфейсном паритете с Linear](docs/decisions/0002-linear-interface-parity.md)
+- [Решение о стеке и authentication delivery](docs/decisions/0003-implementation-stack-and-auth-delivery.md)
 - [Исследование Linear](docs/reports/2026-08-13-linear-product-study.md)
