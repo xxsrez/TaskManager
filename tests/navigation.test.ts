@@ -4,6 +4,7 @@ import {
   navigationHistoryState,
   navigationPath,
   parseNavigationPath,
+  pathFromRouteSegments,
   resolveNavigationHistoryState,
   resolveNavigationTarget,
 } from "../lib/navigation";
@@ -50,6 +51,17 @@ test("REST-style paths identify views, boards, projects, releases, and tasks", (
     kind: "task",
     id: "task-1",
   });
+});
+
+test("catch-all route segments are encoded exactly once in local and production runtimes", () => {
+  assert.equal(
+    pathFromRouteSegments(["linear:view:user-1:homeostat", "board"]),
+    "/linear%3Aview%3Auser-1%3Ahomeostat/board",
+  );
+  assert.equal(
+    pathFromRouteSegments(["linear%3Aview%3Auser-1%3Ahomeostat", "board"]),
+    "/linear%3Aview%3Auser-1%3Ahomeostat/board",
+  );
 });
 
 test("a direct view board path restores both its query surface and layout", () => {

@@ -128,8 +128,10 @@ migrations. Это соответствует
 
 ### Открытие прямой ссылки
 
-1. Server route разбирает allowlisted path contract для views, projects,
-   releases, tasks и layout `list|board`; неизвестные extra segments
+1. Server route нормализует catch-all segments ровно через один
+   percent-decode/encode cycle, независимо от того, передал runtime decoded или
+   encoded params, затем разбирает allowlisted path contract для views,
+   projects, releases, tasks и layout `list|board`; неизвестные extra segments
    отклоняются.
 2. Repository строит один ACL-scoped snapshot до разрешения route ID, поэтому
    неизвестный и недоступный record имеют одинаковый `not found` результат.

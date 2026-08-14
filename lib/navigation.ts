@@ -62,6 +62,19 @@ export function parseNavigationSegments(
   return layout ? { kind, id: segments[1], layout } : null;
 }
 
+export function pathFromRouteSegments(segments: string[]): string {
+  return `/${segments
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .map(encodeURIComponent)
+    .join("/")}`;
+}
+
 export function resolveNavigationTarget(
   target: NavigationTarget,
   data: AppSnapshot,
