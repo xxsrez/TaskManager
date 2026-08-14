@@ -36,7 +36,8 @@
 сохранённые views, sharing, list/board, details, filters, selection и основные
 keyboard actions. Реализованы хранение и read-only details для labels,
 parent/subtasks и task relations, а также идемпотентный Linear snapshot import
-с provenance. Редакторы labels/hierarchy/relations, assignee picker, настройка
+с provenance и read-only архивом импортированных комментариев. Редакторы
+labels/hierarchy/relations/comments, assignee picker, настройка
 workflow, полный filter AST, Google sign-in и исчерпывающая acceptance matrix
 ещё не реализованы. В
 [ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md) зафиксированы

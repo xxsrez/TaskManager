@@ -1166,6 +1166,48 @@ function mapExternalSource(row: DbRow): ExternalSourceRecord {
             value !== null,
         )
     : [];
+  const comments = Array.isArray(metadata.comments)
+    ? metadata.comments
+        .map((value) => {
+          if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return null;
+          }
+          const comment = value as Record<string, unknown>;
+          const author =
+            comment.author &&
+            typeof comment.author === "object" &&
+            !Array.isArray(comment.author)
+              ? (comment.author as Record<string, unknown>)
+              : {};
+          if (
+            typeof comment.id !== "string" ||
+            typeof comment.body !== "string" ||
+            typeof comment.createdAt !== "string" ||
+            typeof comment.updatedAt !== "string"
+          ) {
+            return null;
+          }
+          return {
+            id: comment.id,
+            body: comment.body,
+            authorName:
+              typeof author.name === "string" ? author.name : "Linear user",
+            createdAt: comment.createdAt,
+            updatedAt: comment.updatedAt,
+            parentId:
+              typeof comment.parentId === "string" ? comment.parentId : null,
+            quotedText:
+              typeof comment.quotedText === "string"
+                ? comment.quotedText
+                : null,
+          };
+        })
+        .filter(
+          (
+            value,
+          ): value is ExternalSourceRecord["comments"][number] => value !== null,
+        )
+    : [];
   return {
     targetType: String(
       row.target_type,
@@ -1182,9 +1224,8 @@ function mapExternalSource(row: DbRow): ExternalSourceRecord {
     stateHistoryEntries: Array.isArray(metadata.stateHistory)
       ? metadata.stateHistory.length
       : 0,
-    commentEntries: Array.isArray(metadata.comments)
-      ? metadata.comments.length
-      : 0,
+    commentEntries: comments.length,
+    comments,
   };
 }
 

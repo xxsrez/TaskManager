@@ -296,7 +296,10 @@ List повторяет плотную grouped-list модель Linear.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
 - Timestamps muted и доступны в нижней metadata section.
-- Activity/comments area не рисуется, поскольку эти функции вне MVP.
+- Native activity/comments area не рисуется, поскольку эти функции вне MVP.
+  Для импортированной задачи ниже relations допускается отдельная read-only
+  provenance section с исходными комментариями и attachment links без write
+  controls.
 - Изменение title/description происходит inline, с явными saving/error states и
   version conflict handling.
 

@@ -109,6 +109,9 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - parent и subtasks;
 - relations: `blocks`, `related`, `duplicate_of`;
 - created, updated, started, completed, canceled и archived timestamps.
+- для импортированной задачи — source provenance, включая read-only archive
+  исходных комментариев и ссылки на исходные attachments; это не добавляет
+  создание или редактирование comments/uploads в Task Manager.
 
 Assignee обязан быть владельцем Task либо пользователем с доступом к Task или
 её Project. Выбор пользователя без доступа отклоняется.

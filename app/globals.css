@@ -313,6 +313,13 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .source-metadata a { color: var(--accent); }
 .source-metadata a:hover { text-decoration: underline; }
 .source-metadata code { overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
+.comment-archive { display: grid; gap: 8px; }
+.comment-archive article { display: grid; gap: 7px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
+.comment-archive article header { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; }
+.comment-archive article header b { color: var(--text-secondary); font-size: 11px; font-weight: 560; }
+.comment-archive article header small { margin-left: auto; }
+.comment-archive blockquote { margin: 0; padding: 5px 8px; border-left: 2px solid var(--border-strong); color: var(--muted); font-size: 11px; white-space: pre-wrap; }
+.comment-archive p { margin: 0; color: var(--text-secondary); line-height: 18px; white-space: pre-wrap; }
 .timestamps { display: flex; flex-wrap: wrap; gap: 12px; padding: 14px 0; color: var(--muted); font-size: 10px; }
 .archive-action { margin-top: 16px; }
 .peek { position: fixed; z-index: 90; right: 24px; bottom: 24px; width: min(390px, calc(100vw - 48px)); padding: 13px 16px 15px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--raised); box-shadow: var(--shadow); }

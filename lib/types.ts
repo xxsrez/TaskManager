@@ -115,6 +115,15 @@ export type ExternalSourceRecord = {
   }>;
   stateHistoryEntries: number;
   commentEntries: number;
+  comments: Array<{
+    id: string;
+    body: string;
+    authorName: string;
+    createdAt: string;
+    updatedAt: string;
+    parentId: string | null;
+    quotedText: string | null;
+  }>;
 };
 
 export type SavedViewRecord = {
