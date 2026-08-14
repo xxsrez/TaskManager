@@ -142,21 +142,20 @@ relations, dependency snapshots используемых catalogs, active sharin
 descriptors, warnings и SHA-256. Это переносимая страховка владельца, но не
 отдельная live entity и не ACL capability.
 
-`UserImportSession` изолирует staged Project restore и Linear migration:
+`UserImportSession` изолирует staged Project restore:
 
 | Поле | Семантика |
 |---|---|
 | `id`, `created_by_user_id` | Непрозрачный session ID и authenticated User |
-| `kind` | `project_backup` или `linear` |
-| `status` | Ожидание OAuth, промежуточный upload/planning, готовый `snapshot`/`staged`, `applied`, `expired` либо `failed` |
-| `source_json`, `scope_json` | Проверенный source inventory и выбранный scope/mapping |
+| `kind` | `project_backup` |
+| `status` | `uploading`, `staged`, `applying`, `applied`, `expired` либо `failed` |
+| `source_json` | Origin и public identity исходного Project bundle |
 | `preview_json`, `payload_sha256` | Counts/warnings/conflicts и identity staged payload |
 | `expires_at`, `created_at`, `applied_at` | Ограниченный lifecycle и audit metadata |
 
 Rows staging хранятся отдельно по `(import_id, row_type, ordinal)` и не
-участвуют в product queries. OAuth PKCE verifier живёт только до callback;
-Linear access/refresh tokens после bounded snapshot отзываются и не сохраняются
-в session rows. Apply читает только normalized staged plan.
+участвуют в product queries. Apply читает только полностью подготовленный
+normalized staged plan.
 
 ## AccessGrant
 
@@ -403,11 +402,8 @@ Task details как read-only archive. Это не означает наличи
     текущего администратора. Replace всех live tables атомарен; ошибка оставляет
     предыдущее состояние без частичного удаления или импорта.
 19. Project export/restore требует effective role `owner`, совпадение source
-    current owner и того же Site. Project subtree replace и Linear staged apply
-    атомарны; staged rows никогда не дают read access к live resources.
-20. Linear `ExternalRecord.source_id` использует immutable GraphQL UUID.
-    Mapping Linear User в Task Manager User выполняется явно и не создаёт grant
-    автоматически; assignee без effective access не применяется.
+    current owner и того же Site. Project subtree replace атомарен; staged rows
+    никогда не дают read access к live resources.
 
 ## Намеренно не моделируется
 

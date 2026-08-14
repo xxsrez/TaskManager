@@ -342,11 +342,8 @@ export const userImportSessions = sqliteTable(
     createdByUserId: text("created_by_user_id").notNull(),
     kind: text("kind").notNull(),
     status: text("status").notNull(),
-    stateHash: text("state_hash"),
     sourceJson: text("source_json").notNull().default("{}"),
-    scopeJson: text("scope_json").notNull().default("{}"),
     previewJson: text("preview_json").notNull().default("{}"),
-    secretJson: text("secret_json").notNull().default("{}"),
     payloadSha256: text("payload_sha256"),
     sourceExportedAt: text("source_exported_at"),
     projectId: text("project_id"),
@@ -361,7 +358,6 @@ export const userImportSessions = sqliteTable(
       table.status,
       table.expiresAt,
     ),
-    uniqueIndex("idx_user_import_sessions_state_hash").on(table.stateHash),
   ],
 );
 

@@ -137,7 +137,7 @@ function migratedDatabase() {
   for (const migration of [
     "0000_chilly_malice.sql", "0001_wide_skreet.sql", "0002_stiff_madame_hydra.sql",
     "0003_green_white_queen.sql", "0004_large_rocket_racer.sql", "0005_mixed_bruce_banner.sql",
-    "0006_polite_randall_flagg.sql",
+    "0006_complex_reavers.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

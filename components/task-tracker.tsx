@@ -727,9 +727,9 @@ export function TaskTracker({
                   <Inbox size={14} />
                   <span>My tasks</span>
                 </a>
-                <a className="account-menu-item" href="/import" role="menuitem">
-                  <Upload size={14} />
-                  <span>Import &amp; export</span>
+                <a className="account-menu-item" href="/import/project" role="menuitem">
+                  <Download size={14} />
+                  <span>Project backup</span>
                 </a>
                 {data.admin && (
                   <a

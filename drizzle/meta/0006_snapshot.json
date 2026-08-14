@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "0bf64442-fa9f-4613-b26e-8c539481df94",
+  "id": "a80ce6b3-8f57-4f7a-9631-1b2cee028830",
   "prevId": "631c8cf7-2b37-4e5a-804d-e36e3f5dce0b",
   "tables": {
     "access_grants": {
@@ -1347,13 +1347,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "state_hash": {
-          "name": "state_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "source_json": {
           "name": "source_json",
           "type": "text",
@@ -1362,24 +1355,8 @@
           "autoincrement": false,
           "default": "'{}'"
         },
-        "scope_json": {
-          "name": "scope_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'{}'"
-        },
         "preview_json": {
           "name": "preview_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'{}'"
-        },
-        "secret_json": {
-          "name": "secret_json",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -1440,13 +1417,6 @@
             "expires_at"
           ],
           "isUnique": false
-        },
-        "idx_user_import_sessions_state_hash": {
-          "name": "idx_user_import_sessions_state_hash",
-          "columns": [
-            "state_hash"
-          ],
-          "isUnique": true
         }
       },
       "foreignKeys": {},

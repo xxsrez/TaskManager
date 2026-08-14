@@ -257,25 +257,6 @@ export type AppliedProjectBackup = {
   sharingRestored: boolean;
 };
 
-export type LinearMigrationPreview = {
-  importId: string;
-  workspace: string;
-  scope: { mode: "workspace" | "projects" | "assignees"; ids: string[] };
-  sourceCounts: Record<string, number>;
-  counts: Record<string, number>;
-  changes: { create: number; update: number };
-  mappedUsers: number;
-  unmappedUsers: Array<{ id: string; name: string; email: string }>;
-  warnings: string[];
-  sha256: string;
-};
-
-export type AppliedLinearMigration = {
-  applied: true;
-  counts: Record<string, number>;
-  warnings: string[];
-};
-
 export type AppSnapshot = {
   user: UserRecord;
   admin: AdminOverview | null;

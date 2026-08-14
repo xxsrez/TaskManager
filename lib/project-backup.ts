@@ -177,12 +177,12 @@ export async function stageProjectBackup(
   };
   const statements: D1PreparedStatement[] = [
     db.prepare("DELETE FROM user_import_rows WHERE import_id IN (SELECT id FROM user_import_sessions WHERE expires_at < CURRENT_TIMESTAMP)"),
-    db.prepare("UPDATE user_import_sessions SET status = 'expired', secret_json = '{}' WHERE status NOT IN ('applied', 'expired') AND expires_at < CURRENT_TIMESTAMP"),
+    db.prepare("UPDATE user_import_sessions SET status = 'expired' WHERE status NOT IN ('applied', 'expired') AND expires_at < CURRENT_TIMESTAMP"),
     db.prepare(`INSERT INTO user_import_sessions
-      (id, created_by_user_id, kind, status, source_json, scope_json,
-       preview_json, secret_json, payload_sha256, source_exported_at,
+      (id, created_by_user_id, kind, status, source_json,
+       preview_json, payload_sha256, source_exported_at,
        project_id, expires_at)
-      VALUES (?, ?, 'project_backup', 'uploading', ?, '{}', ?, '{}', ?, ?, ?, ?)`)
+      VALUES (?, ?, 'project_backup', 'uploading', ?, ?, ?, ?, ?, ?)`)
       .bind(
         importId,
         currentUser.id,
@@ -300,7 +300,7 @@ export async function applyProjectBackup(
       ORDER BY ordinal`).bind(currentUser.id, input.importId));
   }
   statements.push(
-    db.prepare("UPDATE user_import_sessions SET status = 'applied', applied_at = CURRENT_TIMESTAMP, secret_json = '{}' WHERE id = ? AND status = 'applying'").bind(input.importId),
+    db.prepare("UPDATE user_import_sessions SET status = 'applied', applied_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'applying'").bind(input.importId),
     db.prepare("DELETE FROM user_import_rows WHERE import_id = ?").bind(input.importId),
   );
   try {

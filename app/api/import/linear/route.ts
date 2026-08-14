@@ -1,16 +1,16 @@
-import { readJson, withUser } from "@/lib/http";
-import { applyLinearMigration } from "@/lib/linear-migration";
+import { withUser } from "@/lib/http";
+import { importLinearWorkspace } from "@/lib/linear-import";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  if (request.headers.get("x-task-manager-action") !== "linear-import") {
-    return Response.json({ error: "Linear import action header is required" }, { status: 400 });
+  const contentLength = Number(request.headers.get("content-length") ?? 0);
+  if (contentLength > 10_000_000) {
+    return Response.json(
+      { error: "Linear import payload is too large" },
+      { status: 413 },
+    );
   }
-  const input = await readJson(request);
-  return withUser((user) => applyLinearMigration(user, {
-    importId: String(input.importId ?? ""),
-    sha256: String(input.sha256 ?? ""),
-    confirmation: String(input.confirmation ?? ""),
-  }));
+  const payload = await request.json().catch(() => null);
+  return withUser((user) => importLinearWorkspace(user, payload));
 }

@@ -385,30 +385,8 @@ completed dates и archived state.
 - Каждый видимый control должен иметь реализованное действие или ясное
   disabled-состояние по текущему контексту; controls функций вне MVP не
   показываются.
-- Structured application data сохраняются в Sites D1. Provider application
-  secrets хранятся только в hosted environment settings; одноразовый PKCE
-  verifier может жить лишь в short-lived owner-scoped staging session.
-
-### 12.2 Миграция из Linear
-
-- Authenticated User может запустить одноразовую read-only миграцию через
-  Linear OAuth 2.0 с `state` и PKCE. Provider tokens после bounded snapshot
-  отзываются и не входят в постоянные product records.
-- Scope выбирается до apply: весь workspace, один или несколько Linear Projects
-  либо issues одного или нескольких Linear Users. User scope означает
-  `assignee`, не creator.
-- Preview строит closure необходимых Projects, milestones, statuses, labels,
-  custom views, hierarchy, relations, comments/attachments metadata и archive
-  state. Out-of-scope references сохраняются как warnings/provenance.
-- Linear GraphQL UUID — ключ идемпотентности, readable issue identifier —
-  отдельное пользовательское поле. Повторный import обновляет прежнюю цель.
-- Email не объединяет identities автоматически. Current Linear viewer по
-  умолчанию сопоставляется current Task Manager User; остальные assignees явно
-  mapping-ятся на уже зарегистрированных Users либо остаются unassigned.
-- Migration не создаёт sharing неявно, не синхронизирует изменения обратно в
-  Linear и не копирует attachment binaries без R2-backed storage.
-- Apply использует только проверенный staged plan и одну D1 transaction;
-  collision или invalid reference не оставляет частичных данных.
+- Structured application data сохраняются в Sites D1. Provider secrets и
+  session secrets хранятся только в hosted environment settings.
 
 ## 13. Проверяемые сценарии приёмки
 
@@ -482,13 +460,6 @@ completed dates и archived state.
 27. Повреждённый Project bundle, owner mismatch, collision или отсутствующий
     catalog dependency отклоняется до mutation. Ошибка apply откатывает весь
     subtree; sharing без opt-in не восстанавливается.
-28. Через Linear OAuth выбрать два Projects, увидеть inventory/preview и
-    atomically импортировать только их issues с milestones, workflow, labels,
-    hierarchy, relations, custom-view/provenance metadata и archive state.
-29. Повторить Linear migration по двум выбранным assignees: scope включает
-    только назначенные им issues, unmapped Users становятся unassigned,
-    external references вне closure показываются warnings, повторный apply по
-    тем же GraphQL UUID не создаёт дублей.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -513,5 +484,3 @@ completed dates и archived state.
     спроектированные bulk/metadata commands.
 14. Owner-only Project bundle export/staging/exact restore с preview,
     confirmation, sharing opt-in и rollback tests.
-15. Self-service Linear OAuth, workspace/project/assignee inventory, bounded
-    provider snapshot, explicit mapping, staged preview и atomic apply.

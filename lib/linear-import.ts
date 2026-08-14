@@ -122,8 +122,6 @@ export type LinearImportPlan = {
   externalRecords: PlannedExternalRecord[];
 };
 
-export type LinearUserMapping = Record<string, string | null>;
-
 const STATUS_PRESENTATION: Record<
   string,
   { category: string; color: string; position: number; isDefault?: boolean }
@@ -153,7 +151,6 @@ const BASE_STATUS_NAMES = new Set([
 export function buildLinearImportPlan(
   ownerUserId: string,
   value: unknown,
-  userMapping: LinearUserMapping = {},
 ): LinearImportPlan {
   const payload = object(value, "Linear import payload");
   if (payload.version !== 1) {
@@ -164,7 +161,6 @@ export function buildLinearImportPlan(
     throw new ValidationError("Import source must be Linear");
   }
   const exportedAt = isoInstant(source.exportedAt, "exportedAt");
-  const viewerId = optionalString(source.viewerId);
   const sourceStatuses = array(payload.statuses, "statuses");
   const sourceLabels = array(payload.labels, "labels");
   const sourceProjects = array(payload.projects, "projects");
@@ -233,14 +229,7 @@ export function buildLinearImportPlan(
       summary: optionalString(row.summary) ?? "",
       description: optionalString(row.description) ?? "",
       status: projectStatus(status.type),
-      leadUserId: mappedUserId(
-        row.lead && typeof row.lead === "object" && !Array.isArray(row.lead)
-          ? (row.lead as JsonObject).id
-          : null,
-        viewerId,
-        ownerUserId,
-        userMapping,
-      ),
+      leadUserId: row.lead ? ownerUserId : null,
       startDate: optionalDate(row.startDate),
       targetDate: optionalDate(row.targetDate),
       icon: optionalString(row.icon) ?? "cube",
@@ -307,9 +296,8 @@ export function buildLinearImportPlan(
   const taskLabels: Array<{ taskId: string; labelId: string }> = [];
   const tasks = sourceIssues.map((entry, index) => {
     const row = object(entry, `issues[${index}]`);
-    const identifier = requiredString(row.id, `issues[${index}].id`);
-    const sourceId = optionalString(row.sourceId) ?? identifier;
-    const sequenceNumber = linearSequence(identifier);
+    const sourceId = requiredString(row.id, `issues[${index}].id`);
+    const sequenceNumber = linearSequence(sourceId);
     const statusName = requiredString(row.status, `issues[${index}].status`);
     const status = statusByName.get(statusName);
     if (!status) {
@@ -349,18 +337,13 @@ export function buildLinearImportPlan(
     const task: PlannedTask = {
       id: targetId(ownerUserId, "task", sourceId),
       sourceId,
-      identifier,
+      identifier: sourceId,
       sequenceNumber,
       title: requiredString(row.title, `issues[${index}].title`),
       description: optionalString(row.description) ?? "",
       statusId: status.id,
       priority: linearPriority(row.priority),
-      assigneeUserId: mappedUserId(
-        row.assigneeId,
-        viewerId,
-        ownerUserId,
-        userMapping,
-      ),
+      assigneeUserId: row.assigneeId ? ownerUserId : null,
       projectId: projectId ?? null,
       releaseId: releaseId ?? null,
       estimate: optionalInteger(row.estimate),
@@ -375,11 +358,11 @@ export function buildLinearImportPlan(
       updatedAt: isoInstant(row.updatedAt, `issues[${index}].updatedAt`),
     };
     validateTerminalTimestamps(task, status.category);
-    if (taskBySourceId.has(identifier)) {
-      throw new ValidationError(`Duplicate Linear issue ${identifier}`);
+    if (taskBySourceId.has(sourceId)) {
+      throw new ValidationError(`Duplicate Linear issue ${sourceId}`);
     }
-    taskBySourceId.set(identifier, task);
-    const comments = commentsByIssue[identifier] ?? commentsByIssue[sourceId];
+    taskBySourceId.set(sourceId, task);
+    const comments = commentsByIssue[sourceId];
     externalRecords.push(
       externalRecord(ownerUserId, "task", task.id, sourceId, {
         ...row,
@@ -908,30 +891,15 @@ function externalRecord(
   targetRecordId: string,
   sourceId: string,
   raw: JsonObject,
-  identityKey = sourceId,
 ): PlannedExternalRecord {
   return {
-    id: targetId(ownerUserId, `external-${targetType}`, identityKey),
+    id: targetId(ownerUserId, `external-${targetType}`, sourceId),
     targetType,
     targetId: targetRecordId,
     sourceId,
     sourceUrl: optionalString(raw.url),
     metadataJson: JSON.stringify(raw),
   };
-}
-
-function mappedUserId(
-  sourceUserId: unknown,
-  viewerId: string | null,
-  ownerUserId: string,
-  mapping: LinearUserMapping,
-) {
-  const sourceId = optionalString(sourceUserId);
-  if (!sourceId) return null;
-  if (Object.prototype.hasOwnProperty.call(mapping, sourceId)) {
-    return mapping[sourceId] ?? null;
-  }
-  return viewerId === sourceId ? ownerUserId : null;
 }
 
 async function runBatches(statements: D1PreparedStatement[]) {

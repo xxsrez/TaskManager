@@ -90,7 +90,7 @@ export function ProjectBackupManager() {
         <button className="button danger" disabled={busy || confirmation !== preview.projectName || (preview.projectExists && !downloaded)} onClick={() => void apply()}>{busy ? "Restoring…" : "Restore project"}</button>
       </section>}
       {applied && <section className="import-report"><h2>Project restored</h2><p>{applied.projectName} was applied atomically.</p><a className="button primary" href="/projects">Open Task Manager</a></section>}
-      <a className="button ghost" href="/import">Back to import &amp; export</a>
+      <a className="button ghost" href="/">Back to Task Manager</a>
     </section></main>
   );
 }

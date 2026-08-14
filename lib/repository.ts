@@ -286,11 +286,8 @@ const schemaStatements = [
     created_by_user_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
-    state_hash TEXT,
     source_json TEXT NOT NULL DEFAULT '{}',
-    scope_json TEXT NOT NULL DEFAULT '{}',
     preview_json TEXT NOT NULL DEFAULT '{}',
-    secret_json TEXT NOT NULL DEFAULT '{}',
     payload_sha256 TEXT,
     source_exported_at TEXT,
     project_id TEXT,
@@ -300,8 +297,6 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_user_import_sessions_owner_status
     ON user_import_sessions(created_by_user_id, kind, status, expires_at)`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_user_import_sessions_state_hash
-    ON user_import_sessions(state_hash)`,
   `CREATE TABLE IF NOT EXISTS user_import_rows (
     import_id TEXT NOT NULL,
     row_type TEXT NOT NULL,
