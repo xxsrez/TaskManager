@@ -53,7 +53,7 @@ migrations. Это соответствует
 | Search | Identifier lookup и text search поверх разрешённого scope |
 | Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User |
 | Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
-| Administration | Server allowlist, registrations, activity и owner-scoped aggregate counts без content access |
+| Administration | Server allowlist, content-free overview и explicit full-state backup/restore |
 | UI shell | Linear-like navigation, shared controls, keyboard, themes и state |
 
 Модули — границы кода внутри одного приложения, а не отдельные сервисы. Для MVP
@@ -188,6 +188,9 @@ migrations. Это соответствует
 - Единственное исключение cross-user aggregation — отдельный admin query,
   который сначала проверяет hosted allowlist и возвращает только User metadata
   и counts без content user-owned records.
+- Второе explicit исключение — system backup/restore по ADR-0004. Оно не
+  переиспользуется product surfaces: export читает полный logical state, а
+  restore работает только через validated staging и atomic replace.
 
 Первый срез использует JSON HTTP route handlers: bootstrap snapshot и команды
 создания/изменения Task, Project, Release, SavedView и AccessGrant. Каждая
@@ -207,6 +210,8 @@ migrations. Это соответствует
 - join table для labels;
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of`;
 - `external_records` для owner-scoped provenance идемпотентного импорта;
+- `admin_import_sessions` и `admin_import_rows` для изолированного preflight,
+  payload staging и минимального audit metadata полного restore;
 - constraint или transactional validation project/release consistency;
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
@@ -223,6 +228,22 @@ Authenticated endpoint `/api/import/linear` принимает заранее
 исходные identifiers, timestamps, archive state, hierarchy, labels, relations,
 saved-view query/display и полный provider metadata в `external_records`.
 
+### Системный backup и restore
+
+1. `POST /api/admin/export` проверяет allowlist и одной read-only D1 batch
+   transaction получает все live application tables в стабильном порядке.
+2. Versioned JSON envelope получает timestamp, per-table counts и SHA-256;
+   response не кэшируется и скачивается как attachment.
+3. `POST /api/admin/import/validate` ограничивает payload, полностью проверяет
+   schema/domain/identity references и atomically сохраняет verified rows в
+   staging namespace.
+4. UI показывает preview и требует отдельный текущий backup плюс literal
+   `RESTORE` confirmation.
+5. `POST /api/admin/import` разрешает только создателя staged session и одной
+   D1 batch transaction удаляет live rows, вставляет verified staged rows,
+   отмечает session applied и очищает payload. Batch failure откатывает весь
+   cutover.
+
 ## Надёжность и проверка
 
 - Domain tests проверяют переходы статусов, timestamps, release consistency,
@@ -235,6 +256,9 @@ saved-view query/display и полный provider metadata в `external_records`
   intersection, re-share, revoke и owner implicit access.
 - Admin tests покрывают allowlist normalization, отказ обычному User и
   registration/activity aggregates при изменении source counts.
+- Backup tests покрывают format/domain validation, identity continuity,
+  отсутствие Administration в primary sidebar, preview без live mutation и
+  atomic replace/rollback boundary.
 - UI tests проверяют одинаковый состав list/board, selection/bulk actions,
   keyboard controls, Peek, drag rollback и сохранение views.
 - Visual regression и accessibility checks следуют
@@ -256,6 +280,9 @@ saved-view query/display и полный provider metadata в `external_records`
 - Admin query намеренно cross-user и поэтому должен оставаться отдельным,
   content-free и server-gated; повторное использование его projection в
   обычных user surfaces увеличит риск утечки email и aggregate activity.
+- System backup содержит весь cross-user content и identity metadata. Файл
+  следует считать чувствительным, import ограничивать same-origin admin
+  operation, а invalid snapshot отклонять до staging/cutover.
 - Разрешённый re-share при `full_access` увеличивает blast radius ошибочного
   grant; provenance и быстрый revoke обязательны.
 - Sites contract сегодня даёт ChatGPT identity через email/name headers, а не

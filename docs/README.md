@@ -20,11 +20,13 @@
    — принятое правило переноса controls и границы сходства.
 7. [ADR-0003: стек и authentication delivery](decisions/0003-implementation-stack-and-auth-delivery.md)
    — выбранный Sites runtime, D1/migrations и граница Google auth.
-8. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+8. [ADR-0004: системный backup и restore](decisions/0004-system-backup-and-restore.md)
+   — полный logical snapshot, destructive replace, admin boundary и атомарность.
+9. [Начальная архитектура](architecture.md) — логические компоненты и решения,
    которые ещё предстоит принять.
-9. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+10. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
    продуктовых заимствований и осознанных упрощений.
-10. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+11. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -38,7 +40,9 @@
 сохранённые views, sharing, list/board, details, filters, selection и основные
 keyboard actions. Реализованы хранение и read-only details для labels,
 parent/subtasks и task relations, а также идемпотентный Linear snapshot import
-с provenance и read-only архивом импортированных комментариев. Редакторы
+с provenance и read-only архивом импортированных комментариев. Administration
+поддерживает полный системный export и атомарный replace-import через
+версионированный logical snapshot. Редакторы
 labels/hierarchy/relations/comments, assignee picker, настройка
 workflow, полный filter AST, Google sign-in и исчерпывающая acceptance matrix
 ещё не реализованы. В

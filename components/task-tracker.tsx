@@ -12,6 +12,7 @@ import {
   Circle,
   CircleDot,
   Columns3,
+  Download,
   FolderKanban,
   GitBranch,
   Inbox,
@@ -35,6 +36,7 @@ import {
   SlidersHorizontal,
   Sun,
   Tag,
+  Upload,
   UsersRound,
   X,
   Zap,
@@ -61,18 +63,20 @@ import {
 } from "@/lib/navigation";
 import type {
   AdminOverview,
+  AppliedSystemBackup,
   AppSnapshot,
   Priority,
   ProjectRecord,
   ReleaseRecord,
   SavedViewRecord,
+  StagedSystemBackup,
   TaskRecord,
   ViewDisplay,
   ViewQuery,
   WorkflowStatusRecord,
 } from "@/lib/types";
 
-type Dialog = "task" | "project" | "release" | "view" | "share" | null;
+type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | null;
 
 const priorityMeta: Record<Priority, { label: string; glyph: string }> = {
   urgent: { label: "Urgent", glyph: "!!!" },
@@ -135,6 +139,7 @@ export function TaskTracker({
   const [displayOpen, setDisplayOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [systemBackupBusy, setSystemBackupBusy] = useState(false);
   const [error, setError] = useState("");
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
   const [viewReferenceTime] = useState(() => Date.now());
@@ -343,6 +348,39 @@ export function TaskTracker({
     }
   }
 
+  async function downloadSystemBackup() {
+    setSystemBackupBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/export", {
+        method: "POST",
+        headers: { "x-task-manager-action": "system-backup" },
+      });
+      if (!response.ok) {
+        const value = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(value?.error ?? "Could not export the system backup");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1]
+        ?? `task-manager-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      return true;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not export the system backup");
+      return false;
+    } finally {
+      setSystemBackupBusy(false);
+    }
+  }
+
   function applyNavigation(
     next: ResolvedNavigation,
     historyMode: "push" | "replace" | "none" = "push",
@@ -466,7 +504,7 @@ export function TaskTracker({
           setAccountMenuOpen(false);
           accountTriggerRef.current?.focus();
         }
-        else if (dialog) setDialog(null);
+        else if (dialog && !systemBackupBusy) setDialog(null);
         else if (activeTaskId) {
           setActiveTaskId(null);
           const target = parseNavigationPath(taskReturnPath.current);
@@ -523,7 +561,7 @@ export function TaskTracker({
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [accountMenuOpen, activeTaskId, data, dialog, highlighted, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, selected.size, surface, visibleTasks]);
+  }, [accountMenuOpen, activeTaskId, data, dialog, highlighted, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, selected.size, surface, systemBackupBusy, visibleTasks]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -575,8 +613,6 @@ export function TaskTracker({
         <nav className="nav-scroll" aria-label="Workspace">
           <NavItem compact={sidebarCompact} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} href="/issues" onNavigate={() => navigateSurface("all", "list")} />
           <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
-          {data.admin && <NavItem compact={sidebarCompact} icon={<ShieldCheck size={15} />} label="Administration" active={surface === "admin"} href="/admin" onNavigate={() => navigateSurface("admin", "list")} />}
-
           {!sidebarCompact && (
             <>
               <SidebarSection title="Views" action={() => setDialog("view")}>
@@ -729,6 +765,8 @@ export function TaskTracker({
               <span className="count-pill">{surfaceCount}</span>
             </div>
             <div className="title-actions">
+              {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadSystemBackup()}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Export"}</button>}
+              {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Import</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {shareTarget(surface, activeTask, data) && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Share</button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
@@ -845,6 +883,7 @@ export function TaskTracker({
       {dialog === "release" && <ReleaseDialog projects={data.projects} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "view" && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={shareTarget(surface, activeTask, data)} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} busy={busy} />}
+      {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
     </main>
   );
 }
@@ -1031,6 +1070,161 @@ function ReleaseDialog({ projects, initialProjectId, onClose, onSubmit, busy }: 
 function ViewDialog({ search, status, priority, layout, onClose, onSubmit, busy }: { search: string; status: string; priority: Priority | "all"; layout: Layout; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { const query: ViewQuery = { ...(search && { search }), ...(status !== "all" && { statusIds: [status] }), ...(priority !== "all" && { priorities: [priority] }) }; const display: ViewDisplay = { layout, groupBy: "status", orderBy: "manual", direction: "asc", showEmptyGroups: true, visibleFields: ["priority", "project", "release", "dueDate", "assignee"] }; return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ name: values.name, query, display }); }}><DialogHeader title="Save as view" icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" /></label></div><div className="view-summary"><span>{layout === "list" ? "List" : "Board"}</span><span>{Object.keys(query).length || "No"} active filters</span></div><DialogFooter busy={busy} label="Save view" /></form></Modal>; }
 
 function ShareDialog({ target, collaborators, onClose, onShare, onRevoke, busy }: { target: { resourceType: "project" | "task" | "saved_view"; resourceId: string; label: string } | null; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; busy: boolean }) { if (!target) return null; const grants = collaborators.filter((grant) => grant.resourceType === target.resourceType && grant.resourceId === target.resourceId); return <Modal onClose={onClose}><form onSubmit={async (event) => { event.preventDefault(); const email = String(new FormData(event.currentTarget).get("email") ?? ""); const ok = await onShare({ ...target, email }); if (ok) event.currentTarget.reset(); }}><DialogHeader title={`Share ${target.label}`} icon={<Share2 size={17} />} onClose={onClose} /><p className="dialog-copy">People you add get full access. They must have signed in once with their verified email.</p><div className="share-input"><input name="email" type="email" required placeholder="name@example.com" autoFocus /><button className="button primary" disabled={busy}>{busy ? "Adding…" : "Add"}</button></div><div className="access-list"><div className="access-row"><span className="avatar">{initials("You")}</span><span><b>You</b><small>Owner</small></span><em>Full access</em></div>{grants.map((grant) => <div className="access-row" key={grant.grantId}><span className="avatar">{initials(grant.displayName)}</span><span><b>{grant.displayName}</b><small>{grant.email}</small></span><button type="button" onClick={() => void onRevoke(grant.grantId)}>Remove</button></div>)}</div></form></Modal>; }
+
+function SystemImportDialog({
+  onClose,
+  onDownloadCurrent,
+  onBusyChange,
+  onApplied,
+}: {
+  onClose: () => void;
+  onDownloadCurrent: () => Promise<boolean>;
+  onBusyChange: (busy: boolean) => void;
+  onApplied: (result: AppliedSystemBackup) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [staged, setStaged] = useState<StagedSystemBackup | null>(null);
+  const [rollbackDownloaded, setRollbackDownloaded] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [downloadingCurrent, setDownloadingCurrent] = useState(false);
+  const [error, setError] = useState("");
+
+  function setImportBusy(value: boolean) {
+    setBusy(value);
+    onBusyChange(value);
+  }
+
+  async function validateFile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!file) return;
+    setImportBusy(true);
+    setError("");
+    try {
+      if (file.size > 10_000_000) throw new Error("Backup file is larger than 10 MB");
+      const response = await fetch("/api/admin/import/validate", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-task-manager-action": "system-backup",
+        },
+        body: await file.text(),
+      });
+      const value = await response.json().catch(() => null) as StagedSystemBackup | { error?: string } | null;
+      if (!response.ok || !value || "error" in value || !("importId" in value)) {
+        throw new Error(value && "error" in value ? value.error ?? "Backup validation failed" : "Backup validation failed");
+      }
+      setStaged(value);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Backup validation failed");
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  async function applyImport() {
+    if (!staged || confirmation !== "RESTORE" || !rollbackDownloaded) return;
+    setImportBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/admin/import", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-task-manager-action": "system-backup",
+        },
+        body: JSON.stringify({
+          importId: staged.importId,
+          sha256: staged.sha256,
+          confirmation,
+        }),
+      });
+      const value = await response.json().catch(() => null) as AppliedSystemBackup | { error?: string } | null;
+      if (!response.ok || !value || "error" in value || !("applied" in value)) {
+        throw new Error(value && "error" in value ? value.error ?? "System restore failed" : "System restore failed");
+      }
+      onApplied(value);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "System restore failed");
+      setImportBusy(false);
+    }
+  }
+
+  return (
+    <Modal onClose={() => !busy && !downloadingCurrent && onClose()} className="system-import-modal">
+      <DialogHeader title="Import system backup" icon={<Upload size={17} />} onClose={() => !busy && !downloadingCurrent && onClose()} />
+      {!staged ? (
+        <form onSubmit={validateFile}>
+          <div className="system-import-body">
+            <p>This replaces every user, identity, task, project, release, saved view, label, relation and access grant in this Site.</p>
+            <label className="system-import-file">
+              <span>Backup file</span>
+              <input
+                type="file"
+                accept="application/json,.json"
+                required
+                onChange={(event) => {
+                  setFile(event.target.files?.[0] ?? null);
+                  setError("");
+                }}
+              />
+              <small>Task Manager system backup, up to 10 MB.</small>
+            </label>
+            {error && <p className="system-import-error" role="alert">{error}</p>}
+          </div>
+          <div className="dialog-footer">
+            <span>The live database is unchanged during validation</span>
+            <button className="button primary" disabled={!file || busy}>{busy ? "Validating…" : "Validate backup"}</button>
+          </div>
+        </form>
+      ) : (
+        <div>
+          <div className="system-import-body">
+            <div className="system-import-valid"><Check size={15} /><span><b>Backup validated</b><small>Exported {longDateTime(staged.exportedAt)} · schema {staged.schemaVersion}</small></span></div>
+            <dl className="system-import-counts">
+              <div><dt>Users</dt><dd>{staged.counts.users}</dd></div>
+              <div><dt>Tasks</dt><dd>{staged.counts.tasks}</dd></div>
+              <div><dt>Projects</dt><dd>{staged.counts.projects}</dd></div>
+              <div><dt>Releases</dt><dd>{staged.counts.releases}</dd></div>
+              <div><dt>Saved views</dt><dd>{staged.counts.saved_views}</dd></div>
+              <div><dt>Access grants</dt><dd>{staged.counts.access_grants}</dd></div>
+            </dl>
+            <div className="system-import-warning">
+              <b>This operation cannot be undone in the app.</b>
+              <span>Download the current state first. The replacement is atomic: either every table changes, or none do.</span>
+            </div>
+            <button
+              className="button secondary system-import-download"
+              type="button"
+              disabled={busy || downloadingCurrent || rollbackDownloaded}
+              onClick={() => {
+                setDownloadingCurrent(true);
+                setError("");
+                void onDownloadCurrent().then((ok) => {
+                  if (ok) setRollbackDownloaded(true);
+                  else setError("Current backup download failed");
+                  setDownloadingCurrent(false);
+                });
+              }}
+            >
+              {rollbackDownloaded ? <Check size={14} /> : <Download size={14} />}
+              {rollbackDownloaded ? "Current backup downloaded" : downloadingCurrent ? "Downloading…" : "Download current backup"}
+            </button>
+            <label className="system-import-confirmation">
+              <span>Type <b>RESTORE</b> to replace the live state</span>
+              <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck={false} />
+            </label>
+            {error && <p className="system-import-error" role="alert">{error}</p>}
+          </div>
+          <div className="dialog-footer">
+            <button className="button ghost" type="button" disabled={busy} onClick={() => setStaged(null)}>Choose another file</button>
+            <button className="button primary system-import-apply" type="button" disabled={busy || !rollbackDownloaded || confirmation !== "RESTORE"} onClick={() => void applyImport()}>{busy ? "Replacing…" : "Replace system state"}</button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 function DialogHeader({ title, icon, onClose }: { title: string; icon: React.ReactNode; onClose: () => void }) { return <div className="dialog-header"><div>{icon}<h2>{title}</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={15} /></button></div>; }
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }

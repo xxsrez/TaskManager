@@ -63,8 +63,9 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Application administrator определяется только на сервере по нормализованному
   verified email из hosted allowlist. Клиентский флаг или URL не предоставляет
   admin access.
-- Для администратора доступен `/admin`; навигация скрыта для остальных, а
-  прямой запрос fail-closed и не возвращает user statistics.
+- Для администратора доступен `/admin` из account menu; отдельного пункта в
+  основной левой навигации нет. Прямой запрос обычного User fail-closed и не
+  возвращает user statistics.
 - Overview показывает число зарегистрированных и активных за последние 7 дней
   пользователей, суммарные Tasks, Projects, Releases и SavedViews.
 - Таблица пользователей показывает display name, verified email, дату
@@ -73,6 +74,15 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Admin overview не предоставляет доступ к title, description, filter query или
   другому содержимому чужих records. Shared resources считаются по owner и не
   дублируются у collaborator.
+- Отдельные system operations `Export backup` и `Import backup` доступны той же
+  server-side admin boundary. Export включает всё D1 application state, включая
+  content, identities, ACL, provenance и archived records; hosted secrets,
+  deployment/audience state, analytics, schema и browser-local preferences не
+  входят.
+- Import поддерживает только полную замену. До mutation сервер проверяет format
+  version, типы, уникальность, ссылки, owner/domain invariants и наличие
+  текущей admin identity; затем staging atomically заменяет live state одной
+  D1 transaction. Merge и partial restore отсутствуют.
 - Отдельный login-event или audit-event log пока не моделируется. Поэтому
   «last active» означает последний подтверждённый запрос, а не доказанный новый
   sign-in внутри уже действующей Sites session.
@@ -358,6 +368,11 @@ completed dates и archived state.
 18. Войти администратором, открыть `/admin` и увидеть актуальные user/activity
     aggregates; повторить прямой запрос обычным User и получить fail-closed
     результат без email, counts или подтверждения существования admin surface.
+19. Экспортировать полный system backup, импортировать его через preview и
+    explicit `RESTORE`, затем подтвердить точное восстановление Users,
+    identities, owner/ACL, catalogs, content, archived records и provenance.
+    Повреждённый, несовместимый или invariant-invalid файл не меняет ни одной
+    live row; обычный User не может вызвать export/import API.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -374,3 +389,5 @@ completed dates и archived state.
    parity hardening.
 10. Server-gated admin overview с registration/activity aggregates без
     расширения доступа к user-owned content.
+11. Server-gated logical system backup/restore с staging, полным preflight и
+    атомарным replace.

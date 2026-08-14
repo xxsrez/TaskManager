@@ -193,6 +193,36 @@ export type AdminOverview = {
   users: AdminUserActivityRecord[];
 };
 
+export type SystemBackupCounts = Record<
+  | "users"
+  | "user_identities"
+  | "workflow_statuses"
+  | "projects"
+  | "releases"
+  | "tasks"
+  | "labels"
+  | "task_labels"
+  | "task_relations"
+  | "saved_views"
+  | "external_records"
+  | "access_grants",
+  number
+>;
+
+export type StagedSystemBackup = {
+  importId: string;
+  exportedAt: string;
+  schemaVersion: number;
+  sha256: string;
+  counts: SystemBackupCounts;
+};
+
+export type AppliedSystemBackup = {
+  applied: true;
+  exportedAt: string;
+  counts: SystemBackupCounts;
+};
+
 export type AppSnapshot = {
   user: UserRecord;
   admin: AdminOverview | null;

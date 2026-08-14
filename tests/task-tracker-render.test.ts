@@ -147,9 +147,13 @@ test("an administrator sees registration and activity statistics", () => {
   );
 
   assert.match(markup, /Administration/);
+  assert.match(markup, />Export</);
+  assert.match(markup, />Import</);
   assert.match(markup, /Registered users/);
   assert.match(markup, /test@example\.com/);
   assert.match(markup, /1 changed in 7d/);
+  const primaryNavigation = markup.match(/<nav class="nav-scroll"[\s\S]*?<\/nav>/)?.[0] ?? "";
+  assert.doesNotMatch(primaryNavigation, /Administration/);
 });
 
 test("the account identity is not the sign-out target", () => {

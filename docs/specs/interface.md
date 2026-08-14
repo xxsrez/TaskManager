@@ -47,9 +47,8 @@ Desktop-first shell повторяет композицию Linear:
 │ Views                                    ├──────────────────────────────│
 │ Projects                                 │ list | board | details       │
 │ Releases                                 │                              │
-│ Administration (admin only)              │                              │
 │                                          │                              │
-│ profile / settings                       │                              │
+│ profile / settings / admin menu          │                              │
 └──────────────────────────────────────────┴──────────────────────────────┘
 ```
 
@@ -69,8 +68,8 @@ Desktop-first shell повторяет композицию Linear:
 - Sidebar полностью сворачивается; состояние сохраняется для пользователя.
 - Profile/settings находятся в нижней части или user menu и не смешиваются с
   project navigation.
-- `Administration` видит только application administrator. Пункт располагается
-  рядом с верхней workspace navigation, а не внутри user-owned Views/Projects.
+- `Administration` не занимает место в основной навигации. Application
+  administrator открывает его только из account menu в нижней части sidebar.
 
 ### 3.2 Верхняя панель surface
 
@@ -488,6 +487,9 @@ Linear, но они обязаны использовать тот же visual l
 
 - Surface открывается только из server-authorized snapshot; отсутствие пункта
   в sidebar не является единственной защитой.
+- В title actions находятся `Export backup` и визуально destructive
+  `Import backup`. Export сразу скачивает versioned JSON; Import открывает
+  многошаговый dialog.
 - Верхний ряд содержит compact metric cards: registered users, active users за
   7 дней, Tasks и SavedViews; secondary notes показывают Projects/Releases.
 - Основная dense table содержит User, registration, last active, last content
@@ -498,6 +500,11 @@ Linear, но они обязаны использовать тот же visual l
   отдельного login event, которого первый срез не записывает.
 - `/admin` обычного User разрешается так же fail-closed, как неизвестная или
   недоступная entity route.
+- Import dialog сначала выбирает файл и показывает verified preview: export
+  time, format/schema version и сравнение текущих/imported counts. Apply
+  disabled, пока администратор не скачал текущий backup и не ввёл `RESTORE`.
+  Ошибка validation не закрывает dialog и явно сообщает, что live data не
+  менялись. После успешного replace выполняется full-page reload `/admin`.
 
 ## 13. Keyboard contract
 
@@ -532,8 +539,9 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
   в title row как overlay drawer; это одинаково работает в portrait и
   landscape.
 - Mobile drawer содержит полный разрешённый набор навигации и действий:
-  `My tasks`, `Shared with me`, `Views`, `Projects`, `Releases`, доступную
-  администратору `Administration`, search, create controls и profile/sign out.
+  `My tasks`, `Shared with me`, `Views`, `Projects`, `Releases`, search, create
+  controls и profile/sign out. Administration остаётся в доступном из drawer
+  account menu, а не дублируется как primary navigation item.
   Section actions не зависят от hover. Выбор route, backdrop и `Esc` закрывают
   drawer, не меняя desktop preference.
 - При ширине `900px` и меньше secondary view controls объединяются в доступный

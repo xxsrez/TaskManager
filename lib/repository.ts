@@ -206,6 +206,28 @@ const schemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_access_grants_grantee_active
     ON access_grants(grantee_user_id, resource_type, resource_id)
     WHERE revoked_at IS NULL`,
+  `CREATE TABLE IF NOT EXISTS admin_import_sessions (
+    id TEXT PRIMARY KEY,
+    created_by_user_id TEXT NOT NULL,
+    source_exported_at TEXT NOT NULL,
+    source_schema_version INTEGER NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    counts_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'staged',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    applied_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_admin_import_sessions_status_created
+    ON admin_import_sessions(status, created_at)`,
+  `CREATE TABLE IF NOT EXISTS admin_import_rows (
+    import_id TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    row_json TEXT NOT NULL,
+    PRIMARY KEY(import_id, table_name, ordinal)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_admin_import_rows_import_table
+    ON admin_import_rows(import_id, table_name)`,
 ];
 
 const publicIdTables = [

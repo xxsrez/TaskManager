@@ -4,6 +4,11 @@
 
 Дата решения: 2026-08-13
 
+Часть решения об application administrator уточнена в
+[ADR-0004](0004-system-backup-and-restore.md): обычный admin overview остаётся
+content-free, но тот же server-gated administrator получает отдельные явные
+операции полного системного backup и restore.
+
 ## Контекст
 
 Продукту нужны реальные пользователи, раздельные данные и простая совместная

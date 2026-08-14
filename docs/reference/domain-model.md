@@ -78,8 +78,10 @@ Identity linking — отдельная аутентифицированная �
 
 Application administrator не является отдельной доменной сущностью или ролью
 `AccessGrant`. Server boundary сопоставляет нормализованный verified email
-current User с hosted allowlist. Эта capability разрешает только operational
-aggregate query по Users и owner-scoped counts.
+current User с hosted allowlist. Content-free overview capability разрешает
+operational aggregate query по Users и owner-scoped counts. Отдельная system
+backup capability на той же allowlist разрешает полный logical export и
+атомарный replace-import, но не меняет predicate обычных repository methods.
 
 Admin projection содержит:
 
@@ -89,9 +91,31 @@ Admin projection содержит:
 - максимум `updated_at` среди принадлежащих User Tasks, Projects, Releases и
   SavedViews как `last_content_activity_at`.
 
-Projection не включает content полей этих records и не меняет ownership/ACL
-predicate обычных repository methods. Application admin не получает implicit
-доступ к чужим resources.
+Projection не включает content полей этих records. Exported backup, напротив,
+содержит cross-user content, identities и ACL; это отдельная явная operation,
+а не implicit доступ к чужим resources через обычные product surfaces.
+
+## SystemBackup и AdminImportSession
+
+`SystemBackup` — переносимый versioned JSON envelope со всеми product tables.
+Он сохраняет внутренние/public IDs, ownership, versions, timestamps, archived
+state, joins, relations, revoked grants и external provenance. Hosted secrets,
+Sites configuration, schema/migrations и operational staging в него не входят.
+
+`AdminImportSession` — operational metadata preflight/import:
+
+| Поле | Семантика |
+|---|---|
+| `id` | Непрозрачный import ID |
+| `created_by_user_id` | Администратор, загрузивший snapshot |
+| `source_exported_at`, `payload_sha256` | Provenance и identity payload |
+| `counts_json` | Проверенные counts по каждой application table |
+| `status` | `staged`, `applied` или `expired` |
+| `created_at`, `applied_at` | Operational timestamps |
+
+Staged rows хранятся отдельно по `(import_id, table_name, ordinal)` и не
+участвуют в product queries. После atomic apply payload rows удаляются, а
+session metadata остаётся как минимальный audit record.
 
 ## AccessGrant
 
@@ -321,7 +345,11 @@ Task details как read-only archive. Это не означает наличи
 15. Любая mutation проверяет `version`; stale version возвращает conflict, а не
     last-write-wins.
 16. Admin aggregate query выполняется только после server-side allowlist check
-    и не возвращает содержимое user-owned records.
+    и не возвращает содержимое user-owned records. System backup/restore
+    проверяет ту же boundary отдельно и не переиспользует unscoped product query.
+17. Restore применяет только полностью валидный snapshot, содержащий identity
+    текущего администратора. Replace всех live tables атомарен; ошибка оставляет
+    предыдущее состояние без частичного удаления или импорта.
 
 ## Намеренно не моделируется
 

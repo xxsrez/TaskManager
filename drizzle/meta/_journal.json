@@ -22,6 +22,13 @@
       "when": 1786702910607,
       "tag": "0002_stiff_madame_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786717220148,
+      "tag": "0003_green_white_queen",
+      "breakpoints": true
     }
   ]
 }

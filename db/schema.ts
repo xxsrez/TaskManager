@@ -267,3 +267,41 @@ export const accessGrants = sqliteTable(
       .where(sql`${table.revokedAt} IS NULL`),
   ],
 );
+
+export const adminImportSessions = sqliteTable(
+  "admin_import_sessions",
+  {
+    id: text("id").primaryKey(),
+    createdByUserId: text("created_by_user_id").notNull(),
+    sourceExportedAt: text("source_exported_at").notNull(),
+    sourceSchemaVersion: integer("source_schema_version").notNull(),
+    payloadSha256: text("payload_sha256").notNull(),
+    countsJson: text("counts_json").notNull(),
+    status: text("status").notNull().default("staged"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    appliedAt: text("applied_at"),
+  },
+  (table) => [
+    index("idx_admin_import_sessions_status_created").on(
+      table.status,
+      table.createdAt,
+    ),
+  ],
+);
+
+export const adminImportRows = sqliteTable(
+  "admin_import_rows",
+  {
+    importId: text("import_id").notNull(),
+    tableName: text("table_name").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    rowJson: text("row_json").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.importId, table.tableName, table.ordinal] }),
+    index("idx_admin_import_rows_import_table").on(
+      table.importId,
+      table.tableName,
+    ),
+  ],
+);
