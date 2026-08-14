@@ -1,7 +1,26 @@
 import type { UserRecord, ViewDisplay, ViewQuery } from "./types";
-import { ValidationError } from "./domain";
+import { optionalDate, ValidationError } from "./domain";
 
 type JsonObject = Record<string, unknown>;
+
+export const maxLinearImportBytes = 10_000_000;
+
+export function decodeLinearImportPayload(bytes: Uint8Array): {
+  tooLarge: boolean;
+  payload: unknown;
+} {
+  if (bytes.byteLength > maxLinearImportBytes) {
+    return { tooLarge: true, payload: null };
+  }
+  try {
+    return {
+      tooLarge: false,
+      payload: JSON.parse(new TextDecoder().decode(bytes)) as unknown,
+    };
+  } catch {
+    return { tooLarge: false, payload: null };
+  }
+}
 
 export type LinearImportReport = {
   statuses: number;
@@ -1018,14 +1037,6 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
-}
-
-function optionalDate(value: unknown): string | null {
-  if (value == null) return null;
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new ValidationError("Linear date must use YYYY-MM-DD");
-  }
-  return value;
 }
 
 function isoInstant(value: unknown, label: string) {

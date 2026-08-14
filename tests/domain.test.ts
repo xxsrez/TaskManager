@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   assertReleaseProject,
+  optionalDate,
+  optionalEstimate,
   priority,
   requireTitle,
   statusTimestamps,
@@ -35,6 +37,43 @@ test("status transitions update terminal timestamps atomically", () => {
     completedAt: null,
     canceledAt: null,
   });
+});
+
+test("editing a terminal task preserves its original terminal timestamp", () => {
+  const completedAt = "2026-08-13T16:00:00.000Z";
+  const canceledAt = "2026-08-13T17:00:00.000Z";
+
+  assert.deepEqual(
+    statusTimestamps(
+      "completed",
+      { startedAt: null, completedAt, canceledAt: null },
+      "2026-08-14T00:00:00.000Z",
+    ),
+    { startedAt: null, completedAt, canceledAt: null },
+  );
+  assert.deepEqual(
+    statusTimestamps(
+      "canceled",
+      { startedAt: null, completedAt: null, canceledAt },
+      "2026-08-14T00:00:00.000Z",
+    ),
+    { startedAt: null, completedAt: null, canceledAt },
+  );
+});
+
+test("local dates reject impossible calendar values", () => {
+  assert.equal(optionalDate("2024-02-29"), "2024-02-29");
+  assert.throws(() => optionalDate("2026-02-29"), ValidationError);
+  assert.throws(() => optionalDate("2026-13-01"), ValidationError);
+  assert.throws(() => optionalDate("2026-04-31"), ValidationError);
+});
+
+test("estimates are either absent or positive integer points", () => {
+  assert.equal(optionalEstimate(null), null);
+  assert.equal(optionalEstimate(1), 1);
+  assert.throws(() => optionalEstimate(0), ValidationError);
+  assert.throws(() => optionalEstimate(1.5), ValidationError);
+  assert.throws(() => optionalEstimate(true), ValidationError);
 });
 
 test("release and task project must match", () => {

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildLinearImportPlan,
+  decodeLinearImportPayload,
+  maxLinearImportBytes,
   type LinearImportPlan,
 } from "../lib/linear-import";
 import { ValidationError } from "../lib/domain";
@@ -187,5 +189,30 @@ test("Linear import rejects cyclic parent hierarchies before writing", () => {
   assert.throws(
     () => buildLinearImportPlan("usr_test", value),
     ValidationError,
+  );
+});
+
+test("Linear import rejects impossible calendar dates", () => {
+  const value = fixture();
+  const projects = value.projects as Array<Record<string, unknown>>;
+  projects[0].targetDate = "2026-02-29";
+  assert.throws(
+    () => buildLinearImportPlan("usr_test", value),
+    ValidationError,
+  );
+});
+
+test("Linear import enforces its limit on the bytes actually received", () => {
+  assert.deepEqual(
+    decodeLinearImportPayload(new TextEncoder().encode('{"version":1}')),
+    { tooLarge: false, payload: { version: 1 } },
+  );
+  assert.deepEqual(
+    decodeLinearImportPayload(new TextEncoder().encode("not json")),
+    { tooLarge: false, payload: null },
+  );
+  assert.deepEqual(
+    decodeLinearImportPayload(new Uint8Array(maxLinearImportBytes + 1)),
+    { tooLarge: true, payload: null },
   );
 });

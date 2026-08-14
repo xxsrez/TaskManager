@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+const taskTracker = readFileSync(
+  new URL("../components/task-tracker.tsx", import.meta.url),
+  "utf8",
+);
 
 function declarations(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -32,4 +36,8 @@ test("the application owns its reset without Tailwind Preflight", () => {
 test("board cards do not shrink their content through the bottom padding", () => {
   const rule = declarations(".task-card");
   assert.match(rule, /flex:\s*0\s+0\s+auto\s*;/);
+});
+
+test("task rows do not attach a hidden double-click action", () => {
+  assert.doesNotMatch(taskTracker, /onDoubleClick=\{onPeek\}/);
 });

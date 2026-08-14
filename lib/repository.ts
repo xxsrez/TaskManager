@@ -21,6 +21,7 @@ import {
   ConflictError,
   NotFoundError,
   optionalDate,
+  optionalEstimate,
   optionalText,
   PermissionError,
   priority,
@@ -42,10 +43,14 @@ import type {
   TaskRelationRecord,
   TaskRecord,
   UserRecord,
-  ViewDisplay,
-  ViewQuery,
   WorkflowStatusRecord,
 } from "./types";
+import {
+  parseStoredViewDisplay,
+  parseStoredViewQuery,
+  validateViewDisplay,
+  validateViewQuery,
+} from "./view-contract";
 import { getD1 } from "@/db";
 
 type DbRow = Record<string, unknown>;
@@ -285,6 +290,10 @@ const schemaStatements = [
     ON tasks(owner_user_id, status_id, archived_at)`,
   `CREATE INDEX IF NOT EXISTS idx_tasks_project_release
     ON tasks(project_id, release_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_parent
+    ON tasks(parent_task_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_tasks_release_archived
+    ON tasks(release_id, archived_at)`,
   `CREATE INDEX IF NOT EXISTS idx_tasks_owner_updated
     ON tasks(owner_user_id, updated_at)`,
   `CREATE TABLE IF NOT EXISTS labels (
@@ -1825,37 +1834,10 @@ async function loadGrantForManagement(userId: string, grantId: string) {
   };
 }
 
-function optionalEstimate(value: unknown): number | null {
-  if (value == null || value === "") return null;
-  const estimate = Number(value);
-  if (!Number.isInteger(estimate) || estimate < 0 || estimate > 100) {
-    throw new ValidationError("Estimate must be an integer from 0 to 100");
-  }
-  return estimate;
-}
-
 function finiteNumber(value: unknown, label: string): number {
   const number = Number(value);
   if (!Number.isFinite(number)) throw new ValidationError(`${label} is invalid`);
   return number;
-}
-
-function validateViewQuery(value: unknown): ViewQuery {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as ViewQuery;
-}
-
-function validateViewDisplay(value: unknown): ViewDisplay {
-  const fallback: ViewDisplay = {
-    layout: "list",
-    groupBy: "status",
-    orderBy: "manual",
-    direction: "asc",
-    showEmptyGroups: true,
-    visibleFields: ["priority", "project", "release", "dueDate", "assignee"],
-  };
-  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
-  return { ...fallback, ...(value as Partial<ViewDisplay>) };
 }
 
 function mapUser(row: DbRow): UserRecord {
@@ -2101,8 +2083,8 @@ function mapView(row: DbRow): SavedViewRecord {
     ownerUserId: String(row.owner_user_id),
     name: String(row.name),
     scopeProjectId: nullableString(row.scope_project_id),
-    query: safeJson<ViewQuery>(row.query_json, {}),
-    display: safeJson<ViewDisplay>(row.display_json, validateViewDisplay(null)),
+    query: parseStoredViewQuery(row.query_json),
+    display: parseStoredViewDisplay(row.display_json),
     version: Number(row.version),
     accessRole: effectiveRole(row.access_role),
   };

@@ -40,7 +40,41 @@ export function optionalDate(value: unknown): string | null {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     throw new ValidationError("Date must use YYYY-MM-DD");
   }
+  const [year, month, day] = value.split("-").map(Number);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1]) {
+    throw new ValidationError("Date must be a valid calendar date");
+  }
   return value;
+}
+
+export function optionalEstimate(value: unknown): number | null {
+  if (value == null || value === "") return null;
+  if (
+    typeof value !== "number" &&
+    (typeof value !== "string" || !/^\d+$/.test(value))
+  ) {
+    throw new ValidationError("Estimate must be an integer from 1 to 100");
+  }
+  const estimate = Number(value);
+  if (!Number.isInteger(estimate) || estimate < 1 || estimate > 100) {
+    throw new ValidationError("Estimate must be an integer from 1 to 100");
+  }
+  return estimate;
 }
 
 export function priority(value: unknown): Priority {
@@ -64,8 +98,9 @@ export function statusTimestamps(
       category === "started" && current.startedAt == null
         ? now
         : current.startedAt,
-    completedAt: category === "completed" ? now : null,
-    canceledAt: category === "canceled" ? now : null,
+    completedAt:
+      category === "completed" ? (current.completedAt ?? now) : null,
+    canceledAt: category === "canceled" ? (current.canceledAt ?? now) : null,
   };
 }
 

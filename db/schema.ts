@@ -305,6 +305,11 @@ export const tasks = sqliteTable(
       table.archivedAt,
     ),
     index("idx_tasks_project_release").on(table.projectId, table.releaseId),
+    index("idx_tasks_parent").on(table.parentTaskId),
+    index("idx_tasks_release_archived").on(
+      table.releaseId,
+      table.archivedAt,
+    ),
     index("idx_tasks_owner_updated").on(
       table.ownerUserId,
       table.updatedAt,

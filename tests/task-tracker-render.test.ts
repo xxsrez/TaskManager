@@ -9,6 +9,7 @@ import {
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
   TaskTracker,
+  tasksInListOrder,
 } from "../components/task-tracker";
 import type { AppSnapshot } from "../lib/types";
 
@@ -94,6 +95,61 @@ test("a focused task mutation patches one record without replacing the snapshot"
   assert.equal(result.tasks[0], updatedTask);
   assert.equal(result.projects, snapshot.projects);
   assert.equal(result.releases, snapshot.releases);
+});
+
+test("grouped keyboard order matches rendered status order and collapsed groups", () => {
+  const secondStatus = {
+    ...snapshot.statuses[0]!,
+    id: "done",
+    name: "Done",
+    category: "completed" as const,
+    position: 1,
+    isDefault: false,
+  };
+  const doneTask = {
+    ...snapshot.tasks[0]!,
+    id: "task-2",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    identifier: "TM-2",
+    title: "Done task",
+    statusId: "done",
+    rank: 0,
+  };
+
+  assert.deepEqual(
+    tasksInListOrder(
+      [doneTask, snapshot.tasks[0]!],
+      [...snapshot.statuses, secondStatus],
+      "status",
+      new Set(),
+    ).map((task) => task.id),
+    ["task-1", "task-2"],
+  );
+  assert.deepEqual(
+    tasksInListOrder(
+      [doneTask, snapshot.tasks[0]!],
+      [...snapshot.statuses, secondStatus],
+      "status",
+      new Set(["todo"]),
+    ).map((task) => task.id),
+    ["task-2"],
+  );
+});
+
+test("an unassigned task row does not invent a current-user assignee", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.doesNotMatch(markup, /title="Assignee"/);
 });
 
 test("a direct task render has no controlled field warnings", () => {

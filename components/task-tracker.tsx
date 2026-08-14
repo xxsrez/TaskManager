@@ -77,6 +77,7 @@ import type {
   SavedViewRecord,
   StagedSystemBackup,
   TaskRecord,
+  UserRecord,
   ViewDisplay,
   ViewQuery,
   WorkflowStatusRecord,
@@ -132,6 +133,20 @@ export function applyMutationResult(
       task.id === result.task.id ? result.task : task,
     ),
   };
+}
+
+export function tasksInListOrder(
+  tasks: TaskRecord[],
+  statuses: WorkflowStatusRecord[],
+  groupBy: ViewDisplay["groupBy"],
+  collapsed: Set<string>,
+): TaskRecord[] {
+  if (groupBy === "none") return tasks;
+  return statuses.flatMap((status) =>
+    collapsed.has(status.id)
+      ? []
+      : tasks.filter((task) => task.statusId === status.id),
+  );
 }
 
 const builtInViews = [
@@ -202,6 +217,10 @@ export function TaskTracker({
     () => new Map(data.releases.map((release) => [release.id, release])),
     [data.releases],
   );
+  const userMap = useMemo(
+    () => new Map([...data.users, data.user].map((user) => [user.id, user])),
+    [data.user, data.users],
+  );
 
   useEffect(() => {
     const saved = window.localStorage.getItem("tm-theme");
@@ -259,6 +278,7 @@ export function TaskTracker({
   const activeSavedView = surface.startsWith("view:")
     ? data.views.find((view) => view.id === surface.slice(5))
     : undefined;
+  const listGroupBy = activeSavedView?.display.groupBy ?? "status";
 
   const visibleTasks = useMemo(() => {
     let tasks = data.tasks;
@@ -328,8 +348,17 @@ export function TaskTracker({
   ]);
 
   const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
-  const visibleStatuses = statusGroupsForTasks(visibleTasks, data.statuses).filter(
-    (status) => activeSavedView?.display.showEmptyGroups !== false || visibleTasks.some((task) => task.statusId === status.id),
+  const visibleStatuses = useMemo(
+    () => statusGroupsForTasks(visibleTasks, data.statuses).filter(
+      (status) => activeSavedView?.display.showEmptyGroups !== false || visibleTasks.some((task) => task.statusId === status.id),
+    ),
+    [activeSavedView?.display.showEmptyGroups, data.statuses, visibleTasks],
+  );
+  const keyboardTasks = useMemo(
+    () => layout === "list"
+      ? tasksInListOrder(visibleTasks, visibleStatuses, listGroupBy, collapsedGroups)
+      : visibleTasks,
+    [collapsedGroups, layout, listGroupBy, visibleStatuses, visibleTasks],
   );
   const activeTask = data.tasks.find((task) => task.id === activeTaskId) ?? null;
   const peekTask = data.tasks.find((task) => task.id === peekTaskId) ?? null;
@@ -630,16 +659,18 @@ export function TaskTracker({
         );
       } else if (["j", "ArrowDown"].includes(event.key)) {
         event.preventDefault();
-        setHighlighted((value) => Math.min(value + 1, visibleTasks.length - 1));
+        setHighlighted((value) =>
+          Math.min(value + 1, Math.max(0, keyboardTasks.length - 1)),
+        );
       } else if (["k", "ArrowUp"].includes(event.key)) {
         event.preventDefault();
         setHighlighted((value) => Math.max(0, value - 1));
-      } else if (event.key.toLowerCase() === "x" && visibleTasks[highlighted]) {
+      } else if (event.key.toLowerCase() === "x" && keyboardTasks[highlighted]) {
         event.preventDefault();
-        toggleSelection(visibleTasks[highlighted].id);
-      } else if (event.key === " " && visibleTasks[highlighted]) {
+        toggleSelection(keyboardTasks[highlighted].id);
+      } else if (event.key === " " && keyboardTasks[highlighted]) {
         event.preventDefault();
-        setPeekTaskId(visibleTasks[highlighted].id);
+        setPeekTaskId(keyboardTasks[highlighted].id);
       } else if (event.key.toLowerCase() === "a" && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         setSelected(new Set(visibleTasks.filter((task) => canEditContent(task.accessRole)).map((task) => task.id)));
@@ -650,7 +681,7 @@ export function TaskTracker({
     // The handlers close over the state listed below; adding the local wrapper
     // functions themselves would recreate this listener on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountMenuOpen, activeTaskId, canCreateTask, data, dialog, highlighted, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, selected.size, surface, systemBackupBusy, visibleTasks]);
+  }, [accountMenuOpen, activeTaskId, canCreateTask, data, dialog, highlighted, keyboardTasks, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, selected.size, surface, systemBackupBusy, visibleTasks]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -970,7 +1001,7 @@ export function TaskTracker({
         ) : layout === "board" ? (
           <TaskBoard tasks={visibleTasks} statuses={visibleStatuses} projects={projectMap} releases={releaseMap} selected={selected} canCreate={canCreateTask} onSelect={toggleSelection} onOpen={openTask} onCreate={openCreate} onMove={async (task, statusId, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, statusId, rank })} />
         ) : (
-          <TaskList tasks={visibleTasks} statuses={visibleStatuses} groupBy={activeSavedView?.display.groupBy ?? "status"} projects={projectMap} releases={releaseMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onPeek={setPeekTaskId} onCreate={openCreate} />
+          <TaskList tasks={visibleTasks} statuses={visibleStatuses} groupBy={listGroupBy} projects={projectMap} releases={releaseMap} users={userMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={openCreate} />
         )}
       </section>
 
@@ -999,24 +1030,24 @@ function SidebarSection({ title, action, children }: { title: string; action: ()
   return <section className="sidebar-section"><div className="section-label"><span>{title}</span><button onClick={action} title={`Add ${title.toLowerCase()}`}><Plus size={12} /></button></div>{children}</section>;
 }
 
-function TaskList({ tasks, statuses, groupBy, projects, releases, selected, highlighted, collapsed, canCreate, onToggleGroup, onSelect, onHighlight, onOpen, onPeek, onCreate }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onPeek: (id: string) => void; onCreate: (statusId?: string) => void }) {
+function TaskList({ tasks, statuses, groupBy, projects, releases, users, selected, highlighted, collapsed, canCreate, onToggleGroup, onSelect, onHighlight, onOpen, onCreate }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void }) {
   if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   if (groupBy === "none") {
     const statusMap = new Map(statuses.map((status) => [status.id, status]));
-    return <div className="task-list ungrouped">{tasks.map((task, index) => { const status = statusMap.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onPeek={() => onPeek(task.id)} /> : null; })}</div>;
+    return <div className="task-list ungrouped">{tasks.map((task, index) => { const status = statusMap.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} /> : null; })}</div>;
   }
   let flatIndex = -1;
   return <div className="task-list">{statuses.map((status) => {
     const groupTasks = tasks.filter((task) => task.statusId === status.id);
     if (!groupTasks.length) return null;
     const isCollapsed = collapsed.has(status.id);
-    return <section className="task-group" key={status.id}><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(status.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><StatusIcon status={status} /><span>{status.name}</span><small>{groupTasks.length}</small></button>{canCreate && <button className="icon-button quiet" onClick={() => onCreate(status.id)} title={`Add to ${status.name}`}><Plus size={13} /></button>}</div>{!isCollapsed && groupTasks.map((task) => { flatIndex += 1; const index = flatIndex; return <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onPeek={() => onPeek(task.id)} />; })}</section>;
+    return <section className="task-group" key={status.id}><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(status.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><StatusIcon status={status} /><span>{status.name}</span><small>{groupTasks.length}</small></button>{canCreate && <button className="icon-button quiet" onClick={() => onCreate(status.id)} title={`Add to ${status.name}`}><Plus size={13} /></button>}</div>{!isCollapsed && groupTasks.map((task) => { flatIndex += 1; const index = flatIndex; return <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} />; })}</section>;
   })}</div>;
 }
 
-function TaskRow({ task, status, project, release, selected, highlighted, onSelect, onHighlight, onOpen, onPeek }: { task: TaskRecord; status: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; selected: boolean; highlighted: boolean; onSelect: () => void; onHighlight: () => void; onOpen: () => void; onPeek: () => void }) {
+function TaskRow({ task, status, project, release, assignee, selected, highlighted, onSelect, onHighlight, onOpen }: { task: TaskRecord; status: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; selected: boolean; highlighted: boolean; onSelect: () => void; onHighlight: () => void; onOpen: () => void }) {
   const editable = canEditContent(task.accessRole);
-  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight} onDoubleClick={onPeek}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}<span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}<span className="avatar" title="Assignee">{initials("Me")}</span>{editable && <button className="row-more" title="More"><MoreHorizontal size={14} /></button>}</div></div>;
+  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}<span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}{editable && <button className="row-more" title="More"><MoreHorizontal size={14} /></button>}</div></div>;
 }
 
 function TaskBoard({ tasks, statuses, projects, releases, selected, canCreate, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; canCreate: boolean; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void; onMove: (task: TaskRecord, statusId: string, rank: number) => Promise<unknown> }) {
