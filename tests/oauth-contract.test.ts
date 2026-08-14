@@ -5,6 +5,7 @@ import {
   createOAuthSecret,
   oauthAuthorizationServerMetadata,
   oauthClientRegistrationResponse,
+  oauthConsentContentSecurityPolicy,
   oauthProtectedResourceMetadata,
   oauthProtectedResourceMetadataUrl,
   oauthResource,
@@ -19,6 +20,17 @@ const origin = "https://tasks.example.test";
 const clientId = "https://chatgpt.com/.well-known/oauth-client/task-manager.json";
 const redirectUri = "https://chatgpt.com/connector/oauth/callback-id";
 const verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+
+test("OAuth consent allows the registered callback origin after POST", () => {
+  const csp = oauthConsentContentSecurityPolicy(redirectUri);
+  assert.match(csp, /form-action 'self' https:\/\/chatgpt\.com;/);
+  assert.doesNotMatch(csp, /connector\/oauth\/callback-id/);
+
+  const loopback = oauthConsentContentSecurityPolicy(
+    "http://127.0.0.1:49152/callback",
+  );
+  assert.match(loopback, /form-action 'self' http:\/\/127\.0\.0\.1:49152;/);
+});
 
 test("OAuth discovery binds the connector resource and advertises PKCE", () => {
   const authorization = oauthAuthorizationServerMetadata(origin);

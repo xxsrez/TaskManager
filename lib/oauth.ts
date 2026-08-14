@@ -39,6 +39,7 @@ type DbRow = Record<string, unknown>;
 export type OAuthAuthorizationPrompt = {
   requestId: string;
   clientName: string;
+  redirectUri: string;
   scopes: ApiScope[];
   user: UserRecord;
 };
@@ -108,6 +109,7 @@ export async function prepareOAuthAuthorization(
   return {
     requestId,
     clientName: client.clientName,
+    redirectUri: parameters.redirectUri,
     scopes: parameters.scopes,
     user: currentUser,
   };

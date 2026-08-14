@@ -4,7 +4,11 @@ import {
   completeOAuthAuthorization,
   prepareOAuthAuthorization,
 } from "@/lib/oauth";
-import { OAuthProtocolError, oauthErrorResponse } from "@/lib/oauth-contract";
+import {
+  OAuthProtocolError,
+  oauthConsentContentSecurityPolicy,
+  oauthErrorResponse,
+} from "@/lib/oauth-contract";
 import { getOrCreateUser } from "@/lib/repository";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +25,7 @@ export async function GET(request: Request) {
   try {
     const user = await getOrCreateUser(actor);
     const prompt = await prepareOAuthAuthorization(user, request);
-    return html(consentPage(prompt));
+    return html(consentPage(prompt), 200, prompt.redirectUri);
   } catch (error) {
     if (!(error instanceof OAuthProtocolError)) console.error(error);
     return oauthErrorResponse(error);
@@ -88,13 +92,13 @@ function page(title: string, body: string) {
   </style></head><body><main class="card">${body}</main></body></html>`;
 }
 
-function html(body: string, status = 200) {
+function html(body: string, status = 200, redirectUri?: string) {
   return new Response(body, {
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "private, no-store",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      "Content-Security-Policy": oauthConsentContentSecurityPolicy(redirectUri),
       "X-Frame-Options": "DENY",
     },
   });

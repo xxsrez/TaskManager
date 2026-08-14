@@ -79,6 +79,8 @@ OAuth lifecycle:
   read;
 - token/code/refresh secrets сохраняются только как SHA-256 hashes;
 - client secret, implicit flow и password grant не поддерживаются;
+- consent page разрешает form navigation только на собственный origin и точный
+  origin зарегистрированного `redirect_uri`, после POST используется `303`;
 - CIMD origin разрешается server allowlist; dynamic registration принимает
   только public clients без client secret и redirect на разрешённый HTTPS
   origin либо loopback HTTP URI native client;

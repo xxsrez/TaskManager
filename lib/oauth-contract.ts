@@ -42,6 +42,20 @@ export class OAuthProtocolError extends Error {
   }
 }
 
+export function oauthConsentContentSecurityPolicy(
+  redirectUri?: string,
+): string {
+  const formActions = ["'self'"];
+  if (redirectUri) formActions.push(new URL(redirectUri).origin);
+  return [
+    "default-src 'none'",
+    "style-src 'unsafe-inline'",
+    `form-action ${formActions.join(" ")}`,
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+  ].join("; ");
+}
+
 export function oauthResource(origin: string): string {
   return `${normalizeOrigin(origin)}/api/mcp`;
 }
