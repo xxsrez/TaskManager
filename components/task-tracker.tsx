@@ -18,6 +18,7 @@ import {
   Link2,
   ListFilter,
   LogOut,
+  Monitor,
   Moon,
   MessageSquare,
   MoreHorizontal,
@@ -113,11 +114,14 @@ export function TaskTracker({
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
+  const accountTriggerRef = useRef<HTMLButtonElement>(null);
   const taskReturnPath = useRef(
     navigationPath({ ...initialNavigation, taskId: null }, initialData),
   );
@@ -157,6 +161,17 @@ export function TaskTracker({
       sidebarCollapsed ? "collapsed" : "expanded",
     );
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (!accountMenuRef.current?.contains(event.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [accountMenuOpen]);
 
   useEffect(() => {
     window.history.replaceState(
@@ -390,7 +405,11 @@ export function TaskTracker({
       const target = event.target as HTMLElement;
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
       if (event.key === "Escape") {
-        if (dialog) setDialog(null);
+        if (accountMenuOpen) {
+          setAccountMenuOpen(false);
+          accountTriggerRef.current?.focus();
+        }
+        else if (dialog) setDialog(null);
         else if (activeTaskId) {
           setActiveTaskId(null);
           const target = parseNavigationPath(taskReturnPath.current);
@@ -447,7 +466,7 @@ export function TaskTracker({
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [activeTaskId, data, dialog, highlighted, layout, peekTaskId, selected.size, surface, visibleTasks]);
+  }, [accountMenuOpen, activeTaskId, data, dialog, highlighted, layout, peekTaskId, selected.size, surface, visibleTasks]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -508,15 +527,74 @@ export function TaskTracker({
           )}
         </nav>
         <div className="sidebar-foot">
-          <button className="nav-item" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme">
-            {theme === "dark" ? <Sun size={15} /> : <Moon size={15} />}
-            {!sidebarCollapsed && <span>{theme === "dark" ? "Light theme" : "Dark theme"}</span>}
-          </button>
-          <a className="nav-item" href={signOutPath} title="Sign out">
-            <span className="avatar small">{initials(data.user.displayName)}</span>
-            {!sidebarCollapsed && <span className="profile-label"><b>{data.user.displayName}</b><small>{data.user.email}</small></span>}
-            {!sidebarCollapsed && <LogOut size={13} className="nav-trailing" />}
-          </a>
+          <div className="account-control" ref={accountMenuRef}>
+            {accountMenuOpen && (
+              <div className="account-menu" role="menu" aria-label="Account menu">
+                <div className="account-menu-user">
+                  <span className="avatar">{initials(data.user.displayName)}</span>
+                  <span>
+                    <b>{data.user.displayName}</b>
+                    <small>{data.user.email}</small>
+                  </span>
+                </div>
+                <p className="account-provider">Signed in with ChatGPT</p>
+                <div className="account-menu-separator" role="separator" />
+                <a
+                  className="account-menu-item"
+                  href={navigationPath({ surface: "all", layout: "list", taskId: null }, data)}
+                  role="menuitem"
+                  onClick={(event) => handleLocalLink(event, () => {
+                    navigateSurface("all", "list");
+                    setAccountMenuOpen(false);
+                  })}
+                >
+                  <Inbox size={14} />
+                  <span>My tasks</span>
+                </a>
+                {data.admin && (
+                  <a
+                    className="account-menu-item"
+                    href={navigationPath({ surface: "admin", layout: "list", taskId: null }, data)}
+                    role="menuitem"
+                    onClick={(event) => handleLocalLink(event, () => {
+                      navigateSurface("admin", "list");
+                      setAccountMenuOpen(false);
+                    })}
+                  >
+                    <ShieldCheck size={14} />
+                    <span>Administration</span>
+                  </a>
+                )}
+                <div className="account-menu-separator" role="separator" />
+                <div className="account-theme" role="group" aria-label="Appearance">
+                  <span>Appearance</span>
+                  <div>
+                    <button role="menuitemradio" aria-checked={theme === "system"} className={theme === "system" ? "active" : ""} onClick={() => setTheme("system")} title="Use system theme"><Monitor size={13} /></button>
+                    <button role="menuitemradio" aria-checked={theme === "light"} className={theme === "light" ? "active" : ""} onClick={() => setTheme("light")} title="Use light theme"><Sun size={13} /></button>
+                    <button role="menuitemradio" aria-checked={theme === "dark"} className={theme === "dark" ? "active" : ""} onClick={() => setTheme("dark")} title="Use dark theme"><Moon size={13} /></button>
+                  </div>
+                </div>
+              </div>
+            )}
+            <div className="profile-row">
+              <button
+                className="profile-trigger"
+                ref={accountTriggerRef}
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={accountMenuOpen}
+                title={sidebarCollapsed ? "Open account menu" : undefined}
+                onClick={() => setAccountMenuOpen((value) => !value)}
+              >
+                <span className="avatar small">{initials(data.user.displayName)}</span>
+                {!sidebarCollapsed && <span className="profile-label"><b>{data.user.displayName}</b><small>{data.user.email}</small></span>}
+                {!sidebarCollapsed && <ChevronDown size={13} className={`profile-chevron ${accountMenuOpen ? "open" : ""}`} />}
+              </button>
+              <a className="profile-logout" href={signOutPath} title="Sign out" aria-label="Sign out">
+                <LogOut size={14} />
+              </a>
+            </div>
+          </div>
         </div>
       </aside>
 

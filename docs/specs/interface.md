@@ -463,6 +463,13 @@ Linear, но они обязаны использовать тот же visual l
 - Profile/settings использует left settings navigation и compact form rows.
 - Доступны display name, verified email, timezone, linked providers, theme,
   sidebar preference и sign out.
+- Нажатие на avatar, display name или email в нижней части sidebar открывает
+  компактное account menu и не запускает sign out. Первый menu slice показывает
+  verified identity, рабочие переходы в `My tasks` и доступную администратору
+  `Administration`, а также выбор `system`/`light`/`dark` theme.
+- Sign out запускается только отдельной icon button справа от account trigger.
+  Она имеет явные tooltip и accessible name; вся строка профиля не может быть
+  logout hit target.
 
 ### 12.4 Administration
 

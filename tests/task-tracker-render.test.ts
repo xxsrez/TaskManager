@@ -134,3 +134,21 @@ test("an administrator sees registration and activity statistics", () => {
   assert.match(markup, /test@example\.com/);
   assert.match(markup, /1 changed in 7d/);
 });
+
+test("the account identity is not the sign-out target", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /<button[^>]*class="profile-trigger"/);
+  assert.match(markup, /<a[^>]*class="profile-logout"[^>]*href="\/sign-out"/);
+  assert.equal(markup.match(/href="\/sign-out"/g)?.length, 1);
+});
