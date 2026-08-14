@@ -118,6 +118,8 @@ export function TaskTracker({
   const [highlighted, setHighlighted] = useState(0);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -126,7 +128,9 @@ export function TaskTracker({
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
+  const mobileSearchRef = useRef<HTMLInputElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  const mobileActionsRef = useRef<HTMLDivElement>(null);
   const accountTriggerRef = useRef<HTMLButtonElement>(null);
   const taskReturnPath = useRef(
     navigationPath({ ...initialNavigation, taskId: null }, initialData),
@@ -178,6 +182,17 @@ export function TaskTracker({
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [accountMenuOpen]);
+
+  useEffect(() => {
+    if (!mobileActionsOpen) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (!mobileActionsRef.current?.contains(event.target as Node)) {
+        setMobileActionsOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [mobileActionsOpen]);
 
   useEffect(() => {
     window.history.replaceState(
@@ -285,6 +300,10 @@ export function TaskTracker({
   const contextProjectRecord = contextProject
     ? data.projects.find((project) => project.id === contextProject)
     : undefined;
+  const sidebarCompact = sidebarCollapsed && !mobileSidebarOpen;
+  const hasViewChanges = Boolean(
+    search || priorityFilter !== "all" || statusFilter !== "all",
+  );
 
   async function mutate(path: string, method: string, body: unknown) {
     setBusy(true);
@@ -333,6 +352,8 @@ export function TaskTracker({
   }
 
   function navigateSurface(nextSurface: string, nextLayout?: Layout) {
+    setMobileSidebarOpen(false);
+    setMobileActionsOpen(false);
     applyNavigation({
       surface: nextSurface,
       layout: nextLayout ?? defaultLayoutForSurface(nextSurface, data),
@@ -341,6 +362,7 @@ export function TaskTracker({
   }
 
   function changeLayout(nextLayout: Layout) {
+    setMobileActionsOpen(false);
     applyNavigation({ surface, layout: nextLayout, taskId: null });
   }
 
@@ -370,9 +392,21 @@ export function TaskTracker({
   }
 
   function openCreate(statusId?: string) {
+    setMobileSidebarOpen(false);
+    setMobileActionsOpen(false);
     setDialog("task");
     if (statusId) window.sessionStorage.setItem("tm-create-status", statusId);
     else window.sessionStorage.removeItem("tm-create-status");
+  }
+
+  function focusSearch() {
+    const mobile = window.matchMedia("(max-width: 900px)").matches;
+    setMobileSidebarOpen(false);
+    if (mobile) setMobileActionsOpen(true);
+    window.requestAnimationFrame(() => {
+      const target = mobile ? mobileSearchRef.current : searchRef.current;
+      target?.focus();
+    });
   }
 
   function toggleSelection(id: string, additive = true) {
@@ -411,7 +445,9 @@ export function TaskTracker({
       const target = event.target as HTMLElement;
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
       if (event.key === "Escape") {
-        if (accountMenuOpen) {
+        if (mobileActionsOpen) setMobileActionsOpen(false);
+        else if (mobileSidebarOpen) setMobileSidebarOpen(false);
+        else if (accountMenuOpen) {
           setAccountMenuOpen(false);
           accountTriggerRef.current?.focus();
         }
@@ -472,7 +508,7 @@ export function TaskTracker({
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [accountMenuOpen, activeTaskId, data, dialog, highlighted, layout, peekTaskId, selected.size, surface, visibleTasks]);
+  }, [accountMenuOpen, activeTaskId, data, dialog, highlighted, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, selected.size, surface, visibleTasks]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -482,8 +518,16 @@ export function TaskTracker({
   }, [surface, search, priorityFilter, statusFilter]);
 
   return (
-    <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
-      <aside className="sidebar">
+    <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
+      {mobileSidebarOpen && (
+        <button
+          className="mobile-sidebar-backdrop"
+          type="button"
+          aria-label="Close navigation"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+      <aside className="sidebar" id="workspace-sidebar">
         <div className="sidebar-head">
           <a
             className="workspace-switcher"
@@ -492,25 +536,33 @@ export function TaskTracker({
             onClick={(event) => handleLocalLink(event, () => navigateSurface("all", "list"))}
           >
             <span className="product-mark">T</span>
-            {!sidebarCollapsed && <span className="workspace-name">Task Manager</span>}
+            {!sidebarCompact && <span className="workspace-name">Task Manager</span>}
           </a>
-          {!sidebarCollapsed && (
+          {!sidebarCompact && (
             <button className="icon-button" onClick={() => openCreate()} title="Create task (C)">
               <Plus size={15} />
             </button>
           )}
+          <button
+            className="icon-button mobile-sidebar-close"
+            type="button"
+            aria-label="Close navigation"
+            onClick={() => setMobileSidebarOpen(false)}
+          >
+            <X size={16} />
+          </button>
         </div>
-        {!sidebarCollapsed && (
-          <button className="sidebar-search" onClick={() => searchRef.current?.focus()}>
+        {!sidebarCompact && (
+          <button className="sidebar-search" onClick={focusSearch}>
             <Search size={14} /><span>Search</span><kbd>/</kbd>
           </button>
         )}
         <nav className="nav-scroll" aria-label="Workspace">
-          <NavItem compact={sidebarCollapsed} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} href="/issues" onNavigate={() => navigateSurface("all", "list")} />
-          <NavItem compact={sidebarCollapsed} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
-          {data.admin && <NavItem compact={sidebarCollapsed} icon={<ShieldCheck size={15} />} label="Administration" active={surface === "admin"} href="/admin" onNavigate={() => navigateSurface("admin", "list")} />}
+          <NavItem compact={sidebarCompact} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} href="/issues" onNavigate={() => navigateSurface("all", "list")} />
+          <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
+          {data.admin && <NavItem compact={sidebarCompact} icon={<ShieldCheck size={15} />} label="Administration" active={surface === "admin"} href="/admin" onNavigate={() => navigateSurface("admin", "list")} />}
 
-          {!sidebarCollapsed && (
+          {!sidebarCompact && (
             <>
               <SidebarSection title="Views" action={() => setDialog("view")}>
                 <NavItem compact={false} icon={<Boxes size={13} />} label="All views" active={surface === "views"} href="/views" onNavigate={() => navigateSurface("views", "list")} />
@@ -593,12 +645,12 @@ export function TaskTracker({
                 type="button"
                 aria-haspopup="menu"
                 aria-expanded={accountMenuOpen}
-                title={sidebarCollapsed ? "Open account menu" : undefined}
+                title={sidebarCompact ? "Open account menu" : undefined}
                 onClick={() => setAccountMenuOpen((value) => !value)}
               >
                 <span className="avatar small">{initials(data.user.displayName)}</span>
-                {!sidebarCollapsed && <span className="profile-label"><b>{data.user.displayName}</b><small>{data.user.email}</small></span>}
-                {!sidebarCollapsed && <ChevronDown size={13} className={`profile-chevron ${accountMenuOpen ? "open" : ""}`} />}
+                {!sidebarCompact && <span className="profile-label"><b>{data.user.displayName}</b><small>{data.user.email}</small></span>}
+                {!sidebarCompact && <ChevronDown size={13} className={`profile-chevron ${accountMenuOpen ? "open" : ""}`} />}
               </button>
               <a className="profile-logout" href={signOutPath} title="Sign out" aria-label="Sign out">
                 <LogOut size={14} />
@@ -612,8 +664,30 @@ export function TaskTracker({
         <header className="surface-header">
           <div className="title-row">
             <div className="title-cluster">
-              <button className="icon-button mobile-menu" onClick={() => setSidebarCollapsed((value) => !value)} title="Toggle sidebar">
+              <button
+                className="icon-button desktop-sidebar-toggle"
+                type="button"
+                aria-controls="workspace-sidebar"
+                aria-expanded={!sidebarCollapsed}
+                aria-label={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"}
+                onClick={() => setSidebarCollapsed((value) => !value)}
+                title="Toggle navigation"
+              >
                 {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
+              </button>
+              <button
+                className="icon-button mobile-menu"
+                type="button"
+                aria-controls="workspace-sidebar"
+                aria-expanded={mobileSidebarOpen}
+                aria-label={mobileSidebarOpen ? "Close navigation" : "Open navigation"}
+                onClick={() => {
+                  setMobileSidebarOpen((value) => !value);
+                  setMobileActionsOpen(false);
+                }}
+                title="Toggle navigation"
+              >
+                {mobileSidebarOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
               </button>
               <nav className="breadcrumbs" aria-label="Breadcrumb">
                 {breadcrumbs.map((item, index) => {
@@ -648,24 +722,79 @@ export function TaskTracker({
           {!isCollectionSurface(surface) && (
             <div className="toolbar-row">
               <div className="toolbar-left">
-                <div className="search-control">
-                  <Search size={13} />
-                  <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks…" aria-label="Search tasks" />
-                  {search && <button onClick={() => setSearch("")}><X size={12} /></button>}
+                <div className="desktop-view-controls">
+                  <div className="search-control">
+                    <Search size={13} />
+                    <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks…" aria-label="Search tasks" />
+                    {search && <button onClick={() => setSearch("")}><X size={12} /></button>}
+                  </div>
+                  <div className="popover-anchor">
+                    <button className={`button ghost ${filterOpen ? "active" : ""}`} onClick={() => setFilterOpen((value) => !value)}><ListFilter size={14} />Filter{(priorityFilter !== "all" || statusFilter !== "all") && <span className="filter-count">{Number(priorityFilter !== "all") + Number(statusFilter !== "all")}</span>}</button>
+                    {filterOpen && <FilterPopover statuses={data.statuses} priority={priorityFilter} status={statusFilter} onPriority={setPriorityFilter} onStatus={setStatusFilter} onClose={() => setFilterOpen(false)} />}
+                  </div>
+                  <div className="segmented" aria-label="Layout">
+                    <button className={layout === "list" ? "active" : ""} onClick={() => changeLayout("list")} title="List"><LayoutList size={14} /></button>
+                    <button className={layout === "board" ? "active" : ""} onClick={() => changeLayout("board")} title="Board"><Columns3 size={14} /></button>
+                  </div>
+                  <div className="popover-anchor display-anchor">
+                    <button className={`button ghost ${displayOpen ? "active" : ""}`} onClick={() => setDisplayOpen((value) => !value)}><SlidersHorizontal size={14} />Display</button>
+                    {displayOpen && <DisplayPopover layout={layout} groupBy={activeSavedView?.display.groupBy ?? "status"} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={changeLayout} onClose={() => setDisplayOpen(false)} />}
+                  </div>
+                  {hasViewChanges && <button className="button ghost save-view" onClick={() => setDialog("view")}><Save size={13} />Save view</button>}
                 </div>
-                <div className="popover-anchor">
-                  <button className={`button ghost ${filterOpen ? "active" : ""}`} onClick={() => setFilterOpen((value) => !value)}><ListFilter size={14} />Filter{(priorityFilter !== "all" || statusFilter !== "all") && <span className="filter-count">{Number(priorityFilter !== "all") + Number(statusFilter !== "all")}</span>}</button>
-                  {filterOpen && <FilterPopover statuses={data.statuses} priority={priorityFilter} status={statusFilter} onPriority={setPriorityFilter} onStatus={setStatusFilter} onClose={() => setFilterOpen(false)} />}
+                <div className="mobile-view-controls-anchor" ref={mobileActionsRef}>
+                  <button
+                    className={`icon-button mobile-view-controls-trigger ${mobileActionsOpen ? "active" : ""}`}
+                    type="button"
+                    aria-controls="mobile-view-controls"
+                    aria-expanded={mobileActionsOpen}
+                    aria-haspopup="dialog"
+                    aria-label="Open view controls"
+                    onClick={() => {
+                      setMobileActionsOpen((value) => !value);
+                      setMobileSidebarOpen(false);
+                    }}
+                  >
+                    <SlidersHorizontal size={17} />
+                    {(priorityFilter !== "all" || statusFilter !== "all") && <span className="filter-count">{Number(priorityFilter !== "all") + Number(statusFilter !== "all")}</span>}
+                  </button>
+                  <div
+                    className="mobile-view-controls"
+                    id="mobile-view-controls"
+                    role="dialog"
+                    aria-modal="false"
+                    aria-label="View controls"
+                    hidden={!mobileActionsOpen}
+                  >
+                    <header>
+                      <b>View controls</b>
+                      <button type="button" className="icon-button" aria-label="Close view controls" onClick={() => setMobileActionsOpen(false)}><X size={15} /></button>
+                    </header>
+                    <label className="mobile-search-control">
+                      <Search size={15} />
+                      <input ref={mobileSearchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks…" aria-label="Search tasks on mobile" />
+                      {search && <button type="button" aria-label="Clear search" onClick={() => setSearch("")}><X size={13} /></button>}
+                    </label>
+                    <section className="mobile-control-section">
+                      <h3>Filter</h3>
+                      <label><span>Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Any status</option>{data.statuses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+                      <label><span>Priority</span><select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as Priority | "all")}><option value="all">Any priority</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label>
+                    </section>
+                    <section className="mobile-control-section">
+                      <h3>Display</h3>
+                      <div className="segmented wide" aria-label="Mobile layout">
+                        <button className={layout === "list" ? "active" : ""} onClick={() => changeLayout("list")}><LayoutList size={14} />List</button>
+                        <button className={layout === "board" ? "active" : ""} onClick={() => changeLayout("board")}><Columns3 size={14} />Board</button>
+                      </div>
+                      <div className="mobile-display-summary"><span>Group by</span><b>{displayLabel(activeSavedView?.display.groupBy ?? "status")}</b></div>
+                      <div className="mobile-display-summary"><span>Order</span><b>{displayLabel(activeSavedView?.display.orderBy ?? "manual")}</b></div>
+                    </section>
+                    <div className="mobile-controls-footer">
+                      <button className="button ghost" type="button" onClick={() => { setPriorityFilter("all"); setStatusFilter("all"); }}>Clear filters</button>
+                      {hasViewChanges && <button className="button secondary" type="button" onClick={() => { setMobileActionsOpen(false); setDialog("view"); }}><Save size={14} />Save view</button>}
+                    </div>
+                  </div>
                 </div>
-                <div className="segmented" aria-label="Layout">
-                  <button className={layout === "list" ? "active" : ""} onClick={() => changeLayout("list")} title="List"><LayoutList size={14} /></button>
-                  <button className={layout === "board" ? "active" : ""} onClick={() => changeLayout("board")} title="Board"><Columns3 size={14} /></button>
-                </div>
-                <div className="popover-anchor display-anchor">
-                  <button className={`button ghost ${displayOpen ? "active" : ""}`} onClick={() => setDisplayOpen((value) => !value)}><SlidersHorizontal size={14} />Display</button>
-                  {displayOpen && <DisplayPopover layout={layout} groupBy={activeSavedView?.display.groupBy ?? "status"} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={changeLayout} onClose={() => setDisplayOpen(false)} />}
-                </div>
-                {(search || priorityFilter !== "all" || statusFilter !== "all") && <button className="button ghost save-view" onClick={() => setDialog("view")}><Save size={13} />Save view</button>}
               </div>
               <button className="button primary" onClick={() => openCreate()}><Plus size={14} />New task</button>
             </div>

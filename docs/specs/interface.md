@@ -524,13 +524,27 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 - Основной acceptance viewport — desktop от `1280px`; Linear-like плотность
   проектируется прежде всего для desktop web.
-- Ниже `1024px` sidebar по умолчанию compact либо overlay; details sidebar
-  становится drawer.
-- Ниже `768px` task/project details и composer открываются full-screen, toolbar
-  сворачивает secondary actions в overflow, list скрывает необязательные
-  display properties.
+- Ниже `1024px` details sidebar становится drawer. При ширине `900px` и меньше
+  application sidebar закрыт по умолчанию и открывается из постоянного control
+  в title row как overlay drawer; это одинаково работает в portrait и
+  landscape.
+- Mobile drawer содержит полный разрешённый набор навигации и действий:
+  `My tasks`, `Shared with me`, `Views`, `Projects`, `Releases`, доступную
+  администратору `Administration`, search, create controls и profile/sign out.
+  Section actions не зависят от hover. Выбор route, backdrop и `Esc` закрывают
+  drawer, не меняя desktop preference.
+- При ширине `900px` и меньше secondary view controls объединяются в доступный
+  mobile overflow: search, `Filter`, list/board switch, `Display`, clear и
+  save-view action при наличии изменений. Primary contextual create остаётся
+  непосредственно в toolbar; ни один in-scope control не удаляется только
+  из-за ориентации.
+- Ниже `768px` task/project details и composer открываются full-screen, а list
+  скрывает необязательные display properties. Touch targets имеют размер не
+  меньше `40px`.
 - Kanban сохраняет горизонтальные columns, а не превращается автоматически в
   другую сущность; touch drag имеет альтернативу через property picker.
+- Минимальная responsive-приёмка включает геометрии `390×844` и `844×390`,
+  safe-area insets и повторную проверку после смены ориентации.
 - Отдельные native mobile applications не входят в MVP.
 
 ## 15. Accessibility и content rules

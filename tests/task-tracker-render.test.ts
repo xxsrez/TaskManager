@@ -172,6 +172,43 @@ test("workspace controls navigate to the root without a false dropdown affordanc
   assert.match(markup, /<a class="breadcrumb-link" href="\/issues">Workspace<\/a>/);
 });
 
+test("mobile shell exposes complete navigation and view controls", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(
+    markup,
+    /<button[^>]*aria-controls="workspace-sidebar"[^>]*aria-expanded="false"/,
+  );
+  assert.match(markup, /<aside[^>]*id="workspace-sidebar"/);
+  assert.match(markup, /aria-label="Close navigation"/);
+  assert.match(markup, /href="\/shared"/);
+  assert.match(markup, /href="\/views"/);
+  assert.match(markup, /href="\/projects"/);
+  assert.match(markup, /href="\/releases"/);
+
+  assert.match(
+    markup,
+    /<button[^>]*aria-controls="mobile-view-controls"[^>]*aria-expanded="false"/,
+  );
+  assert.match(markup, /id="mobile-view-controls"/);
+  assert.match(markup, /aria-label="Search tasks on mobile"/);
+  assert.match(markup, />Filter</);
+  assert.match(markup, />Display</);
+  assert.match(markup, />List</);
+  assert.match(markup, />Board</);
+  assert.match(markup, />New task</);
+});
+
 test("release breadcrumbs expose every ancestor and leave the current level static", () => {
   const project = {
     id: "project-1",
