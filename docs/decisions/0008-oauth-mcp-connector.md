@@ -52,18 +52,22 @@ task commands. UI snapshot и административные capabilities дл
    Collections compact и paginated; детали и большой archive загружаются
    только после выбора.
 10. Распространение выполняется отдельным Git marketplace repository, в котором
-    есть ровно один Task Manager plugin: `.mcp.json`, manifest, визуальные
-    assets и skill. Plugin manifest формирует карточку в Codex Desktop, а MCP
-    dependency запускает OAuth Connect/Login. Product source и marketplace
-    lifecycle не смешиваются. Отдельный `.app.json` нужен только после
-    регистрации connector в глобальном ChatGPT app directory и не является
-    условием установки из Git marketplace.
+    есть ровно один Task Manager plugin: `.app.json`, `.mcp.json`, manifest,
+    визуальные assets и skill. Task Manager зарегистрирован как непубличный
+    app connector; его `asdk_app_*` identifier хранится в `.app.json`, поэтому
+    Codex Desktop показывает штатные Install/Authenticate/Reconnect controls,
+    а пользователю не нужно вручную вводить имя или URL MCP server. `.mcp.json`
+    сохраняет transport metadata и fallback для MCP-aware clients. Connector
+    не публикуется в глобальном каталоге: discoverability даёт только явно
+    добавленный Git marketplace. Product source и marketplace lifecycle не
+    смешиваются.
 
 ## Последствия
 
-- Пользователь Codex Desktop устанавливает marketplace/plugin, нажимает
-  Connect, входит через ChatGPT, подтверждает scopes и сразу получает tools;
-  ручной secret не нужен.
+- Пользователь Codex Desktop один раз добавляет Git marketplace, устанавливает
+  Task Manager из Plugins, нажимает Authenticate, входит через ChatGPT,
+  подтверждает scopes и сразу получает tools; ручные MCP/OAuth поля и secret
+  не нужны.
 - OAuth subject сопоставляется тому же внутреннему User, что Sites UI, поэтому
   существующие ownership/grants начинают действовать без отдельного account
   linking.
