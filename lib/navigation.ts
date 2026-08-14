@@ -1,16 +1,28 @@
 import type { AppSnapshot } from "./types";
 
 export type Layout = "list" | "board";
+export type IssueFilter = "all" | "active" | "backlog" | "archived";
 
 export type NavigationTarget =
   | { kind: "root" }
   | { kind: "shared" }
-  | { kind: "projects" }
-  | { kind: "releases" }
+  | { kind: "issues"; filter: IssueFilter; layout: Layout }
+  | { kind: "issue"; id: string }
+  | { kind: "legacyTask"; id: string }
+  | { kind: "views" }
   | { kind: "view"; id: string; layout?: Layout }
+  | { kind: "legacyBuiltInView"; filter: IssueFilter; layout: Layout }
+  | { kind: "projects" }
   | { kind: "project"; id: string; layout?: Layout }
-  | { kind: "release"; id: string; layout?: Layout }
-  | { kind: "task"; id: string };
+  | { kind: "projectReleases"; projectId: string }
+  | {
+      kind: "projectRelease";
+      projectId: string;
+      releaseId: string;
+      layout?: Layout;
+    }
+  | { kind: "releases" }
+  | { kind: "legacyRelease"; id: string; layout?: Layout };
 
 export type ResolvedNavigation = {
   surface: string;
@@ -20,7 +32,7 @@ export type ResolvedNavigation = {
 
 const navigationStateKey = "taskManagerNavigation";
 
-export const builtInViewIds = new Set([
+export const builtInViewIds = new Set<IssueFilter>([
   "all",
   "active",
   "backlog",
@@ -43,23 +55,14 @@ export function parseNavigationSegments(
   if (segments.length === 1 && segments[0] === "shared") {
     return { kind: "shared" };
   }
-  if (segments.length === 1 && segments[0] === "projects") {
-    return { kind: "projects" };
+  if (segments[0] === "issues") return parseIssueSegments(segments);
+  if (segments[0] === "views") return parseViewSegments(segments);
+  if (segments[0] === "projects") return parseProjectSegments(segments);
+  if (segments[0] === "releases") return parseReleaseSegments(segments);
+  if (segments.length === 2 && segments[0] === "tasks" && segments[1]) {
+    return { kind: "legacyTask", id: segments[1] };
   }
-  if (segments.length === 1 && segments[0] === "releases") {
-    return { kind: "releases" };
-  }
-  if (segments.length === 2 && segments[0] === "tasks") {
-    return segments[1] ? { kind: "task", id: segments[1] } : null;
-  }
-
-  const kind = singularKind(segments[0]);
-  if (!kind || !segments[1] || segments.length > 3) return null;
-  if (segments[2] === undefined) {
-    return { kind, id: segments[1], layout: undefined };
-  }
-  const layout = parseLayout(segments[2]);
-  return layout ? { kind, id: segments[1], layout } : null;
+  return null;
 }
 
 export function pathFromRouteSegments(segments: string[]): string {
@@ -85,18 +88,21 @@ export function resolveNavigationTarget(
   if (target.kind === "shared") {
     return { surface: "shared", layout: "list", taskId: null };
   }
-  if (target.kind === "projects" || target.kind === "releases") {
+  if (target.kind === "issues" || target.kind === "legacyBuiltInView") {
+    return {
+      surface: target.filter,
+      layout: target.layout,
+      taskId: null,
+    };
+  }
+  if (target.kind === "views" || target.kind === "projects") {
     return { surface: target.kind, layout: "list", taskId: null };
   }
+  if (target.kind === "releases") {
+    return { surface: "releases", layout: "list", taskId: null };
+  }
   if (target.kind === "view") {
-    if (builtInViewIds.has(target.id)) {
-      return {
-        surface: target.id,
-        layout: target.layout ?? "list",
-        taskId: null,
-      };
-    }
-    const view = data.views.find((item) => item.id === target.id);
+    const view = findAddressable(data.views, target.id);
     return view
       ? {
           surface: `view:${view.id}`,
@@ -106,25 +112,48 @@ export function resolveNavigationTarget(
       : null;
   }
   if (target.kind === "project") {
-    return data.projects.some((item) => item.id === target.id)
+    const project = findAddressable(data.projects, target.id);
+    return project
       ? {
-          surface: `project:${target.id}`,
+          surface: `project:${project.id}`,
           layout: target.layout ?? "list",
           taskId: null,
         }
       : null;
   }
-  if (target.kind === "release") {
-    return data.releases.some((item) => item.id === target.id)
+  if (target.kind === "projectReleases") {
+    const project = findAddressable(data.projects, target.projectId);
+    return project
       ? {
-          surface: `release:${target.id}`,
+          surface: `project-releases:${project.id}`,
+          layout: "list",
+          taskId: null,
+        }
+      : null;
+  }
+  if (target.kind === "projectRelease") {
+    const project = findAddressable(data.projects, target.projectId);
+    const release = findAddressable(data.releases, target.releaseId);
+    return project && release?.projectId === project.id
+      ? {
+          surface: `release:${release.id}`,
+          layout: target.layout ?? "list",
+          taskId: null,
+        }
+      : null;
+  }
+  if (target.kind === "legacyRelease") {
+    const release = findAddressable(data.releases, target.id);
+    return release
+      ? {
+          surface: `release:${release.id}`,
           layout: target.layout ?? "list",
           taskId: null,
         }
       : null;
   }
 
-  const task = data.tasks.find((item) => item.id === target.id);
+  const task = findAddressable(data.tasks, target.id);
   if (!task) return null;
   const surface = task.releaseId
     ? `release:${task.releaseId}`
@@ -136,25 +165,108 @@ export function resolveNavigationTarget(
   return { surface, layout: "list", taskId: task.id };
 }
 
-export function navigationPath(navigation: ResolvedNavigation): string {
-  if (navigation.taskId) return taskPath(navigation.taskId);
+export function navigationPath(
+  navigation: ResolvedNavigation,
+  data: AppSnapshot,
+): string {
+  if (navigation.taskId) {
+    const task = data.tasks.find((item) => item.id === navigation.taskId);
+    return task ? taskPath(task.publicId) : "/issues";
+  }
+
   const { surface, layout } = navigation;
-  if (surface === "projects" || surface === "releases") return `/${surface}`;
+  if (surface === "views" || surface === "projects" || surface === "releases") {
+    return `/${surface}`;
+  }
   if (surface === "shared") return "/shared";
   if (surface.startsWith("view:")) {
-    return collectionPath("views", surface.slice(5), layout, true);
+    const view = data.views.find((item) => item.id === surface.slice(5));
+    if (!view) return "/views";
+    const base = `/views/${encodeURIComponent(view.publicId)}`;
+    return layout === view.display.layout ? base : `${base}/${layout}`;
+  }
+  if (surface.startsWith("project-releases:")) {
+    const project = data.projects.find(
+      (item) => item.id === surface.slice("project-releases:".length),
+    );
+    return project
+      ? `/projects/${encodeURIComponent(project.publicId)}/releases`
+      : "/projects";
   }
   if (surface.startsWith("project:")) {
-    return collectionPath("projects", surface.slice(8), layout, false);
+    const project = data.projects.find((item) => item.id === surface.slice(8));
+    if (!project) return "/projects";
+    return collectionPath(
+      `/projects/${encodeURIComponent(project.publicId)}`,
+      layout,
+    );
   }
   if (surface.startsWith("release:")) {
-    return collectionPath("releases", surface.slice(8), layout, false);
+    const release = data.releases.find((item) => item.id === surface.slice(8));
+    const project = release
+      ? data.projects.find((item) => item.id === release.projectId)
+      : undefined;
+    if (!release || !project) return "/releases";
+    return collectionPath(
+      `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}`,
+      layout,
+    );
   }
-  return collectionPath("views", surface, layout, false);
+  return issueCollectionPath(surface as IssueFilter, layout);
 }
 
-export function taskPath(id: string): string {
-  return `/tasks/${encodeURIComponent(id)}`;
+export function taskPath(publicId: string): string {
+  return `/issues/${encodeURIComponent(publicId)}`;
+}
+
+export function projectReleasesPath(publicId: string): string {
+  return `/projects/${encodeURIComponent(publicId)}/releases`;
+}
+
+export function legacyRedirectPath(
+  target: NavigationTarget,
+  data: AppSnapshot,
+): string | null {
+  const resolved = resolveNavigationTarget(target, data);
+  if (!resolved) return null;
+  const canonical = navigationPath(resolved, data);
+
+  if (
+    target.kind === "legacyTask" ||
+    target.kind === "legacyRelease" ||
+    target.kind === "legacyBuiltInView"
+  ) {
+    return canonical;
+  }
+
+  const usesInternalId =
+    (target.kind === "view" &&
+      data.views.some(
+        (item) => item.id === target.id && item.publicId !== target.id,
+      )) ||
+    (target.kind === "project" &&
+      data.projects.some(
+        (item) => item.id === target.id && item.publicId !== target.id,
+      )) ||
+    (target.kind === "projectReleases" &&
+      data.projects.some(
+        (item) =>
+          item.id === target.projectId && item.publicId !== target.projectId,
+      )) ||
+    (target.kind === "projectRelease" &&
+      (data.projects.some(
+        (item) =>
+          item.id === target.projectId && item.publicId !== target.projectId,
+      ) ||
+        data.releases.some(
+          (item) =>
+            item.id === target.releaseId && item.publicId !== target.releaseId,
+        ))) ||
+    (target.kind === "issue" &&
+      data.tasks.some(
+        (item) => item.id === target.id && item.publicId !== target.id,
+      ));
+  return usesInternalId ? canonical : null;
 }
 
 export function navigationHistoryState(navigation: ResolvedNavigation) {
@@ -170,52 +282,153 @@ export function resolveNavigationHistoryState(
   const candidate = (state as Record<string, unknown>)[navigationStateKey];
   if (!candidate || typeof candidate !== "object") return null;
   const value = candidate as Record<string, unknown>;
+  const task =
+    typeof value.taskId === "string"
+      ? data.tasks.find((item) => item.id === value.taskId)
+      : undefined;
   if (
     typeof value.surface !== "string" ||
     (value.layout !== "list" && value.layout !== "board") ||
-    typeof value.taskId !== "string" ||
-    taskPath(value.taskId) !== pathname ||
-    !data.tasks.some((task) => task.id === value.taskId)
+    !task ||
+    taskPath(task.publicId) !== pathname
   ) {
     return null;
   }
 
-  const backgroundTarget = parseNavigationPath(
-    navigationPath({
+  const backgroundPath = navigationPath(
+    {
       surface: value.surface,
       layout: value.layout,
       taskId: null,
-    }),
+    },
+    data,
   );
+  const backgroundTarget = parseNavigationPath(backgroundPath);
   if (!backgroundTarget || !resolveNavigationTarget(backgroundTarget, data)) {
     return null;
   }
   return {
     surface: value.surface,
     layout: value.layout,
-    taskId: value.taskId,
+    taskId: task.id,
   };
 }
 
-function collectionPath(
-  collection: "views" | "projects" | "releases",
+function parseIssueSegments(segments: string[]): NavigationTarget | null {
+  if (segments.length === 1) {
+    return { kind: "issues", filter: "all", layout: "list" };
+  }
+  if (segments.length === 2 && segments[1] === "board") {
+    return { kind: "issues", filter: "all", layout: "board" };
+  }
+  const filter = parseIssueFilter(segments[1]);
+  if (filter && filter !== "all") {
+    if (segments.length === 2) {
+      return { kind: "issues", filter, layout: "list" };
+    }
+    const layout = segments.length === 3 ? parseLayout(segments[2]) : null;
+    return layout ? { kind: "issues", filter, layout } : null;
+  }
+  return segments.length === 2 && segments[1]
+    ? { kind: "issue", id: segments[1] }
+    : null;
+}
+
+function parseViewSegments(segments: string[]): NavigationTarget | null {
+  if (segments.length === 1) return { kind: "views" };
+  const builtIn = parseIssueFilter(segments[1]);
+  if (builtIn) {
+    if (segments.length === 2) {
+      return { kind: "legacyBuiltInView", filter: builtIn, layout: "list" };
+    }
+    const layout = segments.length === 3 ? parseLayout(segments[2]) : null;
+    return layout
+      ? { kind: "legacyBuiltInView", filter: builtIn, layout }
+      : null;
+  }
+  if (!segments[1] || segments.length > 3) return null;
+  if (segments.length === 2) {
+    return { kind: "view", id: segments[1], layout: undefined };
+  }
+  const layout = parseLayout(segments[2]);
+  return layout ? { kind: "view", id: segments[1], layout } : null;
+}
+
+function parseProjectSegments(segments: string[]): NavigationTarget | null {
+  if (segments.length === 1) return { kind: "projects" };
+  if (!segments[1]) return null;
+  if (segments.length === 2) {
+    return { kind: "project", id: segments[1], layout: undefined };
+  }
+  if (segments.length === 3) {
+    const layout = parseLayout(segments[2]);
+    if (layout) return { kind: "project", id: segments[1], layout };
+    if (segments[2] === "releases") {
+      return { kind: "projectReleases", projectId: segments[1] };
+    }
+    return null;
+  }
+  if (
+    segments[2] !== "releases" ||
+    !segments[3] ||
+    segments.length > 5
+  ) {
+    return null;
+  }
+  if (segments.length === 4) {
+    return {
+      kind: "projectRelease",
+      projectId: segments[1],
+      releaseId: segments[3],
+      layout: undefined,
+    };
+  }
+  const layout = parseLayout(segments[4]);
+  return layout
+    ? {
+        kind: "projectRelease",
+        projectId: segments[1],
+        releaseId: segments[3],
+        layout,
+      }
+    : null;
+}
+
+function parseReleaseSegments(segments: string[]): NavigationTarget | null {
+  if (segments.length === 1) return { kind: "releases" };
+  if (!segments[1] || segments.length > 3) return null;
+  if (segments.length === 2) {
+    return { kind: "legacyRelease", id: segments[1], layout: undefined };
+  }
+  const layout = parseLayout(segments[2]);
+  return layout
+    ? { kind: "legacyRelease", id: segments[1], layout }
+    : null;
+}
+
+function collectionPath(base: string, layout: Layout): string {
+  return layout === "board" ? `${base}/board` : base;
+}
+
+function issueCollectionPath(filter: IssueFilter, layout: Layout): string {
+  const base = filter === "all" ? "/issues" : `/issues/${filter}`;
+  return layout === "board" ? `${base}/board` : base;
+}
+
+function findAddressable<T extends { id: string; publicId: string }>(
+  records: T[],
   id: string,
-  layout: Layout,
-  explicitList: boolean,
-): string {
-  const base = `/${collection}/${encodeURIComponent(id)}`;
-  if (layout === "board") return `${base}/board`;
-  return explicitList ? `${base}/list` : base;
+): T | undefined {
+  return records.find((item) => item.publicId === id || item.id === id);
 }
 
-function singularKind(value: string): "view" | "project" | "release" | null {
-  if (value === "views") return "view";
-  if (value === "projects") return "project";
-  if (value === "releases") return "release";
-  return null;
+function parseIssueFilter(value: string | undefined): IssueFilter | null {
+  return value && builtInViewIds.has(value as IssueFilter)
+    ? (value as IssueFilter)
+    : null;
 }
 
-function parseLayout(value: string): Layout | null {
+function parseLayout(value: string | undefined): Layout | null {
   return value === "list" || value === "board" ? value : null;
 }
 

@@ -64,6 +64,7 @@ const schemaStatements = [
     ON workflow_statuses(owner_user_id, name)`,
   `CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
+    public_id TEXT NOT NULL UNIQUE,
     owner_user_id TEXT NOT NULL,
     creator_user_id TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -84,6 +85,7 @@ const schemaStatements = [
     ON projects(owner_user_id, archived_at)`,
   `CREATE TABLE IF NOT EXISTS releases (
     id TEXT PRIMARY KEY,
+    public_id TEXT NOT NULL UNIQUE,
     project_id TEXT NOT NULL,
     owner_user_id TEXT NOT NULL,
     creator_user_id TEXT NOT NULL,
@@ -101,6 +103,7 @@ const schemaStatements = [
     ON releases(project_id, status)`,
   `CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
+    public_id TEXT NOT NULL UNIQUE,
     owner_user_id TEXT NOT NULL,
     creator_user_id TEXT NOT NULL,
     identifier TEXT NOT NULL,
@@ -157,6 +160,7 @@ const schemaStatements = [
     ON task_relations(target_task_id, type)`,
   `CREATE TABLE IF NOT EXISTS saved_views (
     id TEXT PRIMARY KEY,
+    public_id TEXT NOT NULL UNIQUE,
     owner_user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     scope_project_id TEXT,
@@ -197,15 +201,54 @@ const schemaStatements = [
     WHERE revoked_at IS NULL`,
 ];
 
+const publicIdTables = [
+  { table: "projects", index: "idx_projects_public_id" },
+  { table: "releases", index: "idx_releases_public_id" },
+  { table: "tasks", index: "idx_tasks_public_id" },
+  { table: "saved_views", index: "idx_saved_views_public_id" },
+] as const;
+
 let schemaPromise: Promise<void> | null = null;
 
 export async function ensureDatabase() {
   schemaPromise ??= (async () => {
     const db = getD1();
     await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
+    await ensurePublicIds(db);
     await db.prepare("PRAGMA optimize").run();
   })();
   return schemaPromise;
+}
+
+async function ensurePublicIds(db: D1Database) {
+  for (const { table, index } of publicIdTables) {
+    const columns = await db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all<{ name: string }>();
+    if (!columns.results.some((column) => column.name === "public_id")) {
+      await db.prepare(`ALTER TABLE ${table} ADD COLUMN public_id TEXT`).run();
+    }
+
+    const missing = await db
+      .prepare(
+        `SELECT id FROM ${table} WHERE public_id IS NULL OR public_id = ''`,
+      )
+      .all<{ id: string }>();
+    for (let offset = 0; offset < missing.results.length; offset += 100) {
+      const updates = missing.results.slice(offset, offset + 100).map((row) =>
+        db
+          .prepare(`UPDATE ${table} SET public_id = ? WHERE id = ?`)
+          .bind(crypto.randomUUID(), row.id),
+      );
+      if (updates.length) await db.batch(updates);
+    }
+
+    await db
+      .prepare(
+        `CREATE UNIQUE INDEX IF NOT EXISTS ${index} ON ${table}(public_id)`,
+      )
+      .run();
+  }
 }
 
 export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
@@ -531,14 +574,15 @@ export async function createTask(
   await db
     .prepare(
       `INSERT INTO tasks (
-        id, owner_user_id, creator_user_id, identifier, sequence_number,
+        id, public_id, owner_user_id, creator_user_id, identifier, sequence_number,
         title, description, status_id, priority, assignee_user_id,
         project_id, release_id, estimate, due_date, rank,
         started_at, completed_at, canceled_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       `task_${crypto.randomUUID()}`,
+      crypto.randomUUID(),
       ownerUserId,
       currentUser.id,
       `TM-${sequence}`,
@@ -754,12 +798,13 @@ export async function createProject(
   await getD1()
     .prepare(
       `INSERT INTO projects
-        (id, owner_user_id, creator_user_id, name, summary, description,
+        (id, public_id, owner_user_id, creator_user_id, name, summary, description,
          target_date, lead_user_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       `project_${crypto.randomUUID()}`,
+      crypto.randomUUID(),
       currentUser.id,
       currentUser.id,
       requireTitle(input.name),
@@ -786,12 +831,13 @@ export async function createRelease(
   await getD1()
     .prepare(
       `INSERT INTO releases
-        (id, project_id, owner_user_id, creator_user_id, name, description,
+        (id, public_id, project_id, owner_user_id, creator_user_id, name, description,
          status, target_date, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       `release_${crypto.randomUUID()}`,
+      crypto.randomUUID(),
       project.id,
       project.ownerUserId,
       currentUser.id,
@@ -814,11 +860,12 @@ export async function createSavedView(
   await getD1()
     .prepare(
       `INSERT INTO saved_views
-        (id, owner_user_id, name, scope_project_id, query_json, display_json)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+        (id, public_id, owner_user_id, name, scope_project_id, query_json, display_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       `view_${crypto.randomUUID()}`,
+      crypto.randomUUID(),
       currentUser.id,
       requireTitle(input.name),
       input.scopeProjectId ? String(input.scopeProjectId) : null,
@@ -1049,6 +1096,7 @@ function mapStatus(row: DbRow): WorkflowStatusRecord {
 function mapProject(row: DbRow): ProjectRecord {
   return {
     id: String(row.id),
+    publicId: String(row.public_id),
     ownerUserId: String(row.owner_user_id),
     creatorUserId: String(row.creator_user_id),
     name: String(row.name),
@@ -1068,6 +1116,7 @@ function mapProject(row: DbRow): ProjectRecord {
 function mapRelease(row: DbRow): ReleaseRecord {
   return {
     id: String(row.id),
+    publicId: String(row.public_id),
     projectId: String(row.project_id),
     ownerUserId: String(row.owner_user_id),
     creatorUserId: String(row.creator_user_id),
@@ -1086,6 +1135,7 @@ function mapRelease(row: DbRow): ReleaseRecord {
 function mapTask(row: DbRow): TaskRecord {
   return {
     id: String(row.id),
+    publicId: String(row.public_id),
     ownerUserId: String(row.owner_user_id),
     creatorUserId: String(row.creator_user_id),
     identifier: String(row.identifier),
@@ -1232,6 +1282,7 @@ function mapExternalSource(row: DbRow): ExternalSourceRecord {
 function mapView(row: DbRow): SavedViewRecord {
   return {
     id: String(row.id),
+    publicId: String(row.public_id),
     ownerUserId: String(row.owner_user_id),
     name: String(row.name),
     scopeProjectId: nullableString(row.scope_project_id),

@@ -130,20 +130,24 @@ migrations. Это соответствует
 
 1. Server route нормализует catch-all segments ровно через один
    percent-decode/encode cycle, независимо от того, передал runtime decoded или
-   encoded params, затем разбирает allowlisted path contract для views,
-   projects, releases, tasks и layout `list|board`; неизвестные extra segments
-   отклоняются.
+   encoded params, затем разбирает allowlisted path contract `/issues`,
+   `/views`, `/projects`, `/releases`, project-scoped releases и layout
+   `list|board`; неизвестные extra segments отклоняются.
 2. Repository строит один ACL-scoped snapshot до разрешения route ID, поэтому
    неизвестный и недоступный record имеют одинаковый `not found` результат.
-3. Route разрешается в UI state `{surface, layout, taskId}`. Task URL открывает
+3. Внутренний `id` остаётся ключом связей и import idempotency, а отдельный
+   immutable `public_id` UUID адресует Task, Project, Release и SavedView.
+   Legacy internal-ID route разрешается только внутри ACL snapshot и отвечает
+   redirect на канонический публичный path.
+4. Route разрешается в UI state `{surface, layout, taskId}`. Issue URL открывает
    details поверх доступного project/release context, но сам остаётся
-   каноническим `/tasks/{task-id}`.
-4. Client-side переходы используют `history.pushState`; для `/tasks/{id}`
+   каноническим `/issues/{public-id}`.
+5. Client-side переходы используют `history.pushState`; для `/issues/{id}`
    history entry дополнительно хранит проверяемый background surface/layout,
    чтобы Back/Forward возвращали исходный board без добавления query parameter.
    При отсутствии или подмене state path разрешается заново. Синтаксис и ACL
    снова проверяются server-side при прямой загрузке или refresh.
-5. Metadata независимо шаримой route формируются из уже авторизованного record;
+6. Metadata независимо шаримой route формируются из уже авторизованного record;
    inherited social image очищается, чтобы приватная entity не получала
    вводящий в заблуждение общий preview.
 

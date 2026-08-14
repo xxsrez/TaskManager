@@ -539,10 +539,10 @@ export async function importLinearWorkspace(
       db
         .prepare(
           `INSERT INTO projects
-            (id, owner_user_id, creator_user_id, name, summary, description,
+            (id, public_id, owner_user_id, creator_user_id, name, summary, description,
              status, lead_user_id, start_date, target_date, icon, color,
              archived_at, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              summary = excluded.summary,
@@ -558,6 +558,7 @@ export async function importLinearWorkspace(
         )
         .bind(
           project.id,
+          crypto.randomUUID(),
           currentUser.id,
           currentUser.id,
           project.name,
@@ -581,10 +582,10 @@ export async function importLinearWorkspace(
       db
         .prepare(
           `INSERT INTO releases
-            (id, project_id, owner_user_id, creator_user_id, name, description,
+            (id, public_id, project_id, owner_user_id, creator_user_id, name, description,
              status, target_date, released_at, release_notes, version,
              created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, '', 1, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', 1, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              project_id = excluded.project_id,
              name = excluded.name,
@@ -595,6 +596,7 @@ export async function importLinearWorkspace(
         )
         .bind(
           release.id,
+          crypto.randomUUID(),
           release.projectId,
           currentUser.id,
           currentUser.id,
@@ -613,12 +615,12 @@ export async function importLinearWorkspace(
       db
         .prepare(
           `INSERT INTO tasks
-            (id, owner_user_id, creator_user_id, identifier, sequence_number,
+            (id, public_id, owner_user_id, creator_user_id, identifier, sequence_number,
              title, description, status_id, priority, assignee_user_id,
              project_id, release_id, estimate, due_date, parent_task_id, rank,
              started_at, completed_at, canceled_at, archived_at, version,
              created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              identifier = excluded.identifier,
              sequence_number = excluded.sequence_number,
@@ -641,6 +643,7 @@ export async function importLinearWorkspace(
         )
         .bind(
           task.id,
+          crypto.randomUUID(),
           currentUser.id,
           currentUser.id,
           task.identifier,
@@ -702,9 +705,9 @@ export async function importLinearWorkspace(
       db
         .prepare(
           `INSERT INTO saved_views
-            (id, owner_user_id, name, scope_project_id, query_json,
+            (id, public_id, owner_user_id, name, scope_project_id, query_json,
              display_json, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              scope_project_id = excluded.scope_project_id,
@@ -714,6 +717,7 @@ export async function importLinearWorkspace(
         )
         .bind(
           view.id,
+          crypto.randomUUID(),
           currentUser.id,
           view.name,
           view.scopeProjectId,

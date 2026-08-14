@@ -49,6 +49,7 @@ import {
   navigationHistoryState,
   navigationPath,
   parseNavigationPath,
+  projectReleasesPath,
   resolveNavigationHistoryState,
   resolveNavigationTarget,
   taskPath,
@@ -116,7 +117,7 @@ export function TaskTracker({
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
   const taskReturnPath = useRef(
-    navigationPath({ ...initialNavigation, taskId: null }),
+    navigationPath({ ...initialNavigation, taskId: null }, initialData),
   );
 
   const statusMap = useMemo(
@@ -241,8 +242,24 @@ export function TaskTracker({
   );
   const activeTask = data.tasks.find((task) => task.id === activeTaskId) ?? null;
   const peekTask = data.tasks.find((task) => task.id === peekTaskId) ?? null;
-  const contextProject = surface.startsWith("project:") ? surface.slice(8) : null;
+  const projectReleaseSurfaceId = surface.startsWith("project-releases:")
+    ? surface.slice("project-releases:".length)
+    : null;
+  const contextProject = surface.startsWith("project:")
+    ? surface.slice(8)
+    : projectReleaseSurfaceId;
   const contextRelease = surface.startsWith("release:") ? surface.slice(8) : null;
+  const scopedReleases = projectReleaseSurfaceId
+    ? data.releases.filter((release) => release.projectId === projectReleaseSurfaceId)
+    : data.releases;
+  const surfaceCount = surface === "views"
+    ? builtInViews.length + data.views.length
+    : projectReleaseSurfaceId
+      ? scopedReleases.length
+      : visibleTasks.length;
+  const contextProjectRecord = contextProject
+    ? data.projects.find((project) => project.id === contextProject)
+    : undefined;
 
   async function mutate(path: string, method: string, body: unknown) {
     setBusy(true);
@@ -274,18 +291,18 @@ export function TaskTracker({
     setSurface(next.surface);
     setLayout(next.layout);
     setActiveTaskId(next.taskId);
-    if (!next.taskId) taskReturnPath.current = navigationPath(next);
+    if (!next.taskId) taskReturnPath.current = navigationPath(next, data);
     if (historyMode === "push") {
       window.history.pushState(
         navigationHistoryState(next),
         "",
-        navigationPath(next),
+        navigationPath(next, data),
       );
     } else if (historyMode === "replace") {
       window.history.replaceState(
         navigationHistoryState(next),
         "",
-        navigationPath(next),
+        navigationPath(next, data),
       );
     }
   }
@@ -304,7 +321,10 @@ export function TaskTracker({
 
   function openTask(taskId: string) {
     if (!activeTaskId) {
-      taskReturnPath.current = navigationPath({ surface, layout, taskId: null });
+      taskReturnPath.current = navigationPath(
+        { surface, layout, taskId: null },
+        data,
+      );
     }
     applyNavigation({ surface, layout, taskId });
   }
@@ -348,7 +368,14 @@ export function TaskTracker({
           window.location.pathname,
           data,
         ) ?? (target ? resolveNavigationTarget(target, data) : null);
-      if (resolved) applyNavigation(resolved, "none");
+      if (resolved) {
+        setSurface(resolved.surface);
+        setLayout(resolved.layout);
+        setActiveTaskId(resolved.taskId);
+        if (!resolved.taskId) {
+          taskReturnPath.current = navigationPath(resolved, data);
+        }
+      }
     }
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
@@ -390,11 +417,11 @@ export function TaskTracker({
         const next: ResolvedNavigation = { surface, layout: nextLayout, taskId: null };
         setLayout(nextLayout);
         setActiveTaskId(null);
-        taskReturnPath.current = navigationPath(next);
+        taskReturnPath.current = navigationPath(next, data);
         window.history.pushState(
           navigationHistoryState(next),
           "",
-          navigationPath(next),
+          navigationPath(next, data),
         );
       } else if (["j", "ArrowDown"].includes(event.key)) {
         event.preventDefault();
@@ -445,29 +472,30 @@ export function TaskTracker({
           </button>
         )}
         <nav className="nav-scroll" aria-label="Workspace">
-          <NavItem compact={sidebarCollapsed} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} href="/views/all" onNavigate={() => navigateSurface("all", "list")} />
+          <NavItem compact={sidebarCollapsed} icon={<Inbox size={15} />} label="My tasks" active={builtInViews.some((view) => view.id === surface)} href="/issues" onNavigate={() => navigateSurface("all", "list")} />
           <NavItem compact={sidebarCollapsed} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
 
           {!sidebarCollapsed && (
             <>
               <SidebarSection title="Views" action={() => setDialog("view")}>
+                <NavItem compact={false} icon={<Boxes size={13} />} label="All views" active={surface === "views"} href="/views" onNavigate={() => navigateSurface("views", "list")} />
                 {builtInViews.map((view) => (
-                  <NavItem key={view.id} compact={false} icon={<Circle size={9} />} label={view.label} active={surface === view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null })} onNavigate={() => navigateSurface(view.id, "list")} count={taskCountForView(view.id, data, statusMap)} />
+                  <NavItem key={view.id} compact={false} icon={<Circle size={9} />} label={view.label} active={surface === view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(view.id, "list")} count={taskCountForView(view.id, data, statusMap)} />
                 ))}
                 {data.views.map((view) => (
-                  <NavItem key={view.id} compact={false} icon={<Zap size={13} />} label={view.name} active={surface === `view:${view.id}`} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null })} onNavigate={() => navigateSurface(`view:${view.id}`, view.display.layout)} />
+                  <NavItem key={view.id} compact={false} icon={<Zap size={13} />} label={view.name} active={surface === `view:${view.id}`} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onNavigate={() => navigateSurface(`view:${view.id}`, view.display.layout)} />
                 ))}
               </SidebarSection>
               <SidebarSection title="Projects" action={() => setDialog("project")}>
                 <NavItem compact={false} icon={<Boxes size={13} />} label="All projects" active={surface === "projects"} href="/projects" onNavigate={() => navigateSurface("projects", "list")} />
                 {data.projects.map((project) => (
-                  <NavItem key={project.id} compact={false} icon={<span className="project-dot" style={{ background: project.color }} />} label={project.name} active={surface === `project:${project.id}`} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null })} onNavigate={() => navigateSurface(`project:${project.id}`, "list")} />
+                  <NavItem key={project.id} compact={false} icon={<span className="project-dot" style={{ background: project.color }} />} label={project.name} active={surface === `project:${project.id}`} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`project:${project.id}`, "list")} />
                 ))}
               </SidebarSection>
               <SidebarSection title="Releases" action={() => setDialog("release")}>
                 <NavItem compact={false} icon={<Rocket size={13} />} label="All releases" active={surface === "releases"} href="/releases" onNavigate={() => navigateSurface("releases", "list")} />
                 {data.releases.slice(0, 6).map((release) => (
-                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={release.name} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null })} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
+                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={release.name} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
                 ))}
               </SidebarSection>
             </>
@@ -495,9 +523,10 @@ export function TaskTracker({
               </button>
               <span className="breadcrumb">Workspace</span><ChevronLeft size={12} className="breadcrumb-chevron" />
               <h1>{title}</h1>
-              <span className="count-pill">{visibleTasks.length}</span>
+              <span className="count-pill">{surfaceCount}</span>
             </div>
             <div className="title-actions">
+              {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {shareTarget(surface, activeTask, data) && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Share</button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>
@@ -532,10 +561,12 @@ export function TaskTracker({
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")}><X size={14} /></button></div>}
         {busy && <div className="progress-line" aria-label="Saving" />}
 
-        {surface === "projects" ? (
+        {surface === "views" ? (
+          <ViewsSurface data={data} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} />
+        ) : surface === "projects" ? (
           <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
-        ) : surface === "releases" ? (
-          <ReleasesSurface releases={data.releases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => setDialog("release")} />
+        ) : surface === "releases" || projectReleaseSurfaceId ? (
+          <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => setDialog("release")} />
         ) : layout === "board" ? (
           <TaskBoard tasks={visibleTasks} statuses={visibleStatuses} projects={projectMap} releases={releaseMap} selected={selected} onSelect={toggleSelection} onOpen={openTask} onCreate={openCreate} onMove={async (task, statusId, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, statusId, rank })} />
         ) : (
@@ -582,7 +613,7 @@ function TaskList({ tasks, statuses, groupBy, projects, releases, selected, high
 }
 
 function TaskRow({ task, status, project, release, selected, highlighted, onSelect, onHighlight, onOpen, onPeek }: { task: TaskRecord; status: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; selected: boolean; highlighted: boolean; onSelect: () => void; onHighlight: () => void; onOpen: () => void; onPeek: () => void }) {
-  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight} onDoubleClick={onPeek}><button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button><span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}<span className="avatar" title="Assignee">{initials("Me")}</span><button className="row-more" title="More"><MoreHorizontal size={14} /></button></div></div>;
+  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight} onDoubleClick={onPeek}><button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button><span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}<span className="avatar" title="Assignee">{initials("Me")}</span><button className="row-more" title="More"><MoreHorizontal size={14} /></button></div></div>;
 }
 
 function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void; onMove: (task: TaskRecord, statusId: string, rank: number) => Promise<unknown> }) {
@@ -651,7 +682,7 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, onSelect, on
                   >
                     {selected.has(task.id) ? <Check size={11} /> : <span />}
                   </button>
-                  <a href={taskPath(task.id)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, () => onOpen(task.id)); }}>
+                  <a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, () => onOpen(task.id)); }}>
                   <h3>{task.title}</h3>
                   <div className="card-meta">
                     <span>{task.identifier}</span>
@@ -726,7 +757,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }:
 }
 
 function DetailsSection({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) { return <section className="details-section"><h2>{icon}{title}</h2>{children}</section>; }
-function TaskReference({ label, task, onOpen }: { label: string; task: TaskRecord; onOpen: (id: string) => void }) { return <a href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, () => onOpen(task.id))}><small>{label}</small><span>{task.identifier}</span><b>{task.title}</b></a>; }
+function TaskReference({ label, task, onOpen }: { label: string; task: TaskRecord; onOpen: (id: string) => void }) { return <a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, () => onOpen(task.id))}><small>{label}</small><span>{task.identifier}</span><b>{task.title}</b></a>; }
 
 function PropertyRow({ label, icon, children }: { label: string; icon: React.ReactNode; children: React.ReactNode }) { return <label className="property-row"><span>{icon}{label}</span>{children}</label>; }
 function PropertySelect({ icon, value, onChange, children, disabled }: { icon: React.ReactNode; value: string; onChange: (value: string) => void; children: React.ReactNode; disabled?: boolean }) { return <label className="property-select">{icon}<select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>{children}</select><ChevronDown size={11} /></label>; }
@@ -745,10 +776,11 @@ function DialogHeader({ title, icon, onClose }: { title: string; icon: React.Rea
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }
 function Modal({ onClose, children, className = "" }: { onClose: () => void; children: React.ReactNode; className?: string }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal ${className}`} role="dialog" aria-modal="true">{children}</div></div>; }
 
-function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null })} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
-function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="release-row" key={release.id} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null })} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{release.name}</b><small>{projects.get(release.projectId)?.name}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
+function ViewsSurface({ data, statusMap, onOpen }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void }) { return <div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{data.views.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>; }
+function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
+function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); return <a className="release-row" key={release.id} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{release.name}</b><small>{project?.name}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate: () => void }) { const labels = { task: ["No tasks here", "Create the first task and give this view a starting point."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "Create a release to plan what ships together."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p><button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button></div>; }
-function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.id)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
+function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
 function BulkBar({ count, statuses, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}><Archive size={14} />Archive</button><button onClick={onClose}><X size={14} /></button></div>; }
 
 function handleLocalLink(event: ReactMouseEvent<HTMLAnchorElement>, navigate: () => void) {
@@ -771,8 +803,8 @@ function defaultLayoutForSurface(surface: string, data: AppSnapshot): Layout {
   return data.views.find((view) => view.id === surface.slice(5))?.display.layout ?? "list";
 }
 
-function surfaceTitle(surface: string, data: AppSnapshot, view?: SavedViewRecord) { if (surface === "projects") return "Projects"; if (surface === "releases") return "Releases"; if (surface === "shared") return "Shared with me"; if (surface.startsWith("project:")) return data.projects.find((project) => project.id === surface.slice(8))?.name ?? "Project"; if (surface.startsWith("release:")) return data.releases.find((release) => release.id === surface.slice(8))?.name ?? "Release"; if (view) return view.name; return builtInViews.find((item) => item.id === surface)?.label ?? "My tasks"; }
-function isCollectionSurface(surface: string) { return surface === "projects" || surface === "releases"; }
+function surfaceTitle(surface: string, data: AppSnapshot, view?: SavedViewRecord) { if (surface === "views") return "Views"; if (surface === "projects") return "Projects"; if (surface === "releases") return "Releases"; if (surface === "shared") return "Shared with me"; if (surface.startsWith("project-releases:")) { const project = data.projects.find((item) => item.id === surface.slice("project-releases:".length)); return project ? `${project.name} releases` : "Project releases"; } if (surface.startsWith("project:")) return data.projects.find((project) => project.id === surface.slice(8))?.name ?? "Project"; if (surface.startsWith("release:")) return data.releases.find((release) => release.id === surface.slice(8))?.name ?? "Release"; if (view) return view.name; return builtInViews.find((item) => item.id === surface)?.label ?? "My tasks"; }
+function isCollectionSurface(surface: string) { return surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
 function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot) { if (activeTask) { if (activeTask.projectId) { const project = data.projects.find((item) => item.id === activeTask.projectId); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } return { resourceType: "task" as const, resourceId: activeTask.id, label: activeTask.identifier }; } if (surface.startsWith("project:")) { const project = data.projects.find((item) => item.id === surface.slice(8)); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } if (surface.startsWith("view:")) { const view = data.views.find((item) => item.id === surface.slice(5)); return view ? { resourceType: "saved_view" as const, resourceId: view.id, label: view.name } : null; } return null; }
 function statusGroupsForTasks(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const owners = new Set(tasks.map((task) => task.ownerUserId)); return statuses.filter((status) => owners.has(status.ownerUserId) || tasks.length === 0).sort((a, b) => a.position - b.position); }
 function sortTasks(tasks: TaskRecord[], display?: ViewDisplay) {

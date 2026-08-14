@@ -81,18 +81,21 @@ Desktop-first shell повторяет композицию Linear:
 
 - Breadcrumb и back/forward сохраняют browser history и deep links.
 - Открытие task/project из списка не теряет filter, scroll и selection context.
-- Entity identity и layout кодируются path segments, а не query parameters:
+- Публичный URL использует отдельный стабильный UUID `public-id`. Внутренний
+  primary key, Linear source ID и import provenance в URL не попадают. Entity
+  identity и layout кодируются path segments, а не query parameters:
 
   | Surface | Прямой URL |
   |---|---|
-  | Built-in view | `/views/{all|active|backlog|archived}` |
-  | Saved view | `/views/{view-id}` |
-  | Явный layout view | `/views/{view-id}/{list|board}` |
+  | Issues / board | `/issues`, `/issues/board` |
+  | Built-in issue view | `/issues/{active|backlog|archived}` |
+  | Views / Saved view | `/views`, `/views/{view-public-id}` |
+  | Явный layout view | `/views/{view-public-id}/{list|board}` |
   | Projects / Project | `/projects`, `/projects/{project-id}` |
   | Project board | `/projects/{project-id}/board` |
-  | Releases / Release | `/releases`, `/releases/{release-id}` |
-  | Release board | `/releases/{release-id}/board` |
-  | Task details | `/tasks/{task-id}` |
+  | Releases / Project releases | `/releases`, `/projects/{project-id}/releases` |
+  | Release / board | `/projects/{project-id}/releases/{release-id}`, `…/board` |
+  | Issue details | `/issues/{issue-public-id}` |
   | Shared with me | `/shared` |
 
 - URL saved view без layout открывает сохранённый `display.layout`; суффикс
@@ -104,6 +107,10 @@ Desktop-first shell повторяет композицию Linear:
 - Навигационные items и ссылки на records остаются настоящими anchors: их
   можно копировать, открыть в новой вкладке или активировать modifier-click.
 - Copy-link action копирует текущий абсолютный deep link.
+- Legacy links `/tasks/{internal-id}`, `/releases/{internal-id}` и прежние
+  `/views/{internal-id}`/`/projects/{internal-id}` разрешаются только после ACL
+  lookup и перенаправляются на канонический URL с `public-id`; новые links с
+  внутренними или Linear IDs не создаются.
 - Синтаксически неверный URL, неизвестный либо недоступный ID возвращает
   одинаковый fail-closed `not found`, не раскрывая существование чужого record.
 - `Esc` закрывает верхний dismissible layer: menu, popover, Peek, modal — ровно

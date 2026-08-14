@@ -105,7 +105,8 @@ Owner имеет implicit full access и не представлен grant. Gran
 
 | Поле | Тип | Обязательность | Семантика |
 |---|---|---:|---|
-| `id` | UUID | да | Внутренний immutable ID |
+| `id` | string/UUID | да | Внутренний immutable primary key; может сохранять import namespace |
+| `public_id` | UUID | да | Стабильная непрозрачная identity публичного URL |
 | `owner_user_id` | UUID | да | Владелец и tenant scope записи |
 | `identifier` | string | да | Immutable human ID, например `TM-123` |
 | `title` | string | да | Непустой заголовок |
@@ -130,8 +131,9 @@ Owner имеет implicit full access и не представлен grant. Gran
 
 Labels задаются связующей таблицей `task_labels(task_id, label_id)`. Relations
 и subtasks не кодируются labels. Identifier уникален в owner scope; URL и API
-identity опираются на UUID, поскольку у разных owners возможен одинаковый
-`TM-123`.
+identity опираются на `public_id`, поскольку у разных owners возможен
+одинаковый `TM-123`. `id` остаётся ключом внутренних связей и идемпотентного
+импорта; `public_id` не меняется при повторном импорте.
 
 ## WorkflowStatus
 
@@ -153,7 +155,9 @@ status, на который ссылаются задачи, нельзя без
 
 | Поле | Семантика |
 |---|---|
-| `id`, `slug` | `id` — каноническая URL/API identity; `slug` — читаемый alias |
+| `id` | Внутренний immutable primary key |
+| `public_id` | Стабильная непрозрачная UUID identity публичного URL |
+| `slug` | Читаемый optional alias; не является identity |
 | `owner_user_id` | Владелец Project и его subtree |
 | `name` | Обязательное имя |
 | `summary`, `description` | Краткий и подробный контекст |
@@ -171,7 +175,8 @@ Project progress вычисляется запросом по задачам, а
 
 | Поле | Семантика |
 |---|---|
-| `id` | Каноническая URL/API identity Release |
+| `id` | Внутренний immutable primary key Release |
+| `public_id` | Стабильная непрозрачная UUID identity публичного URL |
 | `project_id` | Обязательный owner project |
 | `owner_user_id` | Денормализованный owner, равный owner Project |
 | `name` | Обязательное имя/version label |
@@ -233,7 +238,8 @@ Task details как read-only archive. Это не означает наличи
 
 | Поле | Семантика |
 |---|---|
-| `id`, `name` | Каноническая URL/API identity и имя |
+| `id`, `name` | Внутренний immutable primary key и имя |
+| `public_id` | Стабильная непрозрачная UUID identity публичного URL |
 | `owner_user_id` | Создатель/владелец и tenant scope |
 | `scope_type` | `global` или `project` |
 | `scope_project_id` | Обязателен для project scope |

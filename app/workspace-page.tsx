@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { cache } from "react";
 import {
   chatGPTSignInPath,
@@ -8,6 +8,7 @@ import {
 import { TaskTracker } from "@/components/task-tracker";
 import { getCurrentActor } from "@/lib/auth";
 import {
+  legacyRedirectPath,
   parseNavigationPath,
   resolveNavigationTarget,
   type ResolvedNavigation,
@@ -31,6 +32,8 @@ export async function WorkspacePage({ pathname }: { pathname: string }) {
 
   const navigation = resolveNavigationTarget(target, snapshot);
   if (!navigation) notFound();
+  const redirectTo = legacyRedirectPath(target, snapshot);
+  if (redirectTo) redirect(redirectTo);
 
   return (
     <TaskTracker
@@ -120,6 +123,14 @@ function metadataForNavigation(
       title = `${view.name}${navigation.layout === "board" ? " board" : ""} – Task Manager`;
       description = `Saved ${navigation.layout} view in Task Manager.`;
     }
+  } else if (navigation.surface.startsWith("project-releases:")) {
+    const project = data.projects.find(
+      (item) => item.id === navigation.surface.slice("project-releases:".length),
+    );
+    if (project) {
+      title = `${project.name} releases – Task Manager`;
+      description = `Releases in ${project.name}.`;
+    }
   } else if (["all", "active", "backlog", "archived"].includes(navigation.surface)) {
     const label = {
       all: "All tasks",
@@ -129,6 +140,9 @@ function metadataForNavigation(
     }[navigation.surface];
     title = `${label}${navigation.layout === "board" ? " board" : ""} – Task Manager`;
     description = `${label} tasks in ${navigation.layout} layout.`;
+  } else if (navigation.surface === "views") {
+    title = "Views – Task Manager";
+    description = "Built-in and saved task views in Task Manager.";
   } else if (navigation.surface === "projects") {
     title = "Projects – Task Manager";
     description = "Projects and their progress in Task Manager.";

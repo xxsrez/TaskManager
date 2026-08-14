@@ -26,6 +26,7 @@ export type WorkflowStatusRecord = {
 
 export type ProjectRecord = {
   id: string;
+  publicId: string;
   ownerUserId: string;
   creatorUserId: string;
   name: string;
@@ -43,6 +44,7 @@ export type ProjectRecord = {
 
 export type ReleaseRecord = {
   id: string;
+  publicId: string;
   projectId: string;
   ownerUserId: string;
   creatorUserId: string;
@@ -59,6 +61,7 @@ export type ReleaseRecord = {
 
 export type TaskRecord = {
   id: string;
+  publicId: string;
   ownerUserId: string;
   creatorUserId: string;
   identifier: string;
@@ -128,6 +131,7 @@ export type ExternalSourceRecord = {
 
 export type SavedViewRecord = {
   id: string;
+  publicId: string;
   ownerUserId: string;
   name: string;
   scopeProjectId: string | null;

@@ -59,6 +59,7 @@ export const projects = sqliteTable(
   "projects",
   {
     id: text("id").primaryKey(),
+    publicId: text("public_id").notNull(),
     ownerUserId: text("owner_user_id").notNull(),
     creatorUserId: text("creator_user_id").notNull(),
     name: text("name").notNull(),
@@ -76,6 +77,7 @@ export const projects = sqliteTable(
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
+    uniqueIndex("idx_projects_public_id").on(table.publicId),
     index("idx_projects_owner_archived").on(
       table.ownerUserId,
       table.archivedAt,
@@ -87,6 +89,7 @@ export const releases = sqliteTable(
   "releases",
   {
     id: text("id").primaryKey(),
+    publicId: text("public_id").notNull(),
     projectId: text("project_id").notNull(),
     ownerUserId: text("owner_user_id").notNull(),
     creatorUserId: text("creator_user_id").notNull(),
@@ -101,6 +104,7 @@ export const releases = sqliteTable(
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
+    uniqueIndex("idx_releases_public_id").on(table.publicId),
     index("idx_releases_project_status").on(table.projectId, table.status),
   ],
 );
@@ -109,6 +113,7 @@ export const tasks = sqliteTable(
   "tasks",
   {
     id: text("id").primaryKey(),
+    publicId: text("public_id").notNull(),
     ownerUserId: text("owner_user_id").notNull(),
     creatorUserId: text("creator_user_id").notNull(),
     identifier: text("identifier").notNull(),
@@ -133,6 +138,7 @@ export const tasks = sqliteTable(
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
+    uniqueIndex("idx_tasks_public_id").on(table.publicId),
     uniqueIndex("idx_tasks_owner_identifier").on(
       table.ownerUserId,
       table.identifier,
@@ -194,17 +200,22 @@ export const taskRelations = sqliteTable(
   ],
 );
 
-export const savedViews = sqliteTable("saved_views", {
-  id: text("id").primaryKey(),
-  ownerUserId: text("owner_user_id").notNull(),
-  name: text("name").notNull(),
-  scopeProjectId: text("scope_project_id"),
-  queryJson: text("query_json").notNull().default("{}"),
-  displayJson: text("display_json").notNull().default("{}"),
-  version: integer("version").notNull().default(1),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+export const savedViews = sqliteTable(
+  "saved_views",
+  {
+    id: text("id").primaryKey(),
+    publicId: text("public_id").notNull(),
+    ownerUserId: text("owner_user_id").notNull(),
+    name: text("name").notNull(),
+    scopeProjectId: text("scope_project_id"),
+    queryJson: text("query_json").notNull().default("{}"),
+    displayJson: text("display_json").notNull().default("{}"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [uniqueIndex("idx_saved_views_public_id").on(table.publicId)],
+);
 
 export const externalRecords = sqliteTable(
   "external_records",
