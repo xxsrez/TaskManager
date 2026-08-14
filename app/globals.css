@@ -170,8 +170,12 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .title-row { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 14px; }
 .title-cluster, .title-actions, .toolbar-left { min-width: 0; display: flex; align-items: center; gap: 6px; }
 .title-cluster h1 { max-width: min(42vw, 520px); margin: 0 3px 0 0; overflow: hidden; color: var(--text); font-size: 14px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
-.breadcrumb { color: var(--muted); font-size: 12px; }
-.breadcrumb-chevron { transform: rotate(180deg); color: var(--muted); }
+.breadcrumbs { min-width: 0; display: flex; align-items: center; overflow: hidden; }
+.breadcrumb-step { min-width: 0; display: inline-flex; flex: 0 1 auto; align-items: center; gap: 5px; }
+.breadcrumb-step:first-child { flex-shrink: 0; }
+.breadcrumb-link { max-width: 160px; overflow: hidden; padding: 2px 4px; border-radius: 4px; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.breadcrumb-link:hover { background: var(--hover); color: var(--text-secondary); }
+.breadcrumb-chevron { flex: 0 0 auto; color: var(--muted); }
 .count-pill { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .mobile-menu { margin-right: 1px; }
 .toolbar-row { height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 14px; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
@@ -444,7 +448,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .app-shell, .app-shell.sidebar-collapsed { grid-template-columns: 1fr; }
   .sidebar { display: none; }
   .main-surface { min-height: 100vh; }
-  .breadcrumb, .breadcrumb-chevron, .count-pill, .display-anchor { display: none; }
+  .breadcrumb-step:not(:last-child), .breadcrumb-step:last-child .breadcrumb-chevron, .count-pill, .display-anchor { display: none; }
   .title-cluster h1 { max-width: 46vw; }
   .toolbar-row { padding-left: 8px; }
   .toolbar-left { min-width: 0; }

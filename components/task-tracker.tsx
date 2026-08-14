@@ -7,7 +7,7 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
-  ChevronLeft,
+  ChevronRight,
   Circle,
   CircleDot,
   Columns3,
@@ -87,6 +87,12 @@ const builtInViews = [
   { id: "backlog", label: "Backlog" },
   { id: "archived", label: "Archived" },
 ];
+
+type BreadcrumbItem = {
+  label: string;
+  surface?: string;
+  layout?: Layout;
+};
 
 export function TaskTracker({
   initialData,
@@ -253,7 +259,7 @@ export function TaskTracker({
     viewReferenceTime,
   ]);
 
-  const title = surfaceTitle(surface, data, activeSavedView);
+  const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
   const visibleStatuses = statusGroupsForTasks(visibleTasks, data.statuses).filter(
     (status) => activeSavedView?.display.showEmptyGroups !== false || visibleTasks.some((task) => task.statusId === status.id),
   );
@@ -479,11 +485,15 @@ export function TaskTracker({
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <div className="sidebar-head">
-          <button className="workspace-switcher" title="Workspace">
+          <a
+            className="workspace-switcher"
+            href={navigationPath({ surface: "all", layout: "list", taskId: null }, data)}
+            title="Go to workspace"
+            onClick={(event) => handleLocalLink(event, () => navigateSurface("all", "list"))}
+          >
             <span className="product-mark">T</span>
             {!sidebarCollapsed && <span className="workspace-name">Task Manager</span>}
-            {!sidebarCollapsed && <ChevronDown size={13} />}
-          </button>
+          </a>
           {!sidebarCollapsed && (
             <button className="icon-button" onClick={() => openCreate()} title="Create task (C)">
               <Plus size={15} />
@@ -605,8 +615,28 @@ export function TaskTracker({
               <button className="icon-button mobile-menu" onClick={() => setSidebarCollapsed((value) => !value)} title="Toggle sidebar">
                 {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
               </button>
-              <span className="breadcrumb">Workspace</span><ChevronLeft size={12} className="breadcrumb-chevron" />
-              <h1>{title}</h1>
+              <nav className="breadcrumbs" aria-label="Breadcrumb">
+                {breadcrumbs.map((item, index) => {
+                  const current = index === breadcrumbs.length - 1;
+                  const targetSurface = item.surface;
+                  return (
+                    <div className="breadcrumb-step" key={`${item.label}:${index}`}>
+                      {index > 0 && <ChevronRight size={12} className="breadcrumb-chevron" aria-hidden="true" />}
+                      {current || !targetSurface ? (
+                        <h1 className="breadcrumb-current">{item.label}</h1>
+                      ) : (
+                        <a
+                          className="breadcrumb-link"
+                          href={navigationPath({ surface: targetSurface, layout: item.layout ?? "list", taskId: null }, data)}
+                          onClick={(event) => handleLocalLink(event, () => navigateSurface(targetSurface, item.layout))}
+                        >
+                          {item.label}
+                        </a>
+                      )}
+                    </div>
+                  );
+                })}
+              </nav>
               <span className="count-pill">{surfaceCount}</span>
             </div>
             <div className="title-actions">
@@ -947,7 +977,79 @@ function defaultLayoutForSurface(surface: string, data: AppSnapshot): Layout {
   return data.views.find((view) => view.id === surface.slice(5))?.display.layout ?? "list";
 }
 
-function surfaceTitle(surface: string, data: AppSnapshot, view?: SavedViewRecord) { if (surface === "admin") return "Administration"; if (surface === "views") return "Views"; if (surface === "projects") return "Projects"; if (surface === "releases") return "Releases"; if (surface === "shared") return "Shared with me"; if (surface.startsWith("project-releases:")) { const project = data.projects.find((item) => item.id === surface.slice("project-releases:".length)); return project ? `${project.name} releases` : "Project releases"; } if (surface.startsWith("project:")) return data.projects.find((project) => project.id === surface.slice(8))?.name ?? "Project"; if (surface.startsWith("release:")) return data.releases.find((release) => release.id === surface.slice(8))?.name ?? "Release"; if (view) return view.name; return builtInViews.find((item) => item.id === surface)?.label ?? "My tasks"; }
+function surfaceBreadcrumbs(
+  surface: string,
+  data: AppSnapshot,
+  view?: SavedViewRecord,
+): BreadcrumbItem[] {
+  const workspace: BreadcrumbItem = {
+    label: "Workspace",
+    surface: "all",
+    layout: "list",
+  };
+  const current = (label: string): BreadcrumbItem => ({ label });
+  const ancestor = (label: string, ancestorSurface: string, layout: Layout = "list"): BreadcrumbItem => ({
+    label,
+    surface: ancestorSurface,
+    layout,
+  });
+
+  if (surface === "admin") return [workspace, current("Administration")];
+  if (surface === "views") return [workspace, current("Views")];
+  if (surface === "projects") return [workspace, current("Projects")];
+  if (surface === "releases") return [workspace, current("Releases")];
+  if (surface === "shared") return [workspace, current("Shared with me")];
+
+  if (surface.startsWith("view:")) {
+    return [
+      workspace,
+      ancestor("Views", "views"),
+      current(view?.name ?? "Saved view"),
+    ];
+  }
+
+  if (surface.startsWith("project-releases:")) {
+    const project = data.projects.find(
+      (item) => item.id === surface.slice("project-releases:".length),
+    );
+    if (!project) return [workspace, ancestor("Projects", "projects"), current("Releases")];
+    return [
+      workspace,
+      ancestor("Projects", "projects"),
+      ancestor(project.name, `project:${project.id}`),
+      current("Releases"),
+    ];
+  }
+
+  if (surface.startsWith("project:")) {
+    const project = data.projects.find((item) => item.id === surface.slice(8));
+    return [
+      workspace,
+      ancestor("Projects", "projects"),
+      current(project?.name ?? "Project"),
+    ];
+  }
+
+  if (surface.startsWith("release:")) {
+    const release = data.releases.find((item) => item.id === surface.slice(8));
+    const project = release
+      ? data.projects.find((item) => item.id === release.projectId)
+      : undefined;
+    if (!release || !project) {
+      return [workspace, ancestor("Releases", "releases"), current(release?.name ?? "Release")];
+    }
+    return [
+      workspace,
+      ancestor("Projects", "projects"),
+      ancestor(project.name, `project:${project.id}`),
+      ancestor("Releases", `project-releases:${project.id}`),
+      current(release.name),
+    ];
+  }
+
+  const builtIn = builtInViews.find((item) => item.id === surface);
+  return [workspace, current(builtIn?.label ?? "My tasks")];
+}
 function isCollectionSurface(surface: string) { return surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
 function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot) { if (activeTask) { if (activeTask.projectId) { const project = data.projects.find((item) => item.id === activeTask.projectId); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } return { resourceType: "task" as const, resourceId: activeTask.id, label: activeTask.identifier }; } if (surface.startsWith("project:")) { const project = data.projects.find((item) => item.id === surface.slice(8)); return project ? { resourceType: "project" as const, resourceId: project.id, label: project.name } : null; } if (surface.startsWith("view:")) { const view = data.views.find((item) => item.id === surface.slice(5)); return view ? { resourceType: "saved_view" as const, resourceId: view.id, label: view.name } : null; } return null; }
 function statusGroupsForTasks(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const owners = new Set(tasks.map((task) => task.ownerUserId)); return statuses.filter((status) => owners.has(status.ownerUserId) || tasks.length === 0).sort((a, b) => a.position - b.position); }

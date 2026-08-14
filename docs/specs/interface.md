@@ -56,7 +56,10 @@ Desktop-first shell повторяет композицию Linear:
 ### 3.1 Left sidebar
 
 - Ширина desktop по умолчанию — `240px`, compact state — `48px`.
-- Верхний ряд содержит product mark/user menu, search и primary create button.
+- Верхний ряд содержит product mark, search и primary create button. Пока в
+  продукте существует один workspace, product mark/name является обычной
+  ссылкой на workspace root без chevron или другого ложного menu affordance;
+  dropdown появляется только вместе с реально реализованным workspace menu.
 - Основная навигация: `My tasks`, `Shared with me`, `Views`, `Projects`,
   `Releases`. Исключённые функции Linear не показываются даже disabled.
 - Sections можно сворачивать; chevron и overflow появляются на hover, если
@@ -83,6 +86,13 @@ Desktop-first shell повторяет композицию Linear:
 ### 3.3 Navigation behavior
 
 - Breadcrumb и back/forward сохраняют browser history и deep links.
+- Breadcrumb строится из реальной route hierarchy. `Workspace`, collection и
+  entity ancestors являются настоящими anchors с canonical URLs; последний
+  сегмент обозначает текущую surface и не является ссылкой. Минимальные цепочки:
+  `Workspace → Views → SavedView`, `Workspace → Projects → Project` и
+  `Workspace → Projects → Project → Releases → Release`.
+- Workspace root первого среза — `/issues`; туда ведут и product mark/name в
+  sidebar, и первый сегмент breadcrumb.
 - Открытие task/project из списка не теряет filter, scroll и selection context.
 - Публичный URL использует отдельный стабильный UUID `public-id`. Внутренний
   primary key, Linear source ID и import provenance в URL не попадают. Entity

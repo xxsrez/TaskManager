@@ -152,3 +152,79 @@ test("the account identity is not the sign-out target", () => {
   assert.match(markup, /<a[^>]*class="profile-logout"[^>]*href="\/sign-out"/);
   assert.equal(markup.match(/href="\/sign-out"/g)?.length, 1);
 });
+
+test("workspace controls navigate to the root without a false dropdown affordance", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: {
+        surface: "views",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  const workspaceControl = markup.match(/<a class="workspace-switcher"[\s\S]*?<\/a>/)?.[0] ?? "";
+  assert.match(workspaceControl, /href="\/issues"/);
+  assert.doesNotMatch(workspaceControl, /chevron-down/);
+  assert.match(markup, /<a class="breadcrumb-link" href="\/issues">Workspace<\/a>/);
+});
+
+test("release breadcrumbs expose every ancestor and leave the current level static", () => {
+  const project = {
+    id: "project-1",
+    publicId: "11111111-1111-4111-8111-111111111111",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Project Alpha",
+    summary: "",
+    description: "",
+    status: "active",
+    leadUserId: null,
+    startDate: null,
+    targetDate: null,
+    color: "#7766dd",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const release = {
+    id: "release-1",
+    publicId: "22222222-2222-4222-8222-222222222222",
+    projectId: project.id,
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Release One",
+    description: "",
+    status: "active" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        projects: [project],
+        releases: [release],
+      },
+      initialNavigation: {
+        surface: `release:${release.id}`,
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /<a class="breadcrumb-link" href="\/projects">Projects<\/a>/);
+  assert.match(markup, /<a class="breadcrumb-link" href="\/projects\/11111111-1111-4111-8111-111111111111">Project Alpha<\/a>/);
+  assert.match(markup, /<a class="breadcrumb-link" href="\/projects\/11111111-1111-4111-8111-111111111111\/releases">Releases<\/a>/);
+  assert.match(markup, /<h1 class="breadcrumb-current">Release One<\/h1>/);
+  assert.doesNotMatch(markup, /<a class="breadcrumb-link"[^>]*>Release One<\/a>/);
+});
