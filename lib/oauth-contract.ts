@@ -15,6 +15,14 @@ export type OAuthClientMetadata = {
   redirectUris: string[];
 };
 
+export type OAuthClientRegistration = {
+  clientName: string;
+  redirectUris: string[];
+  grantTypes: Array<"authorization_code" | "refresh_token">;
+  responseTypes: ["code"];
+  tokenEndpointAuthMethod: "none";
+};
+
 export class OAuthProtocolError extends Error {
   constructor(
     readonly code:
@@ -48,6 +56,7 @@ export function oauthAuthorizationServerMetadata(origin: string) {
     issuer,
     authorization_endpoint: `${issuer}/oauth/authorize`,
     token_endpoint: `${issuer}/oauth/token`,
+    registration_endpoint: `${issuer}/oauth/register`,
     revocation_endpoint: `${issuer}/oauth/revoke`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
@@ -56,6 +65,103 @@ export function oauthAuthorizationServerMetadata(origin: string) {
     client_id_metadata_document_supported: true,
     scopes_supported: [...API_SCOPES],
     resource_parameter_supported: true,
+  } as const;
+}
+
+export function parseOAuthClientRegistration(
+  value: unknown,
+  allowedRedirectOrigins: ReadonlySet<string>,
+): OAuthClientRegistration {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "Client registration must be a JSON object",
+    );
+  }
+  const metadata = value as Record<string, unknown>;
+  if (
+    !Array.isArray(metadata.redirect_uris) ||
+    metadata.redirect_uris.length === 0 ||
+    metadata.redirect_uris.length > 10 ||
+    !metadata.redirect_uris.every((entry) => typeof entry === "string")
+  ) {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "redirect_uris must contain between one and ten URLs",
+    );
+  }
+  const redirectUris = metadata.redirect_uris.map((entry) =>
+    validateRegisteredRedirectUri(entry as string, allowedRedirectOrigins),
+  );
+  if (new Set(redirectUris).size !== redirectUris.length) {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "redirect_uris must not contain duplicates",
+    );
+  }
+
+  const grantTypes = stringArray(
+    metadata.grant_types,
+    ["authorization_code", "refresh_token"],
+    "grant_types",
+  );
+  if (
+    !grantTypes.includes("authorization_code") ||
+    grantTypes.some(
+      (entry) => entry !== "authorization_code" && entry !== "refresh_token",
+    )
+  ) {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "Only authorization_code and refresh_token grants are supported",
+    );
+  }
+  const responseTypes = stringArray(
+    metadata.response_types,
+    ["code"],
+    "response_types",
+  );
+  if (responseTypes.length !== 1 || responseTypes[0] !== "code") {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "Only response_type=code is supported",
+    );
+  }
+  if (
+    metadata.token_endpoint_auth_method !== undefined &&
+    metadata.token_endpoint_auth_method !== "none"
+  ) {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "Only public clients with token_endpoint_auth_method=none are supported",
+    );
+  }
+  const clientName =
+    typeof metadata.client_name === "string" && metadata.client_name.trim()
+      ? metadata.client_name.trim().slice(0, 120)
+      : "Codex or ChatGPT";
+  return {
+    clientName,
+    redirectUris,
+    grantTypes: grantTypes as Array<"authorization_code" | "refresh_token">,
+    responseTypes: ["code"],
+    tokenEndpointAuthMethod: "none",
+  };
+}
+
+export function oauthClientRegistrationResponse(
+  clientId: string,
+  registration: OAuthClientRegistration,
+  issuedAt = Math.floor(Date.now() / 1000),
+) {
+  return {
+    client_id: clientId,
+    client_id_issued_at: issuedAt,
+    client_name: registration.clientName,
+    redirect_uris: registration.redirectUris,
+    grant_types: registration.grantTypes,
+    response_types: registration.responseTypes,
+    token_endpoint_auth_method: registration.tokenEndpointAuthMethod,
   } as const;
 }
 
@@ -117,7 +223,7 @@ export function validateAuthorizationRequestParameters(url: URL): {
     requiredSingle(url.searchParams, "redirect_uri"),
   );
   const resource = validateAbsoluteHttpsUrl(
-    requiredSingle(url.searchParams, "resource"),
+    requiredRepeatedSame(url.searchParams, "resource"),
     "resource",
   );
   const codeChallenge = requiredSingle(url.searchParams, "code_challenge");
@@ -256,6 +362,24 @@ function requiredSingle(searchParams: URLSearchParams, name: string): string {
   return values[0];
 }
 
+function requiredRepeatedSame(
+  searchParams: URLSearchParams,
+  name: string,
+): string {
+  const values = searchParams.getAll(name);
+  if (
+    values.length === 0 ||
+    !values[0]?.trim() ||
+    values.some((value) => value !== values[0])
+  ) {
+    throw new OAuthProtocolError(
+      "invalid_request",
+      `${name} is required and repeated values must match`,
+    );
+  }
+  return values[0];
+}
+
 function optionalSingle(
   searchParams: URLSearchParams,
   name: string,
@@ -290,6 +414,52 @@ function validateRedirectUri(value: string): string {
   return url.toString();
 }
 
+function validateRegisteredRedirectUri(
+  value: string,
+  allowedOrigins: ReadonlySet<string>,
+): string {
+  let normalized: string;
+  try {
+    normalized = validateRedirectUri(value);
+  } catch {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "Each redirect_uri must be HTTPS or a loopback HTTP URL",
+    );
+  }
+  const url = new URL(normalized);
+  const loopback =
+    url.protocol === "http:" &&
+    ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+  if (!loopback && !allowedOrigins.has(url.origin)) {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      "This redirect_uri origin is not allowed",
+    );
+  }
+  return normalized;
+}
+
+function stringArray(
+  value: unknown,
+  fallback: string[],
+  field: string,
+): string[] {
+  if (value === undefined) return fallback;
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > 4 ||
+    !value.every((entry) => typeof entry === "string")
+  ) {
+    throw new OAuthProtocolError(
+      "invalid_client",
+      `${field} must be a non-empty string array`,
+    );
+  }
+  return [...new Set(value as string[])];
+}
+
 function validateAbsoluteHttpsUrl(value: string, field: string): string {
   let url: URL;
   try {
@@ -302,7 +472,7 @@ function validateAbsoluteHttpsUrl(value: string, field: string): string {
   }
   const localDevelopment =
     url.protocol === "http:" &&
-    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+    ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if (url.protocol !== "https:" && !localDevelopment) {
     throw new OAuthProtocolError(
       "invalid_request",

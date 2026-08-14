@@ -55,6 +55,17 @@ export const apiCredentials = sqliteTable(
   ],
 );
 
+export const oauthRegisteredClients = sqliteTable("oauth_registered_clients", {
+  id: text("id").primaryKey(),
+  clientName: text("client_name").notNull(),
+  redirectUrisJson: text("redirect_uris_json").notNull(),
+  grantTypesJson: text("grant_types_json").notNull(),
+  responseTypesJson: text("response_types_json").notNull(),
+  tokenEndpointAuthMethod: text("token_endpoint_auth_method").notNull(),
+  lastUsedAt: text("last_used_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const oauthAuthorizationRequests = sqliteTable(
   "oauth_authorization_requests",
   {

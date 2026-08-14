@@ -23,10 +23,12 @@ task commands. UI snapshot и административные capabilities дл
 2. Sites application одновременно является OAuth 2.1 Authorization Server и
    MCP Resource Server. Authorization endpoint использует существующую
    trusted `Sign in with ChatGPT` identity и явный экран согласия.
-3. Public clients используют Authorization Code + PKCE S256, Client ID Metadata
-   Document (CIMD), точный `redirect_uri`, обязательный `resource` и resource
-   audience `https://<site>/api/mcp`. Client secrets и implicit flow не
-   поддерживаются.
+3. Public clients используют Authorization Code + PKCE S256. Поддерживаются
+   два безопасных способа получить `client_id`: Client ID Metadata Document
+   (CIMD) и Dynamic Client Registration (DCR) через `/oauth/register` для
+   Codex Desktop/native clients. `redirect_uri` совпадает буквально,
+   `resource` обязателен, resource audience — `https://<site>/api/mcp`.
+   Client secrets и implicit flow не поддерживаются.
 4. Access token непрозрачный, живёт 15 минут и хранится только как SHA-256 hash.
    Refresh token живёт до 30 дней, ротируется при каждом использовании;
    повторное использование старого refresh token отзывает всю family и grant.
@@ -39,7 +41,10 @@ task commands. UI snapshot и административные capabilities дл
    capabilities.
 7. CIMD загружается только с HTTPS origins из server allowlist; по умолчанию
    разрешён `https://chatgpt.com`. Redirects при загрузке metadata запрещены,
-   размер документа ограничен.
+   размер документа ограничен. DCR принимает только public clients с
+   `token_endpoint_auth_method=none`, authorization-code/refresh grants и
+   разрешёнными HTTPS либо loopback redirect URI. Зарегистрированный client
+   сам по себе не даёт доступа к данным: нужны user consent, grant и token.
 8. Personal `tm_pat_` остаётся переходным способом для scripts, local smoke и
    REST clients. Он не является основным onboarding flow connector.
 9. MCP exposes отдельные tools: workspace, list/get Projects, list/get
@@ -47,8 +52,10 @@ task commands. UI snapshot и административные capabilities дл
    Collections compact и paginated; детали и большой archive загружаются
    только после выбора.
 10. Распространение выполняется отдельным Git marketplace repository, в котором
-    есть ровно один Task Manager plugin: `.mcp.json`, manifest и skill. Product
-    source и marketplace lifecycle не смешиваются.
+    есть ровно один Task Manager plugin: `.app.json` для зарегистрированной
+    native connector card, `.mcp.json` как transport/fallback, manifest,
+    визуальные assets и skill. Product source и marketplace lifecycle не
+    смешиваются.
 
 ## Последствия
 
@@ -63,9 +70,9 @@ task commands. UI snapshot и административные capabilities дл
   решить rate limits, audit/incident response, key/token operational controls
   и повторно оценить managed IdP: официальные рекомендации OpenAI предпочитают
   established identity provider для production OAuth.
-- CIMD-only registration оптимизирована под актуальные Codex/ChatGPT clients.
-  Если нужен client без CIMD, его DCR или заранее зарегистрированный client ID
-  проектируется отдельно, а не принимается без проверки.
+- CIMD сохраняет stateless web-client path, а DCR закрывает реальный onboarding
+  Codex Desktop. Это добавляет таблицу зарегистрированных clients и lifecycle
+  cleanup, но не создаёт shared secret или новую пользовательскую identity.
 
 ## Отклонённые варианты
 

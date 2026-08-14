@@ -19,9 +19,11 @@ import {
   OAUTH_REFRESH_TOKEN_TTL_SECONDS,
   OAuthProtocolError,
   createOAuthSecret,
+  oauthClientRegistrationResponse,
   oauthErrorResponse,
   oauthResource,
   parseOAuthScopes,
+  parseOAuthClientRegistration,
   parseStoredOAuthScopes,
   pkceS256,
   validateAuthorizationRequestParameters,
@@ -75,7 +77,7 @@ export async function prepareOAuthAuthorization(
       "The requested resource is not this Task Manager connector",
     );
   }
-  const client = await fetchAndValidateClientMetadata(
+  const client = await resolveAndValidateClientMetadata(
     parameters.clientId,
     parameters.redirectUri,
   );
@@ -235,6 +237,60 @@ export async function handleOAuthTokenRequest(request: Request): Promise<Respons
     throw new OAuthProtocolError(
       "unsupported_grant_type",
       "Only authorization_code and refresh_token grants are supported",
+    );
+  } catch (error) {
+    if (!(error instanceof OAuthProtocolError)) console.error(error);
+    return oauthErrorResponse(error);
+  }
+}
+
+export async function handleOAuthClientRegistrationRequest(
+  request: Request,
+): Promise<Response> {
+  try {
+    const contentType = request.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+      throw new OAuthProtocolError(
+        "invalid_request",
+        "Client registration requires application/json",
+      );
+    }
+    const body = await request.json().catch(() => {
+      throw new OAuthProtocolError(
+        "invalid_request",
+        "Client registration body is not valid JSON",
+      );
+    });
+    const registration = parseOAuthClientRegistration(
+      body,
+      allowedClientOrigins(),
+    );
+    await ensureDatabase();
+    await cleanExpiredOAuthArtifacts();
+    const clientId = `tm_oauth_client_${crypto.randomUUID()}`;
+    const issuedAt = Math.floor(Date.now() / 1000);
+    await getD1()
+      .prepare(
+        `INSERT INTO oauth_registered_clients
+          (id, client_name, redirect_uris_json, grant_types_json,
+           response_types_json, token_endpoint_auth_method)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        clientId,
+        registration.clientName,
+        JSON.stringify(registration.redirectUris),
+        JSON.stringify(registration.grantTypes),
+        JSON.stringify(registration.responseTypes),
+        registration.tokenEndpointAuthMethod,
+      )
+      .run();
+    return Response.json(
+      oauthClientRegistrationResponse(clientId, registration, issuedAt),
+      {
+        status: 201,
+        headers: { "Cache-Control": "no-store", Pragma: "no-cache" },
+      },
     );
   } catch (error) {
     if (!(error instanceof OAuthProtocolError)) console.error(error);
@@ -683,10 +739,48 @@ async function issueOAuthTokens(input: {
   };
 }
 
-async function fetchAndValidateClientMetadata(
+async function resolveAndValidateClientMetadata(
   clientId: string,
   redirectUri: string,
 ) {
+  if (clientId.startsWith("tm_oauth_client_")) {
+    await ensureDatabase();
+    const row = await getD1()
+      .prepare(
+        `SELECT client_name, redirect_uris_json, grant_types_json,
+                response_types_json, token_endpoint_auth_method
+         FROM oauth_registered_clients WHERE id = ? LIMIT 1`,
+      )
+      .bind(clientId)
+      .first<DbRow>();
+    if (!row) {
+      throw new OAuthProtocolError(
+        "invalid_client",
+        "The registered OAuth client is unknown",
+      );
+    }
+    const metadata = {
+      client_id: clientId,
+      client_name: String(row.client_name),
+      redirect_uris: parseStoredStringArray(row.redirect_uris_json),
+      grant_types: parseStoredStringArray(row.grant_types_json),
+      response_types: parseStoredStringArray(row.response_types_json),
+      token_endpoint_auth_method: String(row.token_endpoint_auth_method),
+    };
+    const client = validateClientMetadataDocument(
+      clientId,
+      redirectUri,
+      metadata,
+    );
+    await getD1()
+      .prepare(
+        `UPDATE oauth_registered_clients SET last_used_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      )
+      .bind(clientId)
+      .run();
+    return client;
+  }
   let clientUrl: URL;
   try {
     clientUrl = new URL(clientId);
@@ -779,7 +873,27 @@ async function cleanExpiredOAuthArtifacts() {
       `DELETE FROM oauth_refresh_tokens
        WHERE datetime(expires_at) <= datetime('now', '-7 days')`,
     ),
+    db.prepare(
+      `DELETE FROM oauth_registered_clients
+       WHERE datetime(created_at) <= datetime('now', '-30 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM oauth_grants
+           WHERE oauth_grants.client_id = oauth_registered_clients.id
+         )`,
+    ),
   ]);
+}
+
+function parseStoredStringArray(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) && parsed.every((entry) => typeof entry === "string")
+      ? parsed
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 async function revokeGrantAndFamily(grantId: string, familyId: string) {

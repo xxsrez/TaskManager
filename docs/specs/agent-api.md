@@ -56,8 +56,9 @@ flowchart LR
 
 1. Client читает Protected Resource Metadata для `https://<site>/api/mcp` и
    Authorization Server Metadata на том же site origin.
-2. Client публикует HTTPS Client ID Metadata Document (CIMD), генерирует PKCE
-   S256 и передаёт точный `resource=https://<site>/api/mcp`.
+2. Client либо использует HTTPS Client ID Metadata Document (CIMD), либо
+   регистрирует public client через `POST /oauth/register`; затем генерирует
+   PKCE S256 и передаёт `resource=https://<site>/api/mcp`.
 3. `/oauth/authorize` использует Sites `Sign in with ChatGPT`, показывает
    consent и выдаёт одноразовый authorization code.
 4. `/oauth/token` проверяет client ID, redirect, resource и verifier, затем
@@ -78,7 +79,16 @@ OAuth lifecycle:
   read;
 - token/code/refresh secrets сохраняются только как SHA-256 hashes;
 - client secret, implicit flow и password grant не поддерживаются;
-- CIMD origin разрешается server allowlist, redirect должен совпасть буквально.
+- CIMD origin разрешается server allowlist; dynamic registration принимает
+  только public clients без client secret и redirect на разрешённый HTTPS
+  origin либо loopback HTTP URI native client;
+- redirect должен совпасть буквально; несколько одинаковых значений
+  `resource` принимаются как одно, а конфликтующие значения отклоняются.
+
+Authorization Server Metadata публикует `registration_endpoint`. Codex Desktop
+может автоматически зарегистрировать свой локальный OAuth client во время
+первого Connect/Login; пользователю не требуется создавать или переносить
+`client_id` вручную.
 
 Personal token `tm_pat_...` сохранён для scripts, local smoke и REST clients:
 
@@ -96,6 +106,10 @@ Browser-authenticated control plane, не входящий во внешний O
 | `DELETE /api/settings/api-credentials/{id}` | Отозвать личный token |
 | `GET /api/settings/oauth-connections` | Активные OAuth grants без secrets |
 | `DELETE /api/settings/oauth-connections/{id}` | Отозвать grant и его tokens |
+
+Публичный protocol endpoint `POST /oauth/register` не использует browser
+session: он выдаёт только opaque `client_id` для проверенного public-client
+metadata и не предоставляет доступ к данным до отдельного consent пользователя.
 
 Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
 restore атомарно отзывает все authentication capabilities, чтобы они не
@@ -284,7 +298,8 @@ Authorization invariants:
 
 Обязательные сценарии:
 
-1. OAuth Connect выполняет `workspace → create → compact search → detail →
+1. Codex Desktop автоматически регистрирует public client, после чего OAuth
+   Connect выполняет `workspace → create → compact search → detail →
    status update` без Sites headers.
 2. Marker из description отсутствует в list и появляется только в detail.
 3. Status transition меняет timestamps/version; stale version даёт `409`.

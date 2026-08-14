@@ -4,9 +4,11 @@ import {
   OAuthProtocolError,
   createOAuthSecret,
   oauthAuthorizationServerMetadata,
+  oauthClientRegistrationResponse,
   oauthProtectedResourceMetadata,
   oauthProtectedResourceMetadataUrl,
   oauthResource,
+  parseOAuthClientRegistration,
   parseOAuthScopes,
   pkceS256,
   validateAuthorizationRequestParameters,
@@ -24,6 +26,7 @@ test("OAuth discovery binds the connector resource and advertises PKCE", () => {
   assert.equal(authorization.issuer, origin);
   assert.equal(authorization.authorization_endpoint, `${origin}/oauth/authorize`);
   assert.equal(authorization.token_endpoint, `${origin}/oauth/token`);
+  assert.equal(authorization.registration_endpoint, `${origin}/oauth/register`);
   assert.deepEqual(authorization.code_challenge_methods_supported, ["S256"]);
   assert.equal(authorization.client_id_metadata_document_supported, true);
   assert.equal(resource.resource, `${origin}/api/mcp`);
@@ -31,6 +34,60 @@ test("OAuth discovery binds the connector resource and advertises PKCE", () => {
   assert.equal(
     oauthProtectedResourceMetadataUrl(origin),
     `${origin}/.well-known/oauth-protected-resource/api/mcp`,
+  );
+});
+
+test("dynamic client registration accepts Codex public clients and rejects unsafe callbacks", () => {
+  const registration = parseOAuthClientRegistration(
+    {
+      client_name: "Codex Desktop",
+      redirect_uris: ["http://127.0.0.1:49152/callback"],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    },
+    new Set(["https://chatgpt.com"]),
+  );
+  assert.deepEqual(registration.redirectUris, [
+    "http://127.0.0.1:49152/callback",
+  ]);
+  assert.equal(registration.clientName, "Codex Desktop");
+  assert.deepEqual(
+    oauthClientRegistrationResponse("tm_oauth_client_123", registration, 123),
+    {
+      client_id: "tm_oauth_client_123",
+      client_id_issued_at: 123,
+      client_name: "Codex Desktop",
+      redirect_uris: ["http://127.0.0.1:49152/callback"],
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      token_endpoint_auth_method: "none",
+    },
+  );
+
+  assert.throws(
+    () =>
+      parseOAuthClientRegistration(
+        {
+          redirect_uris: ["https://attacker.example/callback"],
+          token_endpoint_auth_method: "none",
+        },
+        new Set(["https://chatgpt.com"]),
+      ),
+    (error: unknown) =>
+      error instanceof OAuthProtocolError && error.code === "invalid_client",
+  );
+  assert.throws(
+    () =>
+      parseOAuthClientRegistration(
+        {
+          redirect_uris: ["http://127.0.0.1:49152/callback"],
+          token_endpoint_auth_method: "client_secret_basic",
+        },
+        new Set(["https://chatgpt.com"]),
+      ),
+    (error: unknown) =>
+      error instanceof OAuthProtocolError && error.code === "invalid_client",
   );
 });
 
@@ -52,6 +109,20 @@ test("authorization requests require an exact resource, redirect, and S256 chall
   assert.deepEqual(parsed.scopes, ["api:read", "api:write"]);
   assert.equal(parsed.resource, `${origin}/api/mcp`);
   assert.equal(parsed.redirectUri, redirectUri);
+
+  url.searchParams.append("resource", oauthResource(origin));
+  assert.equal(
+    validateAuthorizationRequestParameters(url).resource,
+    oauthResource(origin),
+  );
+  url.searchParams.set("resource", "https://other.example/api/mcp");
+  url.searchParams.append("resource", oauthResource(origin));
+  assert.throws(
+    () => validateAuthorizationRequestParameters(url),
+    (error: unknown) =>
+      error instanceof OAuthProtocolError && error.code === "invalid_request",
+  );
+  url.searchParams.set("resource", oauthResource(origin));
 
   url.searchParams.set("code_challenge_method", "plain");
   assert.throws(

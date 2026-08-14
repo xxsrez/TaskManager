@@ -104,6 +104,16 @@ const schemaStatements = [
     ON api_credentials(token_hash)`,
   `CREATE INDEX IF NOT EXISTS idx_api_credentials_owner_active
     ON api_credentials(owner_user_id, revoked_at)`,
+  `CREATE TABLE IF NOT EXISTS oauth_registered_clients (
+    id TEXT PRIMARY KEY,
+    client_name TEXT NOT NULL,
+    redirect_uris_json TEXT NOT NULL,
+    grant_types_json TEXT NOT NULL,
+    response_types_json TEXT NOT NULL,
+    token_endpoint_auth_method TEXT NOT NULL,
+    last_used_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`,
   `CREATE TABLE IF NOT EXISTS oauth_authorization_requests (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,
