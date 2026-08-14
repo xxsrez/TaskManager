@@ -298,8 +298,9 @@ saved-view query/display и полный provider metadata в `external_records`
 
 ### Самостоятельная миграция Linear
 
-1. Connect route создаёт short-lived `UserImportSession`, `state` и PKCE S256 и
-   перенаправляет на Linear с единственным scope `read`.
+1. Пользовательская кнопка `Import from Linear` создаёт short-lived
+   `UserImportSession`, `state` и PKCE S256 и перенаправляет на Linear с
+   единственным scope `read`; постоянного connected-state продукт не хранит.
 2. Callback сверяет state/current User, обменивает code и постранично получает
    bounded snapshot workspace: Users, Projects/milestones, workflow, labels,
    custom views, issues и необходимый archive metadata. Затем provider tokens

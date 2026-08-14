@@ -534,9 +534,11 @@ Linear, но они обязаны использовать тот же visual l
   export time, counts, create/update/delete, warnings и sharing descriptors.
   Existing Project требует отдельный текущий download, checkbox восстановления
   sharing и точное имя Project. Destructive apply отделён от file selection.
-- Linear flow состоит из четырёх явных шагов: `Connect Linear`, inventory,
-  scope/mapping, preview/apply. Scope — `Workspace`, `Projects` или
-  `Assignees`; project/user selectors поддерживают multi-select.
+- Linear flow начинается одной пользовательской кнопкой `Import from Linear`;
+  OAuth authorization является частью одноразового импорта, а не отдельным
+  постоянным «подключением». Затем UI показывает inventory, scope/mapping и
+  preview/apply. Scope — `Workspace`, `Projects` или `Assignees`;
+  project/user selectors поддерживают multi-select.
 - В mapping строках видны Linear name/email и Task Manager target либо
   `Unassigned`. Автоматический email match не выбирается без подтверждения.
 - Preview показывает `Create`, `Update`, entity/source counts, unmapped Users и

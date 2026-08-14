@@ -45,7 +45,8 @@ preview или выбор scope и записывал данные нескол�
    частичный Project не создавал скрытых cross-scope ссылок.
 8. Linear migration — one-time import, не sync. Основной вход — OAuth 2.0 с
    `read`, `state` и PKCE S256. Access/refresh tokens не входят в product data;
-   после получения bounded snapshot они отзываются и удаляются.
+   после получения bounded snapshot они отзываются и удаляются. В UI это одна
+   кнопка `Import from Linear`, а не отдельная постоянная связь с provider.
 9. Перед записью пользователь выбирает один scope: весь workspace, один или
    несколько Linear Projects либо один или несколько Linear Users. User scope
    означает issues, где выбранный User является assignee; creator/author scope
