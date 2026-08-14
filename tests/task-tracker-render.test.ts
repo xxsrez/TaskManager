@@ -3,7 +3,10 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
+  CodexSetupDialog,
   resolveArchiveBulkAction,
+  TASK_MANAGER_CLI_SETUP,
+  TASK_MANAGER_MARKETPLACE_URL,
   TaskTracker,
 } from "../components/task-tracker";
 import type { AppSnapshot } from "../lib/types";
@@ -205,6 +208,35 @@ test("the account identity is not the sign-out target", () => {
   assert.match(markup, /<button[^>]*class="profile-trigger"/);
   assert.match(markup, /<a[^>]*class="profile-logout"[^>]*href="\/sign-out"/);
   assert.equal(markup.match(/href="\/sign-out"/g)?.length, 1);
+});
+
+test("Codex Desktop setup uses the marketplace and standard OAuth flow", () => {
+  const markup = renderToStaticMarkup(
+    createElement(CodexSetupDialog, { onClose: () => undefined }),
+  );
+
+  assert.match(markup, /aria-label="Connect Task Manager to Codex"/);
+  assert.match(markup, /role="tablist"/);
+  assert.match(markup, /Codex Desktop/);
+  assert.match(markup, /Add → Add a marketplace/);
+  assert.match(markup, new RegExp(TASK_MANAGER_MARKETPLACE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(markup, />Install</);
+  assert.match(markup, />Authenticate</);
+  assert.match(markup, />Connect</);
+  assert.match(markup, /No MCP URL, client ID, secret, or API token is required/);
+});
+
+test("Codex CLI setup exposes verified plugin commands and recovery steps", () => {
+  const markup = renderToStaticMarkup(
+    createElement(CodexSetupDialog, { onClose: () => undefined, initialMode: "cli" }),
+  );
+
+  for (const command of TASK_MANAGER_CLI_SETUP.split("\n")) {
+    assert.match(markup, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.match(markup, /\/plugins/);
+  assert.match(markup, /\/new/);
+  assert.match(markup, /Show my tasks in Task Manager/);
 });
 
 test("workspace controls navigate to the root without a false dropdown affordance", () => {

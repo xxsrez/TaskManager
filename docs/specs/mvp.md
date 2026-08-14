@@ -468,6 +468,9 @@ completed dates и archived state.
 27. Повреждённый Project bundle, owner mismatch, collision или отсутствующий
     catalog dependency отклоняется до mutation. Ошибка apply откатывает весь
     subtree; sharing без opt-in не восстанавливается.
+28. Из account menu открыть `Codex setup`, переключиться между `Codex Desktop`
+    и `Codex CLI`, скопировать marketplace source или CLI-команды и завершить
+    штатный OAuth flow без ручного MCP URL, client ID, secret или API token.
 
 ## 14. Рекомендуемые вертикальные срезы
 

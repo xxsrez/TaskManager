@@ -11,8 +11,10 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  CircleHelp,
   CircleDot,
   Columns3,
+  Copy,
   Download,
   FolderKanban,
   GitBranch,
@@ -88,7 +90,15 @@ type ShareTarget = {
   inherited: boolean;
 };
 
-type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | null;
+type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | "codexSetup" | null;
+type CodexSetupMode = "desktop" | "cli";
+
+export const TASK_MANAGER_MARKETPLACE_URL = "https://github.com/xxsrez/task-manager-codex-connector";
+export const TASK_MANAGER_CLI_SETUP = [
+  "codex plugin marketplace add xxsrez/task-manager-codex-connector",
+  "codex plugin add task-manager@task-manager",
+  "codex",
+].join("\n");
 
 const priorityMeta: Record<Priority, { label: string; glyph: string }> = {
   urgent: { label: "Urgent", glyph: "!!!" },
@@ -727,6 +737,18 @@ export function TaskTracker({
                   <Inbox size={14} />
                   <span>My tasks</span>
                 </a>
+                <button
+                  className="account-menu-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    setDialog("codexSetup");
+                  }}
+                >
+                  <CircleHelp size={14} />
+                  <span>Codex setup</span>
+                </button>
                 <a className="account-menu-item" href="/import/project" role="menuitem">
                   <Download size={14} />
                   <span>Project backup</span>
@@ -952,6 +974,7 @@ export function TaskTracker({
       {dialog === "view" && canSaveView && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} scopeProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
+      {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
     </main>
   );
 }
@@ -1365,9 +1388,125 @@ function SystemImportDialog({
   );
 }
 
-function DialogHeader({ title, icon, onClose }: { title: string; icon: React.ReactNode; onClose: () => void }) { return <div className="dialog-header"><div>{icon}<h2>{title}</h2></div><button type="button" className="icon-button" onClick={onClose}><X size={15} /></button></div>; }
+export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose: () => void; initialMode?: CodexSetupMode }) {
+  const [mode, setMode] = useState<CodexSetupMode>(initialMode);
+  const [copied, setCopied] = useState<"marketplace" | "commands" | null>(null);
+
+  async function copySetup(value: string, target: "marketplace" | "commands") {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(target);
+    } catch {
+      setCopied(null);
+    }
+  }
+
+  return (
+    <Modal onClose={onClose} className="codex-setup-modal" ariaLabel="Connect Task Manager to Codex">
+      <DialogHeader title="Connect Task Manager to Codex" icon={<CircleHelp size={17} />} onClose={onClose} />
+      <div className="codex-setup-body">
+        <div className="codex-setup-tabs" role="tablist" aria-label="Codex client">
+          <button
+            id="codex-setup-tab-desktop"
+            type="button"
+            role="tab"
+            aria-selected={mode === "desktop"}
+            aria-controls="codex-setup-desktop"
+            className={mode === "desktop" ? "active" : ""}
+            onClick={() => { setMode("desktop"); setCopied(null); }}
+          >
+            Codex Desktop
+          </button>
+          <button
+            id="codex-setup-tab-cli"
+            type="button"
+            role="tab"
+            aria-selected={mode === "cli"}
+            aria-controls="codex-setup-cli"
+            className={mode === "cli" ? "active" : ""}
+            onClick={() => { setMode("cli"); setCopied(null); }}
+          >
+            Codex CLI
+          </button>
+        </div>
+
+        {mode === "desktop" ? (
+          <section id="codex-setup-desktop" role="tabpanel" aria-labelledby="codex-setup-tab-desktop">
+            <ol className="codex-setup-steps">
+              <SetupStep number={1} title="Open Plugins">
+                In Codex Desktop, open <b>Plugins</b> and choose <b>Add → Add a marketplace</b>.
+              </SetupStep>
+              <SetupStep number={2} title="Add the marketplace">
+                Paste this address into <b>Source</b>:
+                <SetupCopyBlock
+                  value={TASK_MANAGER_MARKETPLACE_URL}
+                  label="Copy marketplace address"
+                  copied={copied === "marketplace"}
+                  onCopy={() => void copySetup(TASK_MANAGER_MARKETPLACE_URL, "marketplace")}
+                />
+                Leave <b>Git ref</b> and <b>Sparse paths</b> empty, then choose <b>Add marketplace</b>.
+              </SetupStep>
+              <SetupStep number={3} title="Install Task Manager">
+                Open <b>Task Manager</b> in the marketplace and choose <b>Install</b>.
+              </SetupStep>
+              <SetupStep number={4} title="Connect your account">
+                Complete setup or choose <b>Authenticate</b>. On the Task Manager consent page, check the account and choose <b>Connect</b>.
+              </SetupStep>
+              <SetupStep number={5} title="Start a new task">
+                Ask Codex: <q>Show my tasks in Task Manager.</q>
+              </SetupStep>
+            </ol>
+          </section>
+        ) : (
+          <section id="codex-setup-cli" role="tabpanel" aria-labelledby="codex-setup-tab-cli">
+            <ol className="codex-setup-steps">
+              <SetupStep number={1} title="Install the plugin">
+                Run these commands in your terminal:
+                <SetupCopyBlock
+                  value={TASK_MANAGER_CLI_SETUP}
+                  label="Copy CLI commands"
+                  copied={copied === "commands"}
+                  multiline
+                  onCopy={() => void copySetup(TASK_MANAGER_CLI_SETUP, "commands")}
+                />
+              </SetupStep>
+              <SetupStep number={2} title="Authenticate">
+                The browser should open automatically. If it does not, enter <code>/plugins</code> in Codex, open <b>Task Manager</b>, and choose <b>Authenticate</b>. Check the account and choose <b>Connect</b>.
+              </SetupStep>
+              <SetupStep number={3} title="Start a new task">
+                Back in Codex, enter <code>/new</code>, then ask: <q>Show my tasks in Task Manager.</q>
+              </SetupStep>
+            </ol>
+          </section>
+        )}
+
+        <p className="codex-setup-note">
+          Use the Task Manager account whose tasks you want Codex to access. No MCP URL, client ID, secret, or API token is required.
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+function SetupStep({ number, title, children }: { number: number; title: string; children: React.ReactNode }) {
+  return <li><span className="codex-step-number">{number}</span><div><strong>{title}</strong><div className="codex-step-content">{children}</div></div></li>;
+}
+
+function SetupCopyBlock({ value, label, copied, multiline = false, onCopy }: { value: string; label: string; copied: boolean; multiline?: boolean; onCopy: () => void }) {
+  return (
+    <div className={`codex-copy-block ${multiline ? "multiline" : ""}`}>
+      {multiline ? <pre><code>{value}</code></pre> : <code>{value}</code>}
+      <button type="button" aria-label={label} title={label} onClick={onCopy}>
+        {copied ? <Check size={14} /> : <Copy size={14} />}
+        <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
+      </button>
+    </div>
+  );
+}
+
+function DialogHeader({ title, icon, onClose }: { title: string; icon: React.ReactNode; onClose: () => void }) { return <div className="dialog-header"><div>{icon}<h2>{title}</h2></div><button type="button" className="icon-button" aria-label={`Close ${title}`} onClick={onClose}><X size={15} /></button></div>; }
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }
-function Modal({ onClose, children, className = "" }: { onClose: () => void; children: React.ReactNode; className?: string }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal ${className}`} role="dialog" aria-modal="true">{children}</div></div>; }
+function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () => void; children: React.ReactNode; className?: string; ariaLabel?: string }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={ariaLabel}>{children}</div></div>; }
 
 function ViewsSurface({ data, statusMap, onOpen }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void }) { return <div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{data.views.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>; }
 function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
