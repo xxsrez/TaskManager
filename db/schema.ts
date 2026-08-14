@@ -334,3 +334,50 @@ export const adminImportRows = sqliteTable(
     ),
   ],
 );
+
+export const userImportSessions = sqliteTable(
+  "user_import_sessions",
+  {
+    id: text("id").primaryKey(),
+    createdByUserId: text("created_by_user_id").notNull(),
+    kind: text("kind").notNull(),
+    status: text("status").notNull(),
+    stateHash: text("state_hash"),
+    sourceJson: text("source_json").notNull().default("{}"),
+    scopeJson: text("scope_json").notNull().default("{}"),
+    previewJson: text("preview_json").notNull().default("{}"),
+    secretJson: text("secret_json").notNull().default("{}"),
+    payloadSha256: text("payload_sha256"),
+    sourceExportedAt: text("source_exported_at"),
+    projectId: text("project_id"),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    appliedAt: text("applied_at"),
+  },
+  (table) => [
+    index("idx_user_import_sessions_owner_status").on(
+      table.createdByUserId,
+      table.kind,
+      table.status,
+      table.expiresAt,
+    ),
+    uniqueIndex("idx_user_import_sessions_state_hash").on(table.stateHash),
+  ],
+);
+
+export const userImportRows = sqliteTable(
+  "user_import_rows",
+  {
+    importId: text("import_id").notNull(),
+    rowType: text("row_type").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    rowJson: text("row_json").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.importId, table.rowType, table.ordinal] }),
+    index("idx_user_import_rows_import_type").on(
+      table.importId,
+      table.rowType,
+    ),
+  ],
+);

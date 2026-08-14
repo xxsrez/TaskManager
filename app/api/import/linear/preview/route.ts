@@ -1,5 +1,5 @@
 import { readJson, withUser } from "@/lib/http";
-import { applyLinearMigration } from "@/lib/linear-migration";
+import { previewLinearMigration } from "@/lib/linear-migration";
 
 export const dynamic = "force-dynamic";
 
@@ -8,9 +8,9 @@ export async function POST(request: Request) {
     return Response.json({ error: "Linear import action header is required" }, { status: 400 });
   }
   const input = await readJson(request);
-  return withUser((user) => applyLinearMigration(user, {
-    importId: String(input.importId ?? ""),
-    sha256: String(input.sha256 ?? ""),
-    confirmation: String(input.confirmation ?? ""),
+  return withUser((user) => previewLinearMigration(user, {
+    sessionId: String(input.sessionId ?? ""),
+    scope: input.scope,
+    userMapping: input.userMapping,
   }));
 }

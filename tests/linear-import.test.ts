@@ -189,3 +189,27 @@ test("Linear import rejects cyclic parent hierarchies before writing", () => {
     ValidationError,
   );
 });
+
+test("Linear OAuth snapshots use immutable source UUIDs and explicit user mapping", () => {
+  const value = fixture();
+  (value.source as Record<string, unknown>).viewerId = "linear-viewer";
+  const issues = value.issues as Array<Record<string, unknown>>;
+  issues[0].sourceId = "11111111-1111-4111-8111-111111111111";
+  issues[0].assigneeId = "linear-collaborator";
+  issues[1].sourceId = "22222222-2222-4222-8222-222222222222";
+  issues[1].assigneeId = "linear-viewer";
+
+  const plan = buildLinearImportPlan("usr_test", value, {
+    "linear-collaborator": "usr_collaborator",
+  });
+  const child = plan.tasks.find((task) => task.identifier === "AND-2");
+  const parent = plan.tasks.find((task) => task.identifier === "AND-1");
+  assert.equal(child?.sourceId, "11111111-1111-4111-8111-111111111111");
+  assert.equal(child?.assigneeUserId, "usr_collaborator");
+  assert.equal(parent?.assigneeUserId, "usr_test");
+  assert.match(child?.id ?? "", /11111111-1111-4111-8111-111111111111$/);
+  assert.equal(
+    plan.externalRecords.find((record) => record.targetId === child?.id)?.sourceId,
+    "11111111-1111-4111-8111-111111111111",
+  );
+});

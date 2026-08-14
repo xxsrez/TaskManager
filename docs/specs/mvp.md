@@ -219,6 +219,27 @@ Assignee обязан быть владельцем Task либо пользов
 - Lead обязан иметь доступ к Project. Task, созданная collaborator внутри
   Project, остаётся в owner scope Project.
 
+### 7.1 Project backup и restore
+
+- Только current Owner может экспортировать и восстановить Project. Project
+  roles и application-admin capability сами по себе этого доступа не дают.
+- Export скачивает один versioned logical JSON bundle с Project, его Tasks,
+  Releases, project-scoped SavedViews, labels, внутренней hierarchy/relations,
+  provenance и dependency snapshot используемых каталогов.
+- Bundle не содержит Users, identities, API credentials, глобальные views,
+  чужие Projects или hosted configuration. Он привязан к исходным immutable
+  IDs, current owner и тому же Site.
+- Первая версия выполняет exact restore исходного Project: merge, copy-as-new и
+  cross-Site remapping отсутствуют. Перед mutation сервер полностью проверяет
+  checksum, ссылки, catalogs, collisions и domain invariants и сохраняет
+  normalized rows в staging.
+- Preview показывает create/update/delete, conflicts, потерянные external
+  references и sharing. Для существующего Project apply требует свежий backup
+  текущего состояния и точное имя Project; sharing восстанавливается только
+  после отдельного opt-in.
+- Replace Project subtree выполняется одной D1 transaction. Ошибка оставляет
+  live state без изменений; relations к Tasks вне bundle не становятся живыми.
+
 ## 8. Релизы
 
 - Release всегда принадлежит ровно одному Project.
@@ -364,8 +385,30 @@ completed dates и archived state.
 - Каждый видимый control должен иметь реализованное действие или ясное
   disabled-состояние по текущему контексту; controls функций вне MVP не
   показываются.
-- Structured application data сохраняются в Sites D1. Provider secrets и
-  session secrets хранятся только в hosted environment settings.
+- Structured application data сохраняются в Sites D1. Provider application
+  secrets хранятся только в hosted environment settings; одноразовый PKCE
+  verifier может жить лишь в short-lived owner-scoped staging session.
+
+### 12.2 Миграция из Linear
+
+- Authenticated User может запустить одноразовую read-only миграцию через
+  Linear OAuth 2.0 с `state` и PKCE. Provider tokens после bounded snapshot
+  отзываются и не входят в постоянные product records.
+- Scope выбирается до apply: весь workspace, один или несколько Linear Projects
+  либо issues одного или нескольких Linear Users. User scope означает
+  `assignee`, не creator.
+- Preview строит closure необходимых Projects, milestones, statuses, labels,
+  custom views, hierarchy, relations, comments/attachments metadata и archive
+  state. Out-of-scope references сохраняются как warnings/provenance.
+- Linear GraphQL UUID — ключ идемпотентности, readable issue identifier —
+  отдельное пользовательское поле. Повторный import обновляет прежнюю цель.
+- Email не объединяет identities автоматически. Current Linear viewer по
+  умолчанию сопоставляется current Task Manager User; остальные assignees явно
+  mapping-ятся на уже зарегистрированных Users либо остаются unassigned.
+- Migration не создаёт sharing неявно, не синхронизирует изменения обратно в
+  Linear и не копирует attachment binaries без R2-backed storage.
+- Apply использует только проверенный staged plan и одну D1 transaction;
+  collision или invalid reference не оставляет частичных данных.
 
 ## 13. Проверяемые сценарии приёмки
 
@@ -432,6 +475,20 @@ completed dates и archived state.
 25. Через write credential создать Task в выбранном Release, перевести её в
     completed и получить обновлённые timestamps/version; повторить PATCH со
     старой version и получить полный отказ без last-write-wins.
+26. Current Project Owner скачивает bundle, меняет и удаляет часть subtree,
+    проходит preview и exact restore; Project IDs, Tasks, Releases, scoped
+    Views, labels, hierarchy и provenance возвращаются. Manager/Editor/Viewer
+    получают отказ на export и apply.
+27. Повреждённый Project bundle, owner mismatch, collision или отсутствующий
+    catalog dependency отклоняется до mutation. Ошибка apply откатывает весь
+    subtree; sharing без opt-in не восстанавливается.
+28. Через Linear OAuth выбрать два Projects, увидеть inventory/preview и
+    atomically импортировать только их issues с milestones, workflow, labels,
+    hierarchy, relations, custom-view/provenance metadata и archive state.
+29. Повторить Linear migration по двум выбранным assignees: scope включает
+    только назначенные им issues, unmapped Users становятся unassigned,
+    external references вне closure показываются warnings, повторный apply по
+    тем же GraphQL UUID не создаёт дублей.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -454,3 +511,7 @@ completed dates и archived state.
     read/write credential, REST v1, OpenAPI и authorization/pagination tests.
 13. Hosted API smoke, rate limits, task-create idempotency и отдельно
     спроектированные bulk/metadata commands.
+14. Owner-only Project bundle export/staging/exact restore с preview,
+    confirmation, sharing opt-in и rollback tests.
+15. Self-service Linear OAuth, workspace/project/assignee inventory, bounded
+    provider snapshot, explicit mapping, staged preview и atomic apply.

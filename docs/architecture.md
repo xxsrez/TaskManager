@@ -57,6 +57,7 @@ migrations. Это соответствует
 | Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User |
 | Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
 | Administration | Server allowlist, content-free overview и explicit full-state backup/restore |
+| Portability | Owner Project bundles, user import staging и Linear OAuth/snapshot/apply |
 | Agent API | Compact/detail projections, pagination, versioned REST и API credential scopes |
 | UI shell | Linear-like navigation, shared controls, keyboard, themes и state |
 
@@ -73,6 +74,8 @@ migrations. Это соответствует
   продукте нет uploads.
 - Provider credentials и session secrets задаются только в hosted environment
   settings; локально перечисляются лишь имена переменных в `.env.example`.
+- `LINEAR_CLIENT_ID` и optional `LINEAR_CLIENT_SECRET` принадлежат hosted
+  environment. Linear bearer tokens не сохраняются после bounded snapshot.
 - `TASK_MANAGER_ADMIN_EMAILS` хранится в hosted environment и разбирается как
   нормализованный comma-separated allowlist. Значение не коммитится в source.
 - Save version создаёт reviewable deployment candidate; Deploy version делает
@@ -243,6 +246,8 @@ role checks, release/project validation и optimistic version.
 - join table для labels;
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of`;
 - `external_records` для owner-scoped provenance идемпотентного импорта;
+- `user_import_sessions` и `user_import_rows` для owner-scoped Project/Linear
+  staging, provider inventory, preview и bounded lifecycle;
 - `admin_import_sessions` и `admin_import_rows` для изолированного preflight,
   payload staging и минимального audit metadata полного restore;
 - constraint или transactional validation project/release consistency;
@@ -277,6 +282,35 @@ saved-view query/display и полный provider metadata в `external_records`
    отмечает session applied и очищает payload. Batch failure откатывает весь
    cutover.
 
+### Project backup и restore
+
+1. Export repository сначала загружает Project с effective role `owner`, затем
+   одной consistent D1 batch читает subtree, internal joins/relations,
+   provenance, catalog dependencies и active Project grants.
+2. Format layer canonicalizes bundle, считает counts/warnings и SHA-256; Users,
+   identities, credentials и unrelated rows не входят.
+3. Validate endpoint проверяет owner/site binding, checksum, references,
+   collisions и доступность shared catalogs до записи normalized rows в
+   `user_import_rows`.
+4. Preview сравнивает staged и live subtree. Apply повторно проверяет session,
+   confirmation и current ownership, затем set-based SQL одной D1 `batch()`
+   transaction заменяет subtree; grants вставляются только при opt-in.
+
+### Самостоятельная миграция Linear
+
+1. Connect route создаёт short-lived `UserImportSession`, `state` и PKCE S256 и
+   перенаправляет на Linear с единственным scope `read`.
+2. Callback сверяет state/current User, обменивает code и постранично получает
+   bounded snapshot workspace: Users, Projects/milestones, workflow, labels,
+   custom views, issues и необходимый archive metadata. Затем provider tokens
+   отзываются.
+3. UI выбирает `workspace`, `projects` либо `assignees` и явный User mapping.
+   Planner строит closure, warnings и deterministic targets; GraphQL UUID
+   является external idempotency key.
+4. Normalized plan сохраняется в user staging. Apply одной D1 transaction
+   upsert-ит catalogs/entities/provenance и joins; invalid collision, missing
+   access или SQL failure не оставляет частичного импорта.
+
 ## Надёжность и проверка
 
 - Domain tests проверяют переходы статусов, timestamps, release consistency,
@@ -293,6 +327,12 @@ saved-view query/display и полный provider metadata в `external_records`
 - Backup tests покрывают format/domain validation, identity continuity,
   отсутствие Administration в primary sidebar, preview без live mutation и
   atomic replace/rollback boundary.
+- Project portability tests покрывают format/checksum, boundary validation и
+  transaction rollback; owner scope дополнительно проверяется repository
+  predicates и live smoke.
+- Linear tests покрывают GraphQL UUID idempotency, explicit user mapping,
+  project/assignee closure и out-of-scope warnings; OAuth callback и D1 apply
+  дополнительно проверяются live smoke.
 - UI tests проверяют одинаковый состав list/board, selection/bulk actions,
   keyboard controls, Peek, drag rollback и сохранение views.
 - Visual regression и accessibility checks следуют
@@ -317,6 +357,13 @@ saved-view query/display и полный provider metadata в `external_records`
 - System backup содержит весь cross-user content и identity metadata. Файл
   следует считать чувствительным, import ограничивать same-origin admin
   operation, а invalid snapshot отклонять до staging/cutover.
+- Project bundle остаётся чувствительным пользовательским content. Same-Site
+  owner binding и no-store response обязательны; sharing descriptors не должны
+  превращаться в implicit grants.
+- Linear OAuth app configuration является внешним release prerequisite.
+  Provider token нельзя логировать, помещать в D1 product rows или сохранять
+  после snapshot/revoke; большой workspace должен завершаться явным limit
+  error, а не усечённым import без warning.
 - Если agent API не отделить от UI snapshot, рост descriptions/imported archive
   создаст большой token и privacy blast radius. Summary/detail boundary должна
   проверяться schema и integration tests, а не только дисциплиной клиента.

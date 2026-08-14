@@ -33,6 +33,7 @@ erDiagram
     PROJECT ||--o{ ACCESS_GRANT : share_target
     TASK ||--o{ ACCESS_GRANT : share_target
     SAVED_VIEW ||--o{ ACCESS_GRANT : share_target
+    USER ||--o{ USER_IMPORT_SESSION : stages
 ```
 
 Связи `ACCESS_GRANT` с share targets полиморфны: одна запись grant указывает
@@ -132,6 +133,30 @@ Sites configuration, schema/migrations и operational staging в него не �
 Staged rows хранятся отдельно по `(import_id, table_name, ordinal)` и не
 участвуют в product queries. После atomic apply payload rows удаляются, а
 session metadata остаётся как минимальный audit record.
+
+## ProjectBackup и UserImportSession
+
+`ProjectBackup` — versioned logical envelope ровно одного Project. Он хранит
+immutable identity Project, current owner, его subtree, internal joins и
+relations, dependency snapshots используемых catalogs, active sharing
+descriptors, warnings и SHA-256. Это переносимая страховка владельца, но не
+отдельная live entity и не ACL capability.
+
+`UserImportSession` изолирует staged Project restore и Linear migration:
+
+| Поле | Семантика |
+|---|---|
+| `id`, `created_by_user_id` | Непрозрачный session ID и authenticated User |
+| `kind` | `project_backup` или `linear` |
+| `status` | Ожидание OAuth, промежуточный upload/planning, готовый `snapshot`/`staged`, `applied`, `expired` либо `failed` |
+| `source_json`, `scope_json` | Проверенный source inventory и выбранный scope/mapping |
+| `preview_json`, `payload_sha256` | Counts/warnings/conflicts и identity staged payload |
+| `expires_at`, `created_at`, `applied_at` | Ограниченный lifecycle и audit metadata |
+
+Rows staging хранятся отдельно по `(import_id, row_type, ordinal)` и не
+участвуют в product queries. OAuth PKCE verifier живёт только до callback;
+Linear access/refresh tokens после bounded snapshot отзываются и не сохраняются
+в session rows. Apply читает только normalized staged plan.
 
 ## AccessGrant
 
@@ -377,6 +402,12 @@ Task details как read-only archive. Это не означает наличи
 18. Restore применяет только полностью валидный snapshot, содержащий identity
     текущего администратора. Replace всех live tables атомарен; ошибка оставляет
     предыдущее состояние без частичного удаления или импорта.
+19. Project export/restore требует effective role `owner`, совпадение source
+    current owner и того же Site. Project subtree replace и Linear staged apply
+    атомарны; staged rows никогда не дают read access к live resources.
+20. Linear `ExternalRecord.source_id` использует immutable GraphQL UUID.
+    Mapping Linear User в Task Manager User выполняется явно и не создаёт grant
+    автоматически; assignee без effective access не применяется.
 
 ## Намеренно не моделируется
 

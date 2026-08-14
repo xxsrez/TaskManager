@@ -281,6 +281,36 @@ const schemaStatements = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_admin_import_rows_import_table
     ON admin_import_rows(import_id, table_name)`,
+  `CREATE TABLE IF NOT EXISTS user_import_sessions (
+    id TEXT PRIMARY KEY,
+    created_by_user_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    state_hash TEXT,
+    source_json TEXT NOT NULL DEFAULT '{}',
+    scope_json TEXT NOT NULL DEFAULT '{}',
+    preview_json TEXT NOT NULL DEFAULT '{}',
+    secret_json TEXT NOT NULL DEFAULT '{}',
+    payload_sha256 TEXT,
+    source_exported_at TEXT,
+    project_id TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    applied_at TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_user_import_sessions_owner_status
+    ON user_import_sessions(created_by_user_id, kind, status, expires_at)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_user_import_sessions_state_hash
+    ON user_import_sessions(state_hash)`,
+  `CREATE TABLE IF NOT EXISTS user_import_rows (
+    import_id TEXT NOT NULL,
+    row_type TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    row_json TEXT NOT NULL,
+    PRIMARY KEY(import_id, row_type, ordinal)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_user_import_rows_import_type
+    ON user_import_rows(import_id, row_type)`,
 ];
 
 const publicIdTables = [

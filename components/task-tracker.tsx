@@ -1,4 +1,5 @@
 "use client";
+/* eslint-disable @next/next/no-html-link-for-pages */
 
 import {
   Archive,
@@ -406,6 +407,37 @@ export function TaskTracker({
     }
   }
 
+  async function downloadProjectBackup(project: ProjectRecord) {
+    setSystemBackupBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(project.id)}/export`, {
+        method: "POST",
+        headers: { "x-task-manager-action": "project-backup" },
+      });
+      if (!response.ok) {
+        const value = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(value?.error ?? "Could not export the project backup");
+      }
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const filename = disposition.match(/filename="([^"]+)"/)?.[1]
+        ?? `task-manager-project-${new Date().toISOString().slice(0, 10)}.json`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not export the project backup");
+    } finally {
+      setSystemBackupBusy(false);
+    }
+  }
+
   function applyNavigation(
     next: ResolvedNavigation,
     historyMode: "push" | "replace" | "none" = "push",
@@ -695,6 +727,10 @@ export function TaskTracker({
                   <Inbox size={14} />
                   <span>My tasks</span>
                 </a>
+                <a className="account-menu-item" href="/import" role="menuitem">
+                  <Upload size={14} />
+                  <span>Import &amp; export</span>
+                </a>
                 {data.admin && (
                   <a
                     className="account-menu-item"
@@ -799,6 +835,7 @@ export function TaskTracker({
               {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadSystemBackup()}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Export"}</button>}
               {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Import</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
+              {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
               {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>

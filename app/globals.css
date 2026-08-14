@@ -96,6 +96,36 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .import-report dl div { padding: 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
 .import-report dt { color: var(--muted); font-size: 10px; }
 .import-report dd { margin: 1px 0 0; font-size: 16px; font-variant-numeric: tabular-nums; }
+.portability-card { width: min(760px, 100%); }
+.import-hub { width: min(680px, 100%); }
+.import-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.import-options > a { min-height: 94px; display: grid; grid-template-columns: 36px minmax(0, 1fr) 18px; align-items: center; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: 9px; color: var(--text-secondary); }
+.import-options > a:hover { border-color: var(--border-strong); background: var(--hover); }
+.import-options b, .project-backup-list b, .connected-source b, .scope-list b, .mapping-list b { display: block; color: var(--text); font-weight: 560; }
+.import-options small, .project-backup-list small, .connected-source small, .scope-list small, .mapping-list small { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+.import-option-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 8px; background: var(--active); color: var(--accent); }
+.import-step { display: grid; gap: 12px; padding-top: 18px; border-top: 1px solid var(--border); }
+.import-step h2 { margin: 0; font-size: 14px; font-weight: 570; }
+.project-backup-list { display: grid; gap: 6px; }
+.project-backup-list > div { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
+.file-drop { display: grid; gap: 6px; padding: 13px; border: 1px dashed var(--border-strong); border-radius: 8px; background: var(--surface-subtle); color: var(--text-secondary); }
+.import-report > label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 11px; }
+.import-report > label input:not([type="checkbox"]) { height: 34px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); }
+.check-row { grid-template-columns: auto 1fr; align-items: center; }
+.import-warnings { display: grid; gap: 5px; margin: 0; padding: 10px 12px 10px 28px; border: 1px solid color-mix(in srgb, #f59e0b 30%, var(--border)); border-radius: 7px; background: color-mix(in srgb, #f59e0b 8%, var(--surface)); color: var(--text-secondary); font-size: 11px; }
+.connected-source { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mini-counts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 5px; margin: 0; }
+.mini-counts div { padding: 6px; border-radius: 6px; background: var(--surface-subtle); }
+.mini-counts dt { color: var(--muted); font-size: 9px; }
+.mini-counts dd { margin: 1px 0 0; font-variant-numeric: tabular-nums; }
+.scope-tabs { width: fit-content; display: flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
+.scope-tabs button { height: 28px; padding: 0 10px; border-radius: 5px; background: transparent; color: var(--muted); text-transform: capitalize; cursor: pointer; }
+.scope-tabs button.active { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.scope-list, .mapping-list { max-height: 260px; display: grid; gap: 3px; padding: 3px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; }
+.scope-list label { min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 5px 8px; border-radius: 5px; cursor: pointer; }
+.scope-list label:hover { background: var(--hover); }
+.mapping-list label { min-height: 46px; display: grid; grid-template-columns: minmax(160px, 1fr) minmax(190px, 1fr); align-items: center; gap: 10px; padding: 5px 8px; }
+.mapping-list select { min-width: 0; height: 31px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); }
 
 .app-shell { display: grid; grid-template-columns: 240px minmax(0, 1fr); width: 100vw; height: 100vh; background: var(--surface); }
 .app-shell.sidebar-collapsed { grid-template-columns: 48px minmax(0, 1fr); }
@@ -569,6 +599,9 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .share-input select { width: 100%; }
   .access-row { grid-template-columns: 28px minmax(0, 1fr) auto; }
   .access-row .access-actions { grid-column: 2 / -1; justify-content: flex-end; }
+  .import-options { grid-template-columns: 1fr; }
+  .mini-counts { grid-template-columns: repeat(3, 1fr); }
+  .mapping-list label { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

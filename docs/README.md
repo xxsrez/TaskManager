@@ -28,11 +28,13 @@
     — Owner/Manager/Editor/Viewer, inheritance, scoped views и transfer.
 11. [ADR-0006: самостоятельный agent API](decisions/0006-standalone-agent-api.md)
     — bearer credentials, compact/detail REST и task-only write scope.
-12. [Начальная архитектура](architecture.md) — логические компоненты и решения,
-   которые ещё предстоит принять.
-13. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
-   продуктовых заимствований и осознанных упрощений.
-14. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+12. [ADR-0007: Project backup и Linear migration](decisions/0007-project-backup-and-linear-migration.md)
+    — owner-only bundle restore, OAuth, project/assignee scope и staging.
+13. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+    которые ещё предстоит принять.
+14. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+    продуктовых заимствований и осознанных упрощений.
+15. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -66,6 +68,9 @@ context и scoped task create/update описаны в
 [спецификации agent API](specs/agent-api.md) и
 [ADR-0006](decisions/0006-standalone-agent-api.md). Hosted smoke, rate limits,
 bulk/idempotency и специализированные clients в текущий срез не входят.
+ADR-0007 и текущая реализация добавляют portability slice: current Project
+Owner получает logical export/exact restore, а authenticated User — одноразовый
+Linear OAuth import с workspace/project/assignee scope, preview и atomic apply.
 
 ## Категории
 

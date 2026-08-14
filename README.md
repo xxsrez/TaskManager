@@ -34,5 +34,6 @@ npm run dev
 - [Начальная архитектура](docs/architecture.md)
 - [Решение об identity, sharing и Sites](docs/decisions/0001-identity-sharing-and-sites-hosting.md)
 - [Решение об интерфейсном паритете с Linear](docs/decisions/0002-linear-interface-parity.md)
+- [Решение о Project backup и Linear migration](docs/decisions/0007-project-backup-and-linear-migration.md)
 - [Решение о стеке и authentication delivery](docs/decisions/0003-implementation-stack-and-auth-delivery.md)
 - [Исследование Linear](docs/reports/2026-08-13-linear-product-study.md)

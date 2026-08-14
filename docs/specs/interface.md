@@ -374,6 +374,9 @@ List повторяет плотную grouped-list модель Linear.
 
 - Header содержит icon/color, inline-editable name, status, share, overflow и
   details toggle.
+- Для current Owner overflow содержит `Export project backup`; action скачивает
+  JSON bundle и не показывается Manager/Editor/Viewer. `Restore project` ведёт
+  на общую import surface, чтобы deleted Project тоже можно было вернуть.
 - Tabs: `Overview`, `Tasks`, `Releases` и project-scoped saved views. Пустые
   tabs для Linear features вне scope не создаются.
 - Overview: summary, description, dates, lead и progress; без documents,
@@ -490,8 +493,9 @@ Linear, но они обязаны использовать тот же visual l
   sidebar preference и sign out.
 - Нажатие на avatar, display name или email в нижней части sidebar открывает
   компактное account menu и не запускает sign out. Первый menu slice показывает
-  verified identity, рабочие переходы в `My tasks` и доступную администратору
-  `Administration`, а также выбор `system`/`light`/`dark` theme.
+  verified identity, рабочие переходы в `My tasks`, `Import & export` и
+  доступную администратору `Administration`, а также выбор
+  `system`/`light`/`dark` theme.
 - Sign out запускается только отдельной icon button справа от account trigger.
   Она имеет явные tooltip и accessible name; вся строка профиля не может быть
   logout hit target.
@@ -518,6 +522,29 @@ Linear, но они обязаны использовать тот же visual l
   disabled, пока администратор не скачал текущий backup и не ввёл `RESTORE`.
   Ошибка validation не закрывает dialog и явно сообщает, что live data не
   менялись. После успешного replace выполняется full-page reload `/admin`.
+
+### 12.5 Import & export
+
+- Отдельная utility surface открывается из account menu, а не занимает место в
+  primary product navigation. Две cards ведут к `Project backup` и
+  `Import from Linear`.
+- Project backup показывает только Projects, где current User — Owner. Для
+  каждого доступен download; ниже находится dropzone restore-файла.
+- После выбора bundle UI сначала показывает verified preview: имя/ID Project,
+  export time, counts, create/update/delete, warnings и sharing descriptors.
+  Existing Project требует отдельный текущий download, checkbox восстановления
+  sharing и точное имя Project. Destructive apply отделён от file selection.
+- Linear flow состоит из четырёх явных шагов: `Connect Linear`, inventory,
+  scope/mapping, preview/apply. Scope — `Workspace`, `Projects` или
+  `Assignees`; project/user selectors поддерживают multi-select.
+- В mapping строках видны Linear name/email и Task Manager target либо
+  `Unassigned`. Автоматический email match не выбирается без подтверждения.
+- Preview показывает `Create`, `Update`, entity/source counts, unmapped Users и
+  `Warnings`; collisions отклоняются до появления apply action.
+  OAuth/provider/configuration failure остаётся внутри card с retry; apply не
+  доступен, пока staging не завершён.
+- После успешного Project restore или Linear apply UI показывает итоговые
+  counts и даёт единственный основной action `Open Task Manager`.
 
 ## 13. Keyboard contract
 
@@ -604,6 +631,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Share controls | Linear-like compact members dialog | Адаптируем | Owner/Manager/Editor/Viewer и inheritance |
 | Login/profile | Та же visual system | Адаптируем | ChatGPT/Google identity model |
 | Administration | Compact metrics + dense user table | Адаптируем | Operational aggregates, не Linear analytics |
+| Import/export utility | Compact staged wizard | Адаптируем | Owner backup и Linear OAuth, не Linear workspace settings |
 
 ## 17. Проверка и приёмка
 
