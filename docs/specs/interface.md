@@ -276,8 +276,11 @@ List повторяет плотную grouped-list модель Linear.
   задачи.
 - Выбранные rows имеют единую accent-tinted заливку.
 - При selection появляется compact bottom action bar для status, priority,
-  assignee, project/release, labels и archive — только для действий,
+  assignee, project/release, labels и archive/restore — только для действий,
   поддержанных выбранным набором и authorization scope.
+- Для полностью архивной selection action называется `Restore` и снимает
+  архивный статус со всех выбранных задач; для неархивной selection доступен
+  `Archive`. Action определяется состоянием задач, а не типом текущего view.
 - Batch mutation атомарна для одного действия; при отказе UI не оставляет
   смешанное неподтверждённое состояние.
 - `Esc` очищает selection после закрытия более верхнего overlay.

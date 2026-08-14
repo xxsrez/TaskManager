@@ -2,6 +2,7 @@
 
 import {
   Archive,
+  ArchiveRestore,
   ArrowDownWideNarrow,
   Boxes,
   CalendarDays,
@@ -80,6 +81,16 @@ const priorityMeta: Record<Priority, { label: string; glyph: string }> = {
   low: { label: "Low", glyph: "▂" },
   none: { label: "No priority", glyph: "—" },
 };
+
+export function resolveArchiveBulkAction(
+  tasks: Array<Pick<TaskRecord, "archivedAt">>,
+) {
+  const shouldRestore =
+    tasks.length > 0 && tasks.every((task) => task.archivedAt !== null);
+  return shouldRestore
+    ? ({ archived: false, label: "Restore" } as const)
+    : ({ archived: true, label: "Archive" } as const);
+}
 
 const builtInViews = [
   { id: "all", label: "All tasks" },
@@ -280,6 +291,10 @@ export function TaskTracker({
   );
   const activeTask = data.tasks.find((task) => task.id === activeTaskId) ?? null;
   const peekTask = data.tasks.find((task) => task.id === peekTaskId) ?? null;
+  const selectedTasks = [...selected]
+    .map((id) => data.tasks.find((task) => task.id === id))
+    .filter(Boolean) as TaskRecord[];
+  const archiveAction = resolveArchiveBulkAction(selectedTasks);
   const projectReleaseSurfaceId = surface.startsWith("project-releases:")
     ? surface.slice("project-releases:".length)
     : null;
@@ -820,7 +835,7 @@ export function TaskTracker({
       </section>
 
       {selected.size > 0 && (
-        <BulkBar count={selected.size} statuses={statusGroupsForTasks([...selected].map((id) => data.tasks.find((task) => task.id === id)).filter(Boolean) as TaskRecord[], data.statuses)} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: true }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
+        <BulkBar count={selected.size} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
       {activeTask && <TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} />}
@@ -1084,7 +1099,7 @@ function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZon
 function AdminMetric({ label, value, note, icon }: { label: string; value: number; note: string; icon: React.ReactNode }) { return <article className="admin-metric"><span className="admin-metric-icon">{icon}</span><div><span>{label}</span><b>{value}</b><small>{note}</small></div></article>; }
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate: () => void }) { const labels = { task: ["No tasks here", "Create the first task and give this view a starting point."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "Create a release to plan what ships together."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p><button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button></div>; }
 function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
-function BulkBar({ count, statuses, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}><Archive size={14} />Archive</button><button onClick={onClose}><X size={14} /></button></div>; }
+function BulkBar({ count, statuses, archiveAction, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; archiveAction: ReturnType<typeof resolveArchiveBulkAction>; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}>{archiveAction.archived ? <Archive size={14} /> : <ArchiveRestore size={14} />}{archiveAction.label}</button><button onClick={onClose}><X size={14} /></button></div>; }
 
 function handleLocalLink(event: ReactMouseEvent<HTMLAnchorElement>, navigate: () => void) {
   if (

@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TaskTracker } from "../components/task-tracker";
+import {
+  resolveArchiveBulkAction,
+  TaskTracker,
+} from "../components/task-tracker";
 import type { AppSnapshot } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
@@ -63,6 +66,20 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+test("bulk archive action restores an entirely archived selection", () => {
+  assert.deepEqual(
+    resolveArchiveBulkAction([{ archivedAt: now }, { archivedAt: now }]),
+    { archived: false, label: "Restore" },
+  );
+});
+
+test("bulk archive action archives an active selection", () => {
+  assert.deepEqual(resolveArchiveBulkAction([{ archivedAt: null }]), {
+    archived: true,
+    label: "Archive",
+  });
+});
 
 test("a direct task render has no controlled field warnings", () => {
   const errors: string[] = [];
