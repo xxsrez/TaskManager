@@ -68,6 +68,9 @@ task commands. UI snapshot и административные capabilities дл
   Task Manager из Plugins, нажимает Authenticate, входит через ChatGPT,
   подтверждает scopes и сразу получает tools; ручные MCP/OAuth поля и secret
   не нужны.
+- Зарегистрированный Task Manager app connector использует DCR. CIMD остаётся
+  поддерживаемым protocol path для совместимых raw MCP clients, но не является
+  способом регистрации штатного ChatGPT/Codex connector.
 - OAuth subject сопоставляется тому же внутреннему User, что Sites UI, поэтому
   существующие ownership/grants начинают действовать без отдельного account
   linking.
@@ -77,8 +80,9 @@ task commands. UI snapshot и административные capabilities дл
   и повторно оценить managed IdP: официальные рекомендации OpenAI предпочитают
   established identity provider для production OAuth.
 - CIMD сохраняет stateless web-client path, а DCR закрывает реальный onboarding
-  Codex Desktop. Это добавляет таблицу зарегистрированных clients и lifecycle
-  cleanup, но не создаёт shared secret или новую пользовательскую identity.
+  ChatGPT и Codex Desktop. Это добавляет таблицу зарегистрированных clients и
+  lifecycle cleanup, но не создаёт shared secret или новую пользовательскую
+  identity.
 
 ## Отклонённые варианты
 

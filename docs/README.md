@@ -31,7 +31,7 @@
 12. [ADR-0007: Project backup](decisions/0007-project-backup.md)
     — owner-only logical bundle, staged preview и atomic exact restore.
 13. [ADR-0008: OAuth-first MCP connector](decisions/0008-oauth-mcp-connector.md)
-    — native Connect flow, PKCE/CIMD, remote MCP tools и отдельный marketplace.
+    — native Connect flow, PKCE/DCR, remote MCP tools и отдельный marketplace.
 14. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
 15. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
