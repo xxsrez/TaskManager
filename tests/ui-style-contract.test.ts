@@ -6,7 +6,7 @@ const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8")
 
 function declarations(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`));
+  const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]+)\\}`));
   assert.ok(match, `Missing CSS rule for ${selector}`);
   return match[1];
 }
@@ -27,4 +27,9 @@ test("the application owns its reset without Tailwind Preflight", () => {
   assert.doesNotMatch(css, /@import\s+["']tailwindcss["']/);
   assert.match(css, /\*,\s*\*::before,\s*\*::after\s*\{\s*box-sizing:\s*border-box\s*;/);
   assert.match(declarations("button"), /padding:\s*0\s*;/);
+});
+
+test("board cards do not shrink their content through the bottom padding", () => {
+  const rule = declarations(".task-card");
+  assert.match(rule, /flex:\s*0\s+0\s+auto\s*;/);
 });
