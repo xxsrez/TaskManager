@@ -52,10 +52,12 @@ task commands. UI snapshot и административные capabilities дл
    Collections compact и paginated; детали и большой archive загружаются
    только после выбора.
 10. Распространение выполняется отдельным Git marketplace repository, в котором
-    есть ровно один Task Manager plugin: `.app.json` для зарегистрированной
-    native connector card, `.mcp.json` как transport/fallback, manifest,
-    визуальные assets и skill. Product source и marketplace lifecycle не
-    смешиваются.
+    есть ровно один Task Manager plugin: `.mcp.json`, manifest, визуальные
+    assets и skill. Plugin manifest формирует карточку в Codex Desktop, а MCP
+    dependency запускает OAuth Connect/Login. Product source и marketplace
+    lifecycle не смешиваются. Отдельный `.app.json` нужен только после
+    регистрации connector в глобальном ChatGPT app directory и не является
+    условием установки из Git marketplace.
 
 ## Последствия
 
