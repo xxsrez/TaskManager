@@ -177,6 +177,23 @@ export const taskLabels = sqliteTable(
   (table) => [primaryKey({ columns: [table.taskId, table.labelId] })],
 );
 
+export const taskRelations = sqliteTable(
+  "task_relations",
+  {
+    sourceTaskId: text("source_task_id").notNull(),
+    targetTaskId: text("target_task_id").notNull(),
+    type: text("type").notNull(),
+    creatorUserId: text("creator_user_id").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.sourceTaskId, table.targetTaskId, table.type],
+    }),
+    index("idx_task_relations_target").on(table.targetTaskId, table.type),
+  ],
+);
+
 export const savedViews = sqliteTable("saved_views", {
   id: text("id").primaryKey(),
   ownerUserId: text("owner_user_id").notNull(),
@@ -188,6 +205,32 @@ export const savedViews = sqliteTable("saved_views", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const externalRecords = sqliteTable(
+  "external_records",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    targetType: text("target_type").notNull(),
+    targetId: text("target_id").notNull(),
+    source: text("source").notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceUrl: text("source_url"),
+    metadataJson: text("metadata_json").notNull(),
+    importedAt: text("imported_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_external_records_owner_source").on(
+      table.ownerUserId,
+      table.source,
+      table.sourceId,
+    ),
+    index("idx_external_records_target").on(
+      table.targetType,
+      table.targetId,
+    ),
+  ],
+);
 
 export const accessGrants = sqliteTable(
   "access_grants",

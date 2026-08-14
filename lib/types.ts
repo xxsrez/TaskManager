@@ -83,6 +83,40 @@ export type TaskRecord = {
   updatedAt: string;
 };
 
+export type LabelRecord = {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  color: string;
+};
+
+export type TaskLabelAssignment = {
+  taskId: string;
+  labelId: string;
+};
+
+export type TaskRelationRecord = {
+  sourceTaskId: string;
+  targetTaskId: string;
+  type: "blocks" | "related" | "duplicate_of";
+};
+
+export type ExternalSourceRecord = {
+  targetType: "task" | "project" | "release" | "saved_view" | "label" | "workflow_status";
+  targetId: string;
+  source: "linear";
+  sourceId: string;
+  sourceUrl: string | null;
+  gitBranchName: string | null;
+  attachments: Array<{
+    title: string;
+    subtitle: string | null;
+    url: string;
+  }>;
+  stateHistoryEntries: number;
+  commentEntries: number;
+};
+
 export type SavedViewRecord = {
   id: string;
   ownerUserId: string;
@@ -100,6 +134,7 @@ export type ViewQuery = {
   projectId?: string | null;
   releaseId?: string | null;
   archived?: boolean;
+  updatedWithinHours?: number;
 };
 
 export type ViewDisplay = {
@@ -127,6 +162,10 @@ export type AppSnapshot = {
   projects: ProjectRecord[];
   releases: ReleaseRecord[];
   tasks: TaskRecord[];
+  labels: LabelRecord[];
+  taskLabels: TaskLabelAssignment[];
+  relations: TaskRelationRecord[];
+  externalSources: ExternalSourceRecord[];
   views: SavedViewRecord[];
   collaborators: CollaboratorRecord[];
 };

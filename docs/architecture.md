@@ -174,14 +174,23 @@ migrations. Это соответствует
 - owner-scoped sequence/index для `Task.identifier`;
 - индексы по owner/status/archive, project/release и updated time;
 - join table для labels;
+- нормализованная `task_relations` для `blocks`, `related` и `duplicate_of`;
+- `external_records` для owner-scoped provenance идемпотентного импорта;
 - constraint или transactional validation project/release consistency;
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
 
-Полнотекстовый индекс, relations schema, дополнительные assignee/priority/due
-indexes и database-level foreign keys остаются следующими schema slices.
+Полнотекстовый индекс, дополнительные assignee/priority/due indexes и
+database-level foreign keys остаются следующими schema slices.
 Owner consistency и project/release invariants в текущем срезе проверяются на
 server mutation boundary.
+
+Authenticated endpoint `/api/import/linear` принимает заранее
+инвентаризированный JSON snapshot, полностью валидирует ссылки до записи и
+выполняет deterministic upsert. Техническая страница `/import/linear` добавляет
+к workspace snapshot отдельно собранный archive комментариев. Импорт сохраняет
+исходные identifiers, timestamps, archive state, hierarchy, labels, relations,
+saved-view query/display и полный provider metadata в `external_records`.
 
 ## Надёжность и проверка
 

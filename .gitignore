@@ -17,6 +17,7 @@ coverage/
 *.tsbuildinfo
 *.sqlite
 *.sqlite3
+.linear-import/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

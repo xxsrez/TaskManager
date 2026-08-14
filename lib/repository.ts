@@ -13,11 +13,15 @@ import {
 import type {
   AppSnapshot,
   CollaboratorRecord,
+  ExternalSourceRecord,
+  LabelRecord,
   Priority,
   ProjectRecord,
   ReleaseRecord,
   SavedViewRecord,
   StatusCategory,
+  TaskLabelAssignment,
+  TaskRelationRecord,
   TaskRecord,
   UserRecord,
   ViewDisplay,
@@ -141,6 +145,16 @@ const schemaStatements = [
     label_id TEXT NOT NULL,
     PRIMARY KEY(task_id, label_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS task_relations (
+    source_task_id TEXT NOT NULL,
+    target_task_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    creator_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(source_task_id, target_task_id, type)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_task_relations_target
+    ON task_relations(target_task_id, type)`,
   `CREATE TABLE IF NOT EXISTS saved_views (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,
@@ -152,6 +166,20 @@ const schemaStatements = [
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS external_records (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    source_url TEXT,
+    metadata_json TEXT NOT NULL,
+    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner_user_id, source, source_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_external_records_target
+    ON external_records(target_type, target_id)`,
   `CREATE TABLE IF NOT EXISTS access_grants (
     id TEXT PRIMARY KEY,
     resource_type TEXT NOT NULL,
@@ -275,7 +303,19 @@ async function ensureDefaultStatuses(ownerUserId: string) {
 export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
   await ensureDatabase();
   const db = getD1();
-  const [tasks, projects, releases, views, statuses, users, collaborators] =
+  const [
+    tasks,
+    projects,
+    releases,
+    views,
+    statuses,
+    users,
+    collaborators,
+    labels,
+    taskLabels,
+    relations,
+    externalSources,
+  ] =
     await Promise.all([
       db
         .prepare(
@@ -366,6 +406,71 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
         )
         .bind(user.id)
         .all<DbRow>(),
+      db
+        .prepare(
+          `SELECT l.* FROM labels l
+           WHERE l.owner_user_id = ?
+              OR EXISTS (
+                SELECT 1 FROM task_labels tl
+                JOIN tasks t ON t.id = tl.task_id
+                JOIN access_grants ag ON (
+                  (ag.resource_type = 'task' AND ag.resource_id = t.id)
+                  OR (ag.resource_type = 'project' AND ag.resource_id = t.project_id)
+                )
+                WHERE tl.label_id = l.id
+                  AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+              )
+           ORDER BY l.name`,
+        )
+        .bind(user.id, user.id)
+        .all<DbRow>(),
+      db
+        .prepare(
+          `SELECT tl.* FROM task_labels tl
+           JOIN tasks t ON t.id = tl.task_id
+           WHERE t.owner_user_id = ?
+              OR EXISTS (
+                SELECT 1 FROM access_grants ag
+                WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                  AND ((ag.resource_type = 'task' AND ag.resource_id = t.id)
+                    OR (ag.resource_type = 'project' AND ag.resource_id = t.project_id))
+              )`,
+        )
+        .bind(user.id, user.id)
+        .all<DbRow>(),
+      db
+        .prepare(
+          `SELECT tr.source_task_id, tr.target_task_id, tr.type
+           FROM task_relations tr
+           JOIN tasks source_task ON source_task.id = tr.source_task_id
+           JOIN tasks target_task ON target_task.id = tr.target_task_id
+           WHERE (
+             source_task.owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 AND ((ag.resource_type = 'task' AND ag.resource_id = source_task.id)
+                   OR (ag.resource_type = 'project' AND ag.resource_id = source_task.project_id))
+             )
+           ) AND (
+             target_task.owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 AND ((ag.resource_type = 'task' AND ag.resource_id = target_task.id)
+                   OR (ag.resource_type = 'project' AND ag.resource_id = target_task.project_id))
+             )
+           )`,
+        )
+        .bind(user.id, user.id, user.id, user.id)
+        .all<DbRow>(),
+      db
+        .prepare(
+          `SELECT target_type, target_id, source, source_id, source_url,
+                  metadata_json
+           FROM external_records
+           WHERE owner_user_id = ?`,
+        )
+        .bind(user.id)
+        .all<DbRow>(),
     ]);
 
   return {
@@ -375,6 +480,10 @@ export async function getSnapshot(user: UserRecord): Promise<AppSnapshot> {
     projects: projects.results.map(mapProject),
     releases: releases.results.map(mapRelease),
     tasks: tasks.results.map(mapTask),
+    labels: labels.results.map(mapLabel),
+    taskLabels: taskLabels.results.map(mapTaskLabel),
+    relations: relations.results.map(mapRelation),
+    externalSources: externalSources.results.map(mapExternalSource),
     views: views.results.map(mapView),
     collaborators: collaborators.results.map(mapCollaborator),
   };
@@ -999,6 +1108,83 @@ function mapTask(row: DbRow): TaskRecord {
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+  };
+}
+
+function mapLabel(row: DbRow): LabelRecord {
+  return {
+    id: String(row.id),
+    ownerUserId: String(row.owner_user_id),
+    name: String(row.name),
+    color: String(row.color),
+  };
+}
+
+function mapTaskLabel(row: DbRow): TaskLabelAssignment {
+  return {
+    taskId: String(row.task_id),
+    labelId: String(row.label_id),
+  };
+}
+
+function mapRelation(row: DbRow): TaskRelationRecord {
+  return {
+    sourceTaskId: String(row.source_task_id),
+    targetTaskId: String(row.target_task_id),
+    type: String(row.type) as TaskRelationRecord["type"],
+  };
+}
+
+function mapExternalSource(row: DbRow): ExternalSourceRecord {
+  const metadata = safeJson<Record<string, unknown>>(row.metadata_json, {});
+  const attachments = Array.isArray(metadata.attachments)
+    ? metadata.attachments
+        .map((value) => {
+          if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return null;
+          }
+          const attachment = value as Record<string, unknown>;
+          if (
+            typeof attachment.title !== "string" ||
+            typeof attachment.url !== "string"
+          ) {
+            return null;
+          }
+          return {
+            title: attachment.title,
+            subtitle:
+              typeof attachment.subtitle === "string"
+                ? attachment.subtitle
+                : null,
+            url: attachment.url,
+          };
+        })
+        .filter(
+          (
+            value,
+          ): value is ExternalSourceRecord["attachments"][number] =>
+            value !== null,
+        )
+    : [];
+  return {
+    targetType: String(
+      row.target_type,
+    ) as ExternalSourceRecord["targetType"],
+    targetId: String(row.target_id),
+    source: "linear",
+    sourceId: String(row.source_id),
+    sourceUrl: nullableString(row.source_url),
+    gitBranchName:
+      typeof metadata.gitBranchName === "string"
+        ? metadata.gitBranchName
+        : null,
+    attachments,
+    stateHistoryEntries: Array.isArray(metadata.stateHistory)
+      ? metadata.stateHistory.length
+      : 0,
+    commentEntries: Array.isArray(metadata.comments)
+      ? metadata.comments.length
+      : 0,
   };
 }
 

@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-13
+Последнее обновление: 2026-08-14
 
 Документ фиксирует логическую модель, а не конкретную ORM или SQL-схему.
 Имена полей могут адаптироваться к выбранному стеку, но семантика и инварианты
@@ -27,6 +27,7 @@ erDiagram
     TASK ||--o{ TASK_RELATION : source
     TASK ||--o{ TASK_RELATION : target
     TASK }o--o{ LABEL : tagged_with
+    USER ||--o{ EXTERNAL_RECORD : owns
     PROJECT ||--o{ SAVED_VIEW : scopes
     PROJECT ||--o{ ACCESS_GRANT : share_target
     TASK ||--o{ ACCESS_GRANT : share_target
@@ -208,6 +209,24 @@ Label — гибкая классификация, но не подмена stat
 
 Для `related` хранится одна канонически упорядоченная пара. `blocked_by`
 вычисляется как обратное чтение `blocks` и не является отдельным type.
+
+## ExternalRecord
+
+`ExternalRecord` хранит provenance миграции, а не создаёт ещё одну доменную
+модель задач.
+
+| Поле | Семантика |
+|---|---|
+| `owner_user_id` | Tenant scope импортированной записи |
+| `target_type`, `target_id` | Внутренняя Task, Project, Release, SavedView, Label или WorkflowStatus |
+| `source`, `source_id`, `source_url` | Provider и identity исходной записи |
+| `metadata_json` | Полный исходный metadata snapshot для обратимой сверки |
+| `imported_at` | Время последнего идемпотентного импорта |
+
+Для Linear snapshot сохраняются, среди прочего, branch name, история статусов,
+attachments metadata и комментарии. Это не означает наличие в MVP отдельного
+редактора комментариев или загрузки файлов: такие данные доступны как import
+provenance и не участвуют в доменных запросах.
 
 ## SavedView
 

@@ -34,7 +34,9 @@
 Спецификации целевого MVP остаются `Proposed`. Первый срез уже реализует вход
 через ChatGPT, D1 persistence, owner/ACL-scoped задачи, проекты, релизы,
 сохранённые views, sharing, list/board, details, filters, selection и основные
-keyboard actions. Labels, assignee picker, hierarchy/relations, настройка
+keyboard actions. Реализованы хранение и read-only details для labels,
+parent/subtasks и task relations, а также идемпотентный Linear snapshot import
+с provenance. Редакторы labels/hierarchy/relations, assignee picker, настройка
 workflow, полный filter AST, Google sign-in и исчерпывающая acceptance matrix
 ещё не реализованы. В
 [ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md) зафиксированы
