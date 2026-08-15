@@ -133,6 +133,37 @@ test("priority grouping creates ordered empty groups and preserves task order", 
   );
 });
 
+test("status grouping follows workflow order while first and last tasks change groups", () => {
+  const done: WorkflowStatusRecord = {
+    id: "done",
+    ownerUserId: "user-1",
+    name: "Done",
+    category: "completed",
+    color: "#22c55e",
+    position: 1,
+    isDefault: false,
+  };
+  const labels = (tasks: TaskRecord[]) => buildTaskGroups({
+    tasks,
+    statuses: [...statuses, done],
+    projects,
+    releases,
+    groupBy: "status",
+    showEmptyGroups: false,
+  }).map((group) => group.label);
+  const movedToDone = { ...baseTask, statusId: done.id };
+
+  assert.deepEqual(labels([baseTask]), ["Todo"]);
+  assert.deepEqual(labels([movedToDone]), ["Done"]);
+  assert.deepEqual(labels([baseTask, {
+    ...movedToDone,
+    id: "task-2",
+    publicId: "66666666-6666-4666-8666-666666666666",
+    identifier: "TM-2",
+  }]), ["Todo", "Done"]);
+  assert.deepEqual(labels([]), []);
+});
+
 test("project and release grouping include explicit unassigned groups", () => {
   const unassigned = {
     ...baseTask,

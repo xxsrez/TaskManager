@@ -242,7 +242,10 @@ List повторяет плотную grouped-list модель Linear.
 - Слева: collapse toggle, property icon/color, group name.
 - Рядом: task count; estimate total появится только после отдельного решения.
 - Справа на hover: add task и overflow menu.
-- Header sticky внутри длинной группы. Пустые группы следуют `Display` option.
+- Header sticky внутри длинной группы. Status group с нулевым count не
+  рендерится; пустые группы других properties следуют `Display` option. После
+  filter или mutation набор status groups пересчитывается сразу, а полностью
+  пустой результат показывает общий empty state без group headers.
 
 ### 6.2 Task row
 
@@ -293,8 +296,9 @@ List повторяет плотную grouped-list модель Linear.
 - Column header показывает property icon/color, name, count, add и overflow.
 - Columns одинаковой ширины, прокручиваются горизонтально; vertical scroll
   остаётся внутри board surface.
-- Пустую column можно скрыть из overflow; hidden groups доступны в крайнем
-  правом compact container.
+- Status column с нулевым count не рендерится и не оставляет placeholder или
+  hidden-groups container. Пустые columns других properties следуют `Display`;
+  если результат целиком пуст, board показывает тот же empty state, что list.
 
 ### 7.2 Task card
 
@@ -431,10 +435,12 @@ List повторяет плотную grouped-list модель Linear.
 2. grouping;
 3. ordering и direction;
 4. display properties;
-5. show empty groups и show subtasks.
+5. show empty groups для non-status grouping и show subtasks.
 
-Unavailable combinations disabled с кратким объяснением. Изменение применяется
-сразу; persisted state меняется только по правилам current/saved view.
+Для grouping по `status` show-empty не применяется: нулевые status groups всегда
+скрыты. Остальные unavailable combinations disabled с кратким объяснением.
+Изменение применяется сразу; persisted state меняется только по правилам
+current/saved view.
 
 ## 11. Search и contextual command actions
 
@@ -617,7 +623,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
 | Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
 | Filters | Searchable property formula | Берём ядро | Только `AND` |
-| Display options | Layout/group/order/properties/empty groups | Берём ядро | Без per-user defaults и subgrouping |
+| Display options | Layout/group/order/properties/empty non-status groups | Берём ядро | Status groups с нулевым count всегда скрыты; без per-user defaults и subgrouping |
 | Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Без activity/comments |

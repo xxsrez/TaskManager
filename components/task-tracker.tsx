@@ -221,6 +221,8 @@ export function TaskTracker({
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const mobileActionsRef = useRef<HTMLDivElement>(null);
   const accountTriggerRef = useRef<HTMLButtonElement>(null);
+  const mobileMenuRef = useRef<HTMLButtonElement>(null);
+  const mobileSidebarCloseRef = useRef<HTMLButtonElement>(null);
   const taskReturnPath = useRef(
     navigationPath({ ...initialNavigation, taskId: null }, initialData),
   );
@@ -286,6 +288,14 @@ export function TaskTracker({
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [mobileActionsOpen]);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+    const timer = window.setTimeout(() => {
+      mobileSidebarCloseRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [mobileSidebarOpen]);
 
   useEffect(() => {
     window.history.replaceState(
@@ -436,7 +446,9 @@ export function TaskTracker({
     releases: groupingReleases,
     users: groupingUsers,
     groupBy: currentGroupBy,
-    showEmptyGroups: activeSavedView?.display.showEmptyGroups ?? true,
+    showEmptyGroups: currentGroupBy === "status"
+      ? false
+      : activeSavedView?.display.showEmptyGroups ?? true,
   });
   const keyboardTasks = layout === "list" && currentGroupBy !== "none"
     ? tasksInGroupOrder(taskGroups, collapsedGroups)
@@ -575,6 +587,13 @@ export function TaskTracker({
     });
   }
 
+  function closeMobileSidebar() {
+    setMobileSidebarOpen(false);
+    window.setTimeout(() => {
+      mobileMenuRef.current?.focus();
+    }, 0);
+  }
+
   function changeLayout(nextLayout: Layout) {
     setMobileActionsOpen(false);
     applyNavigation({ surface, layout: nextLayout, taskId: null });
@@ -667,7 +686,7 @@ export function TaskTracker({
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
       if (event.key === "Escape") {
         if (mobileActionsOpen) setMobileActionsOpen(false);
-        else if (mobileSidebarOpen) setMobileSidebarOpen(false);
+        else if (mobileSidebarOpen) closeMobileSidebar();
         else if (accountMenuOpen) {
           setAccountMenuOpen(false);
           accountTriggerRef.current?.focus();
@@ -750,7 +769,8 @@ export function TaskTracker({
           className="mobile-sidebar-backdrop"
           type="button"
           aria-label="Close navigation"
-          onClick={() => setMobileSidebarOpen(false)}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={closeMobileSidebar}
         />
       )}
       <aside className="sidebar" id="workspace-sidebar">
@@ -769,14 +789,18 @@ export function TaskTracker({
               <Plus size={15} />
             </button>
           )}
-          <button
-            className="icon-button mobile-sidebar-close"
-            type="button"
-            aria-label="Close navigation"
-            onClick={() => setMobileSidebarOpen(false)}
-          >
-            <X size={16} />
-          </button>
+          {mobileSidebarOpen && (
+            <button
+              ref={mobileSidebarCloseRef}
+              className="icon-button mobile-sidebar-close"
+              type="button"
+              aria-label="Close navigation"
+              onClick={closeMobileSidebar}
+              autoFocus
+            >
+              <X size={16} />
+            </button>
+          )}
         </div>
         {!sidebarCompact && (
           <button className="sidebar-search" onClick={focusSearch}>
@@ -806,7 +830,7 @@ export function TaskTracker({
               <SidebarSection title="Releases" action={() => setDialog("release")}>
                 <NavItem compact={false} icon={<Rocket size={13} />} label="All releases" active={surface === "releases"} href="/releases" onNavigate={() => navigateSurface("releases", "list")} />
                 {data.releases.slice(0, 6).map((release) => (
-                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={release.name} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
+                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={`${projectMap.get(release.projectId)?.name ?? ""} ${release.name}`.trim()} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
                 ))}
               </SidebarSection>
             </>
@@ -912,13 +936,15 @@ export function TaskTracker({
                 {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
               </button>
               <button
+                ref={mobileMenuRef}
                 className="icon-button mobile-menu"
                 type="button"
                 aria-controls="workspace-sidebar"
                 aria-expanded={mobileSidebarOpen}
                 aria-label={mobileSidebarOpen ? "Close navigation" : "Open navigation"}
                 onClick={() => {
-                  setMobileSidebarOpen((value) => !value);
+                  if (mobileSidebarOpen) closeMobileSidebar();
+                  else setMobileSidebarOpen(true);
                   setMobileActionsOpen(false);
                 }}
                 title="Toggle navigation"
@@ -1077,7 +1103,7 @@ export function TaskTracker({
 }
 
 function NavItem({ compact, icon, label, active, href, onNavigate, count }: { compact: boolean; icon: React.ReactNode; label: string; active: boolean; href: string; onNavigate: () => void; count?: number }) {
-  return <a className={`nav-item ${active ? "active" : ""}`} href={href} aria-current={active ? "page" : undefined} onClick={(event) => handleLocalLink(event, onNavigate)} title={compact ? label : undefined}><span className="nav-icon">{icon}</span>{!compact && <><span>{label}</span>{count !== undefined && <small className="nav-count">{count}</small>}</>}</a>;
+  return <a className={`nav-item ${active ? "active" : ""}`} href={href} aria-current={active ? "page" : undefined} aria-label={label} onClick={(event) => handleLocalLink(event, onNavigate)} title={label}><span className="nav-icon">{icon}</span>{!compact && <><span className="nav-label">{label}</span>{count !== undefined && <small className="nav-count">{count}</small>}</>}</a>;
 }
 
 function SidebarSection({ title, action, children }: { title: string; action: () => void; children: React.ReactNode }) {
@@ -1085,8 +1111,8 @@ function SidebarSection({ title, action, children }: { title: string; action: ()
 }
 
 function TaskList({ tasks, groups, statuses, groupBy, projects, releases, users, selected, highlighted, collapsed, canCreate, createOwnerUserId, createAssigneeUserIds, onToggleGroup, onSelect, onHighlight, onOpen, onCreate }: { tasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void }) {
+  if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   if (groupBy === "none") {
-    if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
     return <div className="task-list ungrouped">{tasks.map((task, index) => { const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} /> : null; })}</div>;
   }
   let flatIndex = -1;
@@ -1104,6 +1130,7 @@ function TaskRow({ task, status, project, release, assignee, selected, highlight
 
 function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, users, selected, canCreate, createOwnerUserId, createAssigneeUserIds, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup, rank: number) => Promise<unknown> }) {
   const [over, setOver] = useState<string | null>(null);
+  if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   if (groupBy === "none") {
     return <div className="board"><section className="board-column"><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} showStatus showAssignee selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
   }
@@ -1156,7 +1183,7 @@ function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, users
 
 function TaskBoardCard({ task, status, project, release, assignee, showStatus, showAssignee, selected, onSelect, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; showStatus: boolean; showAssignee: boolean; selected: boolean; onSelect: () => void; onOpen: () => void }) {
   const editable = canEditContent(task.accessRole);
-  return <div role="button" tabIndex={0} className={`task-card ${selected ? "selected" : ""}`} draggable={editable} onDragStart={(event) => { event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; }} onClick={onOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3><div className="card-meta"><span>{task.identifier}</span><span className={`priority priority-${task.priority}`}>{priorityMeta[task.priority].glyph}</span>{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
+  return <div role="button" tabIndex={0} className={`task-card ${editable ? "editable" : ""} ${selected ? "selected" : ""}`} draggable={editable} onDragStart={(event) => { event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; }} onClick={onOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3><div className="card-meta"><span>{task.identifier}</span><span className={`priority priority-${task.priority}`}>{priorityMeta[task.priority].glyph}</span>{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
 }
 
 function TaskGroupIcon({ group }: { group: TaskGroup }) {
@@ -1386,7 +1413,7 @@ function ViewDialog({ search, status, priority, layout, groupBy, scopeProjectId,
     groupBy,
     orderBy: "manual",
     direction: "asc",
-    showEmptyGroups: true,
+    showEmptyGroups: groupBy !== "status",
     visibleFields: ["priority", "project", "release", "dueDate", "assignee"],
   };
   return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ name: values.name, query, display, scopeProjectId }); }}><DialogHeader title="Save as view" icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" /></label><label><span>Group by</span><select value={groupBy} disabled>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div>{scopeProjectId && <p className="dialog-copy">This view is limited to the current project and inherits its access.</p>}<div className="view-summary"><span>{layout === "list" ? "List" : "Board"}</span><span>{Object.keys(query).length || "No"} active filters</span></div><DialogFooter busy={busy} label="Save view" /></form></Modal>;

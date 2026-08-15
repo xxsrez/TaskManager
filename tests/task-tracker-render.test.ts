@@ -450,7 +450,7 @@ test("mobile shell exposes complete navigation and view controls", () => {
     /<button[^>]*aria-controls="workspace-sidebar"[^>]*aria-expanded="false"/,
   );
   assert.match(markup, /<aside[^>]*id="workspace-sidebar"/);
-  assert.match(markup, /aria-label="Close navigation"/);
+  assert.doesNotMatch(markup, /aria-label="Close navigation"/);
   assert.match(markup, /href="\/shared"/);
   assert.match(markup, /href="\/views"/);
   assert.match(markup, /href="\/projects"/);
@@ -467,6 +467,149 @@ test("mobile shell exposes complete navigation and view controls", () => {
   assert.match(markup, />List</);
   assert.match(markup, />Board</);
   assert.match(markup, />New task</);
+});
+
+test("sidebar release and view labels expose the full name while truncating visually", () => {
+  const project = {
+    id: "project-sidebar",
+    publicId: "88888888-8888-4888-8888-888888888888",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Task Manager",
+    summary: "",
+    description: "",
+    status: "active",
+    leadUserId: null,
+    startDate: null,
+    targetDate: null,
+    color: "#7766dd",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const release = {
+    id: "release-sidebar",
+    publicId: "99999999-9999-4999-8999-999999999999",
+    projectId: project.id,
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "0.1",
+    description: "",
+    status: "planned" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const longViewName = "Изменённые задачи — последние 6 часов";
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        projects: [project],
+        releases: [release],
+        views: [{
+          id: "view-long",
+          publicId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          ownerUserId: "user-1",
+          name: longViewName,
+          scopeProjectId: null,
+          query: {},
+          display: {
+            layout: "list" as const,
+            groupBy: "status" as const,
+            orderBy: "manual" as const,
+            direction: "asc" as const,
+            showEmptyGroups: true,
+            visibleFields: [],
+          },
+          version: 1,
+          accessRole: "owner" as const,
+        }],
+      },
+      initialNavigation: { surface: "all", layout: "list", taskId: null },
+      signOutPath: "/sign-out",
+    }),
+  );
+  const primaryNavigation = markup.match(/<nav class="nav-scroll"[\s\S]*?<\/nav>/)?.[0] ?? "";
+
+  assert.match(primaryNavigation, /aria-label="Task Manager 0\.1"/);
+  assert.match(primaryNavigation, /title="Task Manager 0\.1"/);
+  assert.match(primaryNavigation, /<span class="nav-label">Task Manager 0\.1<\/span>/);
+  assert.match(primaryNavigation, new RegExp(`aria-label="${longViewName}"`));
+  assert.match(primaryNavigation, new RegExp(`<span class="nav-label">${longViewName}</span>`));
+  assert.match(primaryNavigation, /href="\/projects\/88888888-8888-4888-8888-888888888888\/releases\/99999999-9999-4999-8999-999999999999"/);
+});
+
+test("status grouping hides empty groups in list and board even for saved views", () => {
+  const groupedSnapshot: AppSnapshot = {
+    ...snapshot,
+    statuses: [
+      snapshot.statuses[0]!,
+      {
+        id: "done",
+        ownerUserId: "user-1",
+        name: "Done",
+        category: "completed",
+        color: "#22c55e",
+        position: 1,
+        isDefault: false,
+      },
+    ],
+    views: [{
+      id: "view-status",
+      publicId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      ownerUserId: "user-1",
+      name: "By status",
+      scopeProjectId: null,
+      query: {},
+      display: {
+        layout: "list",
+        groupBy: "status",
+        orderBy: "manual",
+        direction: "asc",
+        showEmptyGroups: true,
+        visibleFields: [],
+      },
+      version: 1,
+      accessRole: "owner",
+    }],
+  };
+
+  for (const layout of ["list", "board"] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(TaskTracker, {
+        initialData: groupedSnapshot,
+        initialNavigation: { surface: "view:view-status", layout, taskId: null },
+        signOutPath: "/sign-out",
+      }),
+    );
+    assert.match(markup, layout === "list"
+      ? /class="group-header"[\s\S]*?<span>Todo<\/span>/
+      : /class="column-header"[\s\S]*?<span>Todo<\/span>/);
+    assert.doesNotMatch(markup, layout === "list"
+      ? /class="group-header"[\s\S]*?<span>Done<\/span>/
+      : /class="column-header"[\s\S]*?<span>Done<\/span>/);
+  }
+});
+
+test("an entirely empty task result uses the shared empty state in both layouts", () => {
+  for (const layout of ["list", "board"] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(TaskTracker, {
+        initialData: { ...snapshot, tasks: [] },
+        initialNavigation: { surface: "all", layout, taskId: null },
+        signOutPath: "/sign-out",
+      }),
+    );
+    assert.match(markup, /class="empty-state"/);
+    assert.doesNotMatch(markup, /class="group-header"/);
+    assert.doesNotMatch(markup, /class="column-header"/);
+  }
 });
 
 test("release breadcrumbs expose every ancestor and leave the current level static", () => {

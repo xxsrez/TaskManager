@@ -304,7 +304,11 @@ completed dates и archived state.
 - Group by: `status`, `priority`, `assignee`, `project`, `release` или none.
 - Order by: manual rank, priority, created, updated, due date или title.
 - Direction: ascending/descending, кроме manual.
-- Пользователь выбирает видимые metadata fields и показ пустых групп.
+- Пользователь выбирает видимые metadata fields и показ пустых групп для
+  группировок по `priority`, `assignee`, `project` и `release`. При группировке
+  по `status` группы с нулевым числом задач не показываются независимо от
+  сохранённой display-настройки; если результат целиком пуст, list и board
+  показывают общий empty state без пустых контейнеров.
 - Sub-grouping/swimlanes и независимые настройки одного view для разных
   пользователей отложены.
 
