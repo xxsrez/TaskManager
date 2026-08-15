@@ -310,10 +310,10 @@ Authorization invariants:
 Обязательные сценарии:
 
 1. Codex Desktop получает зарегистрированный Task Manager app connector из
-   plugin `.app.json`; OAuth Connect через выбранный connector builder CIMD
-   выполняет
+   plugin `.app.json`; OAuth Connect через выбранный connector builder DCR
+   (`/oauth/register`) выполняет
    `workspace → create → compact search → detail → status update` без Sites
-   headers. Raw MCP clients могут использовать DCR или разрешённый CIMD.
+   headers. Raw MCP clients также могут использовать DCR или разрешённый CIMD.
 2. Marker из description отсутствует в list и появляется только в detail.
 3. Status transition меняет timestamps/version; stale version даёт `409`.
 4. Read-only и revoked/expired token получают соответственно `403` и `401`;

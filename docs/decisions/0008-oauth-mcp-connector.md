@@ -6,7 +6,9 @@
 
 Дополнено 2026-08-15: Git marketplace обобщён до `Srez Marketplace`; Task
 Manager остаётся его первым plugin, а каталог может расширяться независимо от
-этого продукта.
+этого продукта. Для текущего ChatGPT app connector выбран DCR: production
+проверка CIMD завершалась `invalid_client` при проверке metadata document,
+тогда как DCR через тот же authorization server прошёл полный Connect flow.
 
 ## Контекст
 
@@ -74,9 +76,10 @@ task commands. UI snapshot и административные capabilities дл
   Task Manager из Plugins, нажимает Authenticate, входит через ChatGPT,
   подтверждает scopes и сразу получает tools; ручные MCP/OAuth поля и secret
   не нужны.
-- Текущий Task Manager app connector использует выбранный builder CIMD; DCR
-  остаётся поддерживаемым protocol path для Codex Desktop/native и других
-  совместимых MCP clients.
+- Текущий Task Manager app connector использует выбранный builder DCR через
+  `/oauth/register`. CIMD остаётся поддерживаемым protocol path для совместимых
+  MCP clients, но не используется этой connector instance после production
+  ошибки проверки metadata document.
 - `initialize`, `notifications/initialized`, `ping` и `tools/list` доступны без
   bearer token, чтобы новый app connector мог обнаружить schemas. Это не
   расширяет data plane: любой `tools/call` по-прежнему проходит OAuth, scopes и
@@ -89,10 +92,10 @@ task commands. UI snapshot и административные capabilities дл
   решить rate limits, audit/incident response, key/token operational controls
   и повторно оценить managed IdP: официальные рекомендации OpenAI предпочитают
   established identity provider для production OAuth.
-- CIMD закрывает текущий ChatGPT app onboarding без отдельной client row, а DCR
-  сохраняет native-client path. DCR добавляет таблицу зарегистрированных clients
-  и lifecycle cleanup, но не создаёт shared secret или новую пользовательскую
-  identity.
+- DCR закрывает текущий ChatGPT app onboarding и сохраняет native-client path.
+  Он добавляет таблицу зарегистрированных clients и lifecycle cleanup, но не
+  создаёт shared secret или новую пользовательскую identity. CIMD остаётся
+  доступной альтернативой после отдельного исправления production verification.
 
 ## Отклонённые варианты
 
