@@ -166,6 +166,31 @@ test("Codex namespaced tool calls are normalized inside JSON-RPC batches", async
   assert.equal(body[1]?.method, "ping");
 });
 
+test("Codex namespaced tool calls are normalized inside proxy envelopes", async () => {
+  const request = new Request("https://tasks.example/api/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: [
+        {
+          message: {
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "task_manager.get_workspace", arguments: {} },
+          },
+        },
+      ],
+    }),
+  });
+
+  const normalized = await normalizeTaskManagerToolCallRequest(request);
+  const body = (await normalized.json()) as {
+    messages: Array<{ message: { params: { name: string } } }>;
+  };
+  assert.equal(body.messages[0]?.message.params.name, "get_workspace");
+});
+
 test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", async (t) => {
   configureRuntimeEnvironment({
     TASK_MANAGER_PUBLIC_ORIGIN: "https://tasks.example",

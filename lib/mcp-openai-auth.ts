@@ -26,23 +26,7 @@ export async function normalizeTaskManagerToolCallRequest(
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) return request;
   const value = await request.clone().json().catch(() => null);
-  const messages = Array.isArray(value) ? value : [value];
-  let changed = false;
-  for (const entry of messages) {
-    if (!isRecord(entry)) continue;
-    const message = isRecord(entry.message) ? entry.message : entry;
-    if (message.method !== "tools/call" || !isRecord(message.params)) {
-      continue;
-    }
-    const name = message.params.name;
-    if (typeof name !== "string" || !name.startsWith("task_manager.")) {
-      continue;
-    }
-    const normalizedName = name.slice("task_manager.".length);
-    if (!normalizedName) continue;
-    message.params.name = normalizedName;
-    changed = true;
-  }
+  const changed = normalizeTaskManagerToolCalls(value);
   if (!changed) return request;
   const headers = new Headers(request.headers);
   headers.delete("content-length");
@@ -52,6 +36,30 @@ export async function normalizeTaskManagerToolCallRequest(
     body: JSON.stringify(value),
     signal: request.signal,
   });
+}
+
+function normalizeTaskManagerToolCalls(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.reduce<boolean>(
+      (changed, entry) => normalizeTaskManagerToolCalls(entry) || changed,
+      false,
+    );
+  }
+  if (!isRecord(value)) return false;
+  if (value.method === "tools/call" && isRecord(value.params)) {
+    const name = value.params.name;
+    if (typeof name !== "string" || !name.startsWith("task_manager.")) {
+      return false;
+    }
+    const normalizedName = name.slice("task_manager.".length);
+    if (!normalizedName) return false;
+    value.params.name = normalizedName;
+    return true;
+  }
+  return Object.values(value).reduce<boolean>(
+    (changed, child) => normalizeTaskManagerToolCalls(child) || changed,
+    false,
+  );
 }
 
 export async function decorateToolsListSecuritySchemes(response: Response) {
