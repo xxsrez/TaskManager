@@ -100,6 +100,14 @@ const snapshotTaskIdScopeCte = `WITH scoped_task_ids AS (
   ORDER BY updated_at DESC, id DESC LIMIT ?
 )`;
 
+const snapshotTaskProjection = `
+  t.id, t.public_id, t.owner_user_id, t.creator_user_id,
+  t.identifier, t.sequence_number, t.title, NULL AS description,
+  t.status_id, t.priority, t.assignee_user_id, t.project_id, t.release_id,
+  t.estimate, t.due_date, t.parent_task_id, t.rank,
+  t.started_at, t.completed_at, t.canceled_at, t.archived_at,
+  t.version, t.created_at, t.updated_at`;
+
 export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
   const db = getD1();
   const identity = await db
@@ -219,7 +227,7 @@ export async function getSnapshot(
       db
         .prepare(
           `WITH scoped AS (
-             SELECT t.*,
+             SELECT ${snapshotTaskProjection},
                EXISTS (
                  SELECT 1 FROM external_records er
                  WHERE er.target_type = 'task' AND er.target_id = t.id
@@ -564,6 +572,61 @@ export async function getTaskExternalSource(
     .bind(taskId)
     .first<DbRow>();
   return row ? mapExternalSource(row) : null;
+}
+
+export async function getTask(
+  currentUser: UserRecord,
+  taskId: string,
+): Promise<TaskRecord> {
+  return loadAccessibleTask(currentUser.id, taskId);
+}
+
+export async function searchTaskIds(
+  currentUser: UserRecord,
+  input: string,
+): Promise<string[]> {
+  const query = input.trim().toLowerCase();
+  if (!query) return [];
+  if (query.length > 200) {
+    throw new ValidationError("Task search is limited to 200 characters");
+  }
+  const rows = await getD1()
+    .prepare(
+      `WITH scoped AS (
+         SELECT t.id,
+           CASE
+             WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 1
+             WHEN t.project_id IS NOT NULL THEN EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             )
+             WHEN t.owner_user_id = ? THEN 1
+             ELSE EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             )
+           END AS is_visible
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         WHERE instr(lower(t.identifier), ?) > 0
+            OR instr(lower(t.title), ?) > 0
+            OR instr(lower(COALESCE(t.description, '')), ?) > 0
+       )
+       SELECT id FROM scoped WHERE is_visible = 1 LIMIT ?`,
+    )
+    .bind(
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      query,
+      query,
+      query,
+      MAX_UI_SNAPSHOT_TASKS,
+    )
+    .all<{ id: string }>();
+  return rows.results.map((row) => String(row.id));
 }
 
 export async function getAdminOverview(
@@ -1683,7 +1746,7 @@ function mapTask(row: DbRow): TaskRecord {
     identifier: String(row.identifier),
     sequenceNumber: Number(row.sequence_number),
     title: String(row.title),
-    description: String(row.description ?? ""),
+    description: row.description == null ? null : String(row.description),
     statusId: String(row.status_id),
     priority: String(row.priority) as Priority,
     assigneeUserId: nullableString(row.assignee_user_id),

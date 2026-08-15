@@ -13,7 +13,7 @@ import {
   resolveNavigationTarget,
   type ResolvedNavigation,
 } from "@/lib/navigation";
-import { getOrCreateUser, getSnapshot } from "@/lib/repository";
+import { getOrCreateUser, getSnapshot, getTask } from "@/lib/repository";
 import type { AppSnapshot } from "@/lib/types";
 
 const loadWorkspaceSnapshot = cache(async (includeAdminOverview: boolean) => {
@@ -27,13 +27,14 @@ export async function WorkspacePage({ pathname }: { pathname: string }) {
   const target = parseNavigationPath(pathname);
   if (!target) notFound();
 
-  const snapshot = await loadWorkspaceSnapshot(target.kind === "admin");
-  if (!snapshot) return <SignInPage returnTo={pathname} />;
+  const baseSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
+  if (!baseSnapshot) return <SignInPage returnTo={pathname} />;
 
-  const navigation = resolveNavigationTarget(target, snapshot);
+  const navigation = resolveNavigationTarget(target, baseSnapshot);
   if (!navigation) notFound();
-  const redirectTo = legacyRedirectPath(target, snapshot);
+  const redirectTo = legacyRedirectPath(target, baseSnapshot);
   if (redirectTo) redirect(redirectTo);
+  const snapshot = await withSelectedTaskDetail(baseSnapshot, navigation);
 
   return (
     <TaskTracker
@@ -48,11 +49,24 @@ export async function workspaceMetadata(pathname: string): Promise<Metadata> {
   const target = parseNavigationPath(pathname);
   if (!target) return notFoundMetadata();
 
-  const snapshot = await loadWorkspaceSnapshot(target.kind === "admin");
-  if (!snapshot) return signedOutMetadata();
-  const navigation = resolveNavigationTarget(target, snapshot);
+  const baseSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
+  if (!baseSnapshot) return signedOutMetadata();
+  const navigation = resolveNavigationTarget(target, baseSnapshot);
   if (!navigation) return notFoundMetadata();
+  const snapshot = await withSelectedTaskDetail(baseSnapshot, navigation);
   return metadataForNavigation(navigation, snapshot);
+}
+
+async function withSelectedTaskDetail(
+  snapshot: AppSnapshot,
+  navigation: ResolvedNavigation,
+): Promise<AppSnapshot> {
+  if (!navigation.taskId) return snapshot;
+  const task = await getTask(snapshot.user, navigation.taskId);
+  return {
+    ...snapshot,
+    tasks: snapshot.tasks.map((item) => item.id === task.id ? task : item),
+  };
 }
 
 function SignInPage({ returnTo }: { returnTo: string }) {

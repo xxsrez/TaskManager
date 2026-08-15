@@ -239,6 +239,14 @@ role checks, release/project validation и optimistic version.
 Project, Release, SavedView и AccessGrant. Если доступных Tasks больше, snapshot
 явно возвращает `taskWindow.truncated=true`, а UI показывает границу вместо
 молчаливой иллюзии полного workspace.
+Task rows в этом snapshot являются summary projection: они содержат поля list,
+board, grouping и navigation, но вместо `description` передают явный `null`.
+Открытие Task отдельно запрашивает полную запись через `GET /api/tasks/{id}` с
+повторной ACL-проверкой; server render прямой task URL добавляет detail только
+для выбранной Task. Поиск по description также выполняется отдельным
+authorization-scoped `GET /api/tasks?search=…`, поэтому отсутствие bodies в
+bootstrap не ослабляет search contract и не требует загружать их при обычном
+открытии workspace.
 `/api/bootstrap` не включает тяжёлый импортированный архив комментариев и
 attachments: при открытии details одной импортированной Task UI отдельно
 запрашивает `/api/tasks/{id}/external-source`, а server сначала повторно

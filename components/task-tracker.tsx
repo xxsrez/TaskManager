@@ -193,6 +193,7 @@ export function TaskTracker({
   const [surface, setSurface] = useState(initialNavigation.surface);
   const [layout, setLayout] = useState<Layout>(initialNavigation.layout);
   const [search, setSearch] = useState("");
+  const [taskSearch, setTaskSearch] = useState<{ query: string; taskIds: string[] } | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -310,6 +311,36 @@ export function TaskTracker({
     : undefined;
   const savedGroupBy = activeSavedView?.display.groupBy ?? "status";
   const currentGroupBy = groupByOverrides[surface] ?? savedGroupBy;
+  const searchNeedle = (search || activeSavedView?.query.search || "").trim().toLowerCase();
+
+  useEffect(() => {
+    if (!searchNeedle) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      void fetch(`/api/tasks?search=${encodeURIComponent(searchNeedle)}`, {
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          const value = (await response.json()) as
+            | { taskIds: string[] }
+            | { error: string };
+          if (!response.ok || "error" in value) {
+            throw new Error("error" in value ? value.error : "Task search failed");
+          }
+          setTaskSearch({ query: searchNeedle, taskIds: value.taskIds });
+        })
+        .catch((requestError: unknown) => {
+          if (requestError instanceof DOMException && requestError.name === "AbortError") {
+            return;
+          }
+          setError(requestError instanceof Error ? requestError.message : "Task search failed");
+        });
+    }, 150);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchNeedle]);
 
   const visibleTasks = useMemo(() => {
     let tasks = data.tasks;
@@ -356,14 +387,18 @@ export function TaskTracker({
     }
     if (statusFilter !== "all") tasks = tasks.filter((task) => task.statusId === statusFilter);
     if (priorityFilter !== "all") tasks = tasks.filter((task) => task.priority === priorityFilter);
-    const needle = (search || query.search || "").trim().toLowerCase();
+    const needle = searchNeedle;
     if (needle) {
+      const remoteMatches = taskSearch?.query === needle
+        ? new Set(taskSearch.taskIds)
+        : null;
       tasks = tasks.filter(
         (task) =>
+          remoteMatches?.has(task.id) ||
           task.identifier.toLowerCase() === needle ||
           task.identifier.toLowerCase().includes(needle) ||
           task.title.toLowerCase().includes(needle) ||
-          task.description.toLowerCase().includes(needle),
+          (task.description?.toLowerCase().includes(needle) ?? false),
       );
     }
     return sortTasks(tasks, activeSavedView?.display);
@@ -371,16 +406,46 @@ export function TaskTracker({
     activeSavedView,
     data.tasks,
     priorityFilter,
-    search,
+    searchNeedle,
     statusFilter,
     statusMap,
     surface,
+    taskSearch,
     viewReferenceTime,
   ]);
 
   const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
   const activeTask = data.tasks.find((task) => task.id === activeTaskId) ?? null;
   const peekTask = data.tasks.find((task) => task.id === peekTaskId) ?? null;
+  const deferredTaskId = activeTask?.description === null
+    ? activeTask.id
+    : peekTask?.description === null
+      ? peekTask.id
+      : null;
+
+  useEffect(() => {
+    if (!deferredTaskId) return;
+    const controller = new AbortController();
+    void fetch(`/api/tasks/${encodeURIComponent(deferredTaskId)}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const value = (await response.json()) as
+          | { task: TaskRecord }
+          | { error: string };
+        if (!response.ok || "error" in value) {
+          throw new Error("error" in value ? value.error : "Request failed");
+        }
+        setData((current) => applyMutationResult(current, value));
+      })
+      .catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") {
+          return;
+        }
+        setError(requestError instanceof Error ? requestError.message : "Could not load task details");
+      });
+    return () => controller.abort();
+  }, [deferredTaskId]);
   const selectedTasks = [...selected]
     .map((id) => data.tasks.find((task) => task.id === id))
     .filter(Boolean) as TaskRecord[];
@@ -1089,7 +1154,7 @@ export function TaskTracker({
         <BulkBar count={selected.size} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}><TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} /></div>}
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "project" && <EntityDialog title="Create project" icon={<FolderKanban size={17} />} fields={[{ name: "name", label: "Project name", required: true }, { name: "summary", label: "Short summary" }, { name: "targetDate", label: "Target date", type: "date" }]} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
@@ -1288,7 +1353,7 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
 
 function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
-  const [description, setDescription] = useState(task.description);
+  const [description, setDescription] = useState(task.description ?? "");
   const [estimate, setEstimate] = useState(task.estimate?.toString() ?? "");
   const source = useTaskExternalSource(task);
   if (!canEditContent(task.accessRole)) {
@@ -1317,7 +1382,11 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }:
     }
   }
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} full />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel"><header><div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div><div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div></header><div className="details-body"><input className="details-title" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => title.trim() && title !== task.title && void onSave({ title })} /><textarea className="details-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={8} /><button className="button secondary save-description" disabled={busy || description === task.description} onClick={() => void onSave({ description })}>{busy ? "Saving…" : "Save description"}</button><div className="properties-grid"><PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow><PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow><PropertyRow label="Assignee" icon={<UsersRound size={14} />}><select value={task.assigneeUserId ?? ""} onChange={(event) => void onSave({ assigneeUserId: event.target.value || null })}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</select></PropertyRow><PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow><PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={!task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow><PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow><PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => setEstimate(event.target.value)} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (value !== task.estimate) void onSave({ estimate: value }); }} /></PropertyRow></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div><button className="button danger ghost archive-action" onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel"><header><div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div><div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div></header><div className="details-body"><input className="details-title" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => title.trim() && title !== task.title && void onSave({ title })} /><textarea className="details-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={8} /><button className="button secondary save-description" disabled={busy || description === (task.description ?? "")} onClick={() => void onSave({ description })}>{busy ? "Saving…" : "Save description"}</button><div className="properties-grid"><PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow><PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow><PropertyRow label="Assignee" icon={<UsersRound size={14} />}><select value={task.assigneeUserId ?? ""} onChange={(event) => void onSave({ assigneeUserId: event.target.value || null })}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</select></PropertyRow><PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow><PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={!task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow><PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow><PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => setEstimate(event.target.value)} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (value !== task.estimate) void onSave({ estimate: value }); }} /></PropertyRow></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div><button className="button danger ghost archive-action" onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button></div></aside></div>;
+}
+
+function TaskDetailsLoading({ task, onClose }: { task: TaskRecord; onClose: () => void }) {
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel" aria-busy="true"><header><div className="details-crumb"><span>{task.identifier}</span></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body task-details-loading"><h1 className="read-only-title">{task.title}</h1><p>Loading task details…</p></div></aside></div>;
 }
 
 function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task: TaskRecord; data: AppSnapshot; source: ExternalSourceRecord | null | undefined; onClose: () => void; onOpenTask: (id: string) => void }) {
@@ -1791,7 +1860,7 @@ function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZon
 }
 function AdminMetric({ label, value, note, icon }: { label: string; value: number; note: string; icon: React.ReactNode }) { return <article className="admin-metric"><span className="admin-metric-icon">{icon}</span><div><span>{label}</span><b>{value}</b><small>{note}</small></div></article>; }
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate?: () => void }) { const labels = { task: ["No tasks here", "There is no work in this view yet."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "There are no releases in this scope yet."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button>}</div>; }
-function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
+function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description === null ? "Loading preview…" : task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
 function BulkBar({ count, statuses, archiveAction, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; archiveAction: ReturnType<typeof resolveArchiveBulkAction>; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}>{archiveAction.archived ? <Archive size={14} /> : <ArchiveRestore size={14} />}{archiveAction.label}</button><button onClick={onClose}><X size={14} /></button></div>; }
 
 function handleLocalLink(event: ReactMouseEvent<HTMLAnchorElement>, navigate: () => void) {

@@ -11,8 +11,10 @@ import {
   createTask,
   getOrCreateUser,
   getSnapshot,
+  getTask,
   grantAccess,
   revokeAccess,
+  searchTaskIds,
   updateAccessRole,
   updateTask,
 } from "../lib/repository";
@@ -240,6 +242,29 @@ test("workspace snapshots expose an explicit bounded task window", async () => {
   assert.ok(bounded.relations.every(
     (relation) => taskIds.has(relation.sourceTaskId) && taskIds.has(relation.targetTaskId),
   ));
+});
+
+test("workspace snapshots defer task descriptions until task details are requested", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  await createTask(owner, {
+    title: "Deferred task body",
+    description: "Large detail content that the task list does not render",
+  });
+
+  const snapshot = await getSnapshot(owner);
+  const task = snapshot.tasks.find((item) => item.title === "Deferred task body");
+
+  assert.ok(task);
+  assert.equal(task.description, null);
+
+  const detail = await getTask(owner, task.id);
+  assert.equal(
+    detail.description,
+    "Large detail content that the task list does not render",
+  );
+
+  const matches = await searchTaskIds(owner, "detail content");
+  assert.deepEqual(matches, [task.id]);
 });
 
 test("Agent task cursor remains stable when earlier rows are inserted", async () => {

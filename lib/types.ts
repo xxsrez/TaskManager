@@ -71,7 +71,7 @@ export type TaskRecord = {
   identifier: string;
   sequenceNumber: number;
   title: string;
-  description: string;
+  description: string | null;
   statusId: string;
   priority: Priority;
   assigneeUserId: string | null;

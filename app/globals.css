@@ -403,6 +403,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .details-crumb { color: var(--muted); font-size: 11px; }
 .details-crumb button, .peek button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
 .details-body { height: calc(100% - 47px); padding: 28px 36px 80px; overflow: auto; }
+.task-details-loading p { margin-top: 18px; color: var(--muted); }
 .details-title { width: 100%; padding: 0 0 10px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 23px; font-weight: 550; line-height: 31px; }
 .details-description { width: 100%; min-height: 150px; padding: 8px 0; resize: vertical; border: 0; border-top: 1px solid var(--border); outline: 0; background: transparent; color: var(--text-secondary); line-height: 21px; }
 .save-description { margin: 0 0 24px; }

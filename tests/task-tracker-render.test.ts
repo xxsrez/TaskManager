@@ -256,6 +256,26 @@ test("a direct task render has no controlled field warnings", () => {
   );
 });
 
+test("a summary task opens a lightweight loading panel before its body arrives", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        tasks: snapshot.tasks.map((task) => ({ ...task, description: null })),
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: "task-1",
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /Loading task details/);
+  assert.doesNotMatch(markup, /class="details-description"/);
+});
+
 test("viewer task details are read-only and expose no mutation controls", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
