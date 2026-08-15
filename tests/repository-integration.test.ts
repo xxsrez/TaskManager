@@ -3,7 +3,7 @@ import { after, before, test } from "node:test";
 import { configureActorResolverForTests } from "../lib/auth";
 import { parseAgentTaskListQuery } from "../lib/agent-api-contract";
 import { listAgentTasks } from "../lib/agent-api-repository";
-import { PermissionError } from "../lib/domain";
+import { PermissionError, ValidationError } from "../lib/domain";
 import {
   bulkUpdateTasks,
   createProject,
@@ -12,6 +12,7 @@ import {
   getOrCreateUser,
   getSnapshot,
   grantAccess,
+  revokeAccess,
   updateAccessRole,
   updateTask,
 } from "../lib/repository";
@@ -29,6 +30,12 @@ const collaboratorActor = {
   providerAccountKey: "collaborator-account",
   displayName: "Collaborator",
   email: "collaborator@example.test",
+};
+const outsiderActor = {
+  provider: "chatgpt" as const,
+  providerAccountKey: "outsider-account",
+  displayName: "Outsider",
+  email: "outsider@example.test",
 };
 
 let dispose: (() => Promise<void>) | undefined;
@@ -143,6 +150,60 @@ test("grouping moves preserve project and release invariants", async () => {
   });
   assert.equal(task.projectId, null);
   assert.equal(task.releaseId, null);
+});
+
+test("assignee grouping commands enforce task access", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const collaborator = await getOrCreateUser(collaboratorActor);
+  const outsider = await getOrCreateUser(outsiderActor);
+  await createProject(owner, { name: "Assignee project" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Assignee project",
+  )!;
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: collaborator.email,
+    permission: "editor",
+  });
+
+  await createTask(owner, {
+    title: "Create in assignee group",
+    projectId: project.id,
+    assigneeUserId: collaborator.id,
+  });
+  let task = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Create in assignee group",
+  )!;
+  assert.equal(task.assigneeUserId, collaborator.id);
+
+  task = await updateTask(owner, task.id, {
+    version: task.version,
+    assigneeUserId: null,
+  });
+  assert.equal(task.assigneeUserId, null);
+
+  await assert.rejects(
+    updateTask(owner, task.id, {
+      version: task.version,
+      assigneeUserId: outsider.id,
+    }),
+    ValidationError,
+  );
+
+  task = await updateTask(owner, task.id, {
+    version: task.version,
+    assigneeUserId: collaborator.id,
+  });
+  const grant = (await getSnapshot(owner)).collaborators.find(
+    (item) =>
+      item.resourceType === "project" &&
+      item.resourceId === project.id &&
+      item.userId === collaborator.id,
+  )!;
+  await revokeAccess(owner, grant.grantId);
+  task = (await getSnapshot(owner)).tasks.find((item) => item.id === task.id)!;
+  assert.equal(task.assigneeUserId, null);
 });
 
 test("bulk mutations return only updated task records", async () => {

@@ -11,6 +11,7 @@ import type {
   ProjectRecord,
   ReleaseRecord,
   TaskRecord,
+  UserRecord,
   WorkflowStatusRecord,
 } from "../lib/types";
 
@@ -63,6 +64,20 @@ const releases: ReleaseRecord[] = [
     createdAt: now,
     updatedAt: now,
     accessRole: "owner",
+  },
+];
+const users: UserRecord[] = [
+  {
+    id: "user-2",
+    displayName: "Alex Editor",
+    email: "alex@example.test",
+    timezone: "UTC",
+  },
+  {
+    id: "user-1",
+    displayName: "Test Owner",
+    email: "owner@example.test",
+    timezone: "UTC",
   },
 ];
 const baseTask: TaskRecord = {
@@ -147,6 +162,41 @@ test("project and release grouping include explicit unassigned groups", () => {
     showEmptyGroups: false,
   });
   assert.deepEqual(releaseGroups.map((group) => group.label), ["v1", "No release"]);
+});
+
+test("assignee grouping includes people and an explicit unassigned group", () => {
+  const assigned = {
+    ...baseTask,
+    id: "task-assigned",
+    publicId: "55555555-5555-4555-8555-555555555555",
+    identifier: "TM-3",
+    assigneeUserId: "user-2",
+  };
+
+  const groups = buildTaskGroups({
+    tasks: [assigned, baseTask],
+    statuses,
+    projects,
+    releases,
+    users,
+    groupBy: "assignee",
+    showEmptyGroups: true,
+  });
+
+  assert.deepEqual(groups.map((group) => group.label), [
+    "Alex Editor",
+    "Test Owner",
+    "No assignee",
+  ]);
+  assert.deepEqual(groups[0]?.tasks.map((task) => task.id), ["task-assigned"]);
+  assert.deepEqual(groups[2]?.tasks.map((task) => task.id), ["task-1"]);
+  assert.deepEqual(taskGroupMutation(groups[0]!, 2500), {
+    assigneeUserId: "user-2",
+    rank: 2500,
+  });
+  assert.deepEqual(taskGroupCreateDefaults(groups[2]!), {
+    assigneeUserId: null,
+  });
 });
 
 test("group actions update and create the grouping property", () => {

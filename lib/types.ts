@@ -159,7 +159,7 @@ export type ViewQuery = {
 
 export type ViewDisplay = {
   layout: "list" | "board";
-  groupBy: "status" | "priority" | "project" | "release" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "release" | "none";
   orderBy: "manual" | "priority" | "created" | "updated" | "due" | "title";
   direction: "asc" | "desc";
   showEmptyGroups: boolean;

@@ -166,6 +166,70 @@ test("a saved priority grouping is rendered consistently in list and board", () 
   }
 });
 
+test("a saved assignee grouping is rendered consistently in list and board", () => {
+  const groupedSnapshot: AppSnapshot = {
+    ...snapshot,
+    users: [
+      {
+        id: "user-2",
+        displayName: "Alex Editor",
+        email: "alex@example.test",
+        timezone: "UTC",
+      },
+    ],
+    tasks: [
+      { ...snapshot.tasks[0]!, assigneeUserId: "user-2" },
+      {
+        ...snapshot.tasks[0]!,
+        id: "task-2",
+        publicId: "66666666-6666-4666-8666-666666666666",
+        identifier: "TM-2",
+        sequenceNumber: 2,
+        title: "Unassigned task",
+      },
+    ],
+    views: [
+      {
+        id: "view-assignee",
+        publicId: "77777777-7777-4777-8777-777777777777",
+        ownerUserId: "user-1",
+        name: "By assignee",
+        scopeProjectId: null,
+        query: {},
+        display: {
+          layout: "list",
+          groupBy: "assignee",
+          orderBy: "manual",
+          direction: "asc",
+          showEmptyGroups: true,
+          visibleFields: ["assignee"],
+        },
+        version: 1,
+        accessRole: "owner",
+      },
+    ],
+  };
+
+  for (const layout of ["list", "board"] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(TaskTracker, {
+        initialData: groupedSnapshot,
+        initialNavigation: {
+          surface: "view:view-assignee",
+          layout,
+          taskId: null,
+        },
+        signOutPath: "/sign-out",
+      }),
+    );
+
+    assert.match(markup, layout === "list"
+      ? /class="group-header"[\s\S]*?Alex Editor/
+      : /class="column-header"[\s\S]*?Alex Editor/);
+    assert.match(markup, /No assignee/);
+  }
+});
+
 test("a direct task render has no controlled field warnings", () => {
   const errors: string[] = [];
   const originalError = console.error;

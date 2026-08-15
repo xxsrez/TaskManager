@@ -963,6 +963,7 @@ function viewDisplay(value: unknown): ViewDisplay {
   const groupBy =
     display.groupBy === "status" ||
     display.groupBy === "priority" ||
+    display.groupBy === "assignee" ||
     display.groupBy === "project" ||
     display.groupBy === "release" ||
     display.groupBy === "none"

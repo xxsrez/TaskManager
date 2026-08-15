@@ -3,6 +3,7 @@ import type {
   ProjectRecord,
   ReleaseRecord,
   TaskRecord,
+  UserRecord,
   ViewDisplay,
   WorkflowStatusRecord,
 } from "./types";
@@ -19,6 +20,7 @@ export type TaskGroup = {
   priority?: Priority;
   project?: ProjectRecord;
   release?: ReleaseRecord;
+  assignee?: UserRecord;
 };
 
 const priorities: Array<{ value: Priority; label: string }> = [
@@ -34,6 +36,7 @@ export function buildTaskGroups({
   statuses,
   projects,
   releases,
+  users = [],
   groupBy,
   showEmptyGroups,
 }: {
@@ -41,6 +44,7 @@ export function buildTaskGroups({
   statuses: WorkflowStatusRecord[];
   projects: ProjectRecord[];
   releases: ReleaseRecord[];
+  users?: UserRecord[];
   groupBy: ViewDisplay["groupBy"];
   showEmptyGroups: boolean;
 }): TaskGroup[] {
@@ -67,6 +71,26 @@ export function buildTaskGroups({
       priority: value,
       tasks: tasks.filter((task) => task.priority === value),
     }));
+  } else if (groupBy === "assignee") {
+    groups = [...users]
+      .sort((left, right) =>
+        left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id),
+      )
+      .map((assignee) => ({
+        id: `assignee:${assignee.id}`,
+        kind: "assignee" as const,
+        value: assignee.id,
+        label: assignee.displayName,
+        assignee,
+        tasks: tasks.filter((task) => task.assigneeUserId === assignee.id),
+      }));
+    groups.push({
+      id: "assignee:none",
+      kind: "assignee",
+      value: null,
+      label: "No assignee",
+      tasks: tasks.filter((task) => task.assigneeUserId === null),
+    });
   } else if (groupBy === "project") {
     groups = [...projects]
       .sort((left, right) => left.name.localeCompare(right.name))
@@ -127,6 +151,8 @@ export function taskMatchesGroup(task: TaskRecord, group: TaskGroup): boolean {
       return task.statusId === group.value;
     case "priority":
       return task.priority === group.value;
+    case "assignee":
+      return task.assigneeUserId === group.value;
     case "project":
       return task.projectId === group.value;
     case "release":
@@ -162,6 +188,8 @@ export function taskGroupCreateDefaults(group: TaskGroup): Record<string, unknow
       return { statusId: group.value };
     case "priority":
       return { priority: group.value };
+    case "assignee":
+      return { assigneeUserId: group.value };
     case "project":
       return { projectId: group.value };
     case "release":

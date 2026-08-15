@@ -176,6 +176,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .account-theme button.active { background: var(--raised); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
 .avatar { width: 22px; height: 22px; display: inline-grid; flex: 0 0 22px; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: linear-gradient(145deg, #6b657c, #3f3b4c); color: #fff; font-size: 8px; font-style: normal; font-weight: 650; }
 .avatar.small { width: 21px; height: 21px; flex-basis: 21px; }
+.avatar.group-avatar { width: 18px; height: 18px; flex-basis: 18px; font-size: 7px; }
 .sidebar-collapsed .sidebar-head { padding-inline: 9px; }
 .sidebar-collapsed .workspace-switcher { padding: 0; justify-content: center; }
 .sidebar-collapsed .nav-scroll { padding-inline: 8px; }

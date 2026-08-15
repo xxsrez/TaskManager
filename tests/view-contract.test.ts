@@ -22,6 +22,7 @@ test("saved view input accepts the supported query and display contract", () => 
     },
   );
   assert.equal(validateViewDisplay({ layout: "board" }).layout, "board");
+  assert.equal(validateViewDisplay({ groupBy: "assignee" }).groupBy, "assignee");
 });
 
 test("saved view input rejects values that can poison the client snapshot", () => {

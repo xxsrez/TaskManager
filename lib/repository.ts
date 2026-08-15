@@ -399,13 +399,46 @@ export async function getSnapshot(
           `SELECT DISTINCT u.id, u.display_name, u.email, u.timezone
            FROM users u
            WHERE u.id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.revoked_at IS NULL
-               AND (ag.owner_user_id = ? OR ag.grantee_user_id = ?)
-               AND (ag.owner_user_id = u.id OR ag.grantee_user_id = u.id)
-           ) ORDER BY u.display_name`,
+             SELECT 1 FROM projects p
+             WHERE (
+               p.owner_user_id = ? OR EXISTS (
+                 SELECT 1 FROM access_grants actor_grant
+                 WHERE actor_grant.resource_type = 'project'
+                   AND actor_grant.resource_id = p.id
+                   AND actor_grant.grantee_user_id = ?
+                   AND actor_grant.revoked_at IS NULL
+               )
+             ) AND (
+               p.owner_user_id = u.id OR EXISTS (
+                 SELECT 1 FROM access_grants member_grant
+                 WHERE member_grant.resource_type = 'project'
+                   AND member_grant.resource_id = p.id
+                   AND member_grant.grantee_user_id = u.id
+                   AND member_grant.revoked_at IS NULL
+               )
+             )
+           ) OR EXISTS (
+             SELECT 1 FROM tasks t
+             WHERE t.project_id IS NULL AND (
+               t.owner_user_id = ? OR EXISTS (
+                 SELECT 1 FROM access_grants actor_grant
+                 WHERE actor_grant.resource_type = 'task'
+                   AND actor_grant.resource_id = t.id
+                   AND actor_grant.grantee_user_id = ?
+                   AND actor_grant.revoked_at IS NULL
+               )
+             ) AND (
+               t.owner_user_id = u.id OR EXISTS (
+                 SELECT 1 FROM access_grants member_grant
+                 WHERE member_grant.resource_type = 'task'
+                   AND member_grant.resource_id = t.id
+                   AND member_grant.grantee_user_id = u.id
+                   AND member_grant.revoked_at IS NULL
+               )
+             )
+           ) ORDER BY u.display_name, u.id`,
         )
-        .bind(user.id, user.id, user.id)
+        .bind(user.id, user.id, user.id, user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
@@ -423,14 +456,19 @@ export async function getSnapshot(
                      AND actor_grant.resource_id = p.id
                      AND actor_grant.grantee_user_id = ?
                      AND actor_grant.revoked_at IS NULL
-                     AND actor_grant.permission IN ('manager', 'full_access')
                  )
                )
              )) OR
              (ag.resource_type = 'task' AND EXISTS (
                SELECT 1 FROM tasks t
                WHERE t.id = ag.resource_id AND t.project_id IS NULL
-                 AND t.owner_user_id = ?
+                 AND (t.owner_user_id = ? OR EXISTS (
+                   SELECT 1 FROM access_grants actor_grant
+                   WHERE actor_grant.resource_type = 'task'
+                     AND actor_grant.resource_id = t.id
+                     AND actor_grant.grantee_user_id = ?
+                     AND actor_grant.revoked_at IS NULL
+                 ))
              )) OR
              (ag.resource_type = 'saved_view' AND EXISTS (
                SELECT 1 FROM saved_views v
@@ -440,7 +478,7 @@ export async function getSnapshot(
            )
            ORDER BY ag.created_at DESC`,
         )
-        .bind(user.id, user.id, user.id, user.id)
+        .bind(user.id, user.id, user.id, user.id, user.id)
         .all<DbRow>(),
       db
         .prepare(
@@ -609,6 +647,15 @@ export async function createTask(
     : null;
   if (release) requireContentEdit(release.accessRole);
   assertReleaseProject(project?.id ?? null, release?.projectId ?? null);
+  const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
+    ? requestedAssigneeUserId(input.assigneeUserId)
+    : currentUser.id;
+  await assertTaskAssigneeAccess(
+    assigneeUserId,
+    ownerUserId,
+    project?.id ?? null,
+    null,
+  );
 
   const sequenceRow = await db
     .prepare(
@@ -663,7 +710,7 @@ export async function createTask(
       optionalText(input.description),
       status.id,
       input.priority ? priority(input.priority) : "none",
-      currentUser.id,
+      assigneeUserId,
       project?.id ?? null,
       release?.id ?? null,
       optionalEstimate(input.estimate),
@@ -750,6 +797,16 @@ export async function updateTask(
     releaseId = null;
   }
 
+  const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
+    ? requestedAssigneeUserId(input.assigneeUserId)
+    : task.assigneeUserId;
+  await assertTaskAssigneeAccess(
+    assigneeUserId,
+    task.ownerUserId,
+    projectId,
+    task.id,
+  );
+
   const status = Object.hasOwn(input, "statusId")
     ? await loadStatus(task.ownerUserId, String(input.statusId))
     : await loadStatus(task.ownerUserId, task.statusId);
@@ -783,7 +840,7 @@ export async function updateTask(
     .prepare(
       `UPDATE tasks SET
         title = ?, description = ?, status_id = ?, priority = ?,
-        project_id = ?, release_id = ?, estimate = ?, due_date = ?, rank = ?,
+        assignee_user_id = ?, project_id = ?, release_id = ?, estimate = ?, due_date = ?, rank = ?,
         started_at = ?, completed_at = ?, canceled_at = ?, archived_at = ?,
         version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND (
@@ -813,6 +870,7 @@ export async function updateTask(
       description,
       status.id,
       nextPriority,
+      assigneeUserId,
       projectId,
       releaseId,
       estimate,
@@ -1091,14 +1149,37 @@ export async function revokeAccess(currentUser: UserRecord, grantId: string) {
   if (!canManageGrant(grant.actorRole, grant.resourceType, grant.permission)) {
     throw new PermissionError("You cannot remove that participant");
   }
-  const result = await getD1()
-    .prepare(
-      `UPDATE access_grants SET revoked_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
-    )
-    .bind(grantId, grant.ownerUserId)
-    .run();
-  if ((result.meta.changes ?? 0) !== 1) throw new NotFoundError("Grant not found");
+  const db = getD1();
+  const now = new Date().toISOString();
+  const clearAssignee = grant.resourceType === "project"
+    ? db
+        .prepare(
+          `UPDATE tasks SET assignee_user_id = NULL,
+             version = version + 1, updated_at = ?
+           WHERE project_id = ? AND assignee_user_id = ?`,
+        )
+        .bind(now, grant.resourceId, grant.granteeUserId)
+    : grant.resourceType === "task"
+      ? db
+          .prepare(
+            `UPDATE tasks SET assignee_user_id = NULL,
+               version = version + 1, updated_at = ?
+             WHERE id = ? AND project_id IS NULL AND assignee_user_id = ?`,
+          )
+          .bind(now, grant.resourceId, grant.granteeUserId)
+      : db.prepare("SELECT 1");
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE access_grants SET revoked_at = ?
+         WHERE id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
+      )
+      .bind(now, grantId, grant.ownerUserId),
+    clearAssignee,
+  ]);
+  if ((results[0]?.meta.changes ?? 0) !== 1) {
+    throw new NotFoundError("Grant not found");
+  }
 }
 
 export async function updateAccessRole(
@@ -1370,6 +1451,65 @@ async function loadStatus(ownerUserId: string, statusId: string | null) {
   return mapStatus(row);
 }
 
+function requestedAssigneeUserId(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !value || value.length > 200) {
+    throw new ValidationError("Assignee is invalid");
+  }
+  return value;
+}
+
+async function assertTaskAssigneeAccess(
+  assigneeUserId: string | null,
+  ownerUserId: string,
+  projectId: string | null,
+  taskId: string | null,
+) {
+  if (assigneeUserId === null) return;
+
+  let row: DbRow | null;
+  if (projectId) {
+    row = await getD1()
+      .prepare(
+        `SELECT u.id FROM users u
+         JOIN projects p ON p.id = ?
+         WHERE u.id = ? AND (
+           p.owner_user_id = u.id OR EXISTS (
+             SELECT 1 FROM access_grants ag
+             WHERE ag.resource_type = 'project'
+               AND ag.resource_id = p.id
+               AND ag.grantee_user_id = u.id
+               AND ag.revoked_at IS NULL
+           )
+         )`,
+      )
+      .bind(projectId, assigneeUserId)
+      .first<DbRow>();
+  } else if (assigneeUserId === ownerUserId) {
+    row = { id: assigneeUserId };
+  } else if (taskId) {
+    row = await getD1()
+      .prepare(
+        `SELECT u.id FROM users u
+         WHERE u.id = ? AND EXISTS (
+           SELECT 1 FROM access_grants ag
+           WHERE ag.resource_type = 'task'
+             AND ag.resource_id = ?
+             AND ag.grantee_user_id = u.id
+             AND ag.revoked_at IS NULL
+         )`,
+      )
+      .bind(assigneeUserId, taskId)
+      .first<DbRow>();
+  } else {
+    row = null;
+  }
+
+  if (!row) {
+    throw new ValidationError("Assignee must have access to the task");
+  }
+}
+
 function shareableResourceType(value: unknown): ShareableResourceType {
   if (value === "project" || value === "task" || value === "saved_view") {
     return value;
@@ -1413,7 +1553,7 @@ async function loadShareTarget(
 async function loadGrantForManagement(userId: string, grantId: string) {
   const row = await getD1()
     .prepare(
-      `SELECT resource_type, resource_id, owner_user_id, permission
+      `SELECT resource_type, resource_id, owner_user_id, grantee_user_id, permission
        FROM access_grants WHERE id = ? AND revoked_at IS NULL`,
     )
     .bind(grantId)
@@ -1421,6 +1561,7 @@ async function loadGrantForManagement(userId: string, grantId: string) {
       resource_type: string;
       resource_id: string;
       owner_user_id: string;
+      grantee_user_id: string;
       permission: string;
     }>();
   if (!row) throw new NotFoundError("Grant not found");
@@ -1432,6 +1573,7 @@ async function loadGrantForManagement(userId: string, grantId: string) {
     resourceType,
     resourceId: row.resource_id,
     ownerUserId: target.ownerUserId,
+    granteeUserId: row.grantee_user_id,
     actorRole: target.actorRole,
     permission,
   };

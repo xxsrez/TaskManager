@@ -23,6 +23,7 @@ const displayKeys = new Set([
 const groupings: ViewDisplay["groupBy"][] = [
   "status",
   "priority",
+  "assignee",
   "project",
   "release",
   "none",
