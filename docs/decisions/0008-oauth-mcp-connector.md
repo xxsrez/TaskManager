@@ -4,6 +4,10 @@
 
 Дата решения: 2026-08-14
 
+Дополнено 2026-08-15: Git marketplace обобщён до `Srez Marketplace`; Task
+Manager остаётся его первым plugin, а каталог может расширяться независимо от
+этого продукта.
+
 ## Контекст
 
 REST API из ADR-0006 покрывает task-oriented data plane, но personal token
@@ -51,26 +55,32 @@ task commands. UI snapshot и административные capabilities дл
    Releases, list/filter/get Tasks, imported context, create/update Task.
    Collections compact и paginated; детали и большой archive загружаются
    только после выбора.
-10. Распространение выполняется отдельным Git marketplace repository, в котором
-    есть ровно один Task Manager plugin: `.app.json`, `.mcp.json`, manifest,
-    визуальные assets и skill. Task Manager зарегистрирован как непубличный
-    app connector; его `asdk_app_*` identifier хранится в `.app.json`, поэтому
+10. Распространение выполняется через общий Git repository `Srez Marketplace`.
+    Сейчас в нём опубликован один Task Manager plugin: `.app.json`, `.mcp.json`,
+    manifest, визуальные assets и skill; позднее тот же marketplace может
+    содержать другие независимые plugins. Task Manager зарегистрирован как
+    непубличный app connector; его `asdk_app_*` identifier хранится в
+    `.app.json`, поэтому
     Codex Desktop показывает штатные Install/Authenticate/Reconnect controls,
     а пользователю не нужно вручную вводить имя или URL MCP server. `.mcp.json`
     сохраняет transport metadata и fallback для MCP-aware clients. Connector
     не публикуется в глобальном каталоге: discoverability даёт только явно
     добавленный Git marketplace. Product source и marketplace lifecycle не
-    смешиваются.
+    смешиваются, а добавление других plugins не меняет Task Manager contract.
 
 ## Последствия
 
-- Пользователь Codex Desktop один раз добавляет Git marketplace, устанавливает
+- Пользователь Codex Desktop один раз добавляет `Srez Marketplace`, устанавливает
   Task Manager из Plugins, нажимает Authenticate, входит через ChatGPT,
   подтверждает scopes и сразу получает tools; ручные MCP/OAuth поля и secret
   не нужны.
-- Зарегистрированный Task Manager app connector использует DCR. CIMD остаётся
-  поддерживаемым protocol path для совместимых raw MCP clients, но не является
-  способом регистрации штатного ChatGPT/Codex connector.
+- Текущий Task Manager app connector использует выбранный builder CIMD; DCR
+  остаётся поддерживаемым protocol path для Codex Desktop/native и других
+  совместимых MCP clients.
+- `initialize`, `notifications/initialized`, `ping` и `tools/list` доступны без
+  bearer token, чтобы новый app connector мог обнаружить schemas. Это не
+  расширяет data plane: любой `tools/call` по-прежнему проходит OAuth, scopes и
+  owner/ACL checks до repository query.
 - OAuth subject сопоставляется тому же внутреннему User, что Sites UI, поэтому
   существующие ownership/grants начинают действовать без отдельного account
   linking.
@@ -79,9 +89,9 @@ task commands. UI snapshot и административные capabilities дл
   решить rate limits, audit/incident response, key/token operational controls
   и повторно оценить managed IdP: официальные рекомендации OpenAI предпочитают
   established identity provider для production OAuth.
-- CIMD сохраняет stateless web-client path, а DCR закрывает реальный onboarding
-  ChatGPT и Codex Desktop. Это добавляет таблицу зарегистрированных clients и
-  lifecycle cleanup, но не создаёт shared secret или новую пользовательскую
+- CIMD закрывает текущий ChatGPT app onboarding без отдельной client row, а DCR
+  сохраняет native-client path. DCR добавляет таблицу зарегистрированных clients
+  и lifecycle cleanup, но не создаёт shared secret или новую пользовательскую
   identity.
 
 ## Отклонённые варианты

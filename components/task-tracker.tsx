@@ -111,10 +111,10 @@ type TaskCreateDefaults = Partial<{
   releaseId: string | null;
 }>;
 
-export const TASK_MANAGER_MARKETPLACE_URL = "https://github.com/xxsrez/task-manager-codex-connector";
+export const TASK_MANAGER_MARKETPLACE_URL = "https://github.com/xxsrez/marketplace";
 export const TASK_MANAGER_CLI_SETUP = [
-  "codex plugin marketplace add xxsrez/task-manager-codex-connector",
-  "codex plugin add task-manager@task-manager",
+  "codex plugin marketplace add xxsrez/marketplace",
+  "codex plugin add task-manager@srez-marketplace",
   "codex",
 ].join("\n");
 
@@ -1641,7 +1641,7 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
                 Leave <b>Git ref</b> and <b>Sparse paths</b> empty, then choose <b>Add marketplace</b>.
               </SetupStep>
               <SetupStep number={3} title="Install Task Manager">
-                Open <b>Task Manager</b> in the marketplace and choose <b>Install</b>.
+                Open <b>Srez Marketplace</b>, choose <b>Task Manager</b>, then choose <b>Install</b>.
               </SetupStep>
               <SetupStep number={4} title="Connect your account">
                 Complete setup or choose <b>Authenticate</b>. On the Task Manager consent page, check the account and choose <b>Connect</b>.

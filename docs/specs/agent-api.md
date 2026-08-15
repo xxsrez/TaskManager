@@ -177,6 +177,12 @@ list/get → вызвать compact `list_tasks` → выбрать candidate �
 недостаточном scope write tool возвращает `mcp/www_authenticate`, чтобы client
 мог повторно запустить Connect flow с `api:write`.
 
+Для регистрации нового connector без bearer token доступны только безопасные
+MCP discovery methods: `initialize`, `notifications/initialized`, `ping` и
+`tools/list`. Они раскрывают protocol capabilities и схемы task-oriented tools,
+но не пользовательские данные. Любой `tools/call` проходит bearer verification,
+scope check и owner/ACL scope до обращения к repository.
+
 ### 5.2 Pagination и envelope
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
@@ -304,7 +310,8 @@ Authorization invariants:
 Обязательные сценарии:
 
 1. Codex Desktop получает зарегистрированный Task Manager app connector из
-   plugin `.app.json`; OAuth Connect через DCR выполняет
+   plugin `.app.json`; OAuth Connect через выбранный connector builder CIMD
+   выполняет
    `workspace → create → compact search → detail → status update` без Sites
    headers. Raw MCP clients могут использовать DCR или разрешённый CIMD.
 2. Marker из description отсутствует в list и появляется только в detail.
@@ -317,6 +324,8 @@ Authorization invariants:
    hashes в backup.
 8. MCP `tools/list` показывает только task-oriented surface; `list_tasks`
    фильтрует по Project и Release, сохраняет compact/detail boundary и cursor.
+9. Новый connector получает `initialize` и `tools/list` без bearer token, но
+   анонимный `tools/call` получает `401` и не выполняет repository query.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются
 проверенными локальной реализацией.

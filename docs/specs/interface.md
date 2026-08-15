@@ -497,8 +497,8 @@ Linear, но они обязаны использовать тот же visual l
   администратору `Administration` и общий для всех пункт `Codex setup`, а также
   выбор `system`/`light`/`dark` theme.
 - `Codex setup` открывает modal с переключаемыми режимами `Codex Desktop` и
-  `Codex CLI`. Desktop flow показывает добавление единственного официального
-  project marketplace, установку `Task Manager` и OAuth `Authenticate`/`Connect`;
+  `Codex CLI`. Desktop flow показывает добавление `Srez Marketplace`, в котором
+  сейчас опубликован `Task Manager`, его установку и OAuth `Authenticate`/`Connect`;
   CLI flow показывает копируемые команды `codex plugin marketplace add`,
   `codex plugin add` и последующий OAuth flow. Ни один режим не требует ручного
   ввода MCP URL, client ID, secret или API token; copy controls и текущая

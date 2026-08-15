@@ -379,6 +379,8 @@ test("the account identity is not the sign-out target", () => {
 });
 
 test("Codex Desktop setup uses the marketplace and standard OAuth flow", () => {
+  assert.equal(TASK_MANAGER_MARKETPLACE_URL, "https://github.com/xxsrez/marketplace");
+
   const markup = renderToStaticMarkup(
     createElement(CodexSetupDialog, { onClose: () => undefined }),
   );
@@ -395,6 +397,10 @@ test("Codex Desktop setup uses the marketplace and standard OAuth flow", () => {
 });
 
 test("Codex CLI setup exposes verified plugin commands and recovery steps", () => {
+  assert.match(TASK_MANAGER_CLI_SETUP, /codex plugin marketplace add xxsrez\/marketplace/);
+  assert.match(TASK_MANAGER_CLI_SETUP, /codex plugin add task-manager@srez-marketplace/);
+  assert.doesNotMatch(TASK_MANAGER_CLI_SETUP, /task-manager-codex-connector/);
+
   const markup = renderToStaticMarkup(
     createElement(CodexSetupDialog, { onClose: () => undefined, initialMode: "cli" }),
   );

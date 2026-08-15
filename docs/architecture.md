@@ -154,7 +154,9 @@ migrations. Это соответствует
    imported archive остаётся отдельным paginated вызовом.
 5. REST возвращает versioned schema и request/as-of metadata. MCP публикует
    task-oriented tools с теми же projections. Любой client переходит от summary
-   к detail только через явный отдельный запрос.
+   к detail только через явный отдельный запрос. Анонимный MCP handshake может
+   получить capabilities и схемы tools для установки connector, но каждый
+   `tools/call` требует bearer token до data query.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в

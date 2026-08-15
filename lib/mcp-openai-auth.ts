@@ -1,19 +1,21 @@
 import type { ApiScope } from "./api-credential-crypto";
 
 export async function isToolsListMcpRequest(request: Request): Promise<boolean> {
-  if (request.method !== "POST") return false;
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) return false;
-  const value = await request.clone().json().catch(() => null);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const body = value as Record<string, unknown>;
-  if (body.method === "tools/list") return true;
-  const message = body.message;
+  return (await mcpRequestMethod(request)) === "tools/list";
+}
+
+export async function isAnonymousMcpDiscoveryRequest(
+  request: Request,
+): Promise<boolean> {
+  const method = await mcpRequestMethod(request);
   return Boolean(
-    message &&
-      typeof message === "object" &&
-      !Array.isArray(message) &&
-      (message as Record<string, unknown>).method === "tools/list",
+    method &&
+      [
+        "initialize",
+        "notifications/initialized",
+        "ping",
+        "tools/list",
+      ].includes(method),
   );
 }
 
@@ -50,6 +52,22 @@ function decorateJsonText(text: string): string {
   } catch {
     return text;
   }
+}
+
+async function mcpRequestMethod(request: Request): Promise<string | null> {
+  if (request.method !== "POST") return null;
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) return null;
+  const value = await request.clone().json().catch(() => null);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const body = value as Record<string, unknown>;
+  if (typeof body.method === "string") return body.method;
+  const message = body.message;
+  if (!message || typeof message !== "object" || Array.isArray(message)) {
+    return null;
+  }
+  const method = (message as Record<string, unknown>).method;
+  return typeof method === "string" ? method : null;
 }
 
 function decorateJsonValue(value: unknown) {
