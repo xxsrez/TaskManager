@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { assertAdmin } from "./admin";
 import { ValidationError } from "./domain";
 import type {
@@ -8,7 +7,6 @@ import type {
   UserRecord,
 } from "./types";
 import { getD1 } from "@/db";
-import { ensureDatabase } from "./repository";
 import {
   assertBackupContainsIdentity,
   authenticationCapabilityDeleteOrder,
@@ -21,12 +19,12 @@ import {
   type BackupTables,
   type SystemBackup,
 } from "./system-backup-format";
+import { getRuntimeEnvironment } from "./runtime-environment";
 
 export { maxSystemBackupBytes } from "./system-backup-format";
 
 export async function exportSystemBackup(currentUser: UserRecord): Promise<SystemBackup> {
   assertConfiguredAdmin(currentUser);
-  await ensureDatabase();
   const db = getD1();
   const results = await db.batch(
     tableDefinitions.map((table) =>
@@ -45,7 +43,6 @@ export async function stageSystemBackup(
   payload: unknown,
 ): Promise<StagedSystemBackup> {
   assertConfiguredAdmin(currentUser);
-  await ensureDatabase();
   const backup = await validateSystemBackup(payload);
   const db = getD1();
   const identities = await db
@@ -92,7 +89,6 @@ export async function applySystemBackup(
   if (!input.importId.startsWith("admin-import:") || !/^[a-f0-9]{64}$/.test(input.sha256)) {
     throw new ValidationError("Invalid staged backup reference");
   }
-  await ensureDatabase();
   const db = getD1();
   const session = await db
     .prepare(`SELECT source_exported_at, counts_json FROM admin_import_sessions
@@ -103,6 +99,7 @@ export async function applySystemBackup(
   if (!session) throw new ValidationError("Staged backup is missing, expired, or belongs to another administrator");
 
   const statements: D1PreparedStatement[] = [];
+  statements.push(db.prepare("DELETE FROM task_sequences"));
   // OAuth grants/tokens and personal API credentials are deliberately excluded
   // from logical backups. A full restore revokes every authentication
   // capability instead of carrying it into the restored state.
@@ -130,6 +127,6 @@ export async function applySystemBackup(
 }
 
 function assertConfiguredAdmin(user: UserRecord) {
-  const configured = (env as unknown as { TASK_MANAGER_ADMIN_EMAILS?: string }).TASK_MANAGER_ADMIN_EMAILS ?? "";
+  const configured = getRuntimeEnvironment().TASK_MANAGER_ADMIN_EMAILS ?? "";
   assertAdmin(user, configured);
 }

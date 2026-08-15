@@ -55,6 +55,15 @@ import {
 } from "react";
 import { canAssignRole, canEditContent, canManageGrant } from "@/lib/access";
 import {
+  buildTaskGroups,
+  canMoveTaskToGroup,
+  taskGroupCreateDefaults,
+  taskGroupMutation,
+  taskMatchesGroup,
+  tasksInGroupOrder,
+  type TaskGroup,
+} from "@/lib/task-groups";
+import {
   navigationHistoryState,
   navigationPath,
   parseNavigationPath,
@@ -94,6 +103,12 @@ type ShareTarget = {
 
 type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | "codexSetup" | null;
 type CodexSetupMode = "desktop" | "cli";
+type TaskCreateDefaults = Partial<{
+  statusId: string;
+  priority: Priority;
+  projectId: string | null;
+  releaseId: string | null;
+}>;
 
 export const TASK_MANAGER_MARKETPLACE_URL = "https://github.com/xxsrez/task-manager-codex-connector";
 export const TASK_MANAGER_CLI_SETUP = [
@@ -110,6 +125,14 @@ const priorityMeta: Record<Priority, { label: string; glyph: string }> = {
   none: { label: "No priority", glyph: "—" },
 };
 
+const groupByOptions: Array<{ value: ViewDisplay["groupBy"]; label: string }> = [
+  { value: "status", label: "Status" },
+  { value: "priority", label: "Priority" },
+  { value: "project", label: "Project" },
+  { value: "release", label: "Release" },
+  { value: "none", label: "No grouping" },
+];
+
 export function resolveArchiveBulkAction(
   tasks: Array<Pick<TaskRecord, "archivedAt">>,
 ) {
@@ -120,12 +143,19 @@ export function resolveArchiveBulkAction(
     : ({ archived: true, label: "Archive" } as const);
 }
 
-type MutationResult = AppSnapshot | { task: TaskRecord };
+type MutationResult = AppSnapshot | { task: TaskRecord } | { taskUpdates: TaskRecord[] };
 
 export function applyMutationResult(
   current: AppSnapshot,
   result: MutationResult,
 ): AppSnapshot {
+  if ("taskUpdates" in result) {
+    const updates = new Map(result.taskUpdates.map((task) => [task.id, task]));
+    return {
+      ...current,
+      tasks: current.tasks.map((task) => updates.get(task.id) ?? task),
+    };
+  }
   if (!("task" in result)) return result;
   return {
     ...current,
@@ -133,20 +163,6 @@ export function applyMutationResult(
       task.id === result.task.id ? result.task : task,
     ),
   };
-}
-
-export function tasksInListOrder(
-  tasks: TaskRecord[],
-  statuses: WorkflowStatusRecord[],
-  groupBy: ViewDisplay["groupBy"],
-  collapsed: Set<string>,
-): TaskRecord[] {
-  if (groupBy === "none") return tasks;
-  return statuses.flatMap((status) =>
-    collapsed.has(status.id)
-      ? []
-      : tasks.filter((task) => task.statusId === status.id),
-  );
 }
 
 const builtInViews = [
@@ -178,6 +194,8 @@ export function TaskTracker({
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [createDefaults, setCreateDefaults] = useState<TaskCreateDefaults>({});
+  const [groupByOverrides, setGroupByOverrides] = useState<Partial<Record<string, ViewDisplay["groupBy"]>>>({});
   const [activeTaskId, setActiveTaskId] = useState<string | null>(
     initialNavigation.taskId,
   );
@@ -278,7 +296,8 @@ export function TaskTracker({
   const activeSavedView = surface.startsWith("view:")
     ? data.views.find((view) => view.id === surface.slice(5))
     : undefined;
-  const listGroupBy = activeSavedView?.display.groupBy ?? "status";
+  const savedGroupBy = activeSavedView?.display.groupBy ?? "status";
+  const currentGroupBy = groupByOverrides[surface] ?? savedGroupBy;
 
   const visibleTasks = useMemo(() => {
     let tasks = data.tasks;
@@ -348,18 +367,6 @@ export function TaskTracker({
   ]);
 
   const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
-  const visibleStatuses = useMemo(
-    () => statusGroupsForTasks(visibleTasks, data.statuses).filter(
-      (status) => activeSavedView?.display.showEmptyGroups !== false || visibleTasks.some((task) => task.statusId === status.id),
-    ),
-    [activeSavedView?.display.showEmptyGroups, data.statuses, visibleTasks],
-  );
-  const keyboardTasks = useMemo(
-    () => layout === "list"
-      ? tasksInListOrder(visibleTasks, visibleStatuses, listGroupBy, collapsedGroups)
-      : visibleTasks,
-    [collapsedGroups, layout, listGroupBy, visibleStatuses, visibleTasks],
-  );
   const activeTask = data.tasks.find((task) => task.id === activeTaskId) ?? null;
   const peekTask = data.tasks.find((task) => task.id === peekTaskId) ?? null;
   const selectedTasks = [...selected]
@@ -392,6 +399,30 @@ export function TaskTracker({
   const contextProjectRecord = contextProject
     ? data.projects.find((project) => project.id === contextProject)
     : undefined;
+  const groupingOwnerIds = new Set(visibleTasks.map((task) => task.ownerUserId));
+  if (!groupingOwnerIds.size) {
+    groupingOwnerIds.add(contextProjectRecord?.ownerUserId ?? data.user.id);
+  }
+  const visibleStatuses = data.statuses
+    .filter((status) => groupingOwnerIds.has(status.ownerUserId))
+    .sort((left, right) => left.position - right.position);
+  const groupingProjects = contextProject
+    ? data.projects.filter((project) => project.id === contextProject)
+    : data.projects;
+  const groupingReleases = contextProject
+    ? data.releases.filter((release) => release.projectId === contextProject)
+    : data.releases;
+  const taskGroups = buildTaskGroups({
+    tasks: visibleTasks,
+    statuses: visibleStatuses,
+    projects: groupingProjects,
+    releases: groupingReleases,
+    groupBy: currentGroupBy,
+    showEmptyGroups: activeSavedView?.display.showEmptyGroups ?? true,
+  });
+  const keyboardTasks = layout === "list" && currentGroupBy !== "none"
+    ? tasksInGroupOrder(taskGroups, collapsedGroups)
+    : visibleTasks;
   const currentShareTarget = shareTarget(surface, activeTask, data);
   const canCreateTask = contextProjectRecord
     ? canEditContent(contextProjectRecord.accessRole)
@@ -403,7 +434,7 @@ export function TaskTracker({
       : true;
   const sidebarCompact = sidebarCollapsed && !mobileSidebarOpen;
   const hasViewChanges = Boolean(
-    search || priorityFilter !== "all" || statusFilter !== "all",
+    search || priorityFilter !== "all" || statusFilter !== "all" || currentGroupBy !== savedGroupBy,
   );
 
   async function mutate(path: string, method: string, body: unknown) {
@@ -531,6 +562,11 @@ export function TaskTracker({
     applyNavigation({ surface, layout: nextLayout, taskId: null });
   }
 
+  function changeGroupBy(nextGroupBy: ViewDisplay["groupBy"]) {
+    setGroupByOverrides((current) => ({ ...current, [surface]: nextGroupBy }));
+    setCollapsedGroups(new Set());
+  }
+
   function openTask(taskId: string) {
     if (!activeTaskId) {
       taskReturnPath.current = navigationPath(
@@ -556,13 +592,12 @@ export function TaskTracker({
     await navigator.clipboard.writeText(window.location.href);
   }
 
-  function openCreate(statusId?: string) {
+  function openCreate(defaults: TaskCreateDefaults = {}) {
     if (!canCreateTask) return;
     setMobileSidebarOpen(false);
     setMobileActionsOpen(false);
+    setCreateDefaults(defaults);
     setDialog("task");
-    if (statusId) window.sessionStorage.setItem("tm-create-status", statusId);
-    else window.sessionStorage.removeItem("tm-create-status");
   }
 
   function focusSearch() {
@@ -924,7 +959,7 @@ export function TaskTracker({
                   </div>
                   <div className="popover-anchor display-anchor">
                     <button className={`button ghost ${displayOpen ? "active" : ""}`} onClick={() => setDisplayOpen((value) => !value)}><SlidersHorizontal size={14} />Display</button>
-                    {displayOpen && <DisplayPopover layout={layout} groupBy={activeSavedView?.display.groupBy ?? "status"} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={changeLayout} onClose={() => setDisplayOpen(false)} />}
+                    {displayOpen && <DisplayPopover layout={layout} groupBy={currentGroupBy} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={changeLayout} onGroupBy={changeGroupBy} onClose={() => setDisplayOpen(false)} />}
                   </div>
                   {hasViewChanges && canSaveView && <button className="button ghost save-view" onClick={() => setDialog("view")}><Save size={13} />Save view</button>}
                 </div>
@@ -972,7 +1007,7 @@ export function TaskTracker({
                         <button className={layout === "list" ? "active" : ""} onClick={() => changeLayout("list")}><LayoutList size={14} />List</button>
                         <button className={layout === "board" ? "active" : ""} onClick={() => changeLayout("board")}><Columns3 size={14} />Board</button>
                       </div>
-                      <div className="mobile-display-summary"><span>Group by</span><b>{displayLabel(activeSavedView?.display.groupBy ?? "status")}</b></div>
+                      <label className="mobile-display-summary"><span>Group by</span><select value={currentGroupBy} onChange={(event) => changeGroupBy(event.target.value as ViewDisplay["groupBy"])}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                       <div className="mobile-display-summary"><span>Order</span><b>{displayLabel(activeSavedView?.display.orderBy ?? "manual")}</b></div>
                     </section>
                     <div className="mobile-controls-footer">
@@ -988,6 +1023,7 @@ export function TaskTracker({
         </header>
 
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")}><X size={14} /></button></div>}
+        {data.taskWindow?.truncated && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
         {busy && <div className="progress-line" aria-label="Saving" />}
 
         {surface === "admin" && data.admin ? (
@@ -999,9 +1035,9 @@ export function TaskTracker({
         ) : surface === "releases" || projectReleaseSurfaceId ? (
           <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => canCreateTask && setDialog("release")} />
         ) : layout === "board" ? (
-          <TaskBoard tasks={visibleTasks} statuses={visibleStatuses} projects={projectMap} releases={releaseMap} selected={selected} canCreate={canCreateTask} onSelect={toggleSelection} onOpen={openTask} onCreate={openCreate} onMove={async (task, statusId, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, statusId, rank })} />
+          <TaskBoard tasks={visibleTasks} groups={taskGroups} groupBy={currentGroupBy} statuses={statusMap} projects={projectMap} releases={releaseMap} selected={selected} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} onSelect={toggleSelection} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={async (task, group, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, ...taskGroupMutation(group, rank) })} />
         ) : (
-          <TaskList tasks={visibleTasks} statuses={visibleStatuses} groupBy={listGroupBy} projects={projectMap} releases={releaseMap} users={userMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={openCreate} />
+          <TaskList tasks={visibleTasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} projects={projectMap} releases={releaseMap} users={userMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} />
         )}
       </section>
 
@@ -1011,10 +1047,10 @@ export function TaskTracker({
 
       {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}><TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} /></div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
-      {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "project" && <EntityDialog title="Create project" icon={<FolderKanban size={17} />} fields={[{ name: "name", label: "Project name", required: true }, { name: "summary", label: "Short summary" }, { name: "targetDate", label: "Target date", type: "date" }]} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => canEditContent(project.accessRole))} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "view" && canSaveView && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} scopeProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "view" && canSaveView && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} groupBy={currentGroupBy} scopeProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
@@ -1030,18 +1066,16 @@ function SidebarSection({ title, action, children }: { title: string; action: ()
   return <section className="sidebar-section"><div className="section-label"><span>{title}</span><button onClick={action} title={`Add ${title.toLowerCase()}`}><Plus size={12} /></button></div>{children}</section>;
 }
 
-function TaskList({ tasks, statuses, groupBy, projects, releases, users, selected, highlighted, collapsed, canCreate, onToggleGroup, onSelect, onHighlight, onOpen, onCreate }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void }) {
-  if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
+function TaskList({ tasks, groups, statuses, groupBy, projects, releases, users, selected, highlighted, collapsed, canCreate, createOwnerUserId, onToggleGroup, onSelect, onHighlight, onOpen, onCreate }: { tasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void }) {
   if (groupBy === "none") {
-    const statusMap = new Map(statuses.map((status) => [status.id, status]));
-    return <div className="task-list ungrouped">{tasks.map((task, index) => { const status = statusMap.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} /> : null; })}</div>;
+    if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
+    return <div className="task-list ungrouped">{tasks.map((task, index) => { const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} /> : null; })}</div>;
   }
   let flatIndex = -1;
-  return <div className="task-list">{statuses.map((status) => {
-    const groupTasks = tasks.filter((task) => task.statusId === status.id);
-    if (!groupTasks.length) return null;
-    const isCollapsed = collapsed.has(status.id);
-    return <section className="task-group" key={status.id}><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(status.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><StatusIcon status={status} /><span>{status.name}</span><small>{groupTasks.length}</small></button>{canCreate && <button className="icon-button quiet" onClick={() => onCreate(status.id)} title={`Add to ${status.name}`}><Plus size={13} /></button>}</div>{!isCollapsed && groupTasks.map((task) => { flatIndex += 1; const index = flatIndex; return <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} />; })}</section>;
+  return <div className="task-list">{groups.map((group) => {
+    const isCollapsed = collapsed.has(group.id);
+    const groupCanCreate = canCreateInTaskGroup(group, canCreate, createOwnerUserId);
+    return <section className="task-group" key={group.id}><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(group.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><TaskGroupIcon group={group} /><span>{group.label}</span><small>{group.tasks.length}</small></button>{groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)} title={`Add to ${group.label}`}><Plus size={13} /></button>}</div>{!isCollapsed && group.tasks.map((task) => { flatIndex += 1; const index = flatIndex; const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} /> : null; })}</section>;
   })}</div>;
 }
 
@@ -1050,19 +1084,22 @@ function TaskRow({ task, status, project, release, assignee, selected, highlight
   return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}<span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}{editable && <button className="row-more" title="More"><MoreHorizontal size={14} /></button>}</div></div>;
 }
 
-function TaskBoard({ tasks, statuses, projects, releases, selected, canCreate, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; canCreate: boolean; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (statusId?: string) => void; onMove: (task: TaskRecord, statusId: string, rank: number) => Promise<unknown> }) {
+function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, selected, canCreate, createOwnerUserId, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; selected: Set<string>; canCreate: boolean; createOwnerUserId: string; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup, rank: number) => Promise<unknown> }) {
   const [over, setOver] = useState<string | null>(null);
+  if (groupBy === "none") {
+    return <div className="board"><section className="board-column"><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} showStatus selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
+  }
   return (
     <div className="board">
-      {statuses.map((status) => {
-        const cards = tasks.filter((task) => task.statusId === status.id);
+      {groups.map((group) => {
+        const groupCanCreate = canCreateInTaskGroup(group, canCreate, createOwnerUserId);
         return (
           <section
-            key={status.id}
-            className={`board-column ${over === status.id ? "drag-over" : ""}`}
+            key={group.id}
+            className={`board-column ${over === group.id ? "drag-over" : ""}`}
             onDragOver={(event) => {
               event.preventDefault();
-              setOver(status.id);
+              setOver(group.id);
             }}
             onDragLeave={() => setOver(null)}
             onDrop={(event) => {
@@ -1070,72 +1107,26 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, canCreate, o
               const id = event.dataTransfer.getData("text/task-id");
               const task = tasks.find((item) => item.id === id);
               setOver(null);
-              if (task && canEditContent(task.accessRole) && task.statusId !== status.id) {
-                const lastRank = cards.at(-1)?.rank ?? 0;
-                void onMove(task, status.id, lastRank + 1000);
+              if (task && canMoveTaskToGroup(task, group) && !taskMatchesGroup(task, group)) {
+                const lastRank = group.tasks.at(-1)?.rank ?? 0;
+                void onMove(task, group, lastRank + 1000);
               }
             }}
           >
             <div className="column-header">
               <div>
-                <StatusIcon status={status} />
-                <span>{status.name}</span>
-                <small>{cards.length}</small>
+                <TaskGroupIcon group={group} />
+                <span>{group.label}</span>
+                <small>{group.tasks.length}</small>
               </div>
-              {canCreate && <button className="icon-button quiet" onClick={() => onCreate(status.id)}>
+              {groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)}>
                 <Plus size={13} />
               </button>}
             </div>
             <div className="column-cards">
-              {cards.map((task) => (
-                <div
-                  key={task.id}
-                  role="button"
-                  tabIndex={0}
-                  className={`task-card ${selected.has(task.id) ? "selected" : ""}`}
-                  draggable={canEditContent(task.accessRole)}
-                  onDragStart={(event) => {
-                    event.dataTransfer.setData("text/task-id", task.id);
-                    event.dataTransfer.effectAllowed = "move";
-                  }}
-                  onClick={() => onOpen(task.id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onOpen(task.id);
-                    }
-                  }}
-                >
-                  {canEditContent(task.accessRole) && <button
-                    className={`card-check ${selected.has(task.id) ? "checked" : ""}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onSelect(task.id);
-                    }}
-                    aria-label={selected.has(task.id) ? "Deselect task" : "Select task"}
-                  >
-                    {selected.has(task.id) ? <Check size={11} /> : <span />}
-                  </button>}
-                  <a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, () => onOpen(task.id)); }}>
-                  <h3>{task.title}</h3>
-                  <div className="card-meta">
-                    <span>{task.identifier}</span>
-                    <span className={`priority priority-${task.priority}`}>
-                      {priorityMeta[task.priority].glyph}
-                    </span>
-                    {task.projectId && projects.get(task.projectId) && (
-                      <span className="metadata-chip">
-                        <span className="project-dot" style={{ background: projects.get(task.projectId)?.color }} />
-                        {projects.get(task.projectId)?.name}
-                      </span>
-                    )}
-                    {task.releaseId && releases.get(task.releaseId) && <Rocket size={12} />}
-                  </div>
-                  </a>
-                </div>
-              ))}
+              {group.tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} showStatus={group.kind !== "status"} selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} />)}
             </div>
-            {canCreate && <button className="add-card" onClick={() => onCreate(status.id)}>
+            {groupCanCreate && <button className="add-card" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)}>
               <Plus size={13} />Add task
             </button>}
           </section>
@@ -1145,19 +1136,48 @@ function TaskBoard({ tasks, statuses, projects, releases, selected, canCreate, o
   );
 }
 
+function TaskBoardCard({ task, status, project, release, showStatus, selected, onSelect, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; showStatus: boolean; selected: boolean; onSelect: () => void; onOpen: () => void }) {
+  const editable = canEditContent(task.accessRole);
+  return <div role="button" tabIndex={0} className={`task-card ${selected ? "selected" : ""}`} draggable={editable} onDragStart={(event) => { event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; }} onClick={onOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3><div className="card-meta"><span>{task.identifier}</span><span className={`priority priority-${task.priority}`}>{priorityMeta[task.priority].glyph}</span>{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}</div></a></div>;
+}
+
+function TaskGroupIcon({ group }: { group: TaskGroup }) {
+  if (group.status) return <StatusIcon status={group.status} />;
+  if (group.priority) return <span className={`priority priority-${group.priority}`}>{priorityMeta[group.priority].glyph}</span>;
+  if (group.project) return <span className="project-dot" style={{ background: group.project.color }} />;
+  if (group.release) return <Rocket size={13} />;
+  return <Circle size={11} />;
+}
+
+function canCreateInTaskGroup(group: TaskGroup, canCreate: boolean, ownerUserId: string) {
+  if (!canCreate) return false;
+  if (group.status) return group.status.ownerUserId === ownerUserId;
+  if (group.project) return canEditContent(group.project.accessRole);
+  if (group.release) return canEditContent(group.release.accessRole);
+  return true;
+}
+
 function StatusIcon({ status }: { status: WorkflowStatusRecord }) {
   return <span className={`status-icon status-${status.category}`} style={{ "--status-color": status.color } as React.CSSProperties}>{status.category === "completed" && <Check size={9} />}</span>;
 }
 
-function TaskComposer({ data, contextProject, contextRelease, onClose, onSubmit, busy }: { data: AppSnapshot; contextProject: string | null; contextRelease: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
+function TaskComposer({ data, contextProject, contextRelease, defaults, onClose, onSubmit, busy }: { data: AppSnapshot; contextProject: string | null; contextRelease: string | null; defaults: TaskCreateDefaults; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
   const editableProjects = data.projects.filter((project) => canEditContent(project.accessRole));
-  const [projectId, setProjectId] = useState(contextProject ?? (contextRelease ? data.releases.find((release) => release.id === contextRelease)?.projectId ?? "" : ""));
+  const initialReleaseId = defaults.releaseId !== undefined
+    ? defaults.releaseId ?? ""
+    : contextRelease ?? "";
+  const releaseProjectId = initialReleaseId
+    ? data.releases.find((release) => release.id === initialReleaseId)?.projectId
+    : undefined;
+  const initialProjectId = defaults.projectId !== undefined
+    ? defaults.projectId ?? ""
+    : contextProject ?? releaseProjectId ?? "";
+  const [projectId, setProjectId] = useState(initialProjectId);
   const ownerId = data.projects.find((project) => project.id === projectId)?.ownerUserId ?? data.user.id;
   const statuses = data.statuses.filter((status) => status.ownerUserId === ownerId);
-  const storedStatus = typeof window !== "undefined" ? window.sessionStorage.getItem("tm-create-status") : null;
-  const [statusId, setStatusId] = useState(storedStatus && statuses.some((status) => status.id === storedStatus) ? storedStatus : statuses.find((status) => status.isDefault)?.id ?? statuses[0]?.id ?? "");
-  const [releaseId, setReleaseId] = useState(contextRelease ?? "");
-  const [priority, setPriority] = useState<Priority>("none");
+  const [statusId, setStatusId] = useState(defaults.statusId && statuses.some((status) => status.id === defaults.statusId) ? defaults.statusId : statuses.find((status) => status.isDefault)?.id ?? statuses[0]?.id ?? "");
+  const [releaseId, setReleaseId] = useState(initialReleaseId);
+  const [priority, setPriority] = useState<Priority>(defaults.priority ?? "none");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const submit = (event?: FormEvent) => { event?.preventDefault(); if (title.trim()) void onSubmit({ title, description, projectId: projectId || null, releaseId: releaseId || null, statusId, priority }); };
@@ -1271,12 +1291,12 @@ function PropertyRow({ label, icon, children }: { label: string; icon: React.Rea
 function PropertySelect({ icon, value, onChange, children, disabled }: { icon: React.ReactNode; value: string; onChange: (value: string) => void; children: React.ReactNode; disabled?: boolean }) { return <label className="property-select">{icon}<select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>{children}</select><ChevronDown size={11} /></label>; }
 
 function FilterPopover({ statuses, priority, status, onPriority, onStatus, onClose }: { statuses: WorkflowStatusRecord[]; priority: Priority | "all"; status: string; onPriority: (value: Priority | "all") => void; onStatus: (value: string) => void; onClose: () => void }) { return <Popover title="Filter" onClose={onClose}><label className="popover-field"><span>Status</span><select value={status} onChange={(event) => onStatus(event.target.value)}><option value="all">Any status</option>{statuses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="popover-field"><span>Priority</span><select value={priority} onChange={(event) => onPriority(event.target.value as Priority | "all")}><option value="all">Any priority</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label><button className="button ghost popover-clear" onClick={() => { onPriority("all"); onStatus("all"); }}>Clear filters</button></Popover>; }
-function DisplayPopover({ layout, groupBy, orderBy, onLayout, onClose }: { layout: Layout; groupBy: ViewDisplay["groupBy"]; orderBy: ViewDisplay["orderBy"]; onLayout: (value: Layout) => void; onClose: () => void }) { return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><div className="display-static"><span>Group by</span><b>{displayLabel(groupBy)}</b></div><div className="display-static"><span>Order</span><b>{displayLabel(orderBy)}</b></div></Popover>; }
+function DisplayPopover({ layout, groupBy, orderBy, onLayout, onGroupBy, onClose }: { layout: Layout; groupBy: ViewDisplay["groupBy"]; orderBy: ViewDisplay["orderBy"]; onLayout: (value: Layout) => void; onGroupBy: (value: ViewDisplay["groupBy"]) => void; onClose: () => void }) { return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={groupBy} onChange={(event) => onGroupBy(event.target.value as ViewDisplay["groupBy"])}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><div className="display-static"><span>Order</span><b>{displayLabel(orderBy)}</b></div></Popover>; }
 function Popover({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) { return <div className="popover"><header><b>{title}</b><button onClick={onClose}><X size={13} /></button></header>{children}</div>; }
 
 function EntityDialog({ title, icon, fields, onClose, onSubmit, busy }: { title: string; icon: React.ReactNode; fields: Array<{ name: string; label: string; type?: string; required?: boolean }>; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title={title} icon={icon} onClose={onClose} /><div className="form-stack">{fields.map((field) => <label key={field.name}><span>{field.label}</span><input name={field.name} type={field.type ?? "text"} required={field.required} autoFocus={field === fields[0]} /></label>)}</div><DialogFooter busy={busy} label="Create" /></form></Modal>; }
 function ReleaseDialog({ projects, initialProjectId, onClose, onSubmit, busy }: { projects: ProjectRecord[]; initialProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title="Create release" icon={<Rocket size={17} />} onClose={onClose} /><div className="form-stack"><label><span>Release name</span><input name="name" required autoFocus placeholder="v1.0" /></label><label><span>Project</span><select name="projectId" required defaultValue={initialProjectId ?? ""}><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Target date</span><input name="targetDate" type="date" /></label></div>{!projects.length && <p className="inline-note">Create a project before adding a release.</p>}<DialogFooter busy={busy} label="Create release" disabled={!projects.length} /></form></Modal>; }
-function ViewDialog({ search, status, priority, layout, scopeProjectId, onClose, onSubmit, busy }: { search: string; status: string; priority: Priority | "all"; layout: Layout; scopeProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
+function ViewDialog({ search, status, priority, layout, groupBy, scopeProjectId, onClose, onSubmit, busy }: { search: string; status: string; priority: Priority | "all"; layout: Layout; groupBy: ViewDisplay["groupBy"]; scopeProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
   const query: ViewQuery = {
     ...(search && { search }),
     ...(status !== "all" && { statusIds: [status] }),
@@ -1284,13 +1304,13 @@ function ViewDialog({ search, status, priority, layout, scopeProjectId, onClose,
   };
   const display: ViewDisplay = {
     layout,
-    groupBy: "status",
+    groupBy,
     orderBy: "manual",
     direction: "asc",
     showEmptyGroups: true,
     visibleFields: ["priority", "project", "release", "dueDate", "assignee"],
   };
-  return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ name: values.name, query, display, scopeProjectId }); }}><DialogHeader title="Save as view" icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" /></label></div>{scopeProjectId && <p className="dialog-copy">This view is limited to the current project and inherits its access.</p>}<div className="view-summary"><span>{layout === "list" ? "List" : "Board"}</span><span>{Object.keys(query).length || "No"} active filters</span></div><DialogFooter busy={busy} label="Save view" /></form></Modal>;
+  return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ name: values.name, query, display, scopeProjectId }); }}><DialogHeader title="Save as view" icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" /></label><label><span>Group by</span><select value={groupBy} disabled>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div>{scopeProjectId && <p className="dialog-copy">This view is limited to the current project and inherits its access.</p>}<div className="view-summary"><span>{layout === "list" ? "List" : "Board"}</span><span>{Object.keys(query).length || "No"} active filters</span></div><DialogFooter busy={busy} label="Save view" /></form></Modal>;
 }
 
 function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {

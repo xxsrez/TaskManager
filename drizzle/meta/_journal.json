@@ -71,6 +71,13 @@
       "when": 1786749626231,
       "tag": "0009_talented_otto_octavius",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786783414238,
+      "tag": "0010_crazy_puma",
+      "breakpoints": true
     }
   ]
 }

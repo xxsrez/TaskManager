@@ -34,9 +34,14 @@ export type AgentTaskOrder =
   | "due"
   | "title";
 
+export type AgentKeysetPosition = {
+  values: Array<string | number>;
+  id: string;
+};
+
 export type AgentTaskListQuery = {
   limit: number;
-  offset: number;
+  after: AgentKeysetPosition | null;
   projectRef: string | null;
   releaseRef: string | null;
   statusCategories: StatusCategory[];
@@ -51,7 +56,7 @@ export type AgentTaskListQuery = {
 
 export type AgentProjectListQuery = {
   limit: number;
-  offset: number;
+  after: AgentKeysetPosition | null;
   search: string | null;
   archived: boolean;
   fingerprint: string;
@@ -59,7 +64,7 @@ export type AgentProjectListQuery = {
 
 export type AgentReleaseListQuery = {
   limit: number;
-  offset: number;
+  after: AgentKeysetPosition | null;
   projectRef: string | null;
   statuses: Array<"planned" | "active" | "released" | "canceled">;
   search: string | null;
@@ -173,11 +178,11 @@ export async function parseAgentTaskListQuery(
       direction: directionValue,
     }),
   );
-  const offset = decodeCursorOffset(searchParams.get("cursor"), fingerprint);
+  const after = decodeKeysetCursor(searchParams.get("cursor"), fingerprint);
 
   return {
     limit,
-    offset,
+    after,
     projectRef,
     releaseRef,
     statusCategories,
@@ -213,7 +218,7 @@ export async function parseAgentProjectListQuery(
   );
   return {
     limit,
-    offset: decodeCursorOffset(searchParams.get("cursor"), fingerprint),
+    after: decodeKeysetCursor(searchParams.get("cursor"), fingerprint),
     search,
     archived,
     fingerprint,
@@ -247,7 +252,7 @@ export async function parseAgentReleaseListQuery(
   );
   return {
     limit,
-    offset: decodeCursorOffset(searchParams.get("cursor"), fingerprint),
+    after: decodeKeysetCursor(searchParams.get("cursor"), fingerprint),
     projectRef,
     statuses,
     search,
@@ -275,6 +280,15 @@ export async function parseAgentExternalContextQuery(
 export function encodeCursor(offset: number, fingerprint: string): string {
   return base64UrlEncode(
     new TextEncoder().encode(JSON.stringify({ offset, fingerprint })),
+  );
+}
+
+export function encodeKeysetCursor(
+  position: AgentKeysetPosition,
+  fingerprint: string,
+): string {
+  return base64UrlEncode(
+    new TextEncoder().encode(JSON.stringify({ position, fingerprint })),
   );
 }
 
@@ -313,6 +327,46 @@ export function decodeCursorOffset(
       throw new Error("invalid cursor");
     }
     return Number(parsed.offset);
+  } catch {
+    throw new AgentApiError("invalid_argument", "Cursor is invalid", 400);
+  }
+}
+
+export function decodeKeysetCursor(
+  value: string | null,
+  fingerprint: string,
+): AgentKeysetPosition | null {
+  if (value === null) return null;
+  try {
+    const parsed = JSON.parse(
+      new TextDecoder().decode(base64UrlDecode(value)),
+    ) as { position?: unknown; fingerprint?: unknown };
+    const position = parsed.position;
+    if (
+      !position ||
+      typeof position !== "object" ||
+      Array.isArray(position) ||
+      parsed.fingerprint !== fingerprint
+    ) {
+      throw new Error("invalid cursor");
+    }
+    const candidate = position as { values?: unknown; id?: unknown };
+    if (
+      !Array.isArray(candidate.values) ||
+      candidate.values.length < 1 ||
+      candidate.values.length > 4 ||
+      candidate.values.some(
+        (item) => typeof item !== "string" && typeof item !== "number",
+      ) ||
+      typeof candidate.id !== "string" ||
+      !candidate.id
+    ) {
+      throw new Error("invalid cursor");
+    }
+    return {
+      values: candidate.values as Array<string | number>,
+      id: candidate.id,
+    };
   } catch {
     throw new AgentApiError("invalid_argument", "Cursor is invalid", 400);
   }

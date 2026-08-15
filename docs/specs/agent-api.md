@@ -181,7 +181,10 @@ list/get → вызвать compact `list_tasks` → выбрать candidate �
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
 External context имеет maximum `100`. Cursor связан с filters, sort и limit;
-cursor другого query отклоняется.
+cursor другого query отклоняется. Collections используют keyset position из
+стабильного sort value и immutable `public_id`, поэтому вставка или удаление
+строки на уже прочитанной странице не сдвигает следующую страницу. Offset
+остаётся только внутри immutable imported external context.
 
 ```json
 {
@@ -205,13 +208,13 @@ Data responses используют `Cache-Control: private, no-store` и
 - `project_ref`, `release_ref`;
 - повторяемые или comma-separated `status_category` и `priority`;
 - `assignee=me|unassigned`, `archived=true|false`;
-- bounded `search` по identifier/title;
+- bounded prefix `search` по identifier/title без full-scan contains;
 - `order=manual|updated|created|priority|due|title`;
 - `direction=asc|desc`.
 
-`GET /projects` поддерживает `search`, `archived`. `GET /releases` —
-`project_ref`, повторяемый `status`, `search`. Неизвестные parameters
-отклоняются.
+`GET /projects` поддерживает prefix `search` по name/summary и `archived`.
+`GET /releases` — `project_ref`, повторяемый `status`, prefix `search` по
+name. Неизвестные parameters отклоняются.
 
 ## 6. Representations
 

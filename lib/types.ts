@@ -267,6 +267,7 @@ export type AppSnapshot = {
   projects: ProjectRecord[];
   releases: ReleaseRecord[];
   tasks: TaskRecord[];
+  taskWindow?: { limit: number; truncated: boolean };
   labels: LabelRecord[];
   taskLabels: TaskLabelAssignment[];
   relations: TaskRelationRecord[];

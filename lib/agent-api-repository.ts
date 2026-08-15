@@ -4,6 +4,8 @@ import {
   AgentApiError,
   catalogReference,
   encodeCursor,
+  encodeKeysetCursor,
+  type AgentKeysetPosition,
   type AgentProjectListQuery,
   type AgentReleaseListQuery,
   type AgentTaskListQuery,
@@ -166,23 +168,25 @@ export async function listAgentTasks(
   }
   if (query.search) {
     predicates.push(
-      `(lower(v.title) LIKE ? ESCAPE '\\' OR lower(v.identifier) LIKE ? ESCAPE '\\')`,
+      `((lower(v.title) >= ? AND lower(v.title) < ?)
+        OR (lower(v.identifier) >= ? AND lower(v.identifier) < ?))`,
     );
-    const pattern = `%${escapeLike(query.search.toLowerCase())}%`;
-    parameters.push(pattern, pattern);
+    const [start, end] = prefixRange(query.search);
+    parameters.push(start, end, start, end);
   }
 
   const direction = query.direction === "asc" ? "ASC" : "DESC";
   const order = taskOrderExpression(query.order);
-  parameters.push(query.limit + 1, query.offset);
+  appendKeysetPredicate(predicates, parameters, order, direction, query.after);
+  parameters.push(query.limit + 1);
   const rows = await getD1()
     .prepare(
       `${taskScopeCte(false)}
-       SELECT ${taskProjection}
+       SELECT ${taskProjection}, ${order} AS cursor_value
        FROM visible_tasks v
        WHERE ${predicates.join(" AND ")}
        ORDER BY ${order} ${direction}, v.public_id ${direction}
-       LIMIT ? OFFSET ?`,
+       LIMIT ?`,
     )
     .bind(...parameters)
     .all<DbRow>();
@@ -194,7 +198,7 @@ export async function listAgentTasks(
     page: {
       hasMore,
       nextCursor: hasMore
-        ? encodeCursor(query.offset + query.limit, query.fingerprint)
+        ? keysetCursor(visible.at(-1)!, query.fingerprint)
         : null,
     },
   };
@@ -306,23 +310,32 @@ export async function listAgentProjects(
   const parameters: unknown[] = [currentUser.id, currentUser.id];
   if (query.search) {
     predicates.push(
-      `(lower(p.name) LIKE ? ESCAPE '\\' OR lower(p.summary) LIKE ? ESCAPE '\\')`,
+      `((lower(p.name) >= ? AND lower(p.name) < ?)
+        OR (lower(p.summary) >= ? AND lower(p.summary) < ?))`,
     );
-    const pattern = `%${escapeLike(query.search.toLowerCase())}%`;
-    parameters.push(pattern, pattern);
+    const [start, end] = prefixRange(query.search);
+    parameters.push(start, end, start, end);
   }
-  parameters.push(query.limit + 1, query.offset);
+  appendKeysetPredicate(
+    predicates,
+    parameters,
+    "p.updated_at",
+    "DESC",
+    query.after,
+    "p.public_id",
+  );
+  parameters.push(query.limit + 1);
   const rows = await getD1()
     .prepare(
       `${projectScopeCte}
-       SELECT p.*,
+       SELECT p.*, p.updated_at AS cursor_value,
          ${taskCategoryCounts("p.id")},
          (SELECT COUNT(*) FROM releases r WHERE r.project_id = p.id)
            AS release_count
        FROM visible_projects p
        WHERE ${predicates.join(" AND ")}
-       ORDER BY datetime(p.updated_at) DESC, p.public_id DESC
-       LIMIT ? OFFSET ?`,
+       ORDER BY p.updated_at DESC, p.public_id DESC
+       LIMIT ?`,
     )
     .bind(...parameters)
     .all<DbRow>();
@@ -332,7 +345,7 @@ export async function listAgentProjects(
     page: {
       hasMore,
       nextCursor: hasMore
-        ? encodeCursor(query.offset + query.limit, query.fingerprint)
+        ? keysetCursor(rows.results[query.limit - 1]!, query.fingerprint)
         : null,
     },
   };
@@ -391,21 +404,28 @@ export async function listAgentReleases(
     parameters.push(...query.statuses);
   }
   if (query.search) {
-    predicates.push("lower(r.name) LIKE ? ESCAPE '\\'");
-    parameters.push(`%${escapeLike(query.search.toLowerCase())}%`);
+    predicates.push("lower(r.name) >= ? AND lower(r.name) < ?");
+    parameters.push(...prefixRange(query.search));
   }
-  parameters.push(query.limit + 1, query.offset);
+  const releaseOrder = releaseOrderExpression();
+  appendKeysetPredicate(
+    predicates,
+    parameters,
+    releaseOrder,
+    "ASC",
+    query.after,
+    "r.public_id",
+  );
+  parameters.push(query.limit + 1);
   const rows = await getD1()
     .prepare(
       `${releaseScopeCte}
-       SELECT r.*, ${taskCategoryCounts("r.project_id", "r.id")}
+       SELECT r.*, ${releaseOrder} AS cursor_value,
+         ${taskCategoryCounts("r.project_id", "r.id")}
        FROM visible_releases r
        ${predicates.length ? `WHERE ${predicates.join(" AND ")}` : ""}
-       ORDER BY CASE r.status
-         WHEN 'active' THEN 0 WHEN 'planned' THEN 1
-         WHEN 'released' THEN 2 ELSE 3 END,
-         COALESCE(r.target_date, '9999-12-31'), r.public_id
-       LIMIT ? OFFSET ?`,
+       ORDER BY ${releaseOrder} ASC, r.public_id ASC
+       LIMIT ?`,
     )
     .bind(...parameters)
     .all<DbRow>();
@@ -415,7 +435,7 @@ export async function listAgentReleases(
     page: {
       hasMore,
       nextCursor: hasMore
-        ? encodeCursor(query.offset + query.limit, query.fingerprint)
+        ? keysetCursor(rows.results[query.limit - 1]!, query.fingerprint)
         : null,
     },
   };
@@ -942,22 +962,61 @@ function taskScopeParameters(userId: string) {
 
 function taskOrderExpression(order: AgentTaskListQuery["order"]) {
   if (order === "manual") return "v.rank";
-  if (order === "created") return "datetime(v.created_at)";
+  if (order === "created") return "v.created_at";
   if (order === "priority") {
     return `CASE v.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
       WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
   }
   if (order === "due") return "COALESCE(v.due_date, '9999-12-31')";
   if (order === "title") return "lower(v.title)";
-  return "datetime(v.updated_at)";
+  return "v.updated_at";
+}
+
+function releaseOrderExpression() {
+  return `printf('%01d|%s', CASE r.status
+    WHEN 'active' THEN 0 WHEN 'planned' THEN 1
+    WHEN 'released' THEN 2 ELSE 3 END,
+    COALESCE(r.target_date, '9999-12-31'))`;
+}
+
+function appendKeysetPredicate(
+  predicates: string[],
+  parameters: unknown[],
+  valueExpression: string,
+  direction: "ASC" | "DESC",
+  after: AgentKeysetPosition | null,
+  idExpression = "v.public_id",
+) {
+  if (!after) return;
+  if (after.values.length !== 1) {
+    throw new AgentApiError("invalid_argument", "Cursor is invalid", 400);
+  }
+  const comparison = direction === "ASC" ? ">" : "<";
+  predicates.push(
+    `(${valueExpression} ${comparison} ? OR
+      (${valueExpression} = ? AND ${idExpression} ${comparison} ?))`,
+  );
+  parameters.push(after.values[0], after.values[0], after.id);
+}
+
+function keysetCursor(row: DbRow, fingerprint: string) {
+  const value = row.cursor_value;
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new AgentApiError("internal_error", "Pagination key is invalid", 500);
+  }
+  return encodeKeysetCursor(
+    { values: [value], id: String(row.public_id) },
+    fingerprint,
+  );
 }
 
 function placeholders(count: number) {
   return Array.from({ length: count }, () => "?").join(", ");
 }
 
-function escapeLike(value: string) {
-  return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+function prefixRange(value: string): [string, string] {
+  const start = value.toLocaleLowerCase("en-US");
+  return [start, `${start}\uffff`];
 }
 
 function nullableString(value: unknown): string | null {

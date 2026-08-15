@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { getD1 } from "@/db";
 import {
   OAuthError,
@@ -30,9 +29,9 @@ import {
   validateClientMetadataDocument,
   validateCodeVerifier,
 } from "./oauth-contract";
-import { ensureDatabase } from "./repository";
 import type { UserRecord } from "./types";
 import { authenticatePersonalApiToken } from "./api-credentials";
+import { getRuntimeEnvironment } from "./runtime-environment";
 
 type DbRow = Record<string, unknown>;
 
@@ -54,9 +53,7 @@ export type OAuthConnectionSummary = {
 };
 
 export function publicOrigin(request: Request): string {
-  const configured = (
-    env as unknown as { TASK_MANAGER_PUBLIC_ORIGIN?: string }
-  ).TASK_MANAGER_PUBLIC_ORIGIN?.trim();
+  const configured = getRuntimeEnvironment().TASK_MANAGER_PUBLIC_ORIGIN?.trim();
   const candidate = configured || new URL(request.url).origin;
   const url = new URL(candidate);
   if (url.protocol !== "https:" && process.env.NODE_ENV !== "development") {
@@ -69,7 +66,6 @@ export async function prepareOAuthAuthorization(
   currentUser: UserRecord,
   request: Request,
 ): Promise<OAuthAuthorizationPrompt> {
-  await ensureDatabase();
   const origin = publicOrigin(request);
   const parameters = validateAuthorizationRequestParameters(new URL(request.url));
   if (parameters.resource !== oauthResource(origin)) {
@@ -126,7 +122,6 @@ export async function completeOAuthAuthorization(
       "Authorization request is invalid",
     );
   }
-  await ensureDatabase();
   const pending = await getD1()
     .prepare(
       `DELETE FROM oauth_authorization_requests
@@ -267,7 +262,6 @@ export async function handleOAuthClientRegistrationRequest(
       body,
       allowedClientOrigins(),
     );
-    await ensureDatabase();
     await cleanExpiredOAuthArtifacts();
     const clientId = `tm_oauth_client_${crypto.randomUUID()}`;
     const issuedAt = Math.floor(Date.now() / 1000);
@@ -307,7 +301,6 @@ export async function handleOAuthRevocation(request: Request): Promise<Response>
     rejectClientSecret(form);
     const token = formString(form, "token");
     const clientId = formString(form, "client_id");
-    await ensureDatabase();
     const tokenHash = await hashApiToken(token);
     const db = getD1();
     if (token.startsWith("tm_ort_")) {
@@ -345,7 +338,6 @@ export async function authenticateOAuthAccessToken(
   if (!token.startsWith("tm_oat_")) {
     throw unauthenticatedOAuthToken();
   }
-  await ensureDatabase();
   const tokenHash = await hashApiToken(token);
   const row = await getD1()
     .prepare(
@@ -476,7 +468,6 @@ export async function verifyAgentTokenForMcp(
 export async function listOAuthConnections(
   currentUser: UserRecord,
 ): Promise<OAuthConnectionSummary[]> {
-  await ensureDatabase();
   const rows = await getD1()
     .prepare(
       `SELECT id, client_name, client_id, scopes_json, last_used_at, created_at
@@ -500,7 +491,6 @@ export async function revokeOAuthConnection(
   currentUser: UserRecord,
   grantId: string,
 ): Promise<void> {
-  await ensureDatabase();
   const db = getD1();
   const grant = await db
     .prepare(
@@ -544,7 +534,6 @@ async function exchangeAuthorizationCode(form: FormData) {
   const redirectUri = formString(form, "redirect_uri");
   const resource = formString(form, "resource");
   const verifier = validateCodeVerifier(formString(form, "code_verifier"));
-  await ensureDatabase();
   const codeHash = await hashApiToken(code);
   const row = await getD1()
     .prepare(
@@ -592,7 +581,6 @@ async function rotateRefreshToken(form: FormData) {
   const refreshToken = formString(form, "refresh_token");
   const clientId = formString(form, "client_id");
   const requestedResource = optionalFormString(form, "resource");
-  await ensureDatabase();
   const tokenHash = await hashApiToken(refreshToken);
   const row = await getD1()
     .prepare(
@@ -746,7 +734,6 @@ async function resolveAndValidateClientMetadata(
   redirectUri: string,
 ) {
   if (clientId.startsWith("tm_oauth_client_")) {
-    await ensureDatabase();
     const row = await getD1()
       .prepare(
         `SELECT client_name, redirect_uris_json, grant_types_json,
@@ -844,9 +831,7 @@ async function resolveAndValidateClientMetadata(
 }
 
 function allowedClientOrigins(): Set<string> {
-  const configured = (
-    env as unknown as { TASK_MANAGER_OAUTH_CLIENT_ORIGINS?: string }
-  ).TASK_MANAGER_OAUTH_CLIENT_ORIGINS;
+  const configured = getRuntimeEnvironment().TASK_MANAGER_OAUTH_CLIENT_ORIGINS;
   return new Set(
     (configured || "https://chatgpt.com")
       .split(",")

@@ -1,0 +1,199 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  buildTaskGroups,
+  canMoveTaskToGroup,
+  taskGroupCreateDefaults,
+  taskGroupMutation,
+  tasksInGroupOrder,
+} from "../lib/task-groups";
+import type {
+  ProjectRecord,
+  ReleaseRecord,
+  TaskRecord,
+  WorkflowStatusRecord,
+} from "../lib/types";
+
+const now = "2026-08-15T08:00:00.000Z";
+const statuses: WorkflowStatusRecord[] = [
+  {
+    id: "todo",
+    ownerUserId: "user-1",
+    name: "Todo",
+    category: "unstarted",
+    color: "#888888",
+    position: 0,
+    isDefault: true,
+  },
+];
+const projects: ProjectRecord[] = [
+  {
+    id: "project-1",
+    publicId: "11111111-1111-4111-8111-111111111111",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Alpha",
+    summary: "",
+    description: "",
+    status: "active",
+    leadUserId: null,
+    startDate: null,
+    targetDate: null,
+    color: "#5e6ad2",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner",
+  },
+];
+const releases: ReleaseRecord[] = [
+  {
+    id: "release-1",
+    publicId: "22222222-2222-4222-8222-222222222222",
+    projectId: "project-1",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "v1",
+    description: "",
+    status: "planned",
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner",
+  },
+];
+const baseTask: TaskRecord = {
+  id: "task-1",
+  publicId: "33333333-3333-4333-8333-333333333333",
+  ownerUserId: "user-1",
+  creatorUserId: "user-1",
+  identifier: "TM-1",
+  sequenceNumber: 1,
+  title: "Urgent launch",
+  description: "",
+  statusId: "todo",
+  priority: "urgent",
+  assigneeUserId: null,
+  projectId: "project-1",
+  releaseId: "release-1",
+  estimate: null,
+  dueDate: null,
+  parentTaskId: null,
+  rank: 1000,
+  startedAt: null,
+  completedAt: null,
+  canceledAt: null,
+  archivedAt: null,
+  version: 1,
+  createdAt: now,
+  updatedAt: now,
+  accessRole: "owner",
+  hasExternalSource: false,
+};
+
+test("priority grouping creates ordered empty groups and preserves task order", () => {
+  const groups = buildTaskGroups({
+    tasks: [baseTask],
+    statuses,
+    projects,
+    releases,
+    groupBy: "priority",
+    showEmptyGroups: true,
+  });
+
+  assert.deepEqual(groups.map((group) => group.label), [
+    "Urgent",
+    "High",
+    "Medium",
+    "Low",
+    "No priority",
+  ]);
+  assert.deepEqual(groups[0]?.tasks.map((task) => task.id), ["task-1"]);
+  assert.deepEqual(
+    tasksInGroupOrder(groups, new Set([groups[0]!.id])).map((task) => task.id),
+    [],
+  );
+});
+
+test("project and release grouping include explicit unassigned groups", () => {
+  const unassigned = {
+    ...baseTask,
+    id: "task-2",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    identifier: "TM-2",
+    projectId: null,
+    releaseId: null,
+  };
+
+  const projectGroups = buildTaskGroups({
+    tasks: [baseTask, unassigned],
+    statuses,
+    projects,
+    releases,
+    groupBy: "project",
+    showEmptyGroups: false,
+  });
+  assert.deepEqual(projectGroups.map((group) => group.label), ["Alpha", "No project"]);
+
+  const releaseGroups = buildTaskGroups({
+    tasks: [baseTask, unassigned],
+    statuses,
+    projects,
+    releases,
+    groupBy: "release",
+    showEmptyGroups: false,
+  });
+  assert.deepEqual(releaseGroups.map((group) => group.label), ["v1", "No release"]);
+});
+
+test("group actions update and create the grouping property", () => {
+  const releaseGroup = buildTaskGroups({
+    tasks: [baseTask],
+    statuses,
+    projects,
+    releases,
+    groupBy: "release",
+    showEmptyGroups: false,
+  })[0]!;
+
+  assert.deepEqual(taskGroupMutation(releaseGroup, 2000), {
+    releaseId: "release-1",
+    projectId: "project-1",
+    rank: 2000,
+  });
+  assert.deepEqual(taskGroupCreateDefaults(releaseGroup), {
+    releaseId: "release-1",
+    projectId: "project-1",
+  });
+});
+
+test("group moves fail closed across owner and edit boundaries", () => {
+  const projectGroup = buildTaskGroups({
+    tasks: [baseTask],
+    statuses,
+    projects,
+    releases,
+    groupBy: "project",
+    showEmptyGroups: true,
+  });
+  const noProject = projectGroup.find((group) => group.value === null)!;
+  assert.equal(canMoveTaskToGroup({ ...baseTask, accessRole: "editor" }, noProject), false);
+
+  const foreignStatus = {
+    ...statuses[0]!,
+    id: "foreign",
+    ownerUserId: "user-2",
+  };
+  const statusGroup = buildTaskGroups({
+    tasks: [],
+    statuses: [foreignStatus],
+    projects,
+    releases,
+    groupBy: "status",
+    showEmptyGroups: true,
+  })[0]!;
+  assert.equal(canMoveTaskToGroup(baseTask, statusGroup), false);
+});

@@ -4,11 +4,14 @@ import {
   handleImageOptimization,
 } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { configureRuntimeEnvironment } from "../lib/runtime-environment";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   TASK_MANAGER_ADMIN_EMAILS?: string;
+  TASK_MANAGER_PUBLIC_ORIGIN?: string;
+  TASK_MANAGER_OAUTH_CLIENT_ORIGINS?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -32,6 +35,7 @@ const worker = {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<Response> {
+    configureRuntimeEnvironment(env);
     const url = new URL(request.url);
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

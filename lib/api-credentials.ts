@@ -10,7 +10,6 @@ import {
 import type { AgentAuthorizationContext } from "./agent-api-context";
 import { AgentApiError } from "./agent-api-contract";
 import { NotFoundError, ValidationError } from "./domain";
-import { ensureDatabase } from "./repository";
 import type { UserRecord } from "./types";
 
 type DbRow = Record<string, unknown>;
@@ -30,7 +29,6 @@ export async function issueApiCredential(
   currentUser: UserRecord,
   input: Record<string, unknown>,
 ): Promise<{ token: string; credential: ApiCredentialSummary }> {
-  await ensureDatabase();
   const name = credentialName(input.name);
   let scopes: ApiScope[];
   try {
@@ -83,7 +81,6 @@ export async function issueApiCredential(
 export async function listApiCredentials(
   currentUser: UserRecord,
 ): Promise<ApiCredentialSummary[]> {
-  await ensureDatabase();
   const rows = await getD1()
     .prepare(
       `SELECT id, name, token_prefix, scopes_json, expires_at, last_used_at,
@@ -101,7 +98,6 @@ export async function revokeApiCredential(
   currentUser: UserRecord,
   credentialId: string,
 ): Promise<void> {
-  await ensureDatabase();
   const result = await getD1()
     .prepare(
       `UPDATE api_credentials
@@ -142,7 +138,6 @@ export async function authenticatePersonalApiToken(
     );
   }
 
-  await ensureDatabase();
   const tokenHash = await hashApiToken(token);
   const row = await getD1()
     .prepare(

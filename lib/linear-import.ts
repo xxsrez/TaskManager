@@ -496,11 +496,7 @@ export async function importLinearWorkspace(
   currentUser: UserRecord,
   payload: unknown,
 ): Promise<LinearImportReport> {
-  const [{ getD1 }, { ensureDatabase }] = await Promise.all([
-    import("@/db"),
-    import("./repository"),
-  ]);
-  await ensureDatabase();
+  const { getD1 } = await import("@/db");
   const plan = buildLinearImportPlan(currentUser.id, payload);
   const db = getD1();
 

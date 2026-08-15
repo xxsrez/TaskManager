@@ -210,7 +210,8 @@ role checks, release/project validation и optimistic version.
 
 - Commands выражают доменное намерение, когда обычный PATCH может создать
   промежуточное неверное состояние.
-- Read API поддерживает cursor pagination и возвращает стабильный sort key.
+- Read API поддерживает keyset cursor pagination по sort value и immutable
+  `public_id`; offset не используется для mutable collections.
 - Filter AST версионируется и валидируется по allowlist полей/операторов.
 - Ошибки различают validation, not found, permission denied и version conflict.
 - Timestamps назначает сервер; клиент передаёт local date/timezone только там,
@@ -231,8 +232,11 @@ role checks, release/project validation и optimistic version.
   переиспользуется product surfaces: export читает полный logical state, а
   restore работает только через validated staging и atomic replace.
 
-Первый срез использует JSON HTTP route handlers: bounded bootstrap snapshot и
-команды создания/изменения Task, Project, Release, SavedView и AccessGrant.
+Первый срез использует JSON HTTP route handlers: bootstrap snapshot с окном до
+2000 наиболее недавно изменённых Tasks и команды создания/изменения Task,
+Project, Release, SavedView и AccessGrant. Если доступных Tasks больше, snapshot
+явно возвращает `taskWindow.truncated=true`, а UI показывает границу вместо
+молчаливой иллюзии полного workspace.
 `/api/bootstrap` не включает тяжёлый импортированный архив комментариев и
 attachments: при открытии details одной импортированной Task UI отдельно
 запрашивает `/api/tasks/{id}/external-source`, а server сначала повторно
@@ -243,20 +247,26 @@ attachments: при открытии details одной импортирован
 Частая команда изменения одной Task возвращает только подтверждённый
 `TaskRecord`, и client атомарно заменяет эту запись в текущем snapshot. Это не
 запускает заново все workspace queries и не пересылает весь набор Tasks после
-каждого property edit. Более редкие create, bulk и sharing commands пока могут
-возвращать новый authorization-scoped snapshot; дальнейшие command-specific
-responses и pagination добавляются по мере роста объёма данных.
+каждого property edit. Bulk command также возвращает только подтверждённые
+`TaskRecord[]`: ACL-загрузка выбранных IDs выполняется одним set-based query,
+а client точечно заменяет записи. Create и sharing commands пока могут
+возвращать новый authorization-scoped snapshot.
 
 ## Хранение и индексы
 
 В migration baseline уже входят:
 
 - D1 migrations для User, UserIdentity, AccessGrant и доменных таблиц;
+- schema создаётся и меняется только versioned migrations; request runtime не
+  выполняет `CREATE TABLE`, `ALTER TABLE` или compatibility backfill;
 - unique index `(provider, provider_account_key)` для identities;
 - unique active-grant constraint для resource/grantee;
 - owner-prefixed indexes для каждого user-owned query path;
-- owner-scoped sequence/index для `Task.identifier`;
+- owner-scoped unique indexes и атомарный `task_sequences` allocator для
+  `Task.identifier`;
 - индексы по owner/status/archive, project/release и updated time;
+- expression indexes по нормализованным task title/identifier, project
+  name/summary и release name для prefix search;
 - join table для labels;
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of`;
 - `external_records` для owner-scoped provenance идемпотентного импорта;
@@ -329,8 +339,10 @@ saved-view query/display и полный provider metadata в `external_records`
 - Project portability tests покрывают format/checksum, boundary validation и
   transaction rollback; owner scope дополнительно проверяется repository
   predicates и live smoke.
-- UI tests проверяют одинаковый состав list/board, selection/bulk actions,
-  keyboard controls, Peek, drag rollback и сохранение views.
+- UI tests проверяют одинаковую grouping composition list/board,
+  selection/bulk actions, keyboard controls, Peek, drag rollback и сохранение
+  views; Miniflare/D1 integration tests дополнительно проходят repository ACL,
+  routes, OAuth, keyset pagination и конкурентный create.
 - Visual regression и accessibility checks следуют
   [спецификации интерфейса](specs/interface.md); сравнение с Linear проверяет
   composition и interaction parity, а не чужие assets.
@@ -386,7 +398,8 @@ saved-view query/display и полный provider metadata в `external_records`
 2. CSRF hardening сверх Sites session boundary, audit event minimum и account
    recovery.
 3. UX explicit linking/unlinking providers и смены primary email.
-4. Порог перехода snapshot API к cursor pagination и точечным responses.
+4. Переход UI от ограниченного bootstrap окна к server-filtered cursor pages
+   для workspaces больше 2000 Tasks.
 5. Политика immutability released scope и нормализация manual ranks.
 6. Server-side idempotency task create, bulk command contract, OAuth/API rate
    limits, retention audit events и критерии перехода на managed IdP перед

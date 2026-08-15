@@ -1,5 +1,4 @@
 import type { Actor } from "./auth";
-import { env } from "cloudflare:workers";
 import {
   canAssignRole,
   canEditContent,
@@ -52,8 +51,11 @@ import {
   validateViewQuery,
 } from "./view-contract";
 import { getD1 } from "@/db";
+import { getRuntimeEnvironment } from "./runtime-environment";
 
 type DbRow = Record<string, unknown>;
+
+export const MAX_UI_SNAPSHOT_TASKS = 2_000;
 
 const editableTaskWhere = `(
   (tasks.project_id IS NOT NULL AND (
@@ -76,406 +78,29 @@ const editableTaskWhere = `(
   ))
 )`;
 
-const schemaStatements = [
-  `CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    timezone TEXT NOT NULL DEFAULT 'UTC',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE TABLE IF NOT EXISTS user_identities (
-    user_id TEXT NOT NULL,
-    provider TEXT NOT NULL,
-    provider_account_key TEXT NOT NULL,
-    verified_email TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (provider, provider_account_key)
-  )`,
-  `CREATE TABLE IF NOT EXISTS api_credentials (
-    id TEXT PRIMARY KEY,
-    owner_user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    token_prefix TEXT NOT NULL,
-    token_hash TEXT NOT NULL,
-    scopes_json TEXT NOT NULL,
-    expires_at TEXT,
-    last_used_at TEXT,
-    revoked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_api_credentials_token_hash
-    ON api_credentials(token_hash)`,
-  `CREATE INDEX IF NOT EXISTS idx_api_credentials_owner_active
-    ON api_credentials(owner_user_id, revoked_at)`,
-  `CREATE TABLE IF NOT EXISTS oauth_registered_clients (
-    id TEXT PRIMARY KEY,
-    client_name TEXT NOT NULL,
-    redirect_uris_json TEXT NOT NULL,
-    grant_types_json TEXT NOT NULL,
-    response_types_json TEXT NOT NULL,
-    token_endpoint_auth_method TEXT NOT NULL,
-    last_used_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE TABLE IF NOT EXISTS oauth_authorization_requests (
-    id TEXT PRIMARY KEY,
-    owner_user_id TEXT NOT NULL,
-    client_id TEXT NOT NULL,
-    client_name TEXT NOT NULL,
-    redirect_uri TEXT NOT NULL,
-    resource TEXT NOT NULL,
-    scopes_json TEXT NOT NULL,
-    state TEXT,
-    code_challenge TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_oauth_auth_requests_expires
-    ON oauth_authorization_requests(expires_at)`,
-  `CREATE TABLE IF NOT EXISTS oauth_grants (
-    id TEXT PRIMARY KEY,
-    owner_user_id TEXT NOT NULL,
-    client_id TEXT NOT NULL,
-    client_name TEXT NOT NULL,
-    resource TEXT NOT NULL,
-    scopes_json TEXT NOT NULL,
-    last_used_at TEXT,
-    revoked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_grants_owner_client_resource
-    ON oauth_grants(owner_user_id, client_id, resource)`,
-  `CREATE INDEX IF NOT EXISTS idx_oauth_grants_owner_active
-    ON oauth_grants(owner_user_id, revoked_at)`,
-  `CREATE TABLE IF NOT EXISTS oauth_authorization_codes (
-    id TEXT PRIMARY KEY,
-    code_hash TEXT NOT NULL,
-    grant_id TEXT NOT NULL,
-    owner_user_id TEXT NOT NULL,
-    client_id TEXT NOT NULL,
-    redirect_uri TEXT NOT NULL,
-    resource TEXT NOT NULL,
-    scopes_json TEXT NOT NULL,
-    code_challenge TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    consumed_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_auth_codes_hash
-    ON oauth_authorization_codes(code_hash)`,
-  `CREATE INDEX IF NOT EXISTS idx_oauth_auth_codes_expires
-    ON oauth_authorization_codes(expires_at)`,
-  `CREATE TABLE IF NOT EXISTS oauth_access_tokens (
-    id TEXT PRIMARY KEY,
-    token_hash TEXT NOT NULL,
-    grant_id TEXT NOT NULL,
-    owner_user_id TEXT NOT NULL,
-    client_id TEXT NOT NULL,
-    resource TEXT NOT NULL,
-    scopes_json TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    last_used_at TEXT,
-    revoked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_access_tokens_hash
-    ON oauth_access_tokens(token_hash)`,
-  `CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_grant_active
-    ON oauth_access_tokens(grant_id, revoked_at)`,
-  `CREATE TABLE IF NOT EXISTS oauth_refresh_tokens (
-    id TEXT PRIMARY KEY,
-    token_hash TEXT NOT NULL,
-    grant_id TEXT NOT NULL,
-    family_id TEXT NOT NULL,
-    parent_id TEXT,
-    owner_user_id TEXT NOT NULL,
-    client_id TEXT NOT NULL,
-    resource TEXT NOT NULL,
-    scopes_json TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    used_at TEXT,
-    revoked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash
-    ON oauth_refresh_tokens(token_hash)`,
-  `CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_family
-    ON oauth_refresh_tokens(family_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_grant_active
-    ON oauth_refresh_tokens(grant_id, revoked_at)`,
-  `CREATE TABLE IF NOT EXISTS workflow_statuses (
-    id TEXT PRIMARY KEY,
-    owner_user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    color TEXT NOT NULL,
-    position INTEGER NOT NULL,
-    is_default INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_statuses_owner_name
-    ON workflow_statuses(owner_user_id, name)`,
-  `CREATE TABLE IF NOT EXISTS projects (
-    id TEXT PRIMARY KEY,
-    public_id TEXT NOT NULL UNIQUE,
-    owner_user_id TEXT NOT NULL,
-    creator_user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    summary TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'planned',
-    lead_user_id TEXT,
-    start_date TEXT,
-    target_date TEXT,
-    icon TEXT NOT NULL DEFAULT 'cube',
-    color TEXT NOT NULL DEFAULT '#8b7cf6',
-    archived_at TEXT,
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_projects_owner_archived
-    ON projects(owner_user_id, archived_at)`,
-  `CREATE TABLE IF NOT EXISTS releases (
-    id TEXT PRIMARY KEY,
-    public_id TEXT NOT NULL UNIQUE,
-    project_id TEXT NOT NULL,
-    owner_user_id TEXT NOT NULL,
-    creator_user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'planned',
-    target_date TEXT,
-    released_at TEXT,
-    release_notes TEXT NOT NULL DEFAULT '',
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_releases_project_status
-    ON releases(project_id, status)`,
-  `CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY,
-    public_id TEXT NOT NULL UNIQUE,
-    owner_user_id TEXT NOT NULL,
-    creator_user_id TEXT NOT NULL,
-    identifier TEXT NOT NULL,
-    sequence_number INTEGER NOT NULL,
-    title TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    status_id TEXT NOT NULL,
-    priority TEXT NOT NULL DEFAULT 'none',
-    assignee_user_id TEXT,
-    project_id TEXT,
-    release_id TEXT,
-    estimate INTEGER,
-    due_date TEXT,
-    parent_task_id TEXT,
-    rank REAL NOT NULL DEFAULT 0,
-    started_at TEXT,
-    completed_at TEXT,
-    canceled_at TEXT,
-    archived_at TEXT,
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(owner_user_id, identifier),
-    UNIQUE(owner_user_id, sequence_number)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_tasks_owner_status_archived
-    ON tasks(owner_user_id, status_id, archived_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_tasks_project_release
-    ON tasks(project_id, release_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_tasks_parent
-    ON tasks(parent_task_id)`,
-  `CREATE INDEX IF NOT EXISTS idx_tasks_release_archived
-    ON tasks(release_id, archived_at)`,
-  `CREATE INDEX IF NOT EXISTS idx_tasks_owner_updated
-    ON tasks(owner_user_id, updated_at)`,
-  `CREATE TABLE IF NOT EXISTS labels (
-    id TEXT PRIMARY KEY,
-    owner_user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    color TEXT NOT NULL DEFAULT '#6b7280',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(owner_user_id, name)
-  )`,
-  `CREATE TABLE IF NOT EXISTS task_labels (
-    task_id TEXT NOT NULL,
-    label_id TEXT NOT NULL,
-    PRIMARY KEY(task_id, label_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS task_relations (
-    source_task_id TEXT NOT NULL,
-    target_task_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    creator_user_id TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY(source_task_id, target_task_id, type)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_task_relations_target
-    ON task_relations(target_task_id, type)`,
-  `CREATE TABLE IF NOT EXISTS saved_views (
-    id TEXT PRIMARY KEY,
-    public_id TEXT NOT NULL UNIQUE,
-    owner_user_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    scope_project_id TEXT,
-    query_json TEXT NOT NULL DEFAULT '{}',
-    display_json TEXT NOT NULL DEFAULT '{}',
-    version INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_saved_views_scope_project
-    ON saved_views(scope_project_id)`,
-  `CREATE TABLE IF NOT EXISTS external_records (
-    id TEXT PRIMARY KEY,
-    owner_user_id TEXT NOT NULL,
-    target_type TEXT NOT NULL,
-    target_id TEXT NOT NULL,
-    source TEXT NOT NULL,
-    source_id TEXT NOT NULL,
-    source_url TEXT,
-    metadata_json TEXT NOT NULL,
-    imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(owner_user_id, source, source_id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_external_records_target
-    ON external_records(target_type, target_id)`,
-  `CREATE TABLE IF NOT EXISTS access_grants (
-    id TEXT PRIMARY KEY,
-    resource_type TEXT NOT NULL,
-    resource_id TEXT NOT NULL,
-    owner_user_id TEXT NOT NULL,
-    grantee_user_id TEXT NOT NULL,
-    granted_by_user_id TEXT NOT NULL,
-    permission TEXT NOT NULL DEFAULT 'viewer',
-    revoked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(resource_type, resource_id, grantee_user_id)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_access_grants_grantee_active
-    ON access_grants(grantee_user_id, resource_type, resource_id)
-    WHERE revoked_at IS NULL`,
-  `CREATE INDEX IF NOT EXISTS idx_access_grants_owner_resource_active
-    ON access_grants(owner_user_id, resource_type, resource_id)
-    WHERE revoked_at IS NULL`,
-  `CREATE TABLE IF NOT EXISTS admin_import_sessions (
-    id TEXT PRIMARY KEY,
-    created_by_user_id TEXT NOT NULL,
-    source_exported_at TEXT NOT NULL,
-    source_schema_version INTEGER NOT NULL,
-    payload_sha256 TEXT NOT NULL,
-    counts_json TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'staged',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    applied_at TEXT
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_admin_import_sessions_status_created
-    ON admin_import_sessions(status, created_at)`,
-  `CREATE TABLE IF NOT EXISTS admin_import_rows (
-    import_id TEXT NOT NULL,
-    table_name TEXT NOT NULL,
-    ordinal INTEGER NOT NULL,
-    row_json TEXT NOT NULL,
-    PRIMARY KEY(import_id, table_name, ordinal)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_admin_import_rows_import_table
-    ON admin_import_rows(import_id, table_name)`,
-  `CREATE TABLE IF NOT EXISTS user_import_sessions (
-    id TEXT PRIMARY KEY,
-    created_by_user_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    status TEXT NOT NULL,
-    source_json TEXT NOT NULL DEFAULT '{}',
-    preview_json TEXT NOT NULL DEFAULT '{}',
-    payload_sha256 TEXT,
-    source_exported_at TEXT,
-    project_id TEXT,
-    expires_at TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    applied_at TEXT
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_user_import_sessions_owner_status
-    ON user_import_sessions(created_by_user_id, kind, status, expires_at)`,
-  `CREATE TABLE IF NOT EXISTS user_import_rows (
-    import_id TEXT NOT NULL,
-    row_type TEXT NOT NULL,
-    ordinal INTEGER NOT NULL,
-    row_json TEXT NOT NULL,
-    PRIMARY KEY(import_id, row_type, ordinal)
-  )`,
-  `CREATE INDEX IF NOT EXISTS idx_user_import_rows_import_type
-    ON user_import_rows(import_id, row_type)`,
-];
-
-const publicIdTables = [
-  { table: "projects", index: "idx_projects_public_id" },
-  { table: "releases", index: "idx_releases_public_id" },
-  { table: "tasks", index: "idx_tasks_public_id" },
-  { table: "saved_views", index: "idx_saved_views_public_id" },
-] as const;
-
-let schemaPromise: Promise<void> | null = null;
-
-export async function ensureDatabase() {
-  schemaPromise ??= (async () => {
-    const db = getD1();
-    await db.batch(schemaStatements.map((statement) => db.prepare(statement)));
-    await db
-      .prepare(
-        `UPDATE access_grants
-         SET permission = CASE
-           WHEN resource_type = 'project' THEN 'manager'
-           ELSE 'editor'
-         END
-         WHERE permission = 'full_access'`,
+const snapshotTaskIdScopeCte = `WITH scoped_task_ids AS (
+  SELECT t.id, t.updated_at,
+    CASE
+      WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 1
+      WHEN t.project_id IS NOT NULL THEN EXISTS (
+        SELECT 1 FROM access_grants ag
+        WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
+          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
       )
-      .run();
-    await ensurePublicIds(db);
-    await db.prepare("PRAGMA optimize").run();
-  })();
-  return schemaPromise;
-}
-
-async function ensurePublicIds(db: D1Database) {
-  for (const { table, index } of publicIdTables) {
-    const columns = await db
-      .prepare(`PRAGMA table_info(${table})`)
-      .all<{ name: string }>();
-    if (!columns.results.some((column) => column.name === "public_id")) {
-      await db.prepare(`ALTER TABLE ${table} ADD COLUMN public_id TEXT`).run();
-    }
-
-    const missing = await db
-      .prepare(
-        `SELECT id FROM ${table} WHERE public_id IS NULL OR public_id = ''`,
+      WHEN t.owner_user_id = ? THEN 1
+      ELSE EXISTS (
+        SELECT 1 FROM access_grants ag
+        WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
       )
-      .all<{ id: string }>();
-    for (let offset = 0; offset < missing.results.length; offset += 100) {
-      const updates = missing.results.slice(offset, offset + 100).map((row) =>
-        db
-          .prepare(`UPDATE ${table} SET public_id = ? WHERE id = ?`)
-          .bind(crypto.randomUUID(), row.id),
-      );
-      if (updates.length) await db.batch(updates);
-    }
-
-    await db
-      .prepare(
-        `CREATE UNIQUE INDEX IF NOT EXISTS ${index} ON ${table}(public_id)`,
-      )
-      .run();
-  }
-}
+    END AS is_visible
+  FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+), visible_task_ids AS (
+  SELECT id FROM scoped_task_ids WHERE is_visible = 1
+  ORDER BY updated_at DESC, id DESC LIMIT ?
+)`;
 
 export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
-  await ensureDatabase();
   const db = getD1();
   const identity = await db
     .prepare(
@@ -568,10 +193,13 @@ async function ensureDefaultStatuses(ownerUserId: string) {
 
 export async function getSnapshot(
   user: UserRecord,
-  options: { includeAdminOverview?: boolean } = {},
+  options: { includeAdminOverview?: boolean; taskLimit?: number } = {},
 ): Promise<AppSnapshot> {
-  await ensureDatabase();
   const db = getD1();
+  const requestedTaskLimit = Number(options.taskLimit ?? MAX_UI_SNAPSHOT_TASKS);
+  const taskLimit = Number.isSafeInteger(requestedTaskLimit)
+    ? Math.min(MAX_UI_SNAPSHOT_TASKS, Math.max(1, requestedTaskLimit))
+    : MAX_UI_SNAPSHOT_TASKS;
   const configuredAdminEmails = adminEmailsFromEnvironment();
   const isAdmin = isAdminEmail(user.email, configuredAdminEmails);
   const [
@@ -628,9 +256,10 @@ export async function getSnapshot(
              LEFT JOIN projects p ON p.id = t.project_id
            )
            SELECT * FROM scoped WHERE access_role IS NOT NULL
-           ORDER BY rank ASC, created_at DESC`,
+           ORDER BY updated_at DESC, id DESC
+           LIMIT ?`,
         )
-        .bind(user.id, user.id, user.id, user.id)
+        .bind(user.id, user.id, user.id, user.id, taskLimit + 1)
         .all<DbRow>(),
       db
         .prepare(
@@ -815,104 +444,49 @@ export async function getSnapshot(
         .all<DbRow>(),
       db
         .prepare(
-          `SELECT l.* FROM labels l
+          `${snapshotTaskIdScopeCte}
+           SELECT l.* FROM labels l
            WHERE l.owner_user_id = ?
               OR EXISTS (
                 SELECT 1 FROM task_labels tl
-                JOIN tasks t ON t.id = tl.task_id
-                LEFT JOIN projects p ON p.id = t.project_id
+                JOIN visible_task_ids visible ON visible.id = tl.task_id
                 WHERE tl.label_id = l.id
-                  AND ((t.project_id IS NOT NULL AND (
-                    p.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'project'
-                        AND ag.resource_id = t.project_id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  )) OR (t.project_id IS NULL AND (
-                    t.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  )))
               )
            ORDER BY l.name`,
         )
-        .bind(user.id, user.id, user.id, user.id, user.id)
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit), user.id)
         .all<DbRow>(),
       db
         .prepare(
-          `SELECT tl.* FROM task_labels tl
-           JOIN tasks t ON t.id = tl.task_id
-           LEFT JOIN projects p ON p.id = t.project_id
-           WHERE (t.project_id IS NOT NULL AND (
-             p.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           )) OR (t.project_id IS NULL AND (
-             t.owner_user_id = ? OR EXISTS (
-                SELECT 1 FROM access_grants ag
-                WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                  AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-              )
-           ))`,
+          `${snapshotTaskIdScopeCte}
+           SELECT tl.* FROM task_labels tl
+           JOIN visible_task_ids visible ON visible.id = tl.task_id`,
         )
-        .bind(user.id, user.id, user.id, user.id)
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit))
         .all<DbRow>(),
       db
         .prepare(
-          `SELECT tr.source_task_id, tr.target_task_id, tr.type
+          `${snapshotTaskIdScopeCte}
+           SELECT tr.source_task_id, tr.target_task_id, tr.type
            FROM task_relations tr
-           JOIN tasks source_task ON source_task.id = tr.source_task_id
-           JOIN tasks target_task ON target_task.id = tr.target_task_id
-           LEFT JOIN projects source_project ON source_project.id = source_task.project_id
-           LEFT JOIN projects target_project ON target_project.id = target_task.project_id
-           WHERE ((source_task.project_id IS NOT NULL AND (
-             source_project.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'project'
-                 AND ag.resource_id = source_task.project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           )) OR (source_task.project_id IS NULL AND (
-             source_task.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'task' AND ag.resource_id = source_task.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           ))) AND ((target_task.project_id IS NOT NULL AND (
-             target_project.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'project'
-                 AND ag.resource_id = target_task.project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           )) OR (target_task.project_id IS NULL AND (
-             target_task.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'task' AND ag.resource_id = target_task.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           )))`,
+           JOIN visible_task_ids source_visible
+             ON source_visible.id = tr.source_task_id
+           JOIN visible_task_ids target_visible
+             ON target_visible.id = tr.target_task_id`,
         )
-        .bind(
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-          user.id,
-        )
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit))
         .all<DbRow>(),
       isAdmin && options.includeAdminOverview
         ? getAdminOverview(user, configuredAdminEmails)
         : Promise.resolve(null),
     ]);
+
+  const boundedTaskRows = tasks.results.slice(0, taskLimit);
+  const boundedTaskIds = new Set(boundedTaskRows.map((row) => String(row.id)));
+  const boundedTaskLabels = taskLabels.results.filter((row) =>
+    boundedTaskIds.has(String(row.task_id)),
+  );
+  const boundedLabelIds = new Set(boundedTaskLabels.map((row) => String(row.label_id)));
 
   return {
     user,
@@ -922,10 +496,15 @@ export async function getSnapshot(
     statuses: statuses.results.map(mapStatus),
     projects: projects.results.map(mapProject),
     releases: releases.results.map(mapRelease),
-    tasks: tasks.results.map(mapTask),
-    labels: labels.results.map(mapLabel),
-    taskLabels: taskLabels.results.map(mapTaskLabel),
-    relations: relations.results.map(mapRelation),
+    tasks: boundedTaskRows.map(mapTask),
+    taskWindow: { limit: taskLimit, truncated: tasks.results.length > taskLimit },
+    labels: labels.results
+      .filter((row) => String(row.owner_user_id) === user.id || boundedLabelIds.has(String(row.id)))
+      .map(mapLabel),
+    taskLabels: boundedTaskLabels.map(mapTaskLabel),
+    relations: relations.results
+      .filter((row) => boundedTaskIds.has(String(row.source_task_id)) && boundedTaskIds.has(String(row.target_task_id)))
+      .map(mapRelation),
     views: views.results.map(mapView),
     collaborators: collaborators.results.map(mapCollaborator),
   };
@@ -935,7 +514,6 @@ export async function getTaskExternalSource(
   currentUser: UserRecord,
   taskId: string,
 ): Promise<ExternalSourceRecord | null> {
-  await ensureDatabase();
   await loadAccessibleTask(currentUser.id, taskId);
   const row = await getD1()
     .prepare(
@@ -955,7 +533,6 @@ export async function getAdminOverview(
   configuredAdminEmails = adminEmailsFromEnvironment(),
 ) {
   assertAdmin(currentUser, configuredAdminEmails);
-  await ensureDatabase();
   const rows = await getD1()
     .prepare(
       `SELECT
@@ -1035,17 +612,28 @@ export async function createTask(
 
   const sequenceRow = await db
     .prepare(
-      "SELECT COALESCE(MAX(sequence_number), 0) + 1 AS next FROM tasks WHERE owner_user_id = ?",
+      `INSERT INTO task_sequences (owner_user_id, last_value)
+       VALUES (?, (
+         SELECT COALESCE(MAX(sequence_number), 0) + 1
+         FROM tasks WHERE owner_user_id = ?
+       ))
+       ON CONFLICT(owner_user_id) DO UPDATE SET last_value = MAX(
+         task_sequences.last_value + 1,
+         (SELECT COALESCE(MAX(sequence_number), 0) + 1
+          FROM tasks WHERE owner_user_id = ?)
+       )
+       RETURNING last_value`,
     )
-    .bind(ownerUserId)
-    .first<{ next: number }>();
+    .bind(ownerUserId, ownerUserId, ownerUserId)
+    .first<{ last_value: number }>();
   const rankRow = await db
     .prepare(
       "SELECT COALESCE(MAX(rank), 0) + 1000 AS next FROM tasks WHERE owner_user_id = ? AND status_id = ?",
     )
     .bind(ownerUserId, status.id)
     .first<{ next: number }>();
-  const sequence = sequenceRow?.next ?? 1;
+  if (!sequenceRow) throw new Error("Task sequence allocation failed");
+  const sequence = sequenceRow.last_value;
   const now = new Date().toISOString();
   const timestamps = statusTimestamps(
     status.category,
@@ -1109,12 +697,12 @@ export async function updateTask(
       ? await loadAccessibleProject(currentUser.id, String(input.projectId))
       : null;
     if (targetProject) requireContentEdit(targetProject.accessRole);
-    if (task.projectId && !targetProject) {
+    if (task.projectId && !targetProject && currentUser.id !== task.ownerUserId) {
       throw new ValidationError(
-        "Moving a project task back to standalone is not supported",
+        "Only the task owner can move project work back to standalone",
       );
     }
-    if (task.projectId && targetProject?.id !== task.projectId) {
+    if (task.projectId && targetProject && targetProject.id !== task.projectId) {
       const sourceProject = await loadAccessibleProject(
         currentUser.id,
         task.projectId,
@@ -1253,7 +841,7 @@ export async function bulkUpdateTasks(
   currentUser: UserRecord,
   input: Record<string, unknown>,
 ) {
-  const ids = Array.isArray(input.ids) ? input.ids.map(String) : [];
+  const ids = Array.isArray(input.ids) ? [...new Set(input.ids.map(String))] : [];
   if (ids.length === 0 || ids.length > 100) {
     throw new ValidationError("Select between 1 and 100 tasks");
   }
@@ -1261,13 +849,18 @@ export async function bulkUpdateTasks(
   if (field !== "statusId" && field !== "priority" && field !== "archived") {
     throw new ValidationError("Unsupported bulk action");
   }
-  const tasks = await Promise.all(
-    ids.map((id) => loadAccessibleTask(currentUser.id, id)),
-  );
+  const tasks = await loadAccessibleTasks(currentUser.id, ids);
   tasks.forEach((task) => requireContentEdit(task.accessRole));
   const now = new Date().toISOString();
   const db = getD1();
-  const statements = [];
+  const nextPriority = field === "priority" ? priority(input.value) : null;
+  const targetStatus = field === "statusId"
+    ? await loadStatus(tasks[0]!.ownerUserId, String(input.value))
+    : null;
+  if (targetStatus && tasks.some((task) => task.ownerUserId !== targetStatus.ownerUserId)) {
+    throw new ValidationError("Bulk status changes require tasks from one workflow owner");
+  }
+  const statements: D1PreparedStatement[] = [];
   for (const task of tasks) {
     if (field === "priority") {
       statements.push(
@@ -1277,7 +870,7 @@ export async function bulkUpdateTasks(
              WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
           )
           .bind(
-            priority(input.value),
+            nextPriority,
             now,
             task.id,
             task.version,
@@ -1306,8 +899,7 @@ export async function bulkUpdateTasks(
           ),
       );
     } else {
-      const status = await loadStatus(task.ownerUserId, String(input.value));
-      const timestamps = statusTimestamps(status.category, task, now);
+      const timestamps = statusTimestamps(targetStatus!.category, task, now);
       statements.push(
         db
           .prepare(
@@ -1316,7 +908,7 @@ export async function bulkUpdateTasks(
              WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
           )
           .bind(
-            status.id,
+            targetStatus!.id,
             timestamps.startedAt,
             timestamps.completedAt,
             timestamps.canceledAt,
@@ -1335,6 +927,7 @@ export async function bulkUpdateTasks(
   if (results.some((result) => (result.meta.changes ?? 0) !== 1)) {
     throw new ConflictError("One or more tasks changed in another session");
   }
+  return loadAccessibleTasks(currentUser.id, ids);
 }
 
 export async function createProject(
@@ -1604,8 +1197,10 @@ export async function transferProjectOwnership(
   }
 }
 
-async function loadAccessibleTask(userId: string, taskId: string) {
-  const row = await getD1()
+async function loadAccessibleTasks(userId: string, taskIds: string[]) {
+  if (!taskIds.length) return [];
+  const placeholders = taskIds.map(() => "?").join(", ");
+  const rows = await getD1()
     .prepare(
       `WITH scoped AS (
          SELECT t.*,
@@ -1639,13 +1234,21 @@ async function loadAccessibleTask(userId: string, taskId: string) {
              )
            END AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-         WHERE t.id = ?
+         WHERE t.id IN (${placeholders})
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(userId, userId, userId, userId, taskId)
-    .first<DbRow>();
-  if (!row) throw new NotFoundError("Task not found");
-  return mapTask(row);
+    .bind(userId, userId, userId, userId, ...taskIds)
+    .all<DbRow>();
+  if (rows.results.length !== taskIds.length) {
+    throw new NotFoundError("One or more tasks were not found");
+  }
+  const taskById = new Map(rows.results.map((row) => [String(row.id), mapTask(row)]));
+  return taskIds.map((taskId) => taskById.get(taskId)!);
+}
+
+async function loadAccessibleTask(userId: string, taskId: string) {
+  const [task] = await loadAccessibleTasks(userId, [taskId]);
+  return task!;
 }
 
 async function loadAccessibleProject(userId: string, projectId: string) {
@@ -1869,9 +1472,11 @@ function mapAdminUserAggregate(row: DbRow): AdminUserAggregate {
 }
 
 function adminEmailsFromEnvironment(): string {
-  return (
-    env as unknown as { TASK_MANAGER_ADMIN_EMAILS?: string }
-  ).TASK_MANAGER_ADMIN_EMAILS ?? "";
+  return getRuntimeEnvironment().TASK_MANAGER_ADMIN_EMAILS ?? "";
+}
+
+function snapshotTaskScopeParameters(userId: string, taskLimit: number) {
+  return [userId, userId, userId, userId, taskLimit + 1];
 }
 
 function mapStatus(row: DbRow): WorkflowStatusRecord {

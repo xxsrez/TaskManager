@@ -10,7 +10,6 @@ import {
   type ProjectBackupTables,
   type ProjectSharingDescriptor,
 } from "./project-backup-format";
-import { ensureDatabase } from "./repository";
 import { normalizeDbRow } from "./system-backup-format";
 import type {
   AppliedProjectBackup,
@@ -25,7 +24,6 @@ export async function exportProjectBackup(
   projectId: string,
   siteOrigin: string,
 ): Promise<ProjectBackup> {
-  await ensureDatabase();
   const db = getD1();
   const definition = (name: string) => {
     const value = projectBackupTableDefinitions.find((table) => table.name === name);
@@ -134,7 +132,6 @@ export async function stageProjectBackup(
   payload: unknown,
   siteOrigin: string,
 ): Promise<ProjectBackupPreview> {
-  await ensureDatabase();
   const backup = await validateProjectBackup(payload);
   if (backup.siteOrigin !== new URL(siteOrigin).origin) throw new ValidationError("Project backup belongs to another Task Manager Site");
   if (backup.ownerUserId !== currentUser.id) throw new PermissionError("Project backup belongs to another owner");
@@ -238,7 +235,6 @@ export async function applyProjectBackup(
   if (!input.importId.startsWith("user-import:") || !/^[a-f0-9]{64}$/.test(input.sha256)) {
     throw new ValidationError("Invalid staged project backup reference");
   }
-  await ensureDatabase();
   const db = getD1();
   const session = await db.prepare(`SELECT project_id, preview_json FROM user_import_sessions
     WHERE id = ? AND created_by_user_id = ? AND kind = 'project_backup'

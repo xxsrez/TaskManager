@@ -230,7 +230,7 @@ Project Owner имеет implicit highest access и не представлен 
 | `parent_id` | UUID | нет | Родительская задача |
 | `estimate` | integer | нет | Абстрактные points; положительное значение |
 | `due_date` | local date | нет | Дата без времени в timezone пользователя |
-| `rank` | sortable string | да | Manual order без перенумерации всей колонки |
+| `rank` | real | да | Manual order без перенумерации всей колонки |
 | `started_at` | instant | нет | Первый/актуальный вход в started; политика уточняется |
 | `completed_at` | instant | нет | Соответствует completed category |
 | `canceled_at` | instant | нет | Соответствует canceled category |
@@ -244,6 +244,16 @@ Labels задаются связующей таблицей `task_labels(task_id
 identity опираются на `public_id`, поскольку у разных owners возможен
 одинаковый `TM-123`. `id` остаётся ключом внутренних связей и идемпотентного
 импорта; `public_id` не меняется при повторном импорте.
+
+### TaskSequence
+
+`task_sequences(owner_user_id, last_value)` — служебный производный счётчик
+для атомарной выдачи следующего `Task.sequence_number`. Один
+`INSERT ... ON CONFLICT DO UPDATE ... RETURNING` одновременно сверяется с
+максимальным уже сохранённым sequence, поэтому параллельные create и импорт
+записей с большим номером не создают дубликаты. Счётчик не входит в logical
+backup: после restore он безопасно восстанавливается из `tasks` при следующем
+create.
 
 ## WorkflowStatus
 
@@ -403,26 +413,28 @@ Task details как read-only archive. Это не означает наличи
    сущность запрещено.
 11. Assignee и lead обязаны иметь owner либо granted access к соответствующему
     resource.
-12. SavedView выполняется в permission scope читателя и не расширяет его доступ,
+12. `Task.sequence_number` и `Task.identifier` уникальны в owner scope;
+    следующий номер резервируется атомарно до вставки Task.
+13. SavedView выполняется в permission scope читателя и не расширяет его доступ,
     включая counts, groups и search suggestions. Project-scoped View жёстко
     ограничен `scope_project_id` и наследует Project role; global View не имеет
     `scope_project_id`, даже если его filter содержит Project.
-13. Standalone Task с active direct grant нельзя добавить в Project; сначала
+14. Standalone Task с active direct grant нельзя добавить в Project; сначала
     все direct grants должны быть revoked.
-14. Revoke grant немедленно исключает resource из следующего authorized query.
+15. Revoke grant немедленно исключает resource из следующего authorized query.
     Viewer не выполняет mutation; Editor меняет content; Manager управляет
     только Editor/Viewer; Project Owner управляет вплоть до Manager.
-15. Ownership transfer допускает только active Project grantee, атомарно делает
+16. Ownership transfer допускает только active Project grantee, атомарно делает
     его Owner, отзывает его grant и создаёт прежнему Owner grant Manager.
-16. Любая mutation проверяет `version`; stale version возвращает conflict, а не
+17. Любая mutation проверяет `version`; stale version возвращает conflict, а не
     last-write-wins.
-17. Admin aggregate query выполняется только после server-side allowlist check
+18. Admin aggregate query выполняется только после server-side allowlist check
     и не возвращает содержимое user-owned records. System backup/restore
     проверяет ту же boundary отдельно и не переиспользует unscoped product query.
-18. Restore применяет только полностью валидный snapshot, содержащий identity
+19. Restore применяет только полностью валидный snapshot, содержащий identity
     текущего администратора. Replace всех live tables атомарен; ошибка оставляет
     предыдущее состояние без частичного удаления или импорта.
-19. Project export/restore требует effective role `owner`, совпадение source
+20. Project export/restore требует effective role `owner`, совпадение source
     current owner и того же Site. Project subtree replace атомарен; staged rows
     никогда не дают read access к live resources.
 

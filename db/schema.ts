@@ -234,6 +234,8 @@ export const projects = sqliteTable(
       table.ownerUserId,
       table.archivedAt,
     ),
+    index("idx_projects_name_search").on(sql`lower(${table.name})`),
+    index("idx_projects_summary_search").on(sql`lower(${table.summary})`),
   ],
 );
 
@@ -258,6 +260,7 @@ export const releases = sqliteTable(
   (table) => [
     uniqueIndex("idx_releases_public_id").on(table.publicId),
     index("idx_releases_project_status").on(table.projectId, table.status),
+    index("idx_releases_name_search").on(sql`lower(${table.name})`),
   ],
 );
 
@@ -314,8 +317,15 @@ export const tasks = sqliteTable(
       table.ownerUserId,
       table.updatedAt,
     ),
+    index("idx_tasks_title_search").on(sql`lower(${table.title})`),
+    index("idx_tasks_identifier_search").on(sql`lower(${table.identifier})`),
   ],
 );
+
+export const taskSequences = sqliteTable("task_sequences", {
+  ownerUserId: text("owner_user_id").primaryKey(),
+  lastValue: integer("last_value").notNull(),
+});
 
 export const labels = sqliteTable(
   "labels",

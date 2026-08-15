@@ -41,3 +41,22 @@ test("task hierarchy and release lookups use dedicated indexes", () => {
     ).some((detail) => detail.includes("idx_tasks_release_archived")),
   );
 });
+
+test("prefix search and task sequence allocation have dedicated schema support", () => {
+  const database = migratedDatabase();
+
+  assert.ok(
+    planDetails(
+      database,
+      "SELECT id FROM tasks WHERE lower(title) >= 'ship' AND lower(title) < 'ship￿'",
+    ).some((detail) => detail.includes("idx_tasks_title_search")),
+  );
+  assert.ok(
+    planDetails(
+      database,
+      "SELECT id FROM projects WHERE lower(name) >= 'launch' AND lower(name) < 'launch￿'",
+    ).some((detail) => detail.includes("idx_projects_name_search")),
+  );
+  const columns = database.prepare("PRAGMA table_info(task_sequences)").all();
+  assert.deepEqual(columns.map((column) => column.name), ["owner_user_id", "last_value"]);
+});

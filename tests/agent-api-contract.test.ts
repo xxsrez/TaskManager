@@ -8,7 +8,7 @@ import {
 } from "../lib/api-credential-crypto";
 import {
   AgentApiError,
-  encodeCursor,
+  encodeKeysetCursor,
   parseAgentTaskListQuery,
 } from "../lib/agent-api-contract";
 import { agentApiOpenApi } from "../lib/agent-api-openapi";
@@ -39,13 +39,19 @@ test("task collection parser accepts bounded filters and resumes its cursor", as
   assert.deepEqual(first.statusCategories, ["started"]);
   assert.deepEqual(first.priorities, ["high"]);
 
-  const cursor = encodeCursor(25, first.fingerprint);
+  const cursor = encodeKeysetCursor(
+    { values: ["2026-08-15T08:00:00.000Z"], id: "task-ref" },
+    first.fingerprint,
+  );
   const second = await parseAgentTaskListQuery(
     new URLSearchParams(
       `limit=25&project_ref=project-ref&status_category=started&priority=high&search=ship&order=updated&cursor=${cursor}`,
     ),
   );
-  assert.equal(second.offset, 25);
+  assert.deepEqual(second.after, {
+    values: ["2026-08-15T08:00:00.000Z"],
+    id: "task-ref",
+  });
 
   const priorityOrder = await parseAgentTaskListQuery(
     new URLSearchParams("order=priority"),
@@ -62,7 +68,10 @@ test("task collection parser rejects unknown fields and cross-query cursors", as
   const first = await parseAgentTaskListQuery(
     new URLSearchParams("project_ref=one"),
   );
-  const cursor = encodeCursor(50, first.fingerprint);
+  const cursor = encodeKeysetCursor(
+    { values: ["2026-08-15T08:00:00.000Z"], id: "task-ref" },
+    first.fingerprint,
+  );
   await assert.rejects(
     parseAgentTaskListQuery(
       new URLSearchParams(`project_ref=two&cursor=${cursor}`),

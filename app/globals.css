@@ -234,6 +234,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 @keyframes saving { from { transform: translateX(-100%); } to { transform: translateX(410%); } }
 .error-banner { z-index: 9; min-height: 34px; display: flex; align-items: center; justify-content: space-between; padding: 5px 12px; background: color-mix(in srgb, var(--danger) 12%, var(--surface)); border-bottom: 1px solid color-mix(in srgb, var(--danger) 28%, transparent); color: var(--danger); }
 .error-banner button { width: 28px; height: 28px; display: grid; place-items: center; background: transparent; color: inherit; cursor: pointer; }
+.snapshot-warning { padding: 8px 18px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); color: var(--text-secondary); font-size: 11px; }
 
 .task-list { flex: 1; overflow: auto; padding-bottom: 80px; }
 .task-group { min-width: 720px; }
