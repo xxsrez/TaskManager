@@ -13,14 +13,22 @@ import {
   resolveNavigationTarget,
   type ResolvedNavigation,
 } from "@/lib/navigation";
-import { getOrCreateUser, getSnapshot, getTask } from "@/lib/repository";
+import {
+  getOrCreateUser,
+  getSnapshot,
+  getTask,
+  INITIAL_UI_SNAPSHOT_TASKS,
+} from "@/lib/repository";
 import type { AppSnapshot } from "@/lib/types";
 
 const loadWorkspaceSnapshot = cache(async (includeAdminOverview: boolean) => {
   const actor = await getCurrentActor();
   if (!actor) return null;
   const user = await getOrCreateUser(actor);
-  return getSnapshot(user, { includeAdminOverview });
+  return getSnapshot(user, {
+    includeAdminOverview,
+    taskLimit: INITIAL_UI_SNAPSHOT_TASKS,
+  });
 });
 
 export async function WorkspacePage({ pathname }: { pathname: string }) {
@@ -30,11 +38,12 @@ export async function WorkspacePage({ pathname }: { pathname: string }) {
   const baseSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!baseSnapshot) return <SignInPage returnTo={pathname} />;
 
-  const navigation = resolveNavigationTarget(target, baseSnapshot);
+  const addressableSnapshot = await withAddressedTaskDetail(baseSnapshot, target);
+  const navigation = resolveNavigationTarget(target, addressableSnapshot);
   if (!navigation) notFound();
-  const redirectTo = legacyRedirectPath(target, baseSnapshot);
+  const redirectTo = legacyRedirectPath(target, addressableSnapshot);
   if (redirectTo) redirect(redirectTo);
-  const snapshot = await withSelectedTaskDetail(baseSnapshot, navigation);
+  const snapshot = await withSelectedTaskDetail(addressableSnapshot, navigation);
 
   return (
     <TaskTracker
@@ -51,10 +60,28 @@ export async function workspaceMetadata(pathname: string): Promise<Metadata> {
 
   const baseSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!baseSnapshot) return signedOutMetadata();
-  const navigation = resolveNavigationTarget(target, baseSnapshot);
+  const addressableSnapshot = await withAddressedTaskDetail(baseSnapshot, target);
+  const navigation = resolveNavigationTarget(target, addressableSnapshot);
   if (!navigation) return notFoundMetadata();
-  const snapshot = await withSelectedTaskDetail(baseSnapshot, navigation);
+  const snapshot = await withSelectedTaskDetail(addressableSnapshot, navigation);
   return metadataForNavigation(navigation, snapshot);
+}
+
+async function withAddressedTaskDetail(
+  snapshot: AppSnapshot,
+  target: ReturnType<typeof parseNavigationPath>,
+): Promise<AppSnapshot> {
+  if (!target || (target.kind !== "issue" && target.kind !== "legacyTask")) {
+    return snapshot;
+  }
+  const task = await getTask(snapshot.user, target.id);
+  const exists = snapshot.tasks.some((item) => item.id === task.id);
+  return {
+    ...snapshot,
+    tasks: exists
+      ? snapshot.tasks.map((item) => item.id === task.id ? task : item)
+      : [task, ...snapshot.tasks],
+  };
 }
 
 async function withSelectedTaskDetail(
@@ -62,6 +89,8 @@ async function withSelectedTaskDetail(
   navigation: ResolvedNavigation,
 ): Promise<AppSnapshot> {
   if (!navigation.taskId) return snapshot;
+  const selected = snapshot.tasks.find((item) => item.id === navigation.taskId);
+  if (selected?.description !== null) return snapshot;
   const task = await getTask(snapshot.user, navigation.taskId);
   return {
     ...snapshot,

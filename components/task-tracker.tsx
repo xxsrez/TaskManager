@@ -167,6 +167,46 @@ export function applyMutationResult(
   };
 }
 
+export function mergeDeferredSnapshot(
+  current: AppSnapshot,
+  incoming: AppSnapshot,
+): AppSnapshot {
+  const currentTasks = new Map(current.tasks.map((task) => [task.id, task]));
+  const incomingIds = new Set(incoming.tasks.map((task) => task.id));
+  const retainedTasks = current.tasks.filter((task) => !incomingIds.has(task.id));
+  const tasks = incoming.tasks.map((task) => {
+    const retained = currentTasks.get(task.id);
+    if (!retained) return task;
+    if (retained.version > task.version) return retained;
+    if (retained.version === task.version && retained.description !== null) {
+      return retained;
+    }
+    return task;
+  });
+
+  return {
+    ...current,
+    tasks: [...retainedTasks, ...tasks],
+    taskWindow: incoming.taskWindow,
+    labels: mergeUnique(incoming.labels, current.labels, (label) => label.id),
+    taskLabels: mergeUnique(
+      incoming.taskLabels,
+      current.taskLabels,
+      (assignment) => `${assignment.taskId}:${assignment.labelId}`,
+    ),
+    relations: mergeUnique(
+      incoming.relations,
+      current.relations,
+      (relation) => `${relation.sourceTaskId}:${relation.type}:${relation.targetTaskId}`,
+    ),
+  };
+}
+
+function mergeUnique<T>(incoming: T[], current: T[], key: (item: T) => string): T[] {
+  const seen = new Set(incoming.map(key));
+  return [...incoming, ...current.filter((item) => !seen.has(key(item)))];
+}
+
 const builtInViews = [
   { id: "all", label: "All tasks" },
   { id: "active", label: "Active" },
@@ -213,6 +253,9 @@ export function TaskTracker({
   const [displayOpen, setDisplayOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [taskWindowLoading, setTaskWindowLoading] = useState(
+    Boolean(initialData.taskWindow?.truncated),
+  );
   const [systemBackupBusy, setSystemBackupBusy] = useState(false);
   const [error, setError] = useState("");
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
@@ -305,6 +348,50 @@ export function TaskTracker({
       window.location.href,
     );
   }, [initialNavigation]);
+
+  useEffect(() => {
+    if (!taskWindowLoading) return;
+    const controller = new AbortController();
+    let idleId: number | null = null;
+    let timerId: number | null = null;
+    const idleWindow = window as unknown as {
+      requestIdleCallback?: (
+        callback: IdleRequestCallback,
+        options?: IdleRequestOptions,
+      ) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    const loadRemainingTasks = () => {
+      void fetch("/api/bootstrap", { signal: controller.signal })
+        .then(async (response) => {
+          const value = (await response.json()) as AppSnapshot | { error: string };
+          if (!response.ok || "error" in value) {
+            throw new Error("error" in value ? value.error : "Task loading failed");
+          }
+          setData((current) => mergeDeferredSnapshot(current, value));
+          setTaskWindowLoading(false);
+        })
+        .catch((requestError: unknown) => {
+          if (requestError instanceof DOMException && requestError.name === "AbortError") {
+            return;
+          }
+          setTaskWindowLoading(false);
+          setError(requestError instanceof Error ? requestError.message : "Could not load remaining tasks");
+        });
+    };
+
+    if (idleWindow.requestIdleCallback) {
+      idleId = idleWindow.requestIdleCallback(loadRemainingTasks, { timeout: 800 });
+    } else {
+      timerId = window.setTimeout(loadRemainingTasks, 0);
+    }
+
+    return () => {
+      controller.abort();
+      if (idleId !== null) idleWindow.cancelIdleCallback?.(idleId);
+      if (timerId !== null) window.clearTimeout(timerId);
+    };
+  }, [taskWindowLoading]);
 
   const activeSavedView = surface.startsWith("view:")
     ? data.views.find((view) => view.id === surface.slice(5))
@@ -1132,8 +1219,8 @@ export function TaskTracker({
         </header>
 
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")}><X size={14} /></button></div>}
-        {data.taskWindow?.truncated && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
-        {busy && <div className="progress-line" aria-label="Saving" />}
+        {data.taskWindow?.truncated && !taskWindowLoading && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
+        {(busy || taskWindowLoading) && <div className="progress-line" aria-label={busy ? "Saving" : "Loading remaining tasks"} />}
 
         {surface === "admin" && data.admin ? (
           <AdminSurface overview={data.admin} timeZone={data.user.timezone} />

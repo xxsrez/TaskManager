@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
   CodexSetupDialog,
   applyMutationResult,
+  mergeDeferredSnapshot,
   resolveArchiveBulkAction,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
@@ -103,6 +104,55 @@ test("a bulk mutation patches only returned task records", () => {
   assert.equal(result.tasks[0], updatedTask);
   assert.equal(result.projects, snapshot.projects);
   assert.equal(result.releases, snapshot.releases);
+});
+
+test("deferred task loading expands the window without discarding newer or loaded tasks", () => {
+  const loadedTask = { ...snapshot.tasks[0]!, description: "Loaded body" };
+  const localTask = {
+    ...snapshot.tasks[0]!,
+    id: "task-local",
+    publicId: "88888888-8888-4888-8888-888888888888",
+    identifier: "TM-2",
+    sequenceNumber: 2,
+    title: "Created while loading",
+    version: 2,
+  };
+  const current: AppSnapshot = {
+    ...snapshot,
+    tasks: [loadedTask, localTask],
+    taskWindow: { limit: 40, truncated: true },
+  };
+  const incoming: AppSnapshot = {
+    ...snapshot,
+    tasks: [{ ...loadedTask, description: null }],
+    taskWindow: { limit: 2_000, truncated: false },
+  };
+
+  const merged = mergeDeferredSnapshot(current, incoming);
+
+  assert.equal(merged.tasks.find((task) => task.id === loadedTask.id)?.description, "Loaded body");
+  assert.equal(merged.tasks[0]?.id, localTask.id);
+  assert.deepEqual(merged.taskWindow, { limit: 2_000, truncated: false });
+});
+
+test("a bounded initial task window renders background-loading progress", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        taskWindow: { limit: 40, truncated: true },
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /aria-label="Loading remaining tasks"/);
+  assert.doesNotMatch(markup, /Showing the 40 most recently updated tasks/);
 });
 
 test("an unassigned task row does not invent a current-user assignee", () => {

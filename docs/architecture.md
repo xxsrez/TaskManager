@@ -172,8 +172,11 @@ role checks, release/project validation и optimistic version.
    encoded params, затем разбирает allowlisted path contract `/issues`,
    `/views`, `/projects`, `/releases`, project-scoped releases и layout
    `list|board`; неизвестные extra segments отклоняются.
-2. Repository строит один ACL-scoped snapshot до разрешения route ID, поэтому
-   неизвестный и недоступный record имеют одинаковый `not found` результат.
+2. Repository строит ограниченный ACL-scoped snapshot; для issue route точечно
+   загружает адресованную Task по internal/public ID тем же ACL predicate и
+   добавляет её в snapshot. Поэтому Task за пределами стартового окна всё равно
+   открывается напрямую, а неизвестный и недоступный record имеют одинаковый
+   `not found` результат.
 3. Внутренний `id` остаётся ключом связей и import idempotency, а отдельный
    immutable `public_id` UUID адресует Task, Project, Release и SavedView.
    Legacy internal-ID route разрешается только внутри ACL snapshot и отвечает
@@ -234,11 +237,15 @@ role checks, release/project validation и optimistic version.
   переиспользуется product surfaces: export читает полный logical state, а
   restore работает только через validated staging и atomic replace.
 
-Первый срез использует JSON HTTP route handlers: bootstrap snapshot с окном до
-2000 наиболее недавно изменённых Tasks и команды создания/изменения Task,
-Project, Release, SavedView и AccessGrant. Если доступных Tasks больше, snapshot
-явно возвращает `taskWindow.truncated=true`, а UI показывает границу вместо
-молчаливой иллюзии полного workspace.
+Первый срез использует JSON HTTP route handlers: server render стартует с 40
+наиболее недавно изменённых Tasks, после hydration в browser idle-time
+догружает расширенное ACL-scoped окно до 2000 Tasks через `/api/bootstrap` и
+атомарно объединяет его с уже загруженными detail/новыми версиями записей.
+Во время фоновой загрузки UI показывает progress, но остаётся интерактивным.
+Если доступных Tasks больше 2000, итоговый snapshot явно возвращает
+`taskWindow.truncated=true`, а UI показывает границу вместо молчаливой иллюзии
+полного workspace. Команды создания/изменения Task, Project, Release, SavedView
+и AccessGrant остаются отдельными route handlers.
 Task rows в этом snapshot являются summary projection: они содержат поля list,
 board, grouping и navigation, но вместо `description` передают явный `null`.
 Открытие Task отдельно запрашивает полную запись через `GET /api/tasks/{id}` с
@@ -247,6 +254,11 @@ board, grouping и navigation, но вместо `description` передают 
 authorization-scoped `GET /api/tasks?search=…`, поэтому отсутствие bodies в
 bootstrap не ослабляет search contract и не требует загружать их при обычном
 открытии workspace.
+Authenticated identity lookup для уже зарегистрированного User обновляет
+activity/display fields и возвращает User одним D1 `UPDATE … RETURNING`;
+стартовые workflow statuses создаются в том же batch, что и новая identity.
+Это убирает несколько последовательных D1 round trips с каждой HTML/API
+загрузки, не ослабляя server-trusted identity boundary.
 `/api/bootstrap` не включает тяжёлый импортированный архив комментариев и
 attachments: при открытии details одной импортированной Task UI отдельно
 запрашивает `/api/tasks/{id}/external-source`, а server сначала повторно
@@ -408,8 +420,8 @@ saved-view query/display и полный provider metadata в `external_records`
 2. CSRF hardening сверх Sites session boundary, audit event minimum и account
    recovery.
 3. UX explicit linking/unlinking providers и смены primary email.
-4. Переход UI от ограниченного bootstrap окна к server-filtered cursor pages
-   для workspaces больше 2000 Tasks.
+4. Переход фонового расширенного bootstrap к server-filtered cursor pages для
+   workspaces больше 2000 Tasks.
 5. Политика immutability released scope и нормализация manual ranks.
 6. Server-side idempotency task create, bulk command contract, OAuth/API rate
    limits, retention audit events и критерии перехода на managed IdP перед

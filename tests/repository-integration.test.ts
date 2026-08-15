@@ -263,6 +263,9 @@ test("workspace snapshots defer task descriptions until task details are request
     "Large detail content that the task list does not render",
   );
 
+  const publicDetail = await getTask(owner, task.publicId);
+  assert.equal(publicDetail.id, task.id);
+
   const matches = await searchTaskIds(owner, "detail content");
   assert.deepEqual(matches, [task.id]);
 });

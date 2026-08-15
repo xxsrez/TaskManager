@@ -56,6 +56,21 @@ import { getRuntimeEnvironment } from "./runtime-environment";
 type DbRow = Record<string, unknown>;
 
 export const MAX_UI_SNAPSHOT_TASKS = 2_000;
+export const INITIAL_UI_SNAPSHOT_TASKS = 40;
+
+const defaultStatuses: Array<[
+  string,
+  StatusCategory,
+  string,
+  number,
+  number,
+]> = [
+  ["Backlog", "backlog", "#6b7280", 0, 0],
+  ["Todo", "unstarted", "#94a3b8", 1, 1],
+  ["In Progress", "started", "#f59e0b", 2, 0],
+  ["Done", "completed", "#22c55e", 3, 0],
+  ["Canceled", "canceled", "#ef4444", 4, 0],
+];
 
 const editableTaskWhere = `(
   (tasks.project_id IS NOT NULL AND (
@@ -110,25 +125,25 @@ const snapshotTaskProjection = `
 
 export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
   const db = getD1();
-  const identity = await db
+  const existing = await db
     .prepare(
-      `SELECT user_id FROM user_identities
-       WHERE provider = ? AND provider_account_key = ?`,
+      `UPDATE users
+       SET display_name = ?, email = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = (
+         SELECT user_id FROM user_identities
+         WHERE provider = ? AND provider_account_key = ?
+       )
+       RETURNING id, display_name, email, timezone`,
     )
-    .bind(actor.provider, actor.providerAccountKey)
-    .first<{ user_id: string }>();
+    .bind(
+      actor.displayName,
+      actor.email,
+      actor.provider,
+      actor.providerAccountKey,
+    )
+    .first<DbRow>();
 
-  if (identity) {
-    await db
-      .prepare(
-        `UPDATE users SET display_name = ?, email = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-      )
-      .bind(actor.displayName, actor.email, identity.user_id)
-      .run();
-    await ensureDefaultStatuses(identity.user_id);
-    return loadUser(identity.user_id);
-  }
+  if (existing) return mapUser(existing);
 
   const userId = `usr_${crypto.randomUUID()}`;
   await db.batch([
@@ -145,50 +160,16 @@ export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
          VALUES (?, ?, ?, ?)`,
       )
       .bind(userId, actor.provider, actor.providerAccountKey, actor.email),
-  ]);
-  await ensureDefaultStatuses(userId);
-  return loadUser(userId);
-}
-
-async function loadUser(userId: string): Promise<UserRecord> {
-  const row = await getD1()
-    .prepare(
-      `SELECT id, display_name, email, timezone FROM users WHERE id = ?`,
-    )
-    .bind(userId)
-    .first<DbRow>();
-  if (!row) throw new NotFoundError("User not found");
-  return mapUser(row);
-}
-
-async function ensureDefaultStatuses(ownerUserId: string) {
-  const db = getD1();
-  const row = await db
-    .prepare(
-      "SELECT COUNT(*) AS count FROM workflow_statuses WHERE owner_user_id = ?",
-    )
-    .bind(ownerUserId)
-    .first<{ count: number }>();
-  if ((row?.count ?? 0) > 0) return;
-
-  const defaults: Array<[string, StatusCategory, string, number, number]> = [
-    ["Backlog", "backlog", "#6b7280", 0, 0],
-    ["Todo", "unstarted", "#94a3b8", 1, 1],
-    ["In Progress", "started", "#f59e0b", 2, 0],
-    ["Done", "completed", "#22c55e", 3, 0],
-    ["Canceled", "canceled", "#ef4444", 4, 0],
-  ];
-  await db.batch(
-    defaults.map(([name, category, color, position, isDefault]) =>
+    ...defaultStatuses.map(([name, category, color, position, isDefault]) =>
       db
         .prepare(
-          `INSERT OR IGNORE INTO workflow_statuses
+          `INSERT INTO workflow_statuses
             (id, owner_user_id, name, category, color, position, is_default)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
-          `status:${ownerUserId}:${category}`,
-          ownerUserId,
+          `status:${userId}:${category}`,
+          userId,
           name,
           category,
           color,
@@ -196,7 +177,13 @@ async function ensureDefaultStatuses(ownerUserId: string) {
           isDefault,
         ),
     ),
-  );
+  ]);
+  return {
+    id: userId,
+    displayName: actor.displayName,
+    email: actor.email,
+    timezone: "UTC",
+  };
 }
 
 export async function getSnapshot(
@@ -1378,16 +1365,21 @@ async function loadAccessibleTasks(userId: string, taskIds: string[]) {
              )
            END AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-         WHERE t.id IN (${placeholders})
+         WHERE t.id IN (${placeholders}) OR t.public_id IN (${placeholders})
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(userId, userId, userId, userId, ...taskIds)
+    .bind(userId, userId, userId, userId, ...taskIds, ...taskIds)
     .all<DbRow>();
   if (rows.results.length !== taskIds.length) {
     throw new NotFoundError("One or more tasks were not found");
   }
-  const taskById = new Map(rows.results.map((row) => [String(row.id), mapTask(row)]));
-  return taskIds.map((taskId) => taskById.get(taskId)!);
+  const taskByAddress = new Map<string, TaskRecord>();
+  for (const row of rows.results) {
+    const task = mapTask(row);
+    taskByAddress.set(task.id, task);
+    taskByAddress.set(task.publicId, task);
+  }
+  return taskIds.map((taskId) => taskByAddress.get(taskId)!);
 }
 
 async function loadAccessibleTask(userId: string, taskId: string) {
