@@ -142,6 +142,30 @@ test("Codex namespaced Task Manager tool calls dispatch to the MCP tool name", a
   assert.equal(body.params.name, "get_workspace");
 });
 
+test("Codex namespaced tool calls are normalized inside JSON-RPC batches", async () => {
+  const request = new Request("https://tasks.example/api/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify([
+      {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "task_manager.get_workspace", arguments: {} },
+      },
+      { jsonrpc: "2.0", id: 2, method: "ping" },
+    ]),
+  });
+
+  const normalized = await normalizeTaskManagerToolCallRequest(request);
+  const body = (await normalized.json()) as Array<{
+    method: string;
+    params?: { name: string };
+  }>;
+  assert.equal(body[0]?.params?.name, "get_workspace");
+  assert.equal(body[1]?.method, "ping");
+});
+
 test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", async (t) => {
   configureRuntimeEnvironment({
     TASK_MANAGER_PUBLIC_ORIGIN: "https://tasks.example",

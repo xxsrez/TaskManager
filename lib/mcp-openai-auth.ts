@@ -26,18 +26,24 @@ export async function normalizeTaskManagerToolCallRequest(
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) return request;
   const value = await request.clone().json().catch(() => null);
-  if (!isRecord(value)) return request;
-  const message = isRecord(value.message) ? value.message : value;
-  if (message.method !== "tools/call" || !isRecord(message.params)) {
-    return request;
+  const messages = Array.isArray(value) ? value : [value];
+  let changed = false;
+  for (const entry of messages) {
+    if (!isRecord(entry)) continue;
+    const message = isRecord(entry.message) ? entry.message : entry;
+    if (message.method !== "tools/call" || !isRecord(message.params)) {
+      continue;
+    }
+    const name = message.params.name;
+    if (typeof name !== "string" || !name.startsWith("task_manager.")) {
+      continue;
+    }
+    const normalizedName = name.slice("task_manager.".length);
+    if (!normalizedName) continue;
+    message.params.name = normalizedName;
+    changed = true;
   }
-  const name = message.params.name;
-  if (typeof name !== "string" || !name.startsWith("task_manager.")) {
-    return request;
-  }
-  const normalizedName = name.slice("task_manager.".length);
-  if (!normalizedName) return request;
-  message.params.name = normalizedName;
+  if (!changed) return request;
   const headers = new Headers(request.headers);
   headers.delete("content-length");
   return new Request(request.url, {
