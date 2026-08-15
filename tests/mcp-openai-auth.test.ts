@@ -9,6 +9,7 @@ import {
   decorateToolsListSecuritySchemes,
   isAnonymousMcpDiscoveryRequest,
   isToolsListMcpRequest,
+  normalizeTaskManagerToolCallRequest,
 } from "../lib/mcp-openai-auth";
 
 test("tools/list responses expose top-level OAuth security schemes", async () => {
@@ -120,6 +121,25 @@ test("anonymous MCP discovery is limited to handshake and tool schemas", async (
       method,
     );
   }
+});
+
+test("Codex namespaced Task Manager tool calls dispatch to the MCP tool name", async () => {
+  const request = new Request("https://tasks.example/api/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "task_manager.get_workspace", arguments: {} },
+    }),
+  });
+
+  const normalized = await normalizeTaskManagerToolCallRequest(request);
+  const body = (await normalized.json()) as {
+    params: { name: string };
+  };
+  assert.equal(body.params.name, "get_workspace");
 });
 
 test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", async (t) => {

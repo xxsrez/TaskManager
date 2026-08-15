@@ -167,6 +167,10 @@ protocol revisions).
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
 
+`tools/list` сохраняет канонические имена без namespace. Codex app runtime
+может отправлять вызов как `task_manager.<tool>`; transport boundary снимает
+только этот известный prefix перед MCP dispatch.
+
 Рекомендуемый agent flow: `get_workspace` → разрешить Project/Release через
 list/get → вызвать compact `list_tasks` → выбрать candidate → `get_task` → при
 явном намерении пользователя create/update. Если пользователь просит «все» и

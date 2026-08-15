@@ -13,6 +13,7 @@ import {
   decorateToolsListSecuritySchemes,
   isAnonymousMcpDiscoveryRequest,
   isToolsListMcpRequest,
+  normalizeTaskManagerToolCallRequest,
 } from "@/lib/mcp-openai-auth";
 
 export const dynamic = "force-dynamic";
@@ -45,7 +46,8 @@ async function serve(request: Request) {
     if (authenticated instanceof Response) return authenticated;
     authInfo = authenticated;
   }
-  let response = await handler.fetch(request, { authInfo });
+  const dispatchRequest = await normalizeTaskManagerToolCallRequest(request);
+  let response = await handler.fetch(dispatchRequest, { authInfo });
   if (toolsListRequest) {
     response = await decorateToolsListSecuritySchemes(response);
   }

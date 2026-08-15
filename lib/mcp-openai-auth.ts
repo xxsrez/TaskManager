@@ -19,6 +19,35 @@ export async function isAnonymousMcpDiscoveryRequest(
   );
 }
 
+export async function normalizeTaskManagerToolCallRequest(
+  request: Request,
+): Promise<Request> {
+  if (request.method !== "POST") return request;
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) return request;
+  const value = await request.clone().json().catch(() => null);
+  if (!isRecord(value)) return request;
+  const message = isRecord(value.message) ? value.message : value;
+  if (message.method !== "tools/call" || !isRecord(message.params)) {
+    return request;
+  }
+  const name = message.params.name;
+  if (typeof name !== "string" || !name.startsWith("task_manager.")) {
+    return request;
+  }
+  const normalizedName = name.slice("task_manager.".length);
+  if (!normalizedName) return request;
+  message.params.name = normalizedName;
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: JSON.stringify(value),
+    signal: request.signal,
+  });
+}
+
 export async function decorateToolsListSecuritySchemes(response: Response) {
   const contentType = response.headers.get("content-type") ?? "";
   const text = await response.text();
@@ -86,4 +115,8 @@ function decorateJsonValue(value: unknown) {
         : "api:read";
     tool.securitySchemes = [{ type: "oauth2", scopes: [scope] }];
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
