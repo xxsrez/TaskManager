@@ -197,20 +197,8 @@ export async function getSnapshot(
     : MAX_UI_SNAPSHOT_TASKS;
   const configuredAdminEmails = adminEmailsFromEnvironment();
   const isAdmin = isAdminEmail(user.email, configuredAdminEmails);
-  const [
-    tasks,
-    projects,
-    releases,
-    views,
-    statuses,
-    users,
-    collaborators,
-    labels,
-    taskLabels,
-    relations,
-    admin,
-  ] =
-    await Promise.all([
+  const [snapshotResults, admin] = await Promise.all([
+    db.batch<DbRow>([
       db
         .prepare(
           `WITH scoped AS (
@@ -254,8 +242,7 @@ export async function getSnapshot(
            ORDER BY updated_at DESC, id DESC
            LIMIT ?`,
         )
-        .bind(user.id, user.id, user.id, user.id, taskLimit + 1)
-        .all<DbRow>(),
+        .bind(user.id, user.id, user.id, user.id, taskLimit + 1),
       db
         .prepare(
           `WITH scoped AS (
@@ -277,8 +264,7 @@ export async function getSnapshot(
            SELECT * FROM scoped WHERE access_role IS NOT NULL
            ORDER BY updated_at DESC`,
         )
-        .bind(user.id, user.id)
-        .all<DbRow>(),
+        .bind(user.id, user.id),
       db
         .prepare(
           `WITH scoped AS (
@@ -301,8 +287,7 @@ export async function getSnapshot(
            SELECT * FROM scoped WHERE access_role IS NOT NULL
            ORDER BY created_at DESC`,
         )
-        .bind(user.id, user.id)
-        .all<DbRow>(),
+        .bind(user.id, user.id),
       db
         .prepare(
           `WITH scoped AS (
@@ -341,8 +326,7 @@ export async function getSnapshot(
            SELECT * FROM scoped WHERE access_role IS NOT NULL
            ORDER BY updated_at DESC`,
         )
-        .bind(user.id, user.id, user.id, user.id)
-        .all<DbRow>(),
+        .bind(user.id, user.id, user.id, user.id),
       db
         .prepare(
           `SELECT s.* FROM workflow_statuses s
@@ -387,8 +371,7 @@ export async function getSnapshot(
           user.id,
           user.id,
           user.id,
-        )
-        .all<DbRow>(),
+        ),
       db
         .prepare(
           `SELECT DISTINCT u.id, u.display_name, u.email, u.timezone
@@ -433,8 +416,7 @@ export async function getSnapshot(
              )
            ) ORDER BY u.display_name, u.id`,
         )
-        .bind(user.id, user.id, user.id, user.id, user.id)
-        .all<DbRow>(),
+        .bind(user.id, user.id, user.id, user.id, user.id),
       db
         .prepare(
           `SELECT ag.id, ag.resource_type, ag.resource_id, ag.permission,
@@ -473,8 +455,7 @@ export async function getSnapshot(
            )
            ORDER BY ag.created_at DESC`,
         )
-        .bind(user.id, user.id, user.id, user.id, user.id)
-        .all<DbRow>(),
+        .bind(user.id, user.id, user.id, user.id, user.id),
       db
         .prepare(
           `${snapshotTaskIdScopeCte}
@@ -487,16 +468,14 @@ export async function getSnapshot(
               )
            ORDER BY l.name`,
         )
-        .bind(...snapshotTaskScopeParameters(user.id, taskLimit), user.id)
-        .all<DbRow>(),
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit), user.id),
       db
         .prepare(
           `${snapshotTaskIdScopeCte}
            SELECT tl.* FROM task_labels tl
            JOIN visible_task_ids visible ON visible.id = tl.task_id`,
         )
-        .bind(...snapshotTaskScopeParameters(user.id, taskLimit))
-        .all<DbRow>(),
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit)),
       db
         .prepare(
           `${snapshotTaskIdScopeCte}
@@ -507,12 +486,25 @@ export async function getSnapshot(
            JOIN visible_task_ids target_visible
              ON target_visible.id = tr.target_task_id`,
         )
-        .bind(...snapshotTaskScopeParameters(user.id, taskLimit))
-        .all<DbRow>(),
-      isAdmin && options.includeAdminOverview
-        ? getAdminOverview(user, configuredAdminEmails)
-        : Promise.resolve(null),
-    ]);
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit)),
+    ]),
+    isAdmin && options.includeAdminOverview
+      ? getAdminOverview(user, configuredAdminEmails)
+      : Promise.resolve(null),
+  ]);
+
+  const [
+    tasks,
+    projects,
+    releases,
+    views,
+    statuses,
+    users,
+    collaborators,
+    labels,
+    taskLabels,
+    relations,
+  ] = snapshotResults;
 
   const boundedTaskRows = tasks.results.slice(0, taskLimit);
   const boundedTaskIds = new Set(boundedTaskRows.map((row) => String(row.id)));

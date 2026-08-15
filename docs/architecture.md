@@ -259,6 +259,10 @@ activity/display fields и возвращает User одним D1 `UPDATE … R
 стартовые workflow statuses создаются в том же batch, что и новая identity.
 Это убирает несколько последовательных D1 round trips с каждой HTML/API
 загрузки, не ослабляя server-trusted identity boundary.
+Десять независимых ACL-scoped collection reads для workspace snapshot
+выполняются одним D1 batch. SQL predicates и отдельные результаты сохраняются,
+но критический путь HTML и `/api/bootstrap` больше не платит за десять
+последовательных сетевых round trips к D1.
 `/api/bootstrap` не включает тяжёлый импортированный архив комментариев и
 attachments: при открытии details одной импортированной Task UI отдельно
 запрашивает `/api/tasks/{id}/external-source`, а server сначала повторно
