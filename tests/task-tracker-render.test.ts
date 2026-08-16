@@ -22,6 +22,7 @@ import {
   shouldTriggerPullRefresh,
   taskMutationVersion,
   taskDraftSyncMode,
+  taskDraftValueChanged,
   taskMatchesSearch,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
@@ -218,6 +219,12 @@ test("task draft sync mode auto-applies clean updates and preserves dirty drafts
   assert.equal(taskDraftSyncMode(false, clean), "none");
   assert.equal(taskDraftSyncMode(true, clean), "auto");
   assert.equal(taskDraftSyncMode(true, dirty), "manual");
+});
+
+test("task detail dirty state follows an actual value difference", () => {
+  assert.equal(taskDraftValueChanged("unchanged", "unchanged"), false);
+  assert.equal(taskDraftValueChanged("draft", "saved"), true);
+  assert.equal(taskDraftValueChanged("saved", "saved"), false);
 });
 
 test("rebasing a concurrent task keeps dirty draft fields and refreshes untouched fields", () => {

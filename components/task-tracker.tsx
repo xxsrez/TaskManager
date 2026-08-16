@@ -389,6 +389,10 @@ export function taskDraftSyncMode(
   return Object.values(dirty).some(Boolean) ? "manual" : "auto";
 }
 
+export function taskDraftValueChanged(value: string, baseline: string): boolean {
+  return value !== baseline;
+}
+
 export function mergeTaskDetailContext(
   current: AppSnapshot,
   detail: TaskDetailRecord,
@@ -2322,8 +2326,9 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
             className="details-title"
             value={title}
             onChange={(event) => {
-              setDirty((current) => ({ ...current, title: true }));
-              setTitle(event.target.value);
+              const nextTitle = event.target.value;
+              setDirty((current) => ({ ...current, title: taskDraftValueChanged(nextTitle, task.title) }));
+              setTitle(nextTitle);
             }}
             onBlur={() => {
               if (!hasVersionConflict && title.trim() && title !== task.title) {
@@ -2351,8 +2356,9 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
                   className="details-description"
                   value={description}
                   onChange={(event) => {
-                    setDirty((current) => ({ ...current, description: true }));
-                    setDescription(event.target.value);
+                    const nextDescription = event.target.value;
+                    setDirty((current) => ({ ...current, description: taskDraftValueChanged(nextDescription, task.description ?? "") }));
+                    setDescription(nextDescription);
                   }}
                   placeholder="Add description…"
                   rows={12}
@@ -2395,7 +2401,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
             <PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={hasVersionConflict || !task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow>
-            <PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => { setDirty((current) => ({ ...current, estimate: true })); setEstimate(event.target.value); }} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (!hasVersionConflict && value !== task.estimate) void saveDraftField("estimate", { estimate: value }); }} /></PropertyRow>
+            <PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => { const nextEstimate = event.target.value; setDirty((current) => ({ ...current, estimate: taskDraftValueChanged(nextEstimate, task.estimate?.toString() ?? "") })); setEstimate(nextEstimate); }} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (!hasVersionConflict && value !== task.estimate) void saveDraftField("estimate", { estimate: value }); }} /></PropertyRow>
           </div>
           {labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}
           {(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}
