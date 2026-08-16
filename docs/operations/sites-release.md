@@ -12,6 +12,10 @@
 
 Marketplace plugin всегда использует production endpoint
 `https://task-manager.example.invalid/api/mcp`.
+Обычный lifecycle одной явно указанной Task через этот plugin (status и native
+report comment) не является Sites release и не требует production-deploy
+approval. Он не разрешает менять другие production records или создавать там
+synthetic test data.
 
 ## UAT workflow по умолчанию
 

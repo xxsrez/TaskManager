@@ -40,10 +40,14 @@ Task Manager plugin.
    production `https://task-manager.example.invalid/api/mcp`.
    UAT используется для web/API smoke напрямую и не становится endpoint
    установленного plugin.
-7. Обе среды разворачивают одну codebase и одинаковые versioned migrations.
+7. Обычные ACL-scoped изменения одной явно указанной Task через production
+   plugin — это product-data lifecycle, а не release. Такой запрос разрешает
+   status transitions и native completion/failure comment только для этой Task,
+   но не production deploy, migration, unrelated records или synthetic data.
+8. Обе среды разворачивают одну codebase и одинаковые versioned migrations.
    Каждый релиз связывает validated commit, Site binding, archive, saved
    version, deployment и post-deploy evidence именно одной среды.
-8. Access policy каждой среды меняется только отдельной явной командой.
+9. Access policy каждой среды меняется только отдельной явной командой.
    Обычный UAT-релиз сохраняет её текущую policy.
 
 ```text

@@ -120,10 +120,15 @@ Application-level admin overview реализован отдельно от reso
 
 - Production Task Manager — существующий ChatGPT Site со slug `task-manager`.
   Его binding хранится в `.openai/hosting.production.json`. Push в его Sites
-  source repository, save version, deploy, production data mutation или
-  создание там test data разрешены только прямой текущей командой пользователя,
+  source repository, save version, deploy, production migration или создание
+  там synthetic test data разрешены только прямой текущей командой пользователя,
   которая явно называет production и scope релиза. Обычная просьба реализовать
-  или исправить задачу такого разрешения не даёт.
+  или исправить задачу такого разрешения на production release не даёт.
+- Обычные ACL-scoped изменения одной явно указанной канонической Task через
+  production plugin не являются production release. Прямой запрос выполнить
+  такую Task разрешает её правдивые status transitions и обязательный native
+  completion/failure comment, но не Sites deploy, migration, изменения других
+  production records или создание synthetic test data.
 - UAT Task Manager — отдельный ChatGPT Site со slug `task-manager-uat` и
   независимой D1. Его binding хранится в default `.openai/hosting.json`, поэтому
   обычный Sites build/package path по умолчанию направлен в UAT.
