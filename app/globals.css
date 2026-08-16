@@ -304,9 +304,10 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .task-card.selected { background: color-mix(in srgb, var(--selected) 55%, var(--raised)); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .task-card > a { display: block; }
 .task-card h3 { margin: 0 0 20px; font-size: 13px; font-weight: 480; line-height: 18px; }
-.task-card.editable h3::before { width: 28px; height: 28px; float: right; content: ""; }
-.card-check { position: absolute; top: 9px; right: 9px; }
-.card-meta { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; }
+.task-card.editable .card-meta::after { width: 28px; flex: 0 0 28px; content: ""; }
+.task-card > .card-check { position: absolute; right: 9px; bottom: 9px; }
+.card-meta { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; color: var(--muted); font-size: 10px; }
+.card-identifier { flex: 0 0 auto; white-space: nowrap; }
 .card-meta .metadata-chip { max-width: 112px; height: 19px; border: 0; padding: 0; }
 .add-card { height: 30px; display: flex; align-items: center; gap: 6px; margin-top: 5px; padding: 0 7px; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
 .add-card:hover { background: var(--hover); color: var(--text-secondary); }
@@ -783,7 +784,8 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .row-metadata .metadata-chip { min-width: 0; max-width: min(150px, 42vw); }
   .row-metadata .avatar, .row-metadata .row-more { flex: 0 0 auto; }
   .row-check::before, .card-check::before { inset: -12px; }
-  .task-card.editable h3::before { width: 40px; height: 40px; }
+  .task-card > .card-check { right: 12px; bottom: 12px; }
+  .task-card.editable .card-meta::after { width: 40px; flex-basis: 40px; }
   .row-more { width: 40px; height: 40px; opacity: 1; }
   .properties-grid { grid-template-columns: 1fr; }
   .task-description-section > header .button, .task-description-editor .button { min-height: 44px; }

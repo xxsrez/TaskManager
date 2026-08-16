@@ -86,12 +86,21 @@ test("sidebar height constraints keep only navigation scrollable", () => {
   assert.match(declarations(".account-menu"), /overflow-y:\s*auto\s*;/);
 });
 
-test("board titles reserve only the checkbox hit area and reveal it for keyboard focus", () => {
-  assert.doesNotMatch(declarations(".task-card h3"), /margin:\s*0\s+21px/);
-  const exclusion = declarations(".task-card.editable h3::before");
-  assert.match(exclusion, /float:\s*right\s*;/);
-  assert.match(exclusion, /width:\s*28px\s*;/);
-  assert.match(exclusion, /height:\s*28px\s*;/);
+test("board cards reuse the metadata corner for selection and keep the title full width", () => {
+  assert.doesNotMatch(css, /\.task-card\.editable h3::before\s*\{/);
+  const selectionSpace = declarations(".task-card.editable .card-meta::after");
+  assert.match(selectionSpace, /flex:\s*0\s+0\s+28px\s*;/);
+  assert.match(selectionSpace, /width:\s*28px\s*;/);
+  const identifier = declarations(".card-identifier");
+  assert.match(identifier, /flex:\s*0\s+0\s+auto\s*;/);
+  assert.match(identifier, /white-space:\s*nowrap\s*;/);
+  const checkbox = declarations(".task-card > .card-check");
+  assert.match(checkbox, /bottom:\s*9px\s*;/);
+  assert.doesNotMatch(checkbox, /top:/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-card\s*>\s*\.card-check\s*\{[^}]*right:\s*12px\s*;[^}]*bottom:\s*12px\s*;/,
+  );
   assert.match(
     declarations(".task-card:focus-within .card-check span, .card-check:focus-visible span"),
     /opacity:\s*1\s*;/,
