@@ -137,12 +137,18 @@ Desktop-first shell повторяет композицию Linear:
   polling indicators и не расходятся по моменту обновления.
 - Remote create/update/archive/delete обновляет запись на месте без full-page
   reload, потери текущего layout, scroll или несвязанной selection.
+- Lazy labels/relations, native comments и imported external context не
+  пересылаются в background patch. Invalidation активной чистой
+  details/Peek/activity поверхности запускает точечный refetch; закрытая
+  поверхность только сохраняет stale marker до открытия. Dirty description или
+  estimate draft не затирается и остаётся в manual conflict flow.
 - Если открытая Task или текущая Project/Release/SavedView удалена либо стала
   недоступна, details/Peek закрываются, stale selection очищается, а navigation
   атомарно возвращается в доступный `Workspace` вместо пустого чужого context.
 - Hidden/offline состояние не показывает ошибку само по себе. После возврата
   coordinator немедленно сверяется; временные failures используют backoff и не
-  создают дублирующиеся banners или requests.
+  создают дублирующиеся banners или requests. Зависший request прерывается через
+  45 секунд и проходит тот же retry flow.
 - Full reset после ACL change или cursor gap сохраняет загруженный Task body и
   более новые подтверждённые локальные mutations, но удаляет недоступные
   records из всех UI contexts.

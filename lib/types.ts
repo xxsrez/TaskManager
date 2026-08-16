@@ -89,6 +89,12 @@ export type TaskRecord = {
   version: number;
   /** Client-only version of a loaded detail projection retained across a newer summary merge. */
   detailVersion?: number;
+  /** Client-only marker for relation/label changes that do not increment Task.version. */
+  detailStale?: boolean;
+  /** Client-only cursors make repeated delivery idempotent for lazy consumers. */
+  detailInvalidationCursor?: string;
+  commentInvalidationCursor?: string;
+  externalSourceInvalidationCursor?: string;
   createdAt: string;
   updatedAt: string;
   accessRole: AccessRole;
@@ -340,8 +346,16 @@ export type WorkspaceSyncChanges = {
   projects: WorkspaceSyncCollection<ProjectRecord>;
   releases: WorkspaceSyncCollection<ReleaseRecord>;
   views: WorkspaceSyncCollection<SavedViewRecord>;
+  invalidations: {
+    taskDetails: string[];
+    taskComments: string[];
+    taskExternalSources: string[];
+  };
+  /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   labels: LabelRecord[];
+  /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   taskLabels: TaskLabelAssignment[];
+  /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   relations: TaskRelationRecord[];
 };
 

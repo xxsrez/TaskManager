@@ -150,16 +150,24 @@ migrations. Это соответствует
 3. D1 triggers записывают principal-scoped sequence events в той же transaction,
    что Task/Project/Release/SavedView/AccessGrant mutation. Journal не содержит
    пользовательский content.
-4. Sync repository coalesces touched IDs, заново строит current ACL snapshot и
-   возвращает upsert/remove patches. Поэтому moved/revoked entity для прежнего
-   audience становится remove, а чужой content не попадает в response.
-5. Client применяет patches идемпотентно к общему `AppSnapshot`, сохраняя
-   загруженный Task detail поверх нового summary. Details, list, board,
-   navigation, filters и selection используют уже согласованное состояние.
-6. ACL event, invalid/ahead/pruned cursor, gap или неизвестный event требует
+4. Sync repository coalesces touched IDs и выполняет current ACL projection
+   только по IDs текущей bounded page, не по всему bootstrap window. Поэтому
+   moved/revoked entity для прежнего audience становится remove, доступная
+   старая Task за пределами окна не теряется, а чужой content не попадает в
+   response.
+5. Core Task/Project/Release/SavedView изменения приходят как compact
+   upsert/remove. Labels, relations, comments и imported external context
+   передают только task-scoped invalidation IDs; их content перечитывает
+   отдельный lazy endpoint лишь при активном details/Peek/activity consumer.
+6. Client применяет patches и invalidations идемпотентно к общему
+   `AppSnapshot`, сохраняя загруженный Task detail поверх нового summary.
+   Details, list, board, navigation, filters и selection используют уже
+   согласованное состояние.
+7. ACL event, invalid/ahead/pruned cursor, gap или неизвестный event требует
    полного bootstrap. Hidden/offline вкладка приостанавливает timer и сразу
-   синхронизируется после visibility/online; network failures дают bounded
-   backoff до пяти минут.
+   синхронизируется после visibility/online; network failures и 45-секундный
+   timeout дают bounded backoff до пяти минут. Journal хранится 30 дней и
+   очищается throttled maintenance path не чаще раза в сутки.
 
 Контракт и границы решения приняты в
 [ADR-0009](decisions/0009-central-workspace-synchronization.md). Optimistic
@@ -342,6 +350,9 @@ Native comment bodies также не входят в bootstrap или Task deta
   payload staging и минимального audit metadata полного restore;
 - `workspace_sync_sequences` и `workspace_change_events` для per-principal
   cursor, упорядоченного ACL-safe journal и gap recovery;
+- `workspace_sync_invalidations` как транзакционная trigger queue для fan-out
+  ID-only invalidations lazy task context и `workspace_sync_maintenance` для
+  throttled retention;
 - constraint или transactional validation project/release consistency;
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
@@ -415,9 +426,10 @@ saved-view query/display и полный provider metadata в `external_records`
 - Comment tests покрывают identity, Viewer refusal, author/moderator rules,
   idempotent create/reaction, stale versions, one-level replies, tombstones,
   stable pagination, Agent privacy projection и backup invariants.
-- Workspace sync tests покрывают event ordering/coalescing, idempotent patch,
-  create/update/delete, ACL fan-out без outsider leak, revoke reset, cursor gap
-  и bounded reconnect backoff.
+- Workspace sync tests покрывают event ordering/coalescing, idempotent patch и
+  invalidation, create/update/delete, ACL fan-out без outsider leak, revoke
+  reset, cursor gap, 30-дневный retention, Task за пределами 2000-record window,
+  lazy labels/relations/comments/external context и bounded reconnect backoff.
 - Visual regression и accessibility checks следуют
   [спецификации интерфейса](specs/interface.md); сравнение с Linear проверяет
   composition и interaction parity, а не чужие assets.

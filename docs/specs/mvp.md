@@ -419,12 +419,19 @@ completed dates и archived state.
 - Incremental create/update/archive/delete применяется идемпотентно ко всем
   surfaces. Удалённая или ставшая недоступной entity исчезает также из details,
   selection, breadcrumbs и связанных context records.
+- Incremental core patch строится только по touched IDs, а не через полный
+  workspace snapshot. Labels, relations, comments и imported external context
+  передают только task-scoped invalidation IDs без своих records; их endpoint
+  перечитывает только активный details/Peek/activity consumer. Закрытый cache
+  остаётся загруженным, но помечается stale до следующего открытия.
 - ACL вычисляется сервером до ответа. Grant/revoke, invalid cursor, gap и
   неизвестный event вызывают полный ACL-scoped bootstrap; клиент не получает
   payload чужой entity даже как delete metadata.
 - Одновременно выполняется не больше одного sync request. Ошибки сети
-  используют bounded backoff, reconnect продолжает с последнего подтверждённого
-  cursor, а optimistic version conflicts остаются обязательными для writes.
+  и 45-секундный timeout используют bounded backoff, reconnect продолжает с
+  последнего подтверждённого cursor, а optimistic version conflicts остаются
+  обязательными для writes. Journal хранится 30 дней; cursor старше retention
+  boundary получает безопасный full bootstrap.
 
 - Все изменения проходят одинаковую серверную валидацию независимо от экрана.
 - Authentication и authorization выполняются server-side. Клиентские owner,

@@ -547,6 +547,182 @@ export async function getSnapshot(
   };
 }
 
+export type WorkspaceSyncProjectionInput = {
+  taskIds: readonly string[];
+  projectIds: readonly string[];
+  releaseIds: readonly string[];
+  viewIds: readonly string[];
+  invalidatedTaskIds: readonly string[];
+};
+
+export type WorkspaceSyncProjection = {
+  tasks: TaskRecord[];
+  projects: ProjectRecord[];
+  releases: ReleaseRecord[];
+  views: SavedViewRecord[];
+  accessibleTaskIds: string[];
+};
+
+/**
+ * Reprojects only IDs named by one incremental journal page. Missing rows are
+ * intentional remove candidates; every returned row has been rechecked against
+ * the current principal instead of the bounded UI bootstrap window.
+ */
+export async function getWorkspaceSyncProjection(
+  user: UserRecord,
+  input: WorkspaceSyncProjectionInput,
+): Promise<WorkspaceSyncProjection> {
+  const db = getD1();
+  const allTaskIds = [...new Set([...input.taskIds, ...input.invalidatedTaskIds])];
+  const taskPlaceholders = sqlPlaceholders(allTaskIds);
+  const projectPlaceholders = sqlPlaceholders(input.projectIds);
+  const releasePlaceholders = sqlPlaceholders(input.releaseIds);
+  const viewPlaceholders = sqlPlaceholders(input.viewIds);
+  const [tasks, projects, releases, views] = await db.batch<DbRow>([
+    db
+      .prepare(
+        `WITH scoped AS (
+           SELECT ${snapshotTaskProjection},
+             EXISTS (
+               SELECT 1 FROM external_records er
+               WHERE er.target_type = 'task' AND er.target_id = t.id
+             ) AS has_external_source,
+             CASE
+               WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+               WHEN t.project_id IS NOT NULL THEN (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'manager'
+                   WHEN 'manager' THEN 'manager'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'project'
+                   AND ag.resource_id = t.project_id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               )
+               WHEN t.owner_user_id = ? THEN 'owner'
+               ELSE (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'editor'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               )
+             END AS access_role
+           FROM tasks t
+           LEFT JOIN projects p ON p.id = t.project_id
+           WHERE t.id IN (${taskPlaceholders})
+         )
+         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+      )
+      .bind(user.id, user.id, user.id, user.id, ...allTaskIds),
+    db
+      .prepare(
+        `WITH scoped AS (
+           SELECT p.*,
+             CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'manager'
+                 WHEN 'manager' THEN 'manager'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
+               WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               LIMIT 1
+             ) END AS access_role
+           FROM projects p
+           WHERE p.archived_at IS NULL AND p.id IN (${projectPlaceholders})
+         )
+         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+      )
+      .bind(user.id, user.id, ...input.projectIds),
+    db
+      .prepare(
+        `WITH scoped AS (
+           SELECT r.*,
+             CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'manager'
+                 WHEN 'manager' THEN 'manager'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
+               WHERE ag.resource_type = 'project'
+                 AND ag.resource_id = r.project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               LIMIT 1
+             ) END AS access_role
+           FROM releases r JOIN projects p ON p.id = r.project_id
+           WHERE r.id IN (${releasePlaceholders})
+         )
+         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+      )
+      .bind(user.id, user.id, ...input.releaseIds),
+    db
+      .prepare(
+        `WITH scoped AS (
+           SELECT v.*,
+             CASE
+               WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+               WHEN v.scope_project_id IS NOT NULL THEN (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'manager'
+                   WHEN 'manager' THEN 'manager'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'project'
+                   AND ag.resource_id = v.scope_project_id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               )
+               WHEN v.owner_user_id = ? THEN 'owner'
+               ELSE (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'editor'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               )
+             END AS access_role
+           FROM saved_views v
+           LEFT JOIN projects p ON p.id = v.scope_project_id
+           WHERE v.id IN (${viewPlaceholders})
+         )
+         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+      )
+      .bind(user.id, user.id, user.id, user.id, ...input.viewIds),
+  ]);
+
+  const taskRecords = tasks.results.map(mapTask);
+  const requestedTasks = new Set(input.taskIds);
+  return {
+    tasks: taskRecords.filter((task) => requestedTasks.has(task.id)),
+    projects: projects.results.map(mapProject),
+    releases: releases.results.map(mapRelease),
+    views: views.results.map(mapView),
+    accessibleTaskIds: taskRecords.map((task) => task.id),
+  };
+}
+
+function sqlPlaceholders(values: readonly string[]): string {
+  return values.length ? values.map(() => "?").join(", ") : "NULL";
+}
+
 export async function getTaskExternalSource(
   currentUser: UserRecord,
   taskId: string,
@@ -613,18 +789,15 @@ export async function getTaskDetail(
     if (relation.targetTaskId !== task.id) contextIds.add(relation.targetTaskId);
   }
 
-  const relatedTasks = (
-    await Promise.all(
-      [...contextIds].map(async (id) => {
-        try {
-          return await loadAccessibleTask(currentUser.id, id);
-        } catch (error) {
-          if (error instanceof NotFoundError) return null;
-          throw error;
-        }
-      }),
-    )
-  ).filter((item): item is TaskRecord => item !== null);
+  const relatedTasks = contextIds.size
+    ? (await getWorkspaceSyncProjection(currentUser, {
+        taskIds: [...contextIds],
+        projectIds: [],
+        releaseIds: [],
+        viewIds: [],
+        invalidatedTaskIds: [],
+      })).tasks
+    : [];
   const visibleIds = new Set([task.id, ...relatedTasks.map((item) => item.id)]);
   const labels = (labelRows.results as DbRow[]).map(mapLabel);
 

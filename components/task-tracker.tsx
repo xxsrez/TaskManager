@@ -197,16 +197,51 @@ export function applyMutationResult(
     const updates = new Map(result.taskUpdates.map((task) => [task.id, task]));
     return {
       ...current,
-      tasks: current.tasks.map((task) => updates.get(task.id) ?? task),
+      tasks: current.tasks.map((task) => {
+        const updated = updates.get(task.id);
+        return updated ? mergeTaskMutation(task, updated) : task;
+      }),
     };
   }
   if (!("task" in result)) return result;
   return {
     ...current,
     tasks: current.tasks.map((task) =>
-      task.id === result.task.id ? result.task : task,
+      task.id === result.task.id ? mergeTaskMutation(task, result.task) : task,
     ),
   };
+}
+
+function mergeTaskMutation(
+  retained: TaskRecord | undefined,
+  incoming: TaskRecord,
+): TaskRecord {
+  if (!retained) return incoming;
+  const clientState: Partial<TaskRecord> = {};
+  const hasLoadedDetailState = retained.detailVersion !== undefined ||
+    retained.detailStale !== undefined ||
+    retained.detailInvalidationCursor !== undefined;
+  if (hasLoadedDetailState) {
+    clientState.detailVersion = incoming.description === null
+      ? retained.detailVersion
+      : incoming.version;
+    clientState.detailStale = incoming.description === null
+      ? retained.detailStale
+      : false;
+  }
+  if (retained.detailInvalidationCursor !== undefined) {
+    clientState.detailInvalidationCursor = retained.detailInvalidationCursor;
+  }
+  if (retained.commentInvalidationCursor !== undefined) {
+    clientState.commentInvalidationCursor = retained.commentInvalidationCursor;
+  }
+  if (retained.externalSourceInvalidationCursor !== undefined) {
+    clientState.externalSourceInvalidationCursor =
+      retained.externalSourceInvalidationCursor;
+  }
+  return Object.keys(clientState).length
+    ? { ...incoming, ...clientState }
+    : incoming;
 }
 
 export function mergeDeferredSnapshot(
@@ -357,6 +392,12 @@ export function taskMutationVersion(task: TaskRecord): number {
   return task.detailVersion ?? task.version;
 }
 
+export function taskNeedsDetailRefresh(task: TaskRecord): boolean {
+  return task.description === null ||
+    Boolean(task.detailStale) ||
+    (task.detailVersion !== undefined && task.detailVersion < task.version);
+}
+
 type TaskDraft = {
   title: string;
   description: string;
@@ -397,7 +438,17 @@ export function mergeTaskDetailContext(
   current: AppSnapshot,
   detail: TaskDetailRecord,
 ): AppSnapshot {
-  const contextualTasks = [detail.task, ...detail.relatedTasks];
+  const currentById = new Map(current.tasks.map((task) => [task.id, task]));
+  const focusedTask = mergeLoadedTask(
+    currentById.get(detail.task.id),
+    detail.task,
+  );
+  const contextualTasks = [
+    focusedTask,
+    ...detail.relatedTasks.map((task) =>
+      mergeTaskSummary(currentById.get(task.id), task)
+    ),
+  ];
   const contextualIds = new Set(contextualTasks.map((task) => task.id));
   return {
     ...current,
@@ -420,6 +471,30 @@ export function mergeTaskDetailContext(
       ),
       ...detail.relations,
     ],
+  };
+}
+
+function mergeLoadedTask(
+  retained: TaskRecord | undefined,
+  incoming: TaskRecord,
+): TaskRecord {
+  if (retained && retained.version > incoming.version) return retained;
+  return {
+    ...incoming,
+    detailVersion: incoming.version,
+    detailStale: false,
+    ...(retained?.detailInvalidationCursor !== undefined
+      ? { detailInvalidationCursor: retained.detailInvalidationCursor }
+      : {}),
+    ...(retained?.commentInvalidationCursor !== undefined
+      ? { commentInvalidationCursor: retained.commentInvalidationCursor }
+      : {}),
+    ...(retained?.externalSourceInvalidationCursor !== undefined
+      ? {
+          externalSourceInvalidationCursor:
+            retained.externalSourceInvalidationCursor,
+        }
+      : {}),
   };
 }
 
@@ -475,6 +550,7 @@ export function reconcileTaskDetail(
 export function reconcileTaskDetailFromSync(
   current: TaskDetailRecord,
   changes: WorkspaceSyncResponse["changes"],
+  cursor?: string,
 ): TaskDetailRecord | null {
   const removedTaskIds = new Set(changes.tasks.remove);
   if (removedTaskIds.has(current.task.id)) return null;
@@ -482,53 +558,57 @@ export function reconcileTaskDetailFromSync(
   const nextFocusedTask = changes.tasks.upsert.find(
     (task) => task.id === current.task.id,
   );
-  if (nextFocusedTask) {
-    return reconcileTaskDetail(
-      current,
-      mergeTaskSummary(current.task, nextFocusedTask),
-      {
-        tasks: changes.tasks.upsert,
-        labels: changes.labels,
-        taskLabels: changes.taskLabels,
-        relations: changes.relations,
-      },
-      removedTaskIds,
-    );
-  }
+  const detailInvalidated = changes.invalidations.taskDetails.includes(
+    current.task.id,
+  ) && (!cursor || current.task.detailInvalidationCursor !== cursor);
+  const focusedTask = nextFocusedTask
+    ? mergeTaskSummary(current.task, nextFocusedTask)
+    : current.task;
+  const nextCurrent = detailInvalidated
+    ? {
+        ...current,
+        task: {
+          ...focusedTask,
+          detailStale: true,
+          ...(cursor ? { detailInvalidationCursor: cursor } : {}),
+        },
+      }
+    : { ...current, task: focusedTask };
 
   const relationPeerIds = new Set<string>();
-  for (const relation of current.relations) {
-    if (relation.sourceTaskId === current.task.id) {
+  for (const relation of nextCurrent.relations) {
+    if (relation.sourceTaskId === nextCurrent.task.id) {
       relationPeerIds.add(relation.targetTaskId);
-    } else if (relation.targetTaskId === current.task.id) {
+    } else if (relation.targetTaskId === nextCurrent.task.id) {
       relationPeerIds.add(relation.sourceTaskId);
     }
   }
   const incomingById = new Map(
     changes.tasks.upsert.map((task) => [task.id, task]),
   );
-  const reconciled = current.relatedTasks.flatMap((task) => {
+  incomingById.delete(nextCurrent.task.id);
+  const reconciled = nextCurrent.relatedTasks.flatMap((task) => {
     if (removedTaskIds.has(task.id)) return [];
     const incoming = incomingById.get(task.id);
     if (!incoming) return [task];
     incomingById.delete(task.id);
     const merged = mergeTaskSummary(task, incoming);
-    return merged.parentTaskId === current.task.id ||
-        current.task.parentTaskId === merged.id ||
+    return merged.parentTaskId === nextCurrent.task.id ||
+        nextCurrent.task.parentTaskId === merged.id ||
         relationPeerIds.has(merged.id)
       ? [merged]
       : [];
   });
   for (const task of incomingById.values()) {
     if (
-      task.parentTaskId === current.task.id ||
-      current.task.parentTaskId === task.id ||
+      task.parentTaskId === nextCurrent.task.id ||
+      nextCurrent.task.parentTaskId === task.id ||
       relationPeerIds.has(task.id)
     ) {
       reconciled.push(task);
     }
   }
-  return { ...current, relatedTasks: reconciled };
+  return { ...nextCurrent, relatedTasks: reconciled };
 }
 
 export function reconcileTaskDetailAfterReset(
@@ -685,7 +765,7 @@ export function TaskTracker({
     ));
     setPeekTaskId((current) => current && removedTaskIds.has(current) ? null : current);
     setTaskDetail((current) => current
-      ? reconcileTaskDetailFromSync(current, response.changes)
+      ? reconcileTaskDetailFromSync(current, response.changes, response.cursor)
       : current);
     if (response.changes.tasks.upsert.length || removedTaskIds.size) {
       setTaskSearch((current) => reconcileTaskSearch(current, response.changes));
@@ -1048,7 +1128,7 @@ export function TaskTracker({
   const peekTask = taskPool.find((task) => task.id === peekTaskId) ?? null;
   const deferredTaskId = activeTask?.description === null
     ? activeTask.id
-    : peekTask?.description === null
+    : peekTask && taskNeedsDetailRefresh(peekTask)
       ? peekTask.id
       : null;
   const taskDetailRequestId = forcedTaskDetailId ?? deferredTaskId;
@@ -1077,7 +1157,15 @@ export function TaskTracker({
         if (!response.ok || "error" in value) {
           throw new Error("error" in value ? value.error : "Request failed");
         }
-        setTaskDetail(value);
+        setTaskDetail((current) => ({
+          ...value,
+          task: mergeLoadedTask(
+            current?.task.id === value.task.id
+              ? current.task
+              : dataRef.current.tasks.find((task) => task.id === value.task.id),
+            value.task,
+          ),
+        }));
         setData((current) => mergeTaskDetailContext(current, value));
         setForcedTaskDetailId((current) =>
           current === taskDetailRequestId ? null : current);
@@ -1200,14 +1288,16 @@ export function TaskTracker({
       if ("task" in value) {
         setTaskDetail((current) =>
           current?.task.id === value.task.id
-            ? { ...current, task: value.task }
+            ? { ...current, task: mergeTaskMutation(current.task, value.task) }
             : current,
         );
         setTaskSearch((current) => current
           ? {
               ...current,
               tasks: current.tasks.map((task) =>
-                task.id === value.task.id ? value.task : task,
+                task.id === value.task.id
+                  ? mergeTaskSummary(task, value.task)
+                  : task,
               ),
             }
           : current,
@@ -1281,11 +1371,9 @@ export function TaskTracker({
       }
       const retained = dataRef.current.tasks.find((task) => task.id === taskId);
       if (retained && retained.version > value.task.version) return retained;
-      setTaskDetail((current) =>
-        current?.task.id === taskId && current.task.version > value.task.version
-          ? current
-          : value,
-      );
+      setTaskDetail((current) => current?.task.id === taskId
+        ? { ...value, task: mergeLoadedTask(current.task, value.task) }
+        : current);
       setData((current) => {
         const currentTask = current.tasks.find((task) => task.id === taskId);
         if (currentTask && currentTask.version > value.task.version) return current;
@@ -2237,10 +2325,10 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
     description: false,
     estimate: false,
   });
-  const autoRebaseVersion = useRef<number | null>(null);
+  const autoRebaseKey = useRef<string | null>(null);
   const [autoRebaseFailed, setAutoRebaseFailed] = useState(false);
   const source = useTaskExternalSource(task);
-  const hasVersionConflict = task.detailVersion !== undefined && task.detailVersion < task.version;
+  const hasVersionConflict = taskNeedsDetailRefresh(task);
   const syncMode = taskDraftSyncMode(hasVersionConflict, dirty);
 
   const rebaseDraft = useCallback(async () => {
@@ -2263,10 +2351,15 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
   }, [description, dirty, estimate, onRebase, task.id, task.version, title]);
 
   useEffect(() => {
-    if (syncMode !== "auto" || autoRebaseVersion.current === task.version) return;
-    autoRebaseVersion.current = task.version;
+    if (syncMode !== "auto") {
+      autoRebaseKey.current = null;
+      return;
+    }
+    const rebaseKey = `${task.version}:${task.detailStale ? "stale" : "version"}`;
+    if (autoRebaseKey.current === rebaseKey) return;
+    autoRebaseKey.current = rebaseKey;
     void rebaseDraft();
-  }, [rebaseDraft, syncMode, task.version]);
+  }, [rebaseDraft, syncMode, task.detailStale, task.version]);
 
   if (!canEditContent(task.accessRole)) {
     return <ReadOnlyTaskDetails task={task} data={data} source={source} onClose={onClose} onOpenTask={onOpenTask} />;
@@ -2293,7 +2386,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
       relations.push({ relation, direction: "in", target: taskMap.get(relation.sourceTaskId) });
     }
   }
-  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} full />;
+  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} full />;
   async function saveDraftField(
     field: keyof TaskDraftDirty,
     input: Record<string, unknown>,
@@ -2429,7 +2522,7 @@ function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task
     : undefined;
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
-  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} />;
+  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} />;
   return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <MarkdownBody body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
 }
 
@@ -2440,7 +2533,10 @@ function useTaskExternalSource(task: TaskRecord) {
   } | null>(null);
 
   useEffect(() => {
-    if (!task.hasExternalSource) return;
+    if (!task.hasExternalSource && !task.externalSourceInvalidationCursor) return;
+    // A sync invalidation makes only the mounted lazy consumer reload.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLoaded(null);
     const controller = new AbortController();
     void fetch(`/api/tasks/${encodeURIComponent(task.id)}/external-source`, {
       signal: controller.signal,
@@ -2462,9 +2558,13 @@ function useTaskExternalSource(task: TaskRecord) {
         setLoaded({ taskId: task.id, source: null });
       });
     return () => controller.abort();
-  }, [task.hasExternalSource, task.id]);
+  }, [
+    task.externalSourceInvalidationCursor,
+    task.hasExternalSource,
+    task.id,
+  ]);
 
-  if (!task.hasExternalSource) return null;
+  if (!task.hasExternalSource && !task.externalSourceInvalidationCursor) return null;
   return loaded?.taskId === task.id ? loaded.source : undefined;
 }
 
@@ -2514,11 +2614,13 @@ function TaskActivity({ task, currentUser, canWrite }: {
   }
 
   useEffect(() => {
+    // Keep the draft, but discard the loaded page after a remote comment event.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPage(null);
     const timer = window.setTimeout(() => void loadComments(), 0);
-    // The component is keyed by task and intentionally loads once per task details mount.
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task.id]);
+  }, [task.commentInvalidationCursor, task.id]);
 
   useEffect(() => {
     if (!page || !window.location.hash.startsWith("#comment-")) return;

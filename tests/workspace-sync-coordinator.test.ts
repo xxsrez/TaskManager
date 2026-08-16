@@ -77,6 +77,11 @@ function response(cursor: string, hasMore: boolean): WorkspaceSyncResponse {
       projects: { upsert: [], remove: [] },
       releases: { upsert: [], remove: [] },
       views: { upsert: [], remove: [] },
+      invalidations: {
+        taskDetails: [],
+        taskComments: [],
+        taskExternalSources: [],
+      },
       labels: [],
       taskLabels: [],
       relations: [],

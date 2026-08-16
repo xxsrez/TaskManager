@@ -4,6 +4,7 @@ import { GET as syncRoute } from "../app/api/sync/route";
 import { configureActorResolverForTests } from "../lib/auth";
 import {
   applyWorkspaceSync,
+  WORKSPACE_SYNC_REQUEST_TIMEOUT_MS,
   workspaceSyncRetryDelay,
 } from "../lib/workspace-sync-contract";
 import {
@@ -13,6 +14,7 @@ import {
   createTask,
   getOrCreateUser,
   getSnapshot,
+  getTaskDetail,
   grantAccess,
   revokeAccess,
   transferProjectOwnership,
@@ -21,6 +23,7 @@ import {
 import { getWorkspaceSync } from "../lib/workspace-sync";
 import type { AppSnapshot, WorkspaceSyncResponse } from "../lib/types";
 import { createD1TestHarness } from "./helpers/d1";
+import { createComment, setCommentReaction } from "../lib/comments";
 
 const ownerActor = {
   provider: "chatgpt" as const,
@@ -189,7 +192,7 @@ test("projects, releases, and saved views share the same create and delete feed"
   assert.deepEqual(removed.changes.projects.remove, [project.id]);
 });
 
-test("task label and relation updates ride on the touched task feed", async () => {
+test("task label and relation updates emit only lazy detail invalidations", async () => {
   const owner = await getOrCreateUser({
     ...ownerActor,
     providerAccountKey: "sync-join-owner",
@@ -223,31 +226,26 @@ test("task label and relation updates ride on the touched task feed", async () =
   ]);
 
   const response = await getWorkspaceSync(owner, initial.syncCursor!);
-  assert.equal(
-    response.changes.tasks.upsert.some((task) => task.id === source.id),
-    true,
+  assert.deepEqual(response.changes.tasks.upsert, []);
+  assert.deepEqual(
+    [...response.changes.invalidations.taskDetails].sort(),
+    [source.id, target.id].sort(),
   );
+  assert.deepEqual(response.changes.taskLabels, []);
+  assert.deepEqual(response.changes.labels, []);
+  assert.deepEqual(response.changes.relations, []);
+  const detail = await getTaskDetail(owner, source.id);
   assert.equal(
-    response.changes.tasks.upsert.some((task) => task.id === target.id),
-    true,
+    detail.relatedTasks.find((task) => task.id === target.id)?.description,
+    null,
   );
-  assert.deepEqual(response.changes.taskLabels, [{
-    taskId: source.id,
-    labelId: "label-sync",
-  }]);
-  assert.equal(response.changes.labels[0]?.name, "Sync label");
-  assert.deepEqual(response.changes.relations, [{
-    sourceTaskId: source.id,
-    targetTaskId: target.id,
-    type: "related",
-  }]);
   const after = await getSnapshot(owner);
   assert.equal(after.tasks.find((task) => task.id === source.id)?.updatedAt, source.updatedAt);
   assert.equal(after.tasks.find((task) => task.id === target.id)?.updatedAt, target.updatedAt);
   assert.equal(after.tasks.find((task) => task.id === source.id)?.version, source.version);
 });
 
-test("label definition changes reset every affected principal without exposing content", async () => {
+test("label definitions invalidate only affected lazy task details", async () => {
   const owner = await getOrCreateUser({
     ...ownerActor,
     providerAccountKey: "sync-label-owner",
@@ -266,10 +264,9 @@ test("label definition changes reset every affected principal without exposing c
     )
     .bind("label-reset", owner.id, "Initial label", "#334455")
     .run();
-  assert.equal(
-    (await getWorkspaceSync(owner, beforeCreate.syncCursor!)).resetRequired,
-    true,
-  );
+  const unattachedCreate = await getWorkspaceSync(owner, beforeCreate.syncCursor!);
+  assert.equal(unattachedCreate.resetRequired, false);
+  assert.equal(unattachedCreate.cursor, beforeCreate.syncCursor);
 
   await createProject(owner, { name: "Label reset project" });
   const project = (await getSnapshot(owner)).projects.find(
@@ -304,17 +301,12 @@ test("label definition changes reset every affected principal without exposing c
     collaborator,
     collaboratorInitial.syncCursor!,
   );
-  assert.equal(ownerRename.resetRequired, true);
-  assert.equal(collaboratorRename.resetRequired, true);
-  assert.deepEqual(collaboratorRename.changes, {
-    tasks: { upsert: [], remove: [] },
-    projects: { upsert: [], remove: [] },
-    releases: { upsert: [], remove: [] },
-    views: { upsert: [], remove: [] },
-    labels: [],
-    taskLabels: [],
-    relations: [],
-  });
+  assert.equal(ownerRename.resetRequired, false);
+  assert.equal(collaboratorRename.resetRequired, false);
+  assert.deepEqual(ownerRename.changes.invalidations.taskDetails, [task.id]);
+  assert.deepEqual(collaboratorRename.changes.invalidations.taskDetails, [task.id]);
+  assert.deepEqual(collaboratorRename.changes.tasks.upsert, []);
+  assert.deepEqual(collaboratorRename.changes.labels, []);
 
   const beforeDelete = await getSnapshot(owner);
   await database
@@ -322,10 +314,9 @@ test("label definition changes reset every affected principal without exposing c
     .bind(task.id, "label-reset")
     .run();
   await database.prepare("DELETE FROM labels WHERE id = ?").bind("label-reset").run();
-  assert.equal(
-    (await getWorkspaceSync(owner, beforeDelete.syncCursor!)).resetRequired,
-    true,
-  );
+  const removed = await getWorkspaceSync(owner, beforeDelete.syncCursor!);
+  assert.equal(removed.resetRequired, false);
+  assert.deepEqual(removed.changes.invalidations.taskDetails, [task.id]);
 });
 
 test("sync fan-out follows current project ACL without exposing unrelated changes", async () => {
@@ -533,7 +524,131 @@ test("an internal cursor gap cannot be skipped by a later event", async () => {
   assert.equal(response.resetRequired, true);
 });
 
+test("native comments and reactions emit lazy comment invalidations", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-comments-owner",
+    email: "sync-comments-owner@example.test",
+  });
+  await createTask(owner, { title: "Comment invalidation task" });
+  const initial = await getSnapshot(owner);
+  const task = initial.tasks.find((item) => item.title === "Comment invalidation task")!;
+  const comment = await createComment(owner, task.id, {
+    body: "A remote comment",
+    idempotencyKey: "sync-comment-create",
+  });
+
+  const created = await getWorkspaceSync(owner, initial.syncCursor!);
+  assert.deepEqual(created.changes.invalidations.taskComments, [task.id]);
+  assert.deepEqual(created.changes.labels, []);
+  assert.deepEqual(created.changes.taskLabels, []);
+  assert.deepEqual(created.changes.relations, []);
+
+  await setCommentReaction(owner, task.id, comment.id, {
+    emoji: "👍",
+    active: true,
+  });
+  const reacted = await getWorkspaceSync(owner, created.cursor);
+  assert.equal(reacted.changes.tasks.upsert[0]?.id, task.id);
+  assert.equal(reacted.changes.tasks.upsert[0]?.description, null);
+  assert.deepEqual(reacted.changes.invalidations.taskComments, [task.id]);
+});
+
+test("external task context emits an ID-only lazy invalidation", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-external-owner",
+    email: "sync-external-owner@example.test",
+  });
+  await createTask(owner, { title: "External invalidation task" });
+  const initial = await getSnapshot(owner);
+  const task = initial.tasks.find((item) => item.title === "External invalidation task")!;
+
+  await database.prepare(
+    `INSERT INTO external_records
+      (id, owner_user_id, target_type, target_id, source, source_id,
+       source_url, metadata_json, imported_at)
+     VALUES (?, ?, 'task', ?, 'linear', ?, NULL, '{}', CURRENT_TIMESTAMP)`,
+  ).bind("external-sync-record", owner.id, task.id, "linear-sync-record").run();
+
+  const response = await getWorkspaceSync(owner, initial.syncCursor!);
+  assert.deepEqual(response.changes.tasks.upsert, []);
+  assert.deepEqual(response.changes.invalidations.taskExternalSources, [task.id]);
+  assert.deepEqual(response.changes.labels, []);
+  assert.deepEqual(response.changes.taskLabels, []);
+  assert.deepEqual(response.changes.relations, []);
+});
+
+test("an exact-ID task projection never removes an accessible task outside 2000 rows", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-large-owner",
+    email: "sync-large-owner@example.test",
+  });
+  const status = (await getSnapshot(owner)).statuses[0]!;
+  await database.prepare(
+    `WITH RECURSIVE numbers(value) AS (
+       SELECT 0 UNION ALL SELECT value + 1 FROM numbers WHERE value < 2000
+     )
+     INSERT INTO tasks
+       (id, public_id, owner_user_id, creator_user_id, identifier,
+        sequence_number, title, status_id, rank, created_at, updated_at)
+     SELECT 'bulk-task-' || printf('%04d', value),
+            'bulk-public-' || printf('%04d', value), ?, ?,
+            'BULK-' || printf('%04d', value), 10000 + value,
+            'Bulk task ' || printf('%04d', value), ?, value,
+            '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
+     FROM numbers`,
+  ).bind(owner.id, owner.id, status.id).run();
+  const initial = await getSnapshot(owner);
+  const touchedTaskId = "bulk-task-0000";
+  assert.equal(initial.tasks.some((task) => task.id === touchedTaskId), false);
+
+  const sequence = await database.prepare(
+    `UPDATE workspace_sync_sequences SET last_sequence = last_sequence + 1
+     WHERE audience_user_id = ? RETURNING last_sequence`,
+  ).bind(owner.id).first<{ last_sequence: number }>();
+  await database.prepare(
+    `INSERT INTO workspace_change_events
+      (audience_user_id, sequence, entity_type, entity_id, operation)
+     VALUES (?, ?, 'task', ?, 'upsert')`,
+  ).bind(owner.id, sequence!.last_sequence, touchedTaskId).run();
+
+  const response = await getWorkspaceSync(owner, initial.syncCursor!);
+  assert.deepEqual(response.changes.tasks.remove, []);
+  assert.equal(response.changes.tasks.upsert[0]?.id, touchedTaskId);
+});
+
+test("expired journal rows are pruned and force safe cursor recovery", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-retention-owner",
+    email: "sync-retention-owner@example.test",
+  });
+  const initial = await getSnapshot(owner);
+  await createTask(owner, { title: "Expired sync event" });
+  await database.prepare(
+    `UPDATE workspace_change_events
+     SET created_at = datetime('now', '-31 days')
+     WHERE audience_user_id = ?`,
+  ).bind(owner.id).run();
+  await database.prepare(
+    `INSERT INTO workspace_sync_maintenance (key, last_run_at)
+     VALUES ('event-retention', datetime('now', '-25 hours'))
+     ON CONFLICT(key) DO UPDATE SET last_run_at = excluded.last_run_at`,
+  ).run();
+
+  const response = await getWorkspaceSync(owner, initial.syncCursor!);
+  assert.equal(response.resetRequired, true);
+  const retained = await database.prepare(
+    `SELECT COUNT(*) AS count FROM workspace_change_events
+     WHERE audience_user_id = ?`,
+  ).bind(owner.id).first<{ count: number }>();
+  assert.equal(Number(retained?.count), 0);
+});
+
 test("sync retry backoff is bounded and starts at the polling interval", () => {
+  assert.equal(WORKSPACE_SYNC_REQUEST_TIMEOUT_MS, 45_000);
   assert.equal(workspaceSyncRetryDelay(0), 60_000);
   assert.equal(workspaceSyncRetryDelay(1), 120_000);
   assert.equal(workspaceSyncRetryDelay(20), 300_000);
@@ -562,6 +677,33 @@ test("task patches preserve loaded detail while accepting a newer summary timest
   assert.equal(next.tasks[0]?.commentCount, 1);
 });
 
+test("lazy invalidations preserve cached bodies and apply idempotently by cursor", () => {
+  const task = baseSnapshot().tasks[0]!;
+  const current: AppSnapshot = {
+    ...baseSnapshot(),
+    tasks: [{ ...task, description: "Loaded body", detailVersion: 1 }],
+    labels: [{ id: "label-1", ownerUserId: task.ownerUserId, name: "Cached", color: "#fff" }],
+    taskLabels: [{ taskId: task.id, labelId: "label-1" }],
+  };
+  const response = emptySyncResponse({
+    invalidations: {
+      taskDetails: [task.id],
+      taskComments: [task.id],
+      taskExternalSources: [task.id],
+    },
+  });
+
+  const once = applyWorkspaceSync(current, response);
+  const twice = applyWorkspaceSync(once, response);
+  assert.deepEqual(twice, once);
+  assert.equal(once.tasks[0]?.description, "Loaded body");
+  assert.equal(once.tasks[0]?.detailStale, true);
+  assert.equal(once.tasks[0]?.detailInvalidationCursor, response.cursor);
+  assert.equal(once.tasks[0]?.commentInvalidationCursor, response.cursor);
+  assert.equal(once.tasks[0]?.externalSourceInvalidationCursor, response.cursor);
+  assert.deepEqual(once.taskLabels, current.taskLabels);
+});
+
 function emptySyncResponse(
   changes: Partial<WorkspaceSyncResponse["changes"]> = {},
 ): WorkspaceSyncResponse {
@@ -574,6 +716,11 @@ function emptySyncResponse(
       projects: { upsert: [], remove: [] },
       releases: { upsert: [], remove: [] },
       views: { upsert: [], remove: [] },
+      invalidations: {
+        taskDetails: [],
+        taskComments: [],
+        taskExternalSources: [],
+      },
       labels: [],
       taskLabels: [],
       relations: [],

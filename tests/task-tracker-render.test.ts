@@ -21,6 +21,7 @@ import {
   runSingleFlight,
   shouldTriggerPullRefresh,
   taskMutationVersion,
+  taskNeedsDetailRefresh,
   taskDraftSyncMode,
   taskDraftValueChanged,
   taskMatchesSearch,
@@ -452,6 +453,11 @@ test("task detail reconciliation patches and removes related task summaries", ()
     projects: { upsert: [], remove: [] },
     releases: { upsert: [], remove: [] },
     views: { upsert: [], remove: [] },
+    invalidations: {
+      taskDetails: [],
+      taskComments: [],
+      taskExternalSources: [],
+    },
     labels: [],
     taskLabels: [],
     relations: [],
@@ -463,11 +469,84 @@ test("task detail reconciliation patches and removes related task summaries", ()
     projects: { upsert: [], remove: [] },
     releases: { upsert: [], remove: [] },
     views: { upsert: [], remove: [] },
+    invalidations: {
+      taskDetails: [],
+      taskComments: [],
+      taskExternalSources: [],
+    },
     labels: [],
     taskLabels: [],
     relations: [],
   });
   assert.deepEqual(removed?.relatedTasks, []);
+});
+
+test("task detail invalidation marks loaded same-version context for lazy refresh", () => {
+  const focusedTask = {
+    ...snapshot.tasks[0]!,
+    description: "Loaded body",
+    detailVersion: 1,
+  };
+  const updated = reconcileTaskDetailFromSync({
+    task: focusedTask,
+    relatedTasks: [],
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  }, {
+    tasks: { upsert: [], remove: [] },
+    projects: { upsert: [], remove: [] },
+    releases: { upsert: [], remove: [] },
+    views: { upsert: [], remove: [] },
+    invalidations: {
+      taskDetails: [focusedTask.id],
+      taskComments: [],
+      taskExternalSources: [],
+    },
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  });
+
+  assert.equal(updated?.task.detailStale, true);
+  assert.equal(taskNeedsDetailRefresh(updated!.task), true);
+
+  const duplicate = reconcileTaskDetailFromSync(updated!, {
+    tasks: { upsert: [], remove: [] },
+    projects: { upsert: [], remove: [] },
+    releases: { upsert: [], remove: [] },
+    views: { upsert: [], remove: [] },
+    invalidations: {
+      taskDetails: [focusedTask.id],
+      taskComments: [],
+      taskExternalSources: [],
+    },
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  }, "sync-v1:detail");
+  const onceWithCursor = reconcileTaskDetailFromSync({
+    ...updated!,
+    task: { ...updated!.task, detailInvalidationCursor: "sync-v1:detail" },
+  }, {
+    tasks: { upsert: [], remove: [] },
+    projects: { upsert: [], remove: [] },
+    releases: { upsert: [], remove: [] },
+    views: { upsert: [], remove: [] },
+    invalidations: {
+      taskDetails: [focusedTask.id],
+      taskComments: [],
+      taskExternalSources: [],
+    },
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  }, "sync-v1:detail");
+  assert.equal(duplicate?.task.detailInvalidationCursor, "sync-v1:detail");
+  assert.deepEqual(onceWithCursor, {
+    ...updated!,
+    task: { ...updated!.task, detailInvalidationCursor: "sync-v1:detail" },
+  });
 });
 
 test("reset reconciliation preserves detail-only context until authoritative reload", () => {

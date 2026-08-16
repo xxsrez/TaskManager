@@ -1,7 +1,9 @@
 import { getD1 } from "@/db";
-import { getSnapshot } from "./repository";
+import {
+  getWorkspaceSyncProjection,
+  type WorkspaceSyncProjection,
+} from "./repository";
 import type {
-  AppSnapshot,
   UserRecord,
   WorkspaceSyncChanges,
   WorkspaceSyncResponse,
@@ -19,12 +21,15 @@ type ChangeRow = {
 };
 
 const SYNC_PAGE_SIZE = 200;
+const SYNC_RETENTION_DAYS = 30;
+const SYNC_PRUNE_INTERVAL_HOURS = 24;
 
 export async function getWorkspaceSync(
   user: UserRecord,
   cursorValue: string,
 ): Promise<WorkspaceSyncResponse> {
   const db = getD1();
+  await pruneWorkspaceSyncEvents(db);
   const state = await db
     .prepare(
       `SELECT last_sequence FROM workspace_sync_sequences
@@ -85,13 +90,24 @@ export async function getWorkspaceSync(
   }
 
   const processedSequence = Number(rows.at(-1)!.sequence);
-  const snapshot = await getSnapshot(user);
   const touched = coalesceTouchedEntities(rows);
+  const invalidatedTaskIds = [
+    ...touched.task_detail,
+    ...touched.task_comments,
+    ...touched.task_external_source,
+  ];
+  const projection = await getWorkspaceSyncProjection(user, {
+    taskIds: [...touched.task],
+    projectIds: [...touched.project],
+    releaseIds: [...touched.release],
+    viewIds: [...touched.saved_view],
+    invalidatedTaskIds,
+  });
   return {
     cursor: encodeWorkspaceSyncCursor(processedSequence),
     resetRequired: false,
     hasMore: page.results.length > SYNC_PAGE_SIZE,
-    changes: buildChanges(snapshot, touched),
+    changes: buildChanges(projection, touched),
   };
 }
 
@@ -119,14 +135,34 @@ function emptyChanges(): WorkspaceSyncChanges {
     projects: { upsert: [], remove: [] },
     releases: { upsert: [], remove: [] },
     views: { upsert: [], remove: [] },
+    invalidations: {
+      taskDetails: [],
+      taskComments: [],
+      taskExternalSources: [],
+    },
     labels: [],
     taskLabels: [],
     relations: [],
   };
 }
 
-function isIncrementalEntity(value: string): value is "task" | "project" | "release" | "saved_view" {
-  return value === "task" || value === "project" || value === "release" || value === "saved_view";
+type IncrementalEntity =
+  | "task"
+  | "project"
+  | "release"
+  | "saved_view"
+  | "task_detail"
+  | "task_comments"
+  | "task_external_source";
+
+function isIncrementalEntity(value: string): value is IncrementalEntity {
+  return value === "task" ||
+    value === "project" ||
+    value === "release" ||
+    value === "saved_view" ||
+    value === "task_detail" ||
+    value === "task_comments" ||
+    value === "task_external_source";
 }
 
 function coalesceTouchedEntities(rows: ChangeRow[]) {
@@ -135,6 +171,9 @@ function coalesceTouchedEntities(rows: ChangeRow[]) {
     project: new Set<string>(),
     release: new Set<string>(),
     saved_view: new Set<string>(),
+    task_detail: new Set<string>(),
+    task_comments: new Set<string>(),
+    task_external_source: new Set<string>(),
   };
   for (const row of rows) {
     if (isIncrementalEntity(row.entity_type)) {
@@ -145,31 +184,49 @@ function coalesceTouchedEntities(rows: ChangeRow[]) {
 }
 
 function buildChanges(
-  snapshot: AppSnapshot,
+  projection: WorkspaceSyncProjection,
   touched: ReturnType<typeof coalesceTouchedEntities>,
 ): WorkspaceSyncChanges {
-  const tasks = collectionPatch(snapshot.tasks, touched.task);
-  const projects = collectionPatch(snapshot.projects, touched.project);
-  const releases = collectionPatch(snapshot.releases, touched.release);
-  const views = collectionPatch(snapshot.views, touched.saved_view);
-  const upsertedTaskIds = new Set(tasks.upsert.map((task) => task.id));
-  const taskLabels = snapshot.taskLabels.filter((assignment) =>
-    upsertedTaskIds.has(assignment.taskId),
-  );
-  const labelIds = new Set(taskLabels.map((assignment) => assignment.labelId));
+  const accessibleTaskIds = new Set(projection.accessibleTaskIds);
   return {
-    tasks,
-    projects,
-    releases,
-    views,
-    labels: snapshot.labels.filter((label) => labelIds.has(label.id)),
-    taskLabels,
-    relations: snapshot.relations.filter(
-      (relation) =>
-        upsertedTaskIds.has(relation.sourceTaskId) ||
-        upsertedTaskIds.has(relation.targetTaskId),
-    ),
+    tasks: collectionPatch(projection.tasks, touched.task),
+    projects: collectionPatch(projection.projects, touched.project),
+    releases: collectionPatch(projection.releases, touched.release),
+    views: collectionPatch(projection.views, touched.saved_view),
+    invalidations: {
+      taskDetails: [...touched.task_detail].filter((id) => accessibleTaskIds.has(id)),
+      taskComments: [...touched.task_comments].filter((id) => accessibleTaskIds.has(id)),
+      taskExternalSources: [...touched.task_external_source].filter((id) =>
+        accessibleTaskIds.has(id)
+      ),
+    },
+    // Kept as empty compatibility fields for already-open clients from the
+    // previous protocol. Lazy collections are no longer shipped incrementally.
+    labels: [],
+    taskLabels: [],
+    relations: [],
   };
+}
+
+async function pruneWorkspaceSyncEvents(db: D1Database): Promise<void> {
+  const claim = await db
+    .prepare(
+      `INSERT INTO workspace_sync_maintenance (key, last_run_at)
+       VALUES ('event-retention', CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET last_run_at = CURRENT_TIMESTAMP
+       WHERE last_run_at < datetime('now', '-' || ? || ' hours')
+       RETURNING last_run_at`,
+    )
+    .bind(SYNC_PRUNE_INTERVAL_HOURS)
+    .first<{ last_run_at: string }>();
+  if (!claim) return;
+  await db
+    .prepare(
+      `DELETE FROM workspace_change_events
+       WHERE created_at < datetime('now', '-' || ? || ' days')`,
+    )
+    .bind(SYNC_RETENTION_DAYS)
+    .run();
 }
 
 function collectionPatch<T extends { id: string }>(items: T[], touched: Set<string>) {

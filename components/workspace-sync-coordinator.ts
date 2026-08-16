@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import type { AppSnapshot, WorkspaceSyncResponse } from "@/lib/types";
 import {
   WORKSPACE_SYNC_INTERVAL_MS,
+  WORKSPACE_SYNC_REQUEST_TIMEOUT_MS,
   workspaceSyncRetryDelay,
 } from "@/lib/workspace-sync-contract";
 
@@ -106,6 +107,7 @@ export function useWorkspaceSyncCoordinator({
   useEffect(() => {
     let timer: number | null = null;
     let controller: AbortController | null = null;
+    let requestTimeout: number | null = null;
     let running = false;
     let failureCount = 0;
     let disposed = false;
@@ -113,6 +115,10 @@ export function useWorkspaceSyncCoordinator({
     const clearTimer = () => {
       if (timer !== null) window.clearTimeout(timer);
       timer = null;
+    };
+    const clearRequestTimeout = () => {
+      if (requestTimeout !== null) window.clearTimeout(requestTimeout);
+      requestTimeout = null;
     };
     const canPoll = () => document.visibilityState === "visible" && navigator.onLine;
     const schedule = (delay: number) => {
@@ -128,6 +134,11 @@ export function useWorkspaceSyncCoordinator({
       }
       running = true;
       controller = new AbortController();
+      let timedOut = false;
+      requestTimeout = window.setTimeout(() => {
+        timedOut = true;
+        controller?.abort();
+      }, WORKSPACE_SYNC_REQUEST_TIMEOUT_MS);
       try {
         cursorRef.current = await runWorkspaceSyncCycle({
           cursor: cursorRef.current,
@@ -137,11 +148,12 @@ export function useWorkspaceSyncCoordinator({
         failureCount = 0;
         schedule(WORKSPACE_SYNC_INTERVAL_MS);
       } catch (error) {
-        if (!(error instanceof DOMException && error.name === "AbortError")) {
+        if (timedOut || !(error instanceof DOMException && error.name === "AbortError")) {
           schedule(workspaceSyncRetryDelay(failureCount));
           failureCount += 1;
         }
       } finally {
+        clearRequestTimeout();
         running = false;
         controller = null;
       }
@@ -167,6 +179,7 @@ export function useWorkspaceSyncCoordinator({
     return () => {
       disposed = true;
       clearTimer();
+      clearRequestTimeout();
       controller?.abort();
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("online", resume);

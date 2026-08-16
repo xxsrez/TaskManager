@@ -227,15 +227,22 @@ Project Owner имеет implicit highest access и не представлен 
 | `audience_user_id` | Authenticated principal, для которого рассчитан event |
 | `last_sequence` | Последний монотонный checkpoint этого principal |
 | `sequence` | Порядок event внутри principal scope |
-| `entity_type`, `entity_id` | Touched Task, Project, Release, SavedView либо workspace reset marker |
-| `operation` | `upsert`, `remove` или `reset` |
+| `entity_type`, `entity_id` | Touched Task, Project, Release, SavedView, `task_detail`, `task_comments`, `task_external_source` либо workspace reset marker |
+| `operation` | `upsert`, `remove`, `invalidate` или `reset` |
 | `created_at` | Время записи journal event |
 
 Journal не хранит entity content. Audience вычисляется в той же D1 transaction,
-что mutation, по current owner/active grants. Read response всегда повторно
-строит актуальный ACL-scoped projection; поэтому старый event не даёт права
-прочитать record. `(audience_user_id, sequence)` уникален. Удаление старых rows
-обязано оставлять обнаруживаемый cursor gap, который приводит к full bootstrap.
+что mutation, по current owner/active grants. Для lazy context
+`workspace_sync_invalidations` служит краткоживущей trigger queue: fan-out
+создаёт ID-only event и удаляет queue row в той же transaction. Read response
+строит актуальный ACL-scoped projection только по touched IDs; поэтому старый
+event не даёт права прочитать record и не зависит от bounded bootstrap window.
+`(audience_user_id, sequence)` уникален.
+
+`workspace_sync_maintenance(key, last_run_at)` координирует throttled pruning:
+journal rows старше 30 дней удаляются не чаще раза в сутки. Sequence не
+переиспользуется; cursor до retention boundary образует обнаруживаемый gap и
+приводит к full bootstrap.
 
 ## Task
 

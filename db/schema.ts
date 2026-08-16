@@ -403,6 +403,18 @@ export const workspaceChangeEvents = sqliteTable(
   ],
 );
 
+export const workspaceSyncMaintenance = sqliteTable("workspace_sync_maintenance", {
+  key: text("key").primaryKey(),
+  lastRunAt: text("last_run_at").notNull(),
+});
+
+// Ephemeral trigger queue. An AFTER INSERT trigger fans each row out to the
+// current task audience and removes it in the same transaction.
+export const workspaceSyncInvalidations = sqliteTable("workspace_sync_invalidations", {
+  taskId: text("task_id").notNull(),
+  invalidationType: text("invalidation_type").notNull(),
+});
+
 export const labels = sqliteTable(
   "labels",
   {

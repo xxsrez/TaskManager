@@ -207,7 +207,9 @@ export async function editComment(
     db.prepare(`UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT} WHERE id = ?`)
       .bind(taskNow, taskNow, task.id),
   ]);
-  if ((result[0]?.meta.changes ?? 0) !== 1) {
+  // D1 may include nested sync-trigger writes in meta.changes. The guarded
+  // primary-key update still touches at most one Comment row.
+  if ((result[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Comment was changed in another session");
   }
   return getCommentRecord(currentUser, task, commentId);
@@ -243,7 +245,7 @@ export async function deleteComment(
        ), updated_at = ${MONOTONIC_TASK_UPDATED_AT} WHERE id = ?`,
     ).bind(task.id, taskNow, taskNow, task.id),
   ]);
-  if ((result[0]?.meta.changes ?? 0) !== 1) {
+  if ((result[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Comment was changed in another session");
   }
   return getCommentRecord(currentUser, task, commentId);
@@ -292,7 +294,7 @@ export async function resolveCommentThread(
     db.prepare(`UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT} WHERE id = ?`)
       .bind(taskNow, taskNow, task.id),
   ]);
-  if ((result[0]?.meta.changes ?? 0) !== 1) {
+  if ((result[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Comment thread was changed in another session");
   }
   return getCommentRecord(currentUser, task, rootId);

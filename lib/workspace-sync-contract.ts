@@ -10,6 +10,7 @@ import type {
 
 export const WORKSPACE_SYNC_INTERVAL_MS = 60_000;
 export const WORKSPACE_SYNC_MAX_RETRY_MS = 300_000;
+export const WORKSPACE_SYNC_REQUEST_TIMEOUT_MS = 45_000;
 
 export function workspaceSyncRetryDelay(failureCount: number): number {
   const boundedFailures = Math.max(0, Math.min(20, Math.floor(failureCount)));
@@ -25,15 +26,17 @@ export function applyWorkspaceSync(
 ): AppSnapshot {
   if (response.resetRequired) return current;
 
-  const touchedTaskIds = new Set([
-    ...response.changes.tasks.upsert.map((task) => task.id),
-    ...response.changes.tasks.remove,
-  ]);
-  const tasks = reconcileCollection(
+  const removedTaskIds = new Set(response.changes.tasks.remove);
+  const reconciledTasks = reconcileCollection(
     current.tasks,
     response.changes.tasks,
     (task) => task.id,
     mergeTaskSummary,
+  );
+  const tasks = applyLazyInvalidations(
+    reconciledTasks,
+    response.changes.invalidations,
+    response.cursor,
   );
   const projects = reconcileCollection(
     current.projects,
@@ -61,20 +64,14 @@ export function applyWorkspaceSync(
     releases,
     views,
     labels: mergeById(current.labels, response.changes.labels),
-    taskLabels: [
-      ...current.taskLabels.filter(
-        (assignment) => !touchedTaskIds.has(assignment.taskId),
-      ),
-      ...response.changes.taskLabels,
-    ],
-    relations: [
-      ...current.relations.filter(
-        (relation) =>
-          !touchedTaskIds.has(relation.sourceTaskId) &&
-          !touchedTaskIds.has(relation.targetTaskId),
-      ),
-      ...response.changes.relations,
-    ],
+    taskLabels: current.taskLabels.filter(
+      (assignment) => !removedTaskIds.has(assignment.taskId),
+    ),
+    relations: current.relations.filter(
+      (relation) =>
+        !removedTaskIds.has(relation.sourceTaskId) &&
+        !removedTaskIds.has(relation.targetTaskId),
+    ),
     syncCursor: response.cursor,
   };
 }
@@ -85,14 +82,67 @@ export function mergeTaskSummary(
 ): TaskRecord {
   if (!retained) return incoming;
   if (!incomingWins(retained, incoming)) return retained;
+  const clientState: Partial<TaskRecord> = {};
+  const detailVersion = incoming.detailVersion ?? retained.detailVersion;
+  const detailStale = incoming.detailStale ?? retained.detailStale;
+  const detailInvalidationCursor = incoming.detailInvalidationCursor ??
+    retained.detailInvalidationCursor;
+  const commentInvalidationCursor = incoming.commentInvalidationCursor ??
+    retained.commentInvalidationCursor;
+  const externalSourceInvalidationCursor = incoming.externalSourceInvalidationCursor ??
+    retained.externalSourceInvalidationCursor;
+  if (detailVersion !== undefined) clientState.detailVersion = detailVersion;
+  if (detailStale !== undefined) clientState.detailStale = detailStale;
+  if (detailInvalidationCursor !== undefined) {
+    clientState.detailInvalidationCursor = detailInvalidationCursor;
+  }
+  if (commentInvalidationCursor !== undefined) {
+    clientState.commentInvalidationCursor = commentInvalidationCursor;
+  }
+  if (externalSourceInvalidationCursor !== undefined) {
+    clientState.externalSourceInvalidationCursor = externalSourceInvalidationCursor;
+  }
   if (retained.description !== null && incoming.description === null) {
     return {
       ...incoming,
+      ...clientState,
       description: retained.description,
       detailVersion: retained.detailVersion ?? retained.version,
     };
   }
-  return incoming;
+  return { ...incoming, ...clientState };
+}
+
+function applyLazyInvalidations(
+  tasks: TaskRecord[],
+  invalidations: WorkspaceSyncResponse["changes"]["invalidations"],
+  cursor: string,
+): TaskRecord[] {
+  const detailIds = new Set(invalidations.taskDetails);
+  const commentIds = new Set(invalidations.taskComments);
+  const externalSourceIds = new Set(invalidations.taskExternalSources);
+  if (!detailIds.size && !commentIds.size && !externalSourceIds.size) return tasks;
+  return tasks.map((task) => {
+    const detailInvalidated = detailIds.has(task.id) &&
+      task.detailInvalidationCursor !== cursor;
+    const commentsInvalidated = commentIds.has(task.id) &&
+      task.commentInvalidationCursor !== cursor;
+    const externalSourceInvalidated = externalSourceIds.has(task.id) &&
+      task.externalSourceInvalidationCursor !== cursor;
+    if (!detailInvalidated && !commentsInvalidated && !externalSourceInvalidated) {
+      return task;
+    }
+    return {
+      ...task,
+      ...(detailInvalidated
+        ? { detailStale: true, detailInvalidationCursor: cursor }
+        : {}),
+      ...(commentsInvalidated ? { commentInvalidationCursor: cursor } : {}),
+      ...(externalSourceInvalidated
+        ? { externalSourceInvalidationCursor: cursor }
+        : {}),
+    };
+  });
 }
 
 function reconcileCollection<T>(
