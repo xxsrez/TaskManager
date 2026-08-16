@@ -143,6 +143,8 @@ test("workspace synchronization has per-principal ordering and mutation triggers
     "workspace_sync_views_update",
     "workspace_sync_views_move",
     "workspace_sync_access_update",
+    "workspace_sync_task_labels_insert",
+    "workspace_sync_task_relations_insert",
   ]) {
     assert.equal(triggers.has(trigger), true, `${trigger} should exist`);
   }
