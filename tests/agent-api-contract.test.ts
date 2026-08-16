@@ -87,6 +87,17 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks/{ref}"), true);
   assert.equal(paths.includes("/projects"), true);
   assert.equal(paths.includes("/releases"), true);
+  assert.equal(paths.includes("/tasks/{ref}/comments"), true);
+  assert.equal(paths.includes("/tasks/{ref}/comments/{commentRef}"), true);
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/comments"].post.operationId,
+    "createTaskComment",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/comments/{commentRef}/resolution"].put
+      .operationId,
+    "setTaskCommentResolution",
+  );
   assert.equal(paths.some((path) => /admin|backup|share|credential/.test(path)), false);
   assert.equal(
     Object.hasOwn(

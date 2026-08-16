@@ -48,6 +48,7 @@ import {
   FormEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
+  TouchEvent as ReactTouchEvent,
   useEffect,
   useMemo,
   useRef,
@@ -57,6 +58,9 @@ import { canAssignRole, canEditContent, canManageGrant } from "@/lib/access";
 import {
   buildTaskGroups,
   canMoveTaskToGroup,
+  projectTaskGroupMove,
+  rollbackTaskGroupMove,
+  shouldShowEmptyTaskGroups,
   taskGroupCreateDefaults,
   taskGroupMutation,
   taskMatchesGroup,
@@ -74,11 +78,15 @@ import {
   type Layout,
   type ResolvedNavigation,
 } from "@/lib/navigation";
+import { formatReleaseName } from "@/lib/release-presentation";
 import type {
   AdminOverview,
   AccessRole,
   AppliedSystemBackup,
   AppSnapshot,
+  CommentPage,
+  CommentRecord,
+  CommentThreadRecord,
   ExternalSourceRecord,
   Priority,
   ProjectRecord,
@@ -86,6 +94,7 @@ import type {
   SavedViewRecord,
   StagedSystemBackup,
   TaskRecord,
+  TaskDetailRecord,
   UserRecord,
   ViewDisplay,
   ViewQuery,
@@ -110,6 +119,12 @@ type TaskCreateDefaults = Partial<{
   projectId: string | null;
   releaseId: string | null;
 }>;
+type TaskSearchState = {
+  query: string;
+  taskIds: string[];
+  tasks: TaskRecord[];
+  status: "ready" | "error";
+};
 
 export const TASK_MANAGER_MARKETPLACE_URL = "https://github.com/xxsrez/marketplace";
 export const TASK_MANAGER_CLI_SETUP = [
@@ -118,13 +133,30 @@ export const TASK_MANAGER_CLI_SETUP = [
   "codex",
 ].join("\n");
 
-const priorityMeta: Record<Priority, { label: string; glyph: string }> = {
-  urgent: { label: "Urgent", glyph: "!!!" },
-  high: { label: "High", glyph: "▥" },
-  medium: { label: "Medium", glyph: "▤" },
-  low: { label: "Low", glyph: "▂" },
-  none: { label: "No priority", glyph: "—" },
+export function commentDraftStorageKey(
+  userId: string,
+  taskId: string,
+  threadId: string | null = null,
+) {
+  return `tm:comment-draft:${userId}:${taskId}:${threadId ?? "root"}`;
+}
+
+const priorityMeta: Record<Priority, { label: string }> = {
+  urgent: { label: "Urgent" },
+  high: { label: "High" },
+  medium: { label: "Medium" },
+  low: { label: "Low" },
+  none: { label: "No priority" },
 };
+
+export function PriorityIcon({ priority }: { priority: Priority }) {
+  const label = priorityMeta[priority].label;
+  if (priority === "urgent" || priority === "none") {
+    return <span className={`priority-icon priority-${priority}`} data-priority={priority} role="img" aria-label={priority === "urgent" ? "Urgent priority" : label} title={label}><span className="priority-symbol" aria-hidden="true">{priority === "urgent" ? "!" : "−"}</span></span>;
+  }
+  const activeBars = priority === "high" ? 3 : priority === "medium" ? 2 : 1;
+  return <span className={`priority-icon priority-${priority}`} data-priority={priority} data-active-bars={activeBars} role="img" aria-label={`${label} priority`} title={label}>{[1, 2, 3].map((bar) => <span key={bar} className={`priority-bar ${bar <= activeBars ? "active" : ""}`} aria-hidden="true" />)}</span>;
+}
 
 const groupByOptions: Array<{ value: ViewDisplay["groupBy"]; label: string }> = [
   { value: "status", label: "Status" },
@@ -170,19 +202,18 @@ export function applyMutationResult(
 export function mergeDeferredSnapshot(
   current: AppSnapshot,
   incoming: AppSnapshot,
+  options: { taskIdsAtRequest?: ReadonlySet<string> } = {},
 ): AppSnapshot {
   const currentTasks = new Map(current.tasks.map((task) => [task.id, task]));
   const incomingIds = new Set(incoming.tasks.map((task) => task.id));
-  const retainedTasks = current.tasks.filter((task) => !incomingIds.has(task.id));
-  const tasks = incoming.tasks.map((task) => {
-    const retained = currentTasks.get(task.id);
-    if (!retained) return task;
-    if (retained.version > task.version) return retained;
-    if (retained.version === task.version && retained.description !== null) {
-      return retained;
-    }
-    return task;
+  const retainedTasks = current.tasks.filter((task) => {
+    if (incomingIds.has(task.id)) return false;
+    if (!options.taskIdsAtRequest) return true;
+    return !options.taskIdsAtRequest.has(task.id);
   });
+  const tasks = incoming.tasks.map((task) =>
+    mergeTaskProjection(currentTasks.get(task.id), task),
+  );
 
   return {
     ...current,
@@ -200,6 +231,152 @@ export function mergeDeferredSnapshot(
       (relation) => `${relation.sourceTaskId}:${relation.type}:${relation.targetTaskId}`,
     ),
   };
+}
+
+export const PULL_REFRESH_THRESHOLD = 72;
+
+export function canStartPullRefresh(input: {
+  mobile: boolean;
+  coarsePointer: boolean;
+  scrollTop: number;
+  refreshing: boolean;
+  touchCount: number;
+}) {
+  return input.mobile
+    && input.coarsePointer
+    && input.scrollTop <= 0
+    && !input.refreshing
+    && input.touchCount === 1;
+}
+
+export function pullRefreshDistance(deltaY: number) {
+  return Math.min(104, Math.max(0, deltaY * 0.55));
+}
+
+export function shouldTriggerPullRefresh(distance: number) {
+  return distance >= PULL_REFRESH_THRESHOLD;
+}
+
+export async function fetchTaskSnapshot(fetcher: typeof fetch = fetch) {
+  const response = await fetcher("/api/bootstrap");
+  const value = (await response.json()) as AppSnapshot | { error: string };
+  if (!response.ok || "error" in value) {
+    throw new Error("error" in value ? value.error : "Refresh failed");
+  }
+  return value;
+}
+
+export function runSingleFlight<T>(
+  holder: { current: Promise<T> | null },
+  operation: () => Promise<T>,
+) {
+  if (holder.current) return holder.current;
+  const promise = operation().finally(() => {
+    if (holder.current === promise) holder.current = null;
+  });
+  holder.current = promise;
+  return promise;
+}
+
+export function mergeSearchTaskSummaries(
+  current: TaskRecord[],
+  incoming: TaskRecord[],
+): TaskRecord[] {
+  const incomingIds = new Set(incoming.map((task) => task.id));
+  const currentTasks = new Map(current.map((task) => [task.id, task]));
+  return [
+    ...current.filter((task) => !incomingIds.has(task.id)),
+    ...incoming.map((task) => mergeTaskProjection(currentTasks.get(task.id), task)),
+  ];
+}
+
+function mergeTaskProjection(
+  retained: TaskRecord | undefined,
+  incoming: TaskRecord,
+): TaskRecord {
+  if (!retained) return incoming;
+  if (retained.version > incoming.version) return retained;
+  if (retained.version === incoming.version && retained.description !== null) {
+    return retained;
+  }
+  if (retained.description !== null && incoming.description === null) {
+    return {
+      ...incoming,
+      description: retained.description,
+      detailVersion: retained.detailVersion ?? retained.version,
+    };
+  }
+  return incoming;
+}
+
+export function taskMutationVersion(task: TaskRecord): number {
+  return task.detailVersion ?? task.version;
+}
+
+type TaskDraft = {
+  title: string;
+  description: string;
+  estimate: string;
+};
+
+type TaskDraftDirty = Record<keyof TaskDraft, boolean>;
+
+export function rebaseTaskDraft(
+  current: TaskDraft,
+  dirty: TaskDraftDirty,
+  latest: TaskRecord,
+): TaskDraft {
+  return {
+    title: dirty.title ? current.title : latest.title,
+    description: dirty.description
+      ? current.description
+      : latest.description ?? "",
+    estimate: dirty.estimate
+      ? current.estimate
+      : latest.estimate?.toString() ?? "",
+  };
+}
+
+export function mergeTaskDetailContext(
+  current: AppSnapshot,
+  detail: TaskDetailRecord,
+): AppSnapshot {
+  const contextualTasks = [detail.task, ...detail.relatedTasks];
+  const contextualIds = new Set(contextualTasks.map((task) => task.id));
+  return {
+    ...current,
+    tasks: [
+      ...current.tasks.filter((task) => !contextualIds.has(task.id)),
+      ...contextualTasks,
+    ],
+    labels: mergeUnique(detail.labels, current.labels, (label) => label.id),
+    taskLabels: [
+      ...current.taskLabels.filter(
+        (assignment) => assignment.taskId !== detail.task.id,
+      ),
+      ...detail.taskLabels,
+    ],
+    relations: [
+      ...current.relations.filter(
+        (relation) =>
+          relation.sourceTaskId !== detail.task.id &&
+          relation.targetTaskId !== detail.task.id,
+      ),
+      ...detail.relations,
+    ],
+  };
+}
+
+export function taskMatchesSearch(
+  task: TaskRecord,
+  needle: string,
+  remoteMatches: ReadonlySet<string> | null,
+): boolean {
+  if (remoteMatches) return remoteMatches.has(task.id);
+  return task.identifier.toLowerCase() === needle ||
+    task.identifier.toLowerCase().includes(needle) ||
+    task.title.toLowerCase().includes(needle) ||
+    (task.description?.toLowerCase().includes(needle) ?? false);
 }
 
 function mergeUnique<T>(incoming: T[], current: T[], key: (item: T) => string): T[] {
@@ -230,10 +407,12 @@ export function TaskTracker({
   signOutPath: string;
 }) {
   const [data, setData] = useState(initialData);
+  const dataRef = useRef(data);
   const [surface, setSurface] = useState(initialNavigation.surface);
   const [layout, setLayout] = useState<Layout>(initialNavigation.layout);
   const [search, setSearch] = useState("");
-  const [taskSearch, setTaskSearch] = useState<{ query: string; taskIds: string[] } | null>(null);
+  const [taskSearch, setTaskSearch] = useState<TaskSearchState | null>(null);
+  const [taskDetail, setTaskDetail] = useState<TaskDetailRecord | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -246,6 +425,7 @@ export function TaskTracker({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [highlighted, setHighlighted] = useState(0);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
@@ -256,6 +436,10 @@ export function TaskTracker({
   const [taskWindowLoading, setTaskWindowLoading] = useState(
     Boolean(initialData.taskWindow?.truncated),
   );
+  const [pullRefreshing, setPullRefreshing] = useState(false);
+  const [pullRefreshError, setPullRefreshError] = useState("");
+  const [refreshEpoch, setRefreshEpoch] = useState(0);
+  const pullRefreshFlight = useRef<Promise<AppSnapshot> | null>(null);
   const [systemBackupBusy, setSystemBackupBusy] = useState(false);
   const [error, setError] = useState("");
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
@@ -287,6 +471,10 @@ export function TaskTracker({
     () => new Map([...data.users, data.user].map((user) => [user.id, user])),
     [data.user, data.users],
   );
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("tm-theme");
@@ -362,13 +550,14 @@ export function TaskTracker({
       cancelIdleCallback?: (handle: number) => void;
     };
     const loadRemainingTasks = () => {
+      const taskIdsAtRequest = new Set(dataRef.current.tasks.map((task) => task.id));
       void fetch("/api/bootstrap", { signal: controller.signal })
         .then(async (response) => {
           const value = (await response.json()) as AppSnapshot | { error: string };
           if (!response.ok || "error" in value) {
             throw new Error("error" in value ? value.error : "Task loading failed");
           }
-          setData((current) => mergeDeferredSnapshot(current, value));
+          setData((current) => mergeDeferredSnapshot(current, value, { taskIdsAtRequest }));
           setTaskWindowLoading(false);
         })
         .catch((requestError: unknown) => {
@@ -409,17 +598,29 @@ export function TaskTracker({
       })
         .then(async (response) => {
           const value = (await response.json()) as
-            | { taskIds: string[] }
+            | { taskIds: string[]; tasks: TaskRecord[] }
             | { error: string };
           if (!response.ok || "error" in value) {
             throw new Error("error" in value ? value.error : "Task search failed");
           }
-          setTaskSearch({ query: searchNeedle, taskIds: value.taskIds });
+          if (controller.signal.aborted) return;
+          setTaskSearch({
+            query: searchNeedle,
+            taskIds: value.taskIds,
+            tasks: value.tasks,
+            status: "ready",
+          });
         })
         .catch((requestError: unknown) => {
           if (requestError instanceof DOMException && requestError.name === "AbortError") {
             return;
           }
+          setTaskSearch({
+            query: searchNeedle,
+            taskIds: [],
+            tasks: [],
+            status: "error",
+          });
           setError(requestError instanceof Error ? requestError.message : "Task search failed");
         });
     }, 150);
@@ -427,10 +628,43 @@ export function TaskTracker({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [searchNeedle]);
+  }, [refreshEpoch, searchNeedle]);
+
+  function refreshTaskList() {
+    return runSingleFlight(pullRefreshFlight, async () => {
+      setPullRefreshing(true);
+      setPullRefreshError("");
+      const taskIdsAtRequest = new Set(
+        dataRef.current.tasks.map((task) => task.id),
+      );
+      try {
+        const incoming = await fetchTaskSnapshot();
+        setData((current) => mergeDeferredSnapshot(current, incoming, {
+          taskIdsAtRequest,
+        }));
+        setTaskWindowLoading(false);
+        setRefreshEpoch((current) => current + 1);
+        return incoming;
+      } catch (requestError) {
+        setPullRefreshError(
+          requestError instanceof Error ? requestError.message : "Refresh failed",
+        );
+        throw requestError;
+      } finally {
+        setPullRefreshing(false);
+      }
+    });
+  }
+
+  const taskPool = useMemo(
+    () => taskSearch?.query === searchNeedle
+      ? mergeSearchTaskSummaries(data.tasks, taskSearch.tasks)
+      : data.tasks,
+    [data.tasks, searchNeedle, taskSearch],
+  );
 
   const visibleTasks = useMemo(() => {
-    let tasks = data.tasks;
+    let tasks = taskPool;
     const query: ViewQuery = activeSavedView?.query ?? {};
     if (surface === "shared") {
       tasks = tasks.filter((task) => task.accessRole !== "owner");
@@ -479,19 +713,12 @@ export function TaskTracker({
       const remoteMatches = taskSearch?.query === needle
         ? new Set(taskSearch.taskIds)
         : null;
-      tasks = tasks.filter(
-        (task) =>
-          remoteMatches?.has(task.id) ||
-          task.identifier.toLowerCase() === needle ||
-          task.identifier.toLowerCase().includes(needle) ||
-          task.title.toLowerCase().includes(needle) ||
-          (task.description?.toLowerCase().includes(needle) ?? false),
-      );
+      tasks = tasks.filter((task) => taskMatchesSearch(task, needle, remoteMatches));
     }
     return sortTasks(tasks, activeSavedView?.display);
   }, [
     activeSavedView,
-    data.tasks,
+    taskPool,
     priorityFilter,
     searchNeedle,
     statusFilter,
@@ -500,10 +727,22 @@ export function TaskTracker({
     taskSearch,
     viewReferenceTime,
   ]);
+  const taskSearchStatus = searchNeedle && visibleTasks.length === 0
+    ? taskSearch?.query !== searchNeedle
+      ? "loading"
+      : taskSearch.status === "error"
+        ? "error"
+        : null
+    : null;
 
   const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
-  const activeTask = data.tasks.find((task) => task.id === activeTaskId) ?? null;
-  const peekTask = data.tasks.find((task) => task.id === peekTaskId) ?? null;
+  const activeTaskSummary = taskPool.find((task) => task.id === activeTaskId);
+  const activeTask = taskDetail?.task.id === activeTaskId
+    ? activeTaskSummary
+      ? mergeTaskProjection(taskDetail.task, activeTaskSummary)
+      : taskDetail.task
+    : activeTaskSummary ?? null;
+  const peekTask = taskPool.find((task) => task.id === peekTaskId) ?? null;
   const deferredTaskId = activeTask?.description === null
     ? activeTask.id
     : peekTask?.description === null
@@ -518,12 +757,13 @@ export function TaskTracker({
     })
       .then(async (response) => {
         const value = (await response.json()) as
-          | { task: TaskRecord }
+          | TaskDetailRecord
           | { error: string };
         if (!response.ok || "error" in value) {
           throw new Error("error" in value ? value.error : "Request failed");
         }
-        setData((current) => applyMutationResult(current, value));
+        setTaskDetail(value);
+        setData((current) => applyMutationResult(current, { task: value.task }));
       })
       .catch((requestError: unknown) => {
         if (requestError instanceof DOMException && requestError.name === "AbortError") {
@@ -533,6 +773,9 @@ export function TaskTracker({
       });
     return () => controller.abort();
   }, [deferredTaskId]);
+  const activeDetailsData = activeTask && taskDetail?.task.id === activeTask.id
+    ? mergeTaskDetailContext(data, { ...taskDetail, task: activeTask })
+    : data;
   const selectedTasks = [...selected]
     .map((id) => data.tasks.find((task) => task.id === id))
     .filter(Boolean) as TaskRecord[];
@@ -598,9 +841,11 @@ export function TaskTracker({
     releases: groupingReleases,
     users: groupingUsers,
     groupBy: currentGroupBy,
-    showEmptyGroups: currentGroupBy === "status"
-      ? false
-      : activeSavedView?.display.showEmptyGroups ?? true,
+    showEmptyGroups: shouldShowEmptyTaskGroups(
+      currentGroupBy,
+      activeSavedView?.display.showEmptyGroups ?? true,
+      draggingTaskId !== null,
+    ),
   });
   const keyboardTasks = layout === "list" && currentGroupBy !== "none"
     ? tasksInGroupOrder(taskGroups, collapsedGroups)
@@ -633,12 +878,92 @@ export function TaskTracker({
         throw new Error("error" in value ? value.error : "Request failed");
       }
       setData((current) => applyMutationResult(current, value));
+      if ("task" in value) {
+        setTaskDetail((current) =>
+          current?.task.id === value.task.id
+            ? { ...current, task: value.task }
+            : current,
+        );
+        setTaskSearch((current) => current
+          ? {
+              ...current,
+              tasks: current.tasks.map((task) =>
+                task.id === value.task.id ? value.task : task,
+              ),
+            }
+          : current,
+        );
+      }
       return true;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Request failed");
       return false;
     } finally {
       setBusy(false);
+    }
+  }
+
+  function updateClientTask(
+    taskId: string,
+    update: (task: TaskRecord) => TaskRecord,
+  ) {
+    setData((current) => ({
+      ...current,
+      tasks: current.tasks.map((task) => task.id === taskId ? update(task) : task),
+    }));
+    setTaskSearch((current) => current
+      ? {
+          ...current,
+          tasks: current.tasks.map((task) => task.id === taskId ? update(task) : task),
+        }
+      : current,
+    );
+    setTaskDetail((current) => current?.task.id === taskId
+      ? { ...current, task: update(current.task) }
+      : current,
+    );
+  }
+
+  async function moveTaskToGroup(
+    task: TaskRecord,
+    group: TaskGroup,
+    rank: number,
+  ) {
+    if (!canMoveTaskToGroup(task, group) || taskMatchesGroup(task, group)) {
+      return false;
+    }
+    const optimistic = projectTaskGroupMove(task, group, rank);
+    updateClientTask(
+      task.id,
+      (current) => projectTaskGroupMove(current, group, rank),
+    );
+    const saved = await mutate(`/api/tasks/${task.id}`, "PATCH", {
+      version: taskMutationVersion(task),
+      ...taskGroupMutation(group, rank),
+    });
+    if (!saved) {
+      updateClientTask(
+        task.id,
+        (current) => rollbackTaskGroupMove(current, task, optimistic),
+      );
+    }
+    return saved;
+  }
+
+  async function refreshTaskDetail(taskId: string): Promise<TaskRecord | null> {
+    setError("");
+    try {
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`);
+      const value = (await response.json()) as TaskDetailRecord | { error: string };
+      if (!response.ok || "error" in value) {
+        throw new Error("error" in value ? value.error : "Could not refresh task");
+      }
+      setTaskDetail(value);
+      setData((current) => applyMutationResult(current, { task: value.task }));
+      return value.task;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not refresh task");
+      return null;
     }
   }
 
@@ -982,7 +1307,7 @@ export function TaskTracker({
               <SidebarSection title="Releases" action={() => setDialog("release")}>
                 <NavItem compact={false} icon={<Rocket size={13} />} label="All releases" active={surface === "releases"} href="/releases" onNavigate={() => navigateSurface("releases", "list")} />
                 {data.releases.slice(0, 6).map((release) => (
-                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={`${projectMap.get(release.projectId)?.name ?? ""} ${release.name}`.trim()} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
+                  <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={formatReleaseName(projectMap.get(release.projectId)?.name, release.name)} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
                 ))}
               </SidebarSection>
             </>
@@ -1111,7 +1436,7 @@ export function TaskTracker({
                     <div className="breadcrumb-step" key={`${item.label}:${index}`}>
                       {index > 0 && <ChevronRight size={12} className="breadcrumb-chevron" aria-hidden="true" />}
                       {current || !targetSurface ? (
-                        <h1 className="breadcrumb-current">{item.label}</h1>
+                        <h1 className="breadcrumb-current" title={item.label}>{item.label}</h1>
                       ) : (
                         <a
                           className="breadcrumb-link"
@@ -1158,6 +1483,10 @@ export function TaskTracker({
                     {displayOpen && <DisplayPopover layout={layout} groupBy={currentGroupBy} orderBy={activeSavedView?.display.orderBy ?? "manual"} onLayout={changeLayout} onGroupBy={changeGroupBy} onClose={() => setDisplayOpen(false)} />}
                   </div>
                   {hasViewChanges && canSaveView && <button className="button ghost save-view" onClick={() => setDialog("view")}><Save size={13} />Save view</button>}
+                </div>
+                <div className="segmented mobile-layout-switcher" role="group" aria-label="Layout">
+                  <button type="button" className={layout === "list" ? "active" : ""} aria-label="List view" aria-pressed={layout === "list"} onClick={() => changeLayout("list")}><LayoutList size={16} /></button>
+                  <button type="button" className={layout === "board" ? "active" : ""} aria-label="Kanban view" aria-pressed={layout === "board"} onClick={() => changeLayout("board")}><Columns3 size={16} /></button>
                 </div>
                 <div className="mobile-view-controls-anchor" ref={mobileActionsRef}>
                   <button
@@ -1219,7 +1548,7 @@ export function TaskTracker({
         </header>
 
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")}><X size={14} /></button></div>}
-        {data.taskWindow?.truncated && !taskWindowLoading && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
+        {data.taskWindow?.truncated && !taskWindowLoading && !searchNeedle && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
         {(busy || taskWindowLoading) && <div className="progress-line" aria-label={busy ? "Saving" : "Loading remaining tasks"} />}
 
         {surface === "admin" && data.admin ? (
@@ -1230,10 +1559,12 @@ export function TaskTracker({
           <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
         ) : surface === "releases" || projectReleaseSurfaceId ? (
           <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => canCreateTask && setDialog("release")} />
+        ) : taskSearchStatus ? (
+          <TaskSearchNotice status={taskSearchStatus} />
         ) : layout === "board" ? (
-          <TaskBoard tasks={visibleTasks} groups={taskGroups} groupBy={currentGroupBy} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} selected={selected} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={async (task, group, rank) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: task.version, ...taskGroupMutation(group, rank) })} />
+          <TaskBoard tasks={visibleTasks} groups={taskGroups} groupBy={currentGroupBy} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} selected={selected} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />
         ) : (
-          <TaskList tasks={visibleTasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} projects={projectMap} releases={releaseMap} users={userMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} />
+          <TaskList tasks={visibleTasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} projects={projectMap} releases={releaseMap} users={userMap} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} pullRefreshing={pullRefreshing} pullRefreshError={pullRefreshError} pullRefreshDisabled={busy || taskWindowLoading} onRefresh={refreshTaskList} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />
         )}
       </section>
 
@@ -1241,7 +1572,7 @@ export function TaskTracker({
         <BulkBar count={selected.size} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={data} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: activeTask.version, ...changes })} onShare={() => setDialog("share")} busy={busy} />}</div>}
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes })} onRebase={() => refreshTaskDetail(activeTask.id)} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "project" && <EntityDialog title="Create project" icon={<FolderKanban size={17} />} fields={[{ name: "name", label: "Project name", required: true }, { name: "summary", label: "Short summary" }, { name: "targetDate", label: "Target date", type: "date" }]} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
@@ -1262,29 +1593,154 @@ function SidebarSection({ title, action, children }: { title: string; action: ()
   return <section className="sidebar-section"><div className="section-label"><span>{title}</span><button onClick={action} title={`Add ${title.toLowerCase()}`}><Plus size={12} /></button></div>{children}</section>;
 }
 
-function TaskList({ tasks, groups, statuses, groupBy, projects, releases, users, selected, highlighted, collapsed, canCreate, createOwnerUserId, createAssigneeUserIds, onToggleGroup, onSelect, onHighlight, onOpen, onCreate }: { tasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void }) {
-  if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
-  if (groupBy === "none") {
-    return <div className="task-list ungrouped">{tasks.map((task, index) => { const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} /> : null; })}</div>;
+function TaskList({ tasks, groups, statuses, groupBy, projects, releases, users, selected, highlighted, collapsed, canCreate, createOwnerUserId, createAssigneeUserIds, pullRefreshing, pullRefreshError, pullRefreshDisabled, onRefresh, onToggleGroup, onSelect, onHighlight, onOpen, onCreate, onMove, onDragState }: { tasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; pullRefreshing: boolean; pullRefreshError: string; pullRefreshDisabled: boolean; onRefresh: () => Promise<AppSnapshot>; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup, rank: number) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
+  const [over, setOver] = useState<string | null>(null);
+  const pullListRef = useRef<HTMLDivElement>(null);
+  const pullStart = useRef<{ y: number; active: boolean } | null>(null);
+  const pullDistanceRef = useRef(0);
+  const [pullDistance, setPullDistance] = useState(0);
+  let content: React.ReactNode;
+
+  function updatePullDistance(distance: number) {
+    pullDistanceRef.current = distance;
+    setPullDistance(distance);
   }
-  let flatIndex = -1;
-  return <div className="task-list">{groups.map((group) => {
-    const isCollapsed = collapsed.has(group.id);
-    const groupCanCreate = canCreateInTaskGroup(group, canCreate, createOwnerUserId, createAssigneeUserIds);
-    return <section className="task-group" key={group.id}><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(group.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><TaskGroupIcon group={group} /><span>{group.label}</span><small>{group.tasks.length}</small></button>{groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)} title={`Add to ${group.label}`}><Plus size={13} /></button>}</div>{!isCollapsed && group.tasks.map((task) => { flatIndex += 1; const index = flatIndex; const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} /> : null; })}</section>;
-  })}</div>;
+
+  function handlePullStart(event: ReactTouchEvent<HTMLDivElement>) {
+    const mobile = window.matchMedia("(max-width: 900px)").matches;
+    const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+    const active = canStartPullRefresh({
+      mobile,
+      coarsePointer,
+      scrollTop: pullListRef.current?.scrollTop ?? 0,
+      refreshing: pullRefreshing || pullRefreshDisabled,
+      touchCount: event.touches.length,
+    }) && !hasNestedScrollContainer(event.target, pullListRef.current);
+    pullStart.current = active ? { y: event.touches[0].clientY, active } : null;
+  }
+
+  function handlePullMove(event: ReactTouchEvent<HTMLDivElement>) {
+    if (!pullStart.current?.active || event.touches.length !== 1) return;
+    const distance = pullRefreshDistance(
+      event.touches[0].clientY - pullStart.current.y,
+    );
+    if (distance > 0) event.preventDefault();
+    updatePullDistance(distance);
+  }
+
+  function finishPull() {
+    const shouldRefresh = pullStart.current?.active
+      && shouldTriggerPullRefresh(pullDistanceRef.current)
+      && !pullRefreshing
+      && !pullRefreshDisabled;
+    pullStart.current = null;
+    if (shouldRefresh) {
+      updatePullDistance(52);
+      void onRefresh().finally(() => updatePullDistance(0)).catch(() => undefined);
+    } else if (!pullRefreshing && !pullRefreshError) {
+      updatePullDistance(0);
+    }
+  }
+
+  if (!tasks.length) {
+    content = <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
+  } else if (groupBy === "none") {
+    content = tasks.map((task, index) => {
+      const status = statuses.get(task.statusId);
+      return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} canDrag={false} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null;
+    });
+  } else {
+    let flatIndex = -1;
+    content = groups.map((group) => {
+      const isCollapsed = collapsed.has(group.id);
+      const groupCanCreate = canCreateInTaskGroup(group, canCreate, createOwnerUserId, createAssigneeUserIds);
+      return <section
+        className={`task-group ${over === group.id ? "drag-over" : ""}`}
+        data-drop-target={group.kind}
+        key={group.id}
+        onDragOver={(event) => {
+          if (group.kind !== "status") return;
+          event.preventDefault();
+          setOver(group.id);
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null);
+        }}
+        onDrop={(event) => {
+          if (group.kind !== "status") return;
+          event.preventDefault();
+          const id = event.dataTransfer.getData("text/task-id");
+          const task = tasks.find((item) => item.id === id);
+          setOver(null);
+          onDragState(null);
+          if (task && canMoveTaskToGroup(task, group) && !taskMatchesGroup(task, group)) {
+            const lastRank = group.tasks.at(-1)?.rank ?? 0;
+            void onMove(task, group, lastRank + 1000);
+          }
+        }}
+      ><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(group.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><TaskGroupIcon group={group} /><span>{group.label}</span><small>{group.tasks.length}</small></button>{groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)} title={`Add to ${group.label}`}><Plus size={13} /></button>}</div>{!isCollapsed && group.tasks.map((task) => { flatIndex += 1; const index = flatIndex; const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} selected={selected.has(task.id)} highlighted={highlighted === index} canDrag={group.kind === "status"} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null; })}</section>;
+    });
+  }
+
+  return <div
+    ref={pullListRef}
+    className={`task-list ${groupBy === "none" ? "ungrouped" : ""}`}
+    onTouchStart={handlePullStart}
+    onTouchMove={handlePullMove}
+    onTouchEnd={finishPull}
+    onTouchCancel={finishPull}
+  >
+    <PullRefreshIndicator
+      distance={pullDistance}
+      refreshing={pullRefreshing}
+      error={pullRefreshError}
+      onRetry={() => void onRefresh().catch(() => undefined)}
+    />
+    {content}
+  </div>;
 }
 
-function TaskRow({ task, status, project, release, assignee, selected, highlighted, onSelect, onHighlight, onOpen }: { task: TaskRecord; status: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; selected: boolean; highlighted: boolean; onSelect: () => void; onHighlight: () => void; onOpen: () => void }) {
+function hasNestedScrollContainer(target: EventTarget, boundary: HTMLElement | null) {
+  let element = target instanceof HTMLElement ? target : null;
+  while (element && element !== boundary) {
+    const overflowY = window.getComputedStyle(element).overflowY;
+    if ((overflowY === "auto" || overflowY === "scroll")
+      && element.scrollHeight > element.clientHeight) {
+      return true;
+    }
+    element = element.parentElement;
+  }
+  return false;
+}
+
+function PullRefreshIndicator({ distance, refreshing, error, onRetry }: {
+  distance: number;
+  refreshing: boolean;
+  error: string;
+  onRetry: () => void;
+}) {
+  const height = refreshing || error ? 52 : distance;
+  const ready = shouldTriggerPullRefresh(distance);
+  return <div
+    className="pull-refresh-indicator"
+    role={error ? "alert" : "status"}
+    style={{ height }}
+  >
+    {error ? <><span>{error}</span><button type="button" onClick={onRetry}>Retry</button></> : <><span className={`pull-refresh-spinner ${refreshing ? "refreshing" : ""}`} aria-hidden="true" /><span>{refreshing ? "Refreshing…" : ready ? "Release to refresh" : "Pull to refresh"}</span></>}
+  </div>;
+}
+
+function TaskRow({ task, status, project, release, assignee, selected, highlighted, canDrag, onSelect, onHighlight, onOpen, onDragState }: { task: TaskRecord; status: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; selected: boolean; highlighted: boolean; canDrag: boolean; onSelect: () => void; onHighlight: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
   const editable = canEditContent(task.accessRole);
-  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} onMouseEnter={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}<span className={`priority priority-${task.priority}`} title={priorityMeta[task.priority].label}>{priorityMeta[task.priority].glyph}</span><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}{editable && <button className="row-more" title="More"><MoreHorizontal size={14} /></button>}</div></div>;
+  const draggable = editable && canDrag;
+  return <div className={`task-row ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}`} draggable={draggable} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => onDragState(null)} onMouseEnter={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}<PriorityIcon priority={task.priority} /><a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a><a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{project && <span className="metadata-chip" title={project.name}><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip" title={release.name}><Rocket size={12} />{release.name}</span>}{task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}{editable && <button className="row-more" type="button" aria-label="Open task details" title="Open task details" onClick={(event) => { event.stopPropagation(); onOpen(); }}><MoreHorizontal size={14} /></button>}</div></div>;
 }
 
-function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, users, selected, canCreate, createOwnerUserId, createAssigneeUserIds, onSelect, onOpen, onCreate, onMove }: { tasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup, rank: number) => Promise<unknown> }) {
+function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, users, selected, canCreate, createOwnerUserId, createAssigneeUserIds, onSelect, onOpen, onCreate, onMove, onDragState }: { tasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; selected: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup, rank: number) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
   const [over, setOver] = useState<string | null>(null);
   if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   if (groupBy === "none") {
-    return <div className="board"><section className="board-column"><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} showStatus showAssignee selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
+    return <div className="board"><section className="board-column"><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} showStatus showAssignee selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
   }
   return (
     <div className="board">
@@ -1304,6 +1760,7 @@ function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, users
               const id = event.dataTransfer.getData("text/task-id");
               const task = tasks.find((item) => item.id === id);
               setOver(null);
+              onDragState(null);
               if (task && canMoveTaskToGroup(task, group) && !taskMatchesGroup(task, group)) {
                 const lastRank = group.tasks.at(-1)?.rank ?? 0;
                 void onMove(task, group, lastRank + 1000);
@@ -1321,7 +1778,7 @@ function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, users
               </button>}
             </div>
             <div className="column-cards">
-              {group.tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} showStatus={group.kind !== "status"} showAssignee={group.kind !== "assignee"} selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} />)}
+              {group.tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} showStatus={group.kind !== "status"} showAssignee={group.kind !== "assignee"} selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}
             </div>
             {groupCanCreate && <button className="add-card" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)}>
               <Plus size={13} />Add task
@@ -1333,14 +1790,14 @@ function TaskBoard({ tasks, groups, groupBy, statuses, projects, releases, users
   );
 }
 
-function TaskBoardCard({ task, status, project, release, assignee, showStatus, showAssignee, selected, onSelect, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; showStatus: boolean; showAssignee: boolean; selected: boolean; onSelect: () => void; onOpen: () => void }) {
+function TaskBoardCard({ task, status, project, release, assignee, showStatus, showAssignee, selected, onSelect, onOpen, onDragState }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; showStatus: boolean; showAssignee: boolean; selected: boolean; onSelect: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
   const editable = canEditContent(task.accessRole);
-  return <div role="button" tabIndex={0} className={`task-card ${editable ? "editable" : ""} ${selected ? "selected" : ""}`} draggable={editable} onDragStart={(event) => { event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; }} onClick={onOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3><div className="card-meta"><span>{task.identifier}</span><span className={`priority priority-${task.priority}`}>{priorityMeta[task.priority].glyph}</span>{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
+  return <div role="button" tabIndex={0} className={`task-card ${editable ? "editable" : ""} ${selected ? "selected" : ""}`} draggable={editable} onDragStart={(event) => { event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => onDragState(null)} onClick={onOpen} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3><div className="card-meta"><span>{task.identifier}</span><PriorityIcon priority={task.priority} />{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
 }
 
 function TaskGroupIcon({ group }: { group: TaskGroup }) {
   if (group.status) return <StatusIcon status={group.status} />;
-  if (group.priority) return <span className={`priority priority-${group.priority}`}>{priorityMeta[group.priority].glyph}</span>;
+  if (group.priority) return <PriorityIcon priority={group.priority} />;
   if (group.assignee) return <span className="avatar group-avatar" title={group.assignee.displayName}>{initials(group.assignee.displayName)}</span>;
   if (group.project) return <span className="project-dot" style={{ background: group.project.color }} />;
   if (group.release) return <Rocket size={13} />;
@@ -1438,10 +1895,16 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
   return <Modal onClose={onClose} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">New task</span><button type="button" className="icon-button" onClick={onClose}><X size={15} /></button></div><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="">No project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><div className="modal-footer"><span className="shortcut-hint"><kbd>⌘</kbd><kbd>Enter</kbd> to create</span><button className="button primary" disabled={busy || !title.trim()}>{busy ? "Creating…" : "Create task"}</button></div></form></Modal>;
 }
 
-function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onShare: () => void; busy: boolean }) {
+function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onRebase: () => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [estimate, setEstimate] = useState(task.estimate?.toString() ?? "");
+  const [rebasing, setRebasing] = useState(false);
+  const dirty = useRef<TaskDraftDirty>({
+    title: false,
+    description: false,
+    estimate: false,
+  });
   const source = useTaskExternalSource(task);
   if (!canEditContent(task.accessRole)) {
     return <ReadOnlyTaskDetails task={task} data={data} source={source} onClose={onClose} onOpenTask={onOpenTask} />;
@@ -1469,7 +1932,90 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onShare, busy }:
     }
   }
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} full />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel"><header><div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div><div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div></header><div className="details-body"><input className="details-title" value={title} onChange={(event) => setTitle(event.target.value)} onBlur={() => title.trim() && title !== task.title && void onSave({ title })} /><textarea className="details-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={8} /><button className="button secondary save-description" disabled={busy || description === (task.description ?? "")} onClick={() => void onSave({ description })}>{busy ? "Saving…" : "Save description"}</button><div className="properties-grid"><PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow><PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow><PropertyRow label="Assignee" icon={<UsersRound size={14} />}><select value={task.assigneeUserId ?? ""} onChange={(event) => void onSave({ assigneeUserId: event.target.value || null })}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</select></PropertyRow><PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow><PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={!task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow><PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow><PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => setEstimate(event.target.value)} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (value !== task.estimate) void onSave({ estimate: value }); }} /></PropertyRow></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div><button className="button danger ghost archive-action" onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button></div></aside></div>;
+  const hasVersionConflict = task.detailVersion !== undefined && task.detailVersion < task.version;
+
+  async function rebaseDraft() {
+    setRebasing(true);
+    const latest = await onRebase();
+    if (latest) {
+      const next = rebaseTaskDraft(
+        { title, description, estimate },
+        dirty.current,
+        latest,
+      );
+      setTitle(next.title);
+      setDescription(next.description);
+      setEstimate(next.estimate);
+    }
+    setRebasing(false);
+  }
+
+  async function saveDraftField(
+    field: keyof TaskDraftDirty,
+    input: Record<string, unknown>,
+  ) {
+    const saved = await onSave(input);
+    if (saved === true) dirty.current[field] = false;
+  }
+
+  return (
+    <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside className="details-panel">
+        <header>
+          <div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div>
+          <div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div>
+        </header>
+        <div className="details-body">
+          {hasVersionConflict && (
+            <div className="task-version-conflict" role="alert">
+              <p>This task changed elsewhere. Your draft is preserved in this panel; load the latest version before saving.</p>
+              <button className="button secondary" type="button" disabled={rebasing} onClick={() => void rebaseDraft()}>{rebasing ? "Loading latest…" : "Load latest and keep draft"}</button>
+            </div>
+          )}
+          <input
+            className="details-title"
+            value={title}
+            onChange={(event) => {
+              dirty.current.title = true;
+              setTitle(event.target.value);
+            }}
+            onBlur={() => {
+              if (!hasVersionConflict && title.trim() && title !== task.title) {
+                void saveDraftField("title", { title });
+              }
+            }}
+          />
+          <textarea
+            className="details-description"
+            value={description}
+            onChange={(event) => {
+              dirty.current.description = true;
+              setDescription(event.target.value);
+            }}
+            placeholder="Add description…"
+            rows={8}
+          />
+          <button className="button secondary save-description" disabled={busy || hasVersionConflict || description === (task.description ?? "")} onClick={() => void saveDraftField("description", { description })}>{busy ? "Saving…" : "Save description"}</button>
+          <div className="properties-grid">
+            <PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} disabled={hasVersionConflict} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow>
+            <PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} disabled={hasVersionConflict} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow>
+            <PropertyRow label="Assignee" icon={<UsersRound size={14} />}><select value={task.assigneeUserId ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ assigneeUserId: event.target.value || null })}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</select></PropertyRow>
+            <PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow>
+            <PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={hasVersionConflict || !task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow>
+            <PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow>
+            <PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => { dirty.current.estimate = true; setEstimate(event.target.value); }} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (!hasVersionConflict && value !== task.estimate) void saveDraftField("estimate", { estimate: value }); }} /></PropertyRow>
+          </div>
+          {labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}
+          {(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}
+          {relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}
+          <TaskActivity task={task} currentUser={data.user} canWrite />
+          {sourceContent}
+          <div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div>
+          <button className="button danger ghost archive-action" disabled={hasVersionConflict} onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button>
+        </div>
+      </aside>
+    </div>
+  );
 }
 
 function TaskDetailsLoading({ task, onClose }: { task: TaskRecord; onClose: () => void }) {
@@ -1486,7 +2032,7 @@ function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1><p className="read-only-description">{task.description || "No description"}</p><div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1><p className="read-only-description">{task.description || "No description"}</p><div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
 }
 
 function useTaskExternalSource(task: TaskRecord) {
@@ -1524,6 +2070,354 @@ function useTaskExternalSource(task: TaskRecord) {
   return loaded?.taskId === task.id ? loaded.source : undefined;
 }
 
+function TaskActivity({ task, currentUser, canWrite }: {
+  task: TaskRecord;
+  currentUser: UserRecord;
+  canWrite: boolean;
+}) {
+  const [page, setPage] = useState<CommentPage | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [replyTo, setReplyTo] = useState<string | null>(null);
+  const pendingIdempotencyKeys = useRef(new Map<string, string>());
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const draftKey = commentDraftStorageKey(currentUser.id, task.id, replyTo ?? undefined);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(draftKey);
+    // Local storage is the external source for an unsent per-user task/thread draft.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDraft(saved ?? "");
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (draft) window.localStorage.setItem(draftKey, draft);
+    else window.localStorage.removeItem(draftKey);
+  }, [draft, draftKey]);
+
+  async function loadComments(cursor: string | null = null, append = false) {
+    setLoading(true);
+    setError("");
+    try {
+      const next = await fetchCommentJson<CommentPage>(
+        `/api/tasks/${encodeURIComponent(task.id)}/comments?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      setPage((current) => append && current ? {
+        ...next,
+        threads: [...current.threads, ...next.threads],
+      } : next);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Comments could not be loaded");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void loadComments(), 0);
+    // The component is keyed by task and intentionally loads once per task details mount.
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.id]);
+
+  useEffect(() => {
+    if (!page || !window.location.hash.startsWith("#comment-")) return;
+    const target = document.getElementById(window.location.hash.slice(1));
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.classList.add("permalink-target");
+    const timer = window.setTimeout(() => target.classList.remove("permalink-target"), 1800);
+    return () => window.clearTimeout(timer);
+  }, [page]);
+
+  async function submitComment() {
+    if (!canWrite || busy || !draft.trim()) return;
+    const submittedDraftKey = draftKey;
+    const submittedReplyTo = replyTo;
+    const idempotencyKey = pendingIdempotencyKeys.current.get(submittedDraftKey) ?? crypto.randomUUID();
+    pendingIdempotencyKeys.current.set(submittedDraftKey, idempotencyKey);
+    setBusy(true);
+    setError("");
+    try {
+      await fetchCommentJson<CommentRecord>(
+        `/api/tasks/${encodeURIComponent(task.id)}/comments`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            body: draft,
+            parentCommentId: replyTo,
+            idempotencyKey,
+          }),
+        },
+      );
+      pendingIdempotencyKeys.current.delete(submittedDraftKey);
+      window.localStorage.removeItem(submittedDraftKey);
+      setReplyTo(null);
+      setDraft(submittedReplyTo
+        ? window.localStorage.getItem(commentDraftStorageKey(currentUser.id, task.id)) ?? ""
+        : "");
+      await loadComments();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Comment could not be saved");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function mutateComment(path: string, method: string, input: Record<string, unknown>) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fetchCommentJson(path, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      await loadComments();
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Comment action failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function commentPath(commentId: string, suffix = "") {
+    return `/api/tasks/${encodeURIComponent(task.id)}/comments/${encodeURIComponent(commentId)}${suffix}`;
+  }
+
+  function switchComposer(threadId: string | null) {
+    setReplyTo(threadId);
+    setDraft(window.localStorage.getItem(
+      commentDraftStorageKey(currentUser.id, task.id, threadId ?? undefined),
+    ) ?? "");
+  }
+
+  const count = page?.totalCount ?? task.commentCount;
+  return <section className="task-activity details-section" aria-labelledby={`activity-${task.id}`}>
+    <header className="activity-header">
+      <h2 id={`activity-${task.id}`}><MessageSquare size={14} />Activity</h2>
+      <span>{count} {count === 1 ? "comment" : "comments"}</span>
+    </header>
+    {loading && !page && <p className="inline-note" role="status">Loading comments…</p>}
+    {error && <div className="comment-error" role="alert"><span>{error}</span><button type="button" onClick={() => void loadComments()}>Retry</button></div>}
+    {page && page.threads.length === 0 && <p className="activity-empty">No comments yet.</p>}
+    <div className="comment-threads">
+      {page?.threads.map((thread) => <CommentThread
+        key={`${thread.root.id}:${thread.root.resolvedAt ?? "open"}`}
+        thread={thread}
+        busy={busy}
+        onReply={(rootId) => {
+          switchComposer(rootId);
+          window.setTimeout(() => composerRef.current?.focus(), 0);
+        }}
+        onEdit={(comment, body) => mutateComment(commentPath(comment.id), "PATCH", { version: comment.version, body })}
+        onDelete={(comment) => mutateComment(commentPath(comment.id), "DELETE", { version: comment.version })}
+        onReact={(comment, emoji, active) => mutateComment(commentPath(comment.id, "/reactions"), "PUT", { emoji, active })}
+        onResolve={(comment, resolved) => mutateComment(commentPath(comment.id, "/resolution"), "PUT", { version: comment.version, resolved })}
+      />)}
+    </div>
+    {page?.hasMore && <button className="button ghost load-comments" type="button" disabled={loading} onClick={() => void loadComments(page.nextCursor, true)}>{loading ? "Loading…" : "Load older threads"}</button>}
+    {canWrite && <div className="comment-composer">
+      <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(currentUser.id) } as React.CSSProperties}>{initials(currentUser.displayName)}</span>
+      <div className="comment-composer-box">
+        {replyTo && <div className="reply-context"><span>Replying in thread</span><button type="button" onClick={() => switchComposer(null)}>Cancel</button></div>}
+        <textarea
+          ref={composerRef}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+              event.preventDefault();
+              void submitComment();
+            }
+          }}
+          placeholder="Leave a comment…"
+          aria-label="Comment body"
+          rows={draft.includes("\n") ? 5 : 3}
+        />
+        <div className="comment-composer-actions">
+          <div className="comment-toolbar" role="toolbar" aria-label="Comment formatting">
+            <button type="button" title="Bold" aria-label="Bold" onClick={() => formatCommentSelection(composerRef.current, setDraft, "**")}><b>B</b></button>
+            <button type="button" title="Italic" aria-label="Italic" onClick={() => formatCommentSelection(composerRef.current, setDraft, "*")}><i>I</i></button>
+            <button type="button" title="Inline code" aria-label="Inline code" onClick={() => formatCommentSelection(composerRef.current, setDraft, "`")}><code>&lt;/&gt;</code></button>
+            <button type="button" title="Quote" aria-label="Quote" onClick={() => prefixCommentLines(composerRef.current, setDraft, "> ")}>&gt;</button>
+            <button type="button" title="List" aria-label="List" onClick={() => prefixCommentLines(composerRef.current, setDraft, "- ")}>•</button>
+            <button type="button" title="Link" aria-label="Link" onClick={() => formatCommentSelection(composerRef.current, setDraft, "[", "](https://)")}>↗</button>
+          </div>
+          <span><kbd>⌘</kbd><kbd>Enter</kbd></span>
+          <button className="button primary" type="button" disabled={busy || !draft.trim()} onClick={() => void submitComment()}>{busy ? "Saving…" : replyTo ? "Reply" : "Comment"}</button>
+        </div>
+      </div>
+    </div>}
+  </section>;
+}
+
+function CommentThread({ thread, busy, onReply, onEdit, onDelete, onReact, onResolve }: {
+  thread: CommentThreadRecord;
+  busy: boolean;
+  onReply: (rootId: string) => void;
+  onEdit: (comment: CommentRecord, body: string) => Promise<void>;
+  onDelete: (comment: CommentRecord) => Promise<void>;
+  onReact: (comment: CommentRecord, emoji: string, active: boolean) => Promise<void>;
+  onResolve: (comment: CommentRecord, resolved: boolean) => Promise<void>;
+}) {
+  const [collapsed, setCollapsed] = useState(Boolean(thread.root.resolvedAt));
+  return <article className={`comment-thread ${thread.root.resolvedAt ? "resolved" : ""}`}>
+    {thread.root.resolvedAt && <button className="resolved-thread-toggle" type="button" aria-expanded={!collapsed} onClick={() => setCollapsed((value) => !value)}><Check size={13} />Resolved thread · {thread.replies.length + 1} messages</button>}
+    {!collapsed && <>
+      <CommentEntry comment={thread.root} rootId={thread.root.id} busy={busy} onReply={onReply} onEdit={onEdit} onDelete={onDelete} onReact={onReact} onResolve={onResolve} />
+      {thread.replies.length > 0 && <div className="comment-replies">{thread.replies.map((reply) => <CommentEntry key={reply.id} comment={reply} rootId={thread.root.id} busy={busy} onReply={onReply} onEdit={onEdit} onDelete={onDelete} onReact={onReact} onResolve={onResolve} />)}</div>}
+    </>}
+  </article>;
+}
+
+function CommentEntry({ comment, rootId, busy, onReply, onEdit, onDelete, onReact, onResolve }: {
+  comment: CommentRecord;
+  rootId: string;
+  busy: boolean;
+  onReply: (rootId: string) => void;
+  onEdit: (comment: CommentRecord, body: string) => Promise<void>;
+  onDelete: (comment: CommentRecord) => Promise<void>;
+  onReact: (comment: CommentRecord, emoji: string, active: boolean) => Promise<void>;
+  onResolve: (comment: CommentRecord, resolved: boolean) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [editBody, setEditBody] = useState(comment.body);
+  const [expanded, setExpanded] = useState(false);
+  const long = comment.body.length > 1_200;
+  const body = long && !expanded ? `${comment.body.slice(0, 1_200)}…` : comment.body;
+  const isRoot = comment.parentCommentId === null;
+  const permalink = `comment-${comment.id}`;
+  return <div className="comment-entry" id={permalink} tabIndex={-1}>
+    <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(comment.author.id) } as React.CSSProperties}>{initials(comment.author.displayName)}</span>
+    <div className="comment-content">
+      <header><b>{comment.author.displayName}</b><time dateTime={comment.createdAt} title={longDateTime(comment.createdAt)}>{relativeTime(comment.createdAt)}</time>{comment.updatedAt !== comment.createdAt && <small>edited</small>}
+        <details className="comment-menu"><summary aria-label="Comment actions"><MoreHorizontal size={14} /></summary><div>
+          <button type="button" onClick={() => copyCommentPermalink(comment.id)}>Copy link</button>
+          {comment.permissions.canEdit && <button type="button" onClick={() => setEditing(true)}>Edit</button>}
+          {comment.permissions.canDelete && <button type="button" onClick={() => { if (window.confirm("Delete this comment?")) void onDelete(comment); }}>Delete</button>}
+        </div></details>
+      </header>
+      {comment.deletedAt ? <p className="comment-tombstone">Comment deleted</p> : editing ? <div className="comment-edit"><textarea value={editBody} onChange={(event) => setEditBody(event.target.value)} rows={4} autoFocus /><div><button className="button ghost" type="button" onClick={() => { setEditBody(comment.body); setEditing(false); }}>Cancel</button><button className="button primary" type="button" disabled={busy || !editBody.trim()} onClick={() => void onEdit(comment, editBody).then(() => setEditing(false))}>Save</button></div></div> : <><CommentMarkdown body={body} />{long && <button className="comment-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Show more"}</button>}</>}
+      {!comment.deletedAt && <div className="comment-actions">
+        {comment.reactions.map((reaction) => <button key={reaction.emoji} className={reaction.reactedByCurrentUser ? "active" : ""} type="button" disabled={!comment.permissions.canReact || busy} onClick={() => void onReact(comment, reaction.emoji, !reaction.reactedByCurrentUser)}>{reaction.emoji} <span>{reaction.count}</span></button>)}
+        {comment.permissions.canReact && ["👍", "❤️", "🎉"].filter((emoji) => !comment.reactions.some((reaction) => reaction.emoji === emoji)).map((emoji) => <button className="reaction-add" key={emoji} type="button" disabled={busy} aria-label={`React ${emoji}`} onClick={() => void onReact(comment, emoji, true)}>{emoji}</button>)}
+        {isRoot && comment.permissions.canReact && <button type="button" disabled={busy} onClick={() => onReply(rootId)}>Reply</button>}
+        {isRoot && comment.permissions.canResolve && <button type="button" disabled={busy} onClick={() => void onResolve(comment, !comment.resolvedAt)}>{comment.resolvedAt ? "Reopen" : "Resolve"}</button>}
+      </div>}
+    </div>
+  </div>;
+}
+
+function CommentMarkdown({ body }: { body: string }) {
+  const lines = body.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let code: string[] | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.startsWith("```")) {
+      if (code) {
+        blocks.push(<pre key={`code-${index}`}><code>{code.join("\n")}</code></pre>);
+        code = null;
+      } else code = [];
+      continue;
+    }
+    if (code) {
+      code.push(line);
+      continue;
+    }
+    if (line.startsWith("> ")) blocks.push(<blockquote key={index}>{renderCommentInline(line.slice(2))}</blockquote>);
+    else if (/^[-*] /.test(line)) blocks.push(<div className="comment-list-item" key={index}>• <span>{renderCommentInline(line.slice(2))}</span></div>);
+    else blocks.push(<p key={index}>{renderCommentInline(line) || <br />}</p>);
+  }
+  if (code) blocks.push(<pre key="code-final"><code>{code.join("\n")}</code></pre>);
+  return <div className="comment-body">{blocks}</div>;
+}
+
+function renderCommentInline(value: string) {
+  const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  const nodes: React.ReactNode[] = [];
+  let offset = 0;
+  for (const match of value.matchAll(pattern)) {
+    if (match.index > offset) nodes.push(value.slice(offset, match.index));
+    const token = match[0];
+    const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (link) {
+      const href = safeCommentHref(link[2]);
+      nodes.push(href ? <a key={match.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : token);
+    } else if (token.startsWith("`")) nodes.push(<code key={match.index}>{token.slice(1, -1)}</code>);
+    else if (token.startsWith("**")) nodes.push(<strong key={match.index}>{token.slice(2, -2)}</strong>);
+    else nodes.push(<em key={match.index}>{token.slice(1, -1)}</em>);
+    offset = match.index + token.length;
+  }
+  if (offset < value.length) nodes.push(value.slice(offset));
+  return nodes;
+}
+
+function safeCommentHref(value: string | undefined) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" || url.protocol === "mailto:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatCommentSelection(textarea: HTMLTextAreaElement | null, setValue: (value: string) => void, before: string, after = before) {
+  if (!textarea) return;
+  const start = textarea.selectionStart;
+  const end = textarea.selectionEnd;
+  const next = `${textarea.value.slice(0, start)}${before}${textarea.value.slice(start, end)}${after}${textarea.value.slice(end)}`;
+  setValue(next);
+  window.setTimeout(() => {
+    textarea.focus();
+    textarea.setSelectionRange(start + before.length, end + before.length);
+  }, 0);
+}
+
+function prefixCommentLines(textarea: HTMLTextAreaElement | null, setValue: (value: string) => void, prefix: string) {
+  if (!textarea) return;
+  const start = textarea.selectionStart;
+  const lineStart = textarea.value.lastIndexOf("\n", start - 1) + 1;
+  setValue(`${textarea.value.slice(0, lineStart)}${prefix}${textarea.value.slice(lineStart)}`);
+  window.setTimeout(() => textarea.focus(), 0);
+}
+
+async function fetchCommentJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, init);
+  const value = await response.json() as T | { error: string };
+  if (!response.ok || (value && typeof value === "object" && "error" in value)) {
+    throw new Error(value && typeof value === "object" && "error" in value ? value.error : "Comment request failed");
+  }
+  return value as T;
+}
+
+function copyCommentPermalink(commentId: string) {
+  const url = new URL(window.location.href);
+  url.hash = `comment-${commentId}`;
+  void navigator.clipboard.writeText(url.toString());
+}
+
+function relativeTime(value: string) {
+  const seconds = Math.round((Date.parse(value) - Date.now()) / 1000);
+  const ranges: Array<[Intl.RelativeTimeFormatUnit, number]> = [["year", 31_536_000], ["month", 2_592_000], ["day", 86_400], ["hour", 3_600], ["minute", 60]];
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  for (const [unit, size] of ranges) if (Math.abs(seconds) >= size) return formatter.format(Math.round(seconds / size), unit);
+  return formatter.format(seconds, "second");
+}
+
+function avatarHue(value: string) {
+  let hash = 0;
+  for (const character of value) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
+  return Math.abs(hash) % 360;
+}
+
 function ImportedSourceDetails({ source, hasExternalSource, full = false }: {
   source: ExternalSourceRecord | null | undefined;
   hasExternalSource: boolean;
@@ -1539,7 +2433,7 @@ function ImportedSourceDetails({ source, hasExternalSource, full = false }: {
   if (!full) {
     return source.sourceUrl ? <DetailsSection title="Imported source" icon={<Link2 size={14} />}><a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record</a></DetailsSection> : null;
   }
-  return <><DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open {source.sourceId} in Linear</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentEntries} archived comments</span><span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>{source.comments.length > 0 && <DetailsSection title="Imported comments" icon={<MessageSquare size={14} />}><div className="comment-archive">{source.comments.map((comment) => <article key={comment.id}><header><b>{comment.authorName}</b><time dateTime={comment.createdAt}>{longDateTime(comment.createdAt)}</time>{comment.parentId && <small>Reply</small>}</header>{comment.quotedText && <blockquote>{comment.quotedText}</blockquote>}<p>{comment.body}</p></article>)}</div></DetailsSection>}</>;
+  return <><DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open {source.sourceId} in Linear</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentEntries} archived comments</span><span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>{source.comments.length > 0 && <details className="details-section imported-comment-group"><summary><MessageSquare size={14} />Imported comments <span>{source.comments.length}</span></summary><div className="comment-archive">{source.comments.map((comment) => <article key={comment.id}><header><b>{comment.authorName}</b><time dateTime={comment.createdAt}>{longDateTime(comment.createdAt)}</time>{comment.parentId && <small>Reply</small>}</header>{comment.quotedText && <blockquote>{comment.quotedText}</blockquote>}<p>{comment.body}</p></article>)}</div></details>}</>;
 }
 
 function PropertyValue({ label, value }: { label: string; value: string }) {
@@ -1887,7 +2781,7 @@ function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () =
 
 function ViewsSurface({ data, statusMap, onOpen }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void }) { return <div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{data.views.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>; }
 function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
-function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); return <a className="release-row" key={release.id} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{release.name}</b><small>{project?.name}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
+function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); const releaseName = formatReleaseName(project?.name, release.name); return <a className="release-row" key={release.id} aria-label={releaseName} title={releaseName} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{releaseName}</b></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
 function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZone: string }) {
   return (
     <div className="admin-surface">
@@ -1947,7 +2841,8 @@ function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZon
 }
 function AdminMetric({ label, value, note, icon }: { label: string; value: number; note: string; icon: React.ReactNode }) { return <article className="admin-metric"><span className="admin-metric-icon">{icon}</span><div><span>{label}</span><b>{value}</b><small>{note}</small></div></article>; }
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate?: () => void }) { const labels = { task: ["No tasks here", "There is no work in this view yet."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "There are no releases in this scope yet."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button>}</div>; }
-function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description === null ? "Loading preview…" : task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}</footer></div>; }
+function TaskSearchNotice({ status }: { status: "loading" | "error" }) { return <div className="empty-state" role="status"><Search size={22} /><h2>{status === "loading" ? "Searching tasks…" : "Search unavailable"}</h2><p>{status === "loading" ? "Looking across every task you can access." : "The search request failed. Change the query or try again."}</p></div>; }
+function Peek({ task, status, project, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description === null ? "Loading preview…" : task.description || "No description"}</p><footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}<span><MessageSquare size={12} />{task.commentCount}</span></footer></div>; }
 function BulkBar({ count, statuses, archiveAction, onStatus, onPriority, onArchive, onClose }: { count: number; statuses: WorkflowStatusRecord[]; archiveAction: ReturnType<typeof resolveArchiveBulkAction>; onStatus: (value: string) => void; onPriority: (value: Priority) => void; onArchive: () => void; onClose: () => void }) { return <div className="bulk-bar"><b>{count} selected</b><select defaultValue="" onChange={(event) => event.target.value && onStatus(event.target.value)}><option value="" disabled>Status…</option>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select><select defaultValue="" onChange={(event) => event.target.value && onPriority(event.target.value as Priority)}><option value="" disabled>Priority…</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select><button onClick={onArchive}>{archiveAction.archived ? <Archive size={14} /> : <ArchiveRestore size={14} />}{archiveAction.label}</button><button onClick={onClose}><X size={14} /></button></div>; }
 
 function handleLocalLink(event: ReactMouseEvent<HTMLAnchorElement>, navigate: () => void) {
@@ -2036,7 +2931,7 @@ function surfaceBreadcrumbs(
       ancestor("Projects", "projects"),
       ancestor(project.name, `project:${project.id}`),
       ancestor("Releases", `project-releases:${project.id}`),
-      current(release.name),
+      current(formatReleaseName(project.name, release.name)),
     ];
   }
 

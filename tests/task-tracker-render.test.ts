@@ -4,9 +4,20 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   CodexSetupDialog,
+  canStartPullRefresh,
+  commentDraftStorageKey,
+  fetchTaskSnapshot,
   applyMutationResult,
   mergeDeferredSnapshot,
+  mergeSearchTaskSummaries,
+  pullRefreshDistance,
+  rebaseTaskDraft,
+  PriorityIcon,
   resolveArchiveBulkAction,
+  runSingleFlight,
+  shouldTriggerPullRefresh,
+  taskMutationVersion,
+  taskMatchesSearch,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
   TaskTracker,
@@ -60,6 +71,7 @@ const snapshot: AppSnapshot = {
       completedAt: null,
       canceledAt: null,
       archivedAt: null,
+      commentCount: 0,
       version: 1,
       createdAt: now,
       updatedAt: now,
@@ -135,6 +147,167 @@ test("deferred task loading expands the window without discarding newer or loade
   assert.deepEqual(merged.taskWindow, { limit: 2_000, truncated: false });
 });
 
+test("a newer deferred summary keeps loaded content without masking its optimistic version", () => {
+  const loadedTask = {
+    ...snapshot.tasks[0]!,
+    description: "Unsaved draft base",
+    version: 3,
+    updatedAt: "2026-08-14T09:01:00.000Z",
+  };
+  const incomingTask = {
+    ...loadedTask,
+    title: "Changed in another session",
+    description: null,
+    version: 4,
+    updatedAt: "2026-08-14T09:02:00.000Z",
+  };
+
+  const merged = mergeDeferredSnapshot(
+    { ...snapshot, tasks: [loadedTask] },
+    { ...snapshot, tasks: [incomingTask] },
+  );
+  const task = merged.tasks[0]!;
+
+  assert.equal(task.title, "Changed in another session");
+  assert.equal(task.version, 4);
+  assert.equal(task.description, "Unsaved draft base");
+  assert.equal(task.detailVersion, 3);
+  assert.equal(taskMutationVersion(task), 3);
+});
+
+test("task details surface a concurrent summary conflict without returning to loading", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        tasks: [
+          {
+            ...snapshot.tasks[0]!,
+            description: "Loaded body",
+            version: 4,
+            detailVersion: 3,
+          },
+        ],
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: snapshot.tasks[0]!.id,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /This task changed elsewhere/);
+  assert.match(markup, /Load latest and keep draft/);
+  assert.doesNotMatch(markup, /window\.location\.reload/);
+  assert.match(markup, /<select disabled=""/);
+  assert.match(markup, /archive-action" disabled=""/);
+  assert.doesNotMatch(markup, /Loading task details/);
+});
+
+test("rebasing a concurrent task keeps dirty draft fields and refreshes untouched fields", () => {
+  const rebased = rebaseTaskDraft(
+    {
+      title: "Old title",
+      description: "Unsaved local description",
+      estimate: "3",
+    },
+    {
+      title: false,
+      description: true,
+      estimate: false,
+    },
+    {
+      ...snapshot.tasks[0]!,
+      title: "Latest server title",
+      description: "Latest server description",
+      estimate: 8,
+      version: 4,
+    },
+  );
+
+  assert.deepEqual(rebased, {
+    title: "Latest server title",
+    description: "Unsaved local description",
+    estimate: "8",
+  });
+});
+
+test("a newer loaded detail supersedes an older deferred summary", () => {
+  const loadedTask = {
+    ...snapshot.tasks[0]!,
+    description: "Newest body",
+    version: 5,
+  };
+  const incomingTask = {
+    ...loadedTask,
+    description: null,
+    version: 4,
+  };
+
+  const merged = mergeDeferredSnapshot(
+    { ...snapshot, tasks: [loadedTask] },
+    { ...snapshot, tasks: [incomingTask] },
+  );
+
+  assert.equal(merged.tasks[0], loadedTask);
+  assert.equal(taskMutationVersion(merged.tasks[0]!), 5);
+});
+
+test("a full deferred snapshot drops revoked tasks but retains tasks created after the request began", () => {
+  const revokedTask = {
+    ...snapshot.tasks[0]!,
+    updatedAt: "2026-08-14T09:00:00.000Z",
+  };
+  const localTask = {
+    ...snapshot.tasks[0]!,
+    id: "task-local",
+    publicId: "88888888-8888-4888-8888-888888888888",
+    identifier: "TM-2",
+    sequenceNumber: 2,
+    updatedAt: "2026-08-14T09:02:00.000Z",
+  };
+
+  const merged = mergeDeferredSnapshot(
+    { ...snapshot, tasks: [revokedTask, localTask] },
+    { ...snapshot, tasks: [] },
+    { taskIdsAtRequest: new Set([revokedTask.id]) },
+  );
+
+  assert.deepEqual(merged.tasks.map((task) => task.id), [localTask.id]);
+});
+
+test("search summaries add matches outside the snapshot without discarding loaded details", () => {
+  const loadedTask = { ...snapshot.tasks[0]!, description: "Loaded body" };
+  const remoteMatch = {
+    ...snapshot.tasks[0]!,
+    id: "task-remote",
+    publicId: "99999999-9999-4999-8999-999999999999",
+    identifier: "TM-99",
+    sequenceNumber: 99,
+    title: "Remote compact match",
+    description: null,
+  };
+
+  const tasks = mergeSearchTaskSummaries(
+    [loadedTask],
+    [{ ...loadedTask, description: null }, remoteMatch],
+  );
+
+  assert.equal(tasks.find((task) => task.id === loadedTask.id)?.description, "Loaded body");
+  assert.equal(tasks.find((task) => task.id === remoteMatch.id)?.title, remoteMatch.title);
+  assert.equal(tasks.find((task) => task.id === remoteMatch.id)?.description, null);
+});
+
+test("completed server search IDs are authoritative over stale local text matches", () => {
+  const task = { ...snapshot.tasks[0]!, title: "Local needle" };
+
+  assert.equal(taskMatchesSearch(task, "needle", null), true);
+  assert.equal(taskMatchesSearch(task, "needle", new Set()), false);
+  assert.equal(taskMatchesSearch(task, "needle", new Set([task.id])), true);
+});
+
 test("a bounded initial task window renders background-loading progress", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
@@ -155,6 +328,52 @@ test("a bounded initial task window renders background-loading progress", () => 
   assert.doesNotMatch(markup, /Showing the 40 most recently updated tasks/);
 });
 
+test("pull-to-refresh starts only for a coarse mobile touch at the list top", () => {
+  const eligible = {
+    mobile: true,
+    coarsePointer: true,
+    scrollTop: 0,
+    refreshing: false,
+    touchCount: 1,
+  };
+  assert.equal(canStartPullRefresh(eligible), true);
+  assert.equal(canStartPullRefresh({ ...eligible, mobile: false }), false);
+  assert.equal(canStartPullRefresh({ ...eligible, coarsePointer: false }), false);
+  assert.equal(canStartPullRefresh({ ...eligible, scrollTop: 1 }), false);
+  assert.equal(canStartPullRefresh({ ...eligible, refreshing: true }), false);
+  assert.equal(canStartPullRefresh({ ...eligible, touchCount: 2 }), false);
+  assert.equal(pullRefreshDistance(-20), 0);
+  assert.ok(pullRefreshDistance(80) > 0);
+  assert.equal(shouldTriggerPullRefresh(20), false);
+  assert.equal(shouldTriggerPullRefresh(72), true);
+});
+
+test("pull-to-refresh performs one request, reports errors, and allows retry", async () => {
+  const holder: { current: Promise<AppSnapshot> | null } = { current: null };
+  let calls = 0;
+  const operation = () => {
+    calls += 1;
+    return fetchTaskSnapshot(async () => new Response(JSON.stringify(snapshot)));
+  };
+
+  const first = runSingleFlight(holder, operation);
+  const duplicate = runSingleFlight(holder, operation);
+  assert.equal(first, duplicate);
+  assert.equal((await first).user.id, snapshot.user.id);
+  assert.equal(calls, 1);
+
+  await assert.rejects(
+    fetchTaskSnapshot(async () => new Response(
+      JSON.stringify({ error: "Refresh failed" }),
+      { status: 503 },
+    )),
+    /Refresh failed/,
+  );
+  assert.equal(holder.current, null);
+  await runSingleFlight(holder, operation);
+  assert.equal(calls, 2);
+});
+
 test("an unassigned task row does not invent a current-user assignee", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
@@ -169,6 +388,19 @@ test("an unassigned task row does not invent a current-user assignee", () => {
   );
 
   assert.doesNotMatch(markup, /title="Assignee"/);
+});
+
+test("priority icons distinguish medium and high by active bar count", () => {
+  const medium = renderToStaticMarkup(createElement(PriorityIcon, { priority: "medium" }));
+  const high = renderToStaticMarkup(createElement(PriorityIcon, { priority: "high" }));
+  const urgent = renderToStaticMarkup(createElement(PriorityIcon, { priority: "urgent" }));
+
+  assert.match(medium, /data-active-bars="2"/);
+  assert.match(high, /data-active-bars="3"/);
+  assert.equal((medium.match(/priority-bar active/g) ?? []).length, 2);
+  assert.equal((high.match(/priority-bar active/g) ?? []).length, 3);
+  assert.match(urgent, /aria-label="Urgent priority"/);
+  assert.match(urgent, /priority-symbol/);
 });
 
 test("a saved priority grouping is rendered consistently in list and board", () => {
@@ -212,6 +444,8 @@ test("a saved priority grouping is rendered consistently in list and board", () 
     assert.match(markup, layout === "list"
       ? /class="group-header"[\s\S]*?Urgent/
       : /class="column-header"[\s\S]*?Urgent/);
+    assert.match(markup, /data-priority="medium" data-active-bars="2"/);
+    assert.match(markup, /data-priority="high" data-active-bars="3"/);
     assert.match(markup, /No priority/);
   }
 });
@@ -278,6 +512,27 @@ test("a saved assignee grouping is rendered consistently in list and board", () 
       : /class="column-header"[\s\S]*?Alex Editor/);
     assert.match(markup, /No assignee/);
   }
+});
+
+test("editable status-grouped list rows expose the same drag affordance as board cards", () => {
+  const listMarkup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: { surface: "all", layout: "list", taskId: null },
+      signOutPath: "/sign-out",
+    }),
+  );
+  const boardMarkup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: { surface: "all", layout: "board", taskId: null },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(listMarkup, /class="task-row[^>]*draggable="true"/);
+  assert.match(listMarkup, /data-drop-target="status"/);
+  assert.match(boardMarkup, /class="task-card editable[^>]*draggable="true"/);
 });
 
 test("a direct task render has no controlled field warnings", () => {
@@ -356,6 +611,27 @@ test("viewer task details are read-only and expose no mutation controls", () => 
   assert.doesNotMatch(markup, /Archive task/);
   assert.doesNotMatch(markup, /Save description/);
   assert.doesNotMatch(markup, /Members &amp; access/);
+  assert.match(markup, />Activity</);
+  assert.doesNotMatch(markup, /Leave a comment/);
+});
+
+test("comment drafts are isolated by authenticated user and task", () => {
+  assert.equal(
+    commentDraftStorageKey("user-a", "task-a"),
+    "tm:comment-draft:user-a:task-a:root",
+  );
+  assert.notEqual(
+    commentDraftStorageKey("user-a", "task-a"),
+    commentDraftStorageKey("user-b", "task-a"),
+  );
+  assert.notEqual(
+    commentDraftStorageKey("user-a", "task-a"),
+    commentDraftStorageKey("user-a", "task-b"),
+  );
+  assert.notEqual(
+    commentDraftStorageKey("user-a", "task-a"),
+    commentDraftStorageKey("user-a", "task-a", "root-comment-a"),
+  );
 });
 
 test("imported task details defer the heavy source archive until the panel opens", () => {
@@ -532,6 +808,9 @@ test("mobile shell exposes complete navigation and view controls", () => {
   );
   assert.match(markup, /id="mobile-view-controls"/);
   assert.match(markup, /aria-label="Search tasks on mobile"/);
+  assert.match(markup, /class="segmented mobile-layout-switcher"/);
+  assert.match(markup, /aria-label="List view" aria-pressed="true"/);
+  assert.match(markup, /aria-label="Kanban view" aria-pressed="false"/);
   assert.match(markup, />Filter</);
   assert.match(markup, />Display</);
   assert.match(markup, />List</);
@@ -613,6 +892,63 @@ test("sidebar release and view labels expose the full name while truncating visu
   assert.match(primaryNavigation, new RegExp(`aria-label="${longViewName}"`));
   assert.match(primaryNavigation, new RegExp(`<span class="nav-label">${longViewName}</span>`));
   assert.match(primaryNavigation, /href="\/projects\/88888888-8888-4888-8888-888888888888\/releases\/99999999-9999-4999-8999-999999999999"/);
+});
+
+test("release pages use the project-qualified release name without losing header actions", () => {
+  const project = {
+    id: "project-release-header",
+    publicId: "12121212-1212-4212-8212-121212121212",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Homeostat",
+    summary: "",
+    description: "",
+    status: "active",
+    leadUserId: null,
+    startDate: null,
+    targetDate: null,
+    color: "#7766dd",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const release = {
+    id: "release-header",
+    publicId: "34343434-3434-4434-8434-343434343434",
+    projectId: project.id,
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "0.1",
+    description: "",
+    status: "planned" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: { ...snapshot, projects: [project], releases: [release] },
+      initialNavigation: {
+        surface: `release:${release.id}`,
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(
+    markup,
+    /<h1 class="breadcrumb-current" title="Homeostat 0\.1">Homeostat 0\.1<\/h1>/,
+  );
+  assert.match(markup, /title="Copy direct link"/);
+  assert.match(markup, /aria-label="Homeostat 0\.1"/);
+  assert.match(markup, /title="Homeostat 0\.1"/);
 });
 
 test("status grouping hides empty groups in list and board even for saved views", () => {
@@ -737,6 +1073,6 @@ test("release breadcrumbs expose every ancestor and leave the current level stat
   assert.match(markup, /<a class="breadcrumb-link" href="\/projects">Projects<\/a>/);
   assert.match(markup, /<a class="breadcrumb-link" href="\/projects\/11111111-1111-4111-8111-111111111111">Project Alpha<\/a>/);
   assert.match(markup, /<a class="breadcrumb-link" href="\/projects\/11111111-1111-4111-8111-111111111111\/releases">Releases<\/a>/);
-  assert.match(markup, /<h1 class="breadcrumb-current">Release One<\/h1>/);
-  assert.doesNotMatch(markup, /<a class="breadcrumb-link"[^>]*>Release One<\/a>/);
+  assert.match(markup, /<h1 class="breadcrumb-current" title="Project Alpha Release One">Project Alpha Release One<\/h1>/);
+  assert.doesNotMatch(markup, /<a class="breadcrumb-link"[^>]*>Project Alpha Release One<\/a>/);
 });

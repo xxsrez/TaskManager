@@ -22,6 +22,7 @@ test("tools/list responses expose top-level OAuth security schemes", async () =>
           { name: "list_tasks", inputSchema: { type: "object" } },
           { name: "create_task", inputSchema: { type: "object" } },
           { name: "update_task", inputSchema: { type: "object" } },
+          { name: "add_task_comment", inputSchema: { type: "object" } },
         ],
       },
     }),
@@ -36,6 +37,9 @@ test("tools/list responses expose top-level OAuth security schemes", async () =>
     { type: "oauth2", scopes: ["api:write"] },
   ]);
   assert.deepEqual(body.result.tools[2]?.securitySchemes, [
+    { type: "oauth2", scopes: ["api:write"] },
+  ]);
+  assert.deepEqual(body.result.tools[3]?.securitySchemes, [
     { type: "oauth2", scopes: ["api:write"] },
   ]);
 });
@@ -221,6 +225,18 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     result: { tools: Array<{ name: string }> };
   };
   assert.ok(listBody.result.tools.some((tool) => tool.name === "list_tasks"));
+  for (const name of [
+    "list_task_comments",
+    "get_task_thread",
+    "add_task_comment",
+    "reply_to_task_comment",
+    "edit_task_comment",
+    "delete_task_comment",
+    "set_comment_reaction",
+    "resolve_task_thread",
+  ]) {
+    assert.ok(listBody.result.tools.some((tool) => tool.name === name), name);
+  }
 
   const callResponse = await mcpPost(
     new Request(endpoint, {

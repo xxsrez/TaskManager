@@ -1,9 +1,12 @@
 import { readJson, withUser } from "@/lib/http";
-import { createTask, getSnapshot, searchTaskIds } from "@/lib/repository";
+import { createTask, getSnapshot, searchTaskSummaries } from "@/lib/repository";
 
 export async function GET(request: Request) {
   const search = new URL(request.url).searchParams.get("search") ?? "";
-  return withUser(async (user) => ({ taskIds: await searchTaskIds(user, search) }));
+  return withUser(async (user) => {
+    const tasks = await searchTaskSummaries(user, search);
+    return { taskIds: tasks.map((task) => task.id), tasks };
+  });
 }
 
 export async function POST(request: Request) {

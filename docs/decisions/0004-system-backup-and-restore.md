@@ -4,6 +4,10 @@
 
 Дата решения: 2026-08-14
 
+Дополнение 2026-08-16: native comments и reactions включаются в product state;
+`schemaVersion` logical backup повышена до `2`, старый schema `1` отклоняется
+до staging как несовместимый.
+
 ## Контекст
 
 Task Manager хранит всё текущее product state в одной Sites D1: Users,
@@ -25,7 +29,8 @@ admin boundary.
    навигации не показывается.
 2. В первой версии backup — версионированный logical JSON snapshot, а не raw
    SQLite/SQL dump. Он включает все product, identity, ownership, ACL,
-   provenance и archived records, но не schema/migrations, hosted secrets,
+   provenance, native comments/reactions и archived records, но не
+   schema/migrations, hosted secrets,
    Sites audience/deployments/analytics, browser-local preferences и
    operational import staging и API credentials. Token hash является
    authentication capability, а не переносимым product data.

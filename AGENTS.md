@@ -6,7 +6,8 @@
 
 Проект имеет первый рабочий вертикальный срез на React/Vinext, Sites Worker и
 D1. Реализованы ChatGPT identity boundary, owner/ACL-scoped repository,
-задачи, проекты, релизы, views, sharing, list/board и details; точное состояние
+задачи, проекты, релизы, views, sharing, list/board, details и native task
+comments; точное состояние
 подтверждайте кодом и проверками. Google sign-in, labels UI, hierarchy,
 relations, настройка workflow и полный filter contract пока не реализованы.
 Не описывайте весь MVP как завершённый.
@@ -40,7 +41,7 @@ Application-level admin overview реализован отдельно от reso
 
 - Основные сущности: `User`, `Task`, `Project`, `Release`, `SavedView`.
 - Вспомогательные сущности: `UserIdentity`, `AccessGrant`, `WorkflowStatus`,
-  `Label`, `TaskRelation`.
+  `Label`, `TaskRelation`, `Comment`, `CommentReaction`.
 - Основные поверхности: список задач, Kanban-доска, карточка задачи, список и
   карточка проекта, управление релизами, сохранённые представления, вход и
   `Shared with me`; отдельная server-gated поверхность — `Administration`.
@@ -50,9 +51,9 @@ Application-level admin overview реализован отдельно от reso
 - Целевая среда: authentication-enabled ChatGPT Site с durable structured data;
   не добавляйте альтернативный production hosting без нового принятого ADR.
 - Не добавляйте teams, initiatives, cycles/sprints, roadmap/timeline,
-  комментарии, документы, inbox/triage, уведомления, product analytics сверх
-  принятого admin overview, AI-функции или CI/CD-интеграции без явного
-  расширения спецификации.
+  документы, inbox/triage, уведомления, mentions, comment attachments,
+  product analytics сверх принятого admin overview, AI-функции или
+  CI/CD-интеграции без явного расширения спецификации.
 
 ## Обязательные доменные инварианты
 

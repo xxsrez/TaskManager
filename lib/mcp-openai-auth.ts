@@ -124,12 +124,23 @@ function decorateJsonValue(value: unknown) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const tool = value as Record<string, unknown>;
     const scope: ApiScope =
-      tool.name === "create_task" || tool.name === "update_task"
+      typeof tool.name === "string" && writeToolNames.has(tool.name)
         ? "api:write"
         : "api:read";
     tool.securitySchemes = [{ type: "oauth2", scopes: [scope] }];
   }
 }
+
+const writeToolNames = new Set([
+  "create_task",
+  "update_task",
+  "add_task_comment",
+  "reply_to_task_comment",
+  "edit_task_comment",
+  "delete_task_comment",
+  "set_comment_reaction",
+  "resolve_task_thread",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));

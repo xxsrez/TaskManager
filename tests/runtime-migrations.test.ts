@@ -9,6 +9,7 @@ const runtimeModules = [
   "lib/project-backup.ts",
   "lib/system-backup.ts",
   "lib/linear-import.ts",
+  "lib/comments.ts",
 ];
 
 test("runtime requests rely on versioned migrations instead of schema bootstrap", async () => {

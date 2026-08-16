@@ -18,6 +18,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
+  assert.equal(backup.schemaVersion, 2);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -25,6 +26,14 @@ test("a complete system snapshot validates and preserves application data", asyn
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.tables.tasks[0]?.title, "Ship backup support");
   assert.equal(validated.tables.access_grants[0]?.permission, "full_access");
+});
+
+test("the comment-aware system schema rejects an older backup explicitly", async () => {
+  const backup = await createSystemBackup(validTables(), now);
+  await assert.rejects(
+    validateSystemBackup({ ...backup, schemaVersion: 1 }),
+    /unsupported task manager backup format or version/i,
+  );
 });
 
 test("snapshot validation rejects content changed after export", async () => {
@@ -259,6 +268,7 @@ function validTables(): BackupTables {
         completed_at: null,
         canceled_at: null,
         archived_at: null,
+        comment_count: 1,
         version: 1,
         created_at: now,
         updated_at: now,
@@ -285,10 +295,32 @@ function validTables(): BackupTables {
         completed_at: null,
         canceled_at: null,
         archived_at: null,
+        comment_count: 0,
         version: 1,
         created_at: now,
         updated_at: now,
       },
+    ],
+    comments: [
+      {
+        id: "comment-1",
+        task_id: "task-1",
+        author_user_id: "user-admin",
+        body: "Native backup comment",
+        source: "native",
+        parent_comment_id: null,
+        idempotency_key: "backup-comment-1",
+        created_at: now,
+        updated_at: now,
+        deleted_at: null,
+        resolved_at: null,
+        resolved_by_user_id: null,
+        resolution_comment_id: null,
+        version: 1,
+      },
+    ],
+    comment_reactions: [
+      { comment_id: "comment-1", user_id: "user-collaborator", emoji: "👍", created_at: now },
     ],
     labels: [
       {
@@ -363,6 +395,10 @@ function migratedDatabase() {
     "0005_mixed_bruce_banner.sql",
     "0006_complex_reavers.sql",
     "0007_curious_sharon_carter.sql",
+    "0008_loose_the_fallen.sql",
+    "0009_talented_otto_octavius.sql",
+    "0010_crazy_puma.sql",
+    "0011_conscious_paibok.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

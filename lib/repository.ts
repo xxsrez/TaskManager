@@ -39,6 +39,7 @@ import type {
   SavedViewRecord,
   StatusCategory,
   TaskLabelAssignment,
+  TaskDetailRecord,
   TaskRelationRecord,
   TaskRecord,
   UserRecord,
@@ -121,7 +122,7 @@ const snapshotTaskProjection = `
   t.status_id, t.priority, t.assignee_user_id, t.project_id, t.release_id,
   t.estimate, t.due_date, t.parent_task_id, t.rank,
   t.started_at, t.completed_at, t.canceled_at, t.archived_at,
-  t.version, t.created_at, t.updated_at`;
+  t.comment_count, t.version, t.created_at, t.updated_at`;
 
 export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
   const db = getD1();
@@ -560,10 +561,86 @@ export async function getTask(
   return loadAccessibleTask(currentUser.id, taskId);
 }
 
+export async function getTaskDetail(
+  currentUser: UserRecord,
+  taskId: string,
+): Promise<TaskDetailRecord> {
+  const task = await loadAccessibleTask(currentUser.id, taskId);
+  const db = getD1();
+  const [labelRows, relationRows, childRows] = await db.batch([
+    db
+      .prepare(
+        `SELECT l.* FROM labels l
+         JOIN task_labels tl ON tl.label_id = l.id
+         WHERE tl.task_id = ?
+         ORDER BY l.name, l.id`,
+      )
+      .bind(task.id),
+    db
+      .prepare(
+        `SELECT source_task_id, target_task_id, type
+         FROM task_relations
+         WHERE source_task_id = ? OR target_task_id = ?
+         ORDER BY created_at, source_task_id, target_task_id, type`,
+      )
+      .bind(task.id, task.id),
+    db
+      .prepare(
+        `SELECT id FROM tasks
+         WHERE parent_task_id = ?
+         ORDER BY rank, id`,
+      )
+      .bind(task.id),
+  ]);
+
+  const relationRecords = (relationRows.results as DbRow[]).map(mapRelation);
+  const contextIds = new Set<string>();
+  if (task.parentTaskId) contextIds.add(task.parentTaskId);
+  for (const row of childRows.results as DbRow[]) contextIds.add(String(row.id));
+  for (const relation of relationRecords) {
+    if (relation.sourceTaskId !== task.id) contextIds.add(relation.sourceTaskId);
+    if (relation.targetTaskId !== task.id) contextIds.add(relation.targetTaskId);
+  }
+
+  const relatedTasks = (
+    await Promise.all(
+      [...contextIds].map(async (id) => {
+        try {
+          return await loadAccessibleTask(currentUser.id, id);
+        } catch (error) {
+          if (error instanceof NotFoundError) return null;
+          throw error;
+        }
+      }),
+    )
+  ).filter((item): item is TaskRecord => item !== null);
+  const visibleIds = new Set([task.id, ...relatedTasks.map((item) => item.id)]);
+  const labels = (labelRows.results as DbRow[]).map(mapLabel);
+
+  return {
+    task,
+    relatedTasks,
+    labels,
+    taskLabels: labels.map((label) => ({ taskId: task.id, labelId: label.id })),
+    relations: relationRecords.filter(
+      (relation) =>
+        visibleIds.has(relation.sourceTaskId) &&
+        visibleIds.has(relation.targetTaskId),
+    ),
+  };
+}
+
 export async function searchTaskIds(
   currentUser: UserRecord,
   input: string,
 ): Promise<string[]> {
+  return (await searchTaskSummaries(currentUser, input)).map((task) => task.id);
+}
+
+export async function searchTaskSummaries(
+  currentUser: UserRecord,
+  input: string,
+): Promise<TaskRecord[]> {
   const query = input.trim().toLowerCase();
   if (!query) return [];
   if (query.length > 200) {
@@ -572,27 +649,45 @@ export async function searchTaskIds(
   const rows = await getD1()
     .prepare(
       `WITH scoped AS (
-         SELECT t.id,
+         SELECT ${snapshotTaskProjection},
+           EXISTS (
+             SELECT 1 FROM external_records er
+             WHERE er.target_type = 'task' AND er.target_id = t.id
+           ) AS has_external_source,
            CASE
-             WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 1
-             WHEN t.project_id IS NOT NULL THEN EXISTS (
-               SELECT 1 FROM access_grants ag
+             WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+             WHEN t.project_id IS NOT NULL THEN (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'manager'
+                 WHEN 'manager' THEN 'manager'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
                WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
                  AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               LIMIT 1
              )
-             WHEN t.owner_user_id = ? THEN 1
-             ELSE EXISTS (
-               SELECT 1 FROM access_grants ag
+             WHEN t.owner_user_id = ? THEN 'owner'
+             ELSE (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'editor'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
                WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
                  AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               LIMIT 1
              )
-           END AS is_visible
+           END AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
          WHERE instr(lower(t.identifier), ?) > 0
             OR instr(lower(t.title), ?) > 0
             OR instr(lower(COALESCE(t.description, '')), ?) > 0
        )
-       SELECT id FROM scoped WHERE is_visible = 1 LIMIT ?`,
+       SELECT * FROM scoped WHERE access_role IS NOT NULL
+       ORDER BY updated_at DESC, id DESC LIMIT ?`,
     )
     .bind(
       currentUser.id,
@@ -604,8 +699,8 @@ export async function searchTaskIds(
       query,
       MAX_UI_SNAPSHOT_TASKS,
     )
-    .all<{ id: string }>();
-  return rows.results.map((row) => String(row.id));
+    .all<DbRow>();
+  return rows.results.map(mapTask);
 }
 
 export async function getAdminOverview(
@@ -1744,6 +1839,7 @@ function mapTask(row: DbRow): TaskRecord {
     completedAt: nullableString(row.completed_at),
     canceledAt: nullableString(row.canceled_at),
     archivedAt: nullableString(row.archived_at),
+    commentCount: Number(row.comment_count ?? 0),
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),

@@ -60,3 +60,52 @@ test("prefix search and task sequence allocation have dedicated schema support",
   const columns = database.prepare("PRAGMA table_info(task_sequences)").all();
   assert.deepEqual(columns.map((column) => column.name), ["owner_user_id", "last_value"]);
 });
+
+test("native comments have task counters, relational integrity, and lookup indexes", () => {
+  const database = migratedDatabase();
+  const taskColumns = database.prepare("PRAGMA table_info(tasks)").all();
+  assert.ok(taskColumns.some((column) => column.name === "comment_count"));
+
+  const commentForeignKeys = database
+    .prepare("PRAGMA foreign_key_list(comments)")
+    .all();
+  assert.ok(
+    commentForeignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === "tasks" &&
+        foreignKey.from === "task_id" &&
+        foreignKey.on_delete === "CASCADE",
+    ),
+  );
+  assert.ok(
+    commentForeignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === "comments" &&
+        foreignKey.from === "parent_comment_id" &&
+        foreignKey.on_delete === "CASCADE",
+    ),
+  );
+  const reactionForeignKeys = database
+    .prepare("PRAGMA foreign_key_list(comment_reactions)")
+    .all();
+  assert.ok(
+    reactionForeignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === "comments" &&
+        foreignKey.from === "comment_id" &&
+        foreignKey.on_delete === "CASCADE",
+    ),
+  );
+  assert.ok(
+    planDetails(
+      database,
+      "SELECT id FROM comments WHERE task_id = 'task-1' ORDER BY created_at, id",
+    ).some((detail) => detail.includes("idx_comments_task_created")),
+  );
+  assert.ok(
+    planDetails(
+      database,
+      "SELECT id FROM comments WHERE parent_comment_id = 'comment-1' ORDER BY created_at, id",
+    ).some((detail) => detail.includes("idx_comments_parent")),
+  );
+});

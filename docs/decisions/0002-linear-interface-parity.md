@@ -4,6 +4,10 @@
 
 Дата решения: 2026-08-14
 
+Дополнение 2026-08-16: native task comments добавлены в MVP; для их Activity
+surface действуют те же Linear-like composition и interaction rules. Mentions,
+attachments, notifications и общий activity feed остаются исключены.
+
 ## Контекст
 
 Task Manager переносит из Linear ограниченный набор продуктовых возможностей:
@@ -36,8 +40,8 @@ Linear, а не только использовать похожую домен�
    переходы.
 4. Это не полный клон Linear. Переносятся только controls для функций,
    перечисленных в `docs/specs/mvp.md`. Teams, cycles, initiatives, inbox,
-   comments, documents, analytics и другие исключённые возможности не должны
-   появляться в UI как неработающие пункты.
+   documents, analytics и другие исключённые возможности не должны появляться
+   в UI как неработающие пункты.
 5. Task Manager использует собственные название, логотип, тексты, illustration
    assets и product identity. Не копируются Linear trademark, logo, фирменные
    иллюстрации, исходный код или закрытые assets. Разрешено использовать
@@ -58,6 +62,7 @@ Linear, а не только использовать похожую домен�
 - hover focus, checkbox reveal, single/multi-select и contextual bulk bar;
 - right-click/overflow menus и ограниченное ported actions command menu;
 - modal composer для быстрого создания и отдельная details surface;
+- task Activity с native root/reply threads, reactions и resolution;
 - inline editing title/description и popover property pickers;
 - keyboard-first навигация и shortcuts для доступных действий;
 - `Peek` для task/project из list и board;

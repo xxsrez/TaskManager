@@ -4,6 +4,11 @@
 
 Дата решения: 2026-08-14
 
+Дополнение 2026-08-16: Project subtree включает native comments/reactions его
+Tasks и проверяет их author/reaction Users как существующие dependencies.
+`schemaVersion` Project bundle повышена до `2`; schema `1` не применяется к
+новой таблице Tasks с обязательным `comment_count`.
+
 ## Контекст
 
 Владельцу Project нужна доступная без application-admin роли страховка от
@@ -18,7 +23,8 @@ ADR-0004 для этого не подходит: он раскрывает со
    product API.
 2. Export создаёт versioned logical JSON bundle одного Project. Он включает сам
    Project, Tasks, Releases, project-scoped SavedViews, label assignments,
-   внутреннюю hierarchy/relations, provenance и snapshot используемых
+   внутреннюю hierarchy/relations, native comments/reactions, provenance и
+   snapshot используемых
    WorkflowStatuses/Labels. Users, UserIdentities, API credentials, hosted
    secrets, global SavedViews и данные других Projects не включаются.
 3. Bundle привязан к исходным immutable IDs, current owner и тому же Site.

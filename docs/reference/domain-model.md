@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-14
+Последнее обновление: 2026-08-16
 
 Документ фиксирует логическую модель, а не конкретную ORM или SQL-схему.
 Имена полей могут адаптироваться к выбранному стеку, но семантика и инварианты
@@ -31,6 +31,11 @@ erDiagram
     TASK ||--o{ TASK : parent_of
     TASK ||--o{ TASK_RELATION : source
     TASK ||--o{ TASK_RELATION : target
+    TASK ||--o{ COMMENT : discusses
+    USER ||--o{ COMMENT : authors
+    COMMENT ||--o{ COMMENT : root_of
+    COMMENT ||--o{ COMMENT_REACTION : receives
+    USER ||--o{ COMMENT_REACTION : reacts
     TASK }o--o{ LABEL : tagged_with
     USER ||--o{ EXTERNAL_RECORD : owns
     PROJECT ||--o{ SAVED_VIEW : scopes
@@ -159,7 +164,8 @@ session metadata остаётся как минимальный audit record.
 
 `ProjectBackup` — versioned logical envelope ровно одного Project. Он хранит
 immutable identity Project, current owner, его subtree, internal joins и
-relations, dependency snapshots используемых catalogs, active sharing
+relations, native comments/reactions, dependency snapshots используемых
+catalogs, active sharing
 descriptors, warnings и SHA-256. Это переносимая страховка владельца, но не
 отдельная live entity и не ACL capability.
 
@@ -235,6 +241,7 @@ Project Owner имеет implicit highest access и не представлен 
 | `completed_at` | instant | нет | Соответствует completed category |
 | `canceled_at` | instant | нет | Соответствует canceled category |
 | `archived_at` | instant | нет | Soft archive |
+| `comment_count` | integer | да | Производный count native comments без soft-deleted tombstones |
 | `created_at` | instant | да | Серверное время создания |
 | `updated_at` | instant | да | Серверное время последнего изменения |
 | `version` | integer/token | да | Optimistic concurrency |
@@ -244,6 +251,35 @@ Labels задаются связующей таблицей `task_labels(task_id
 identity опираются на `public_id`, поскольку у разных owners возможен
 одинаковый `TM-123`. `id` остаётся ключом внутренних связей и идемпотентного
 импорта; `public_id` не меняется при повторном импорте.
+
+## Comment и CommentReaction
+
+`Comment` — native discussion record одной Task. Импортированный comment archive
+остаётся в `ExternalRecord.metadata_json` и не создаёт строки `Comment`.
+
+| Поле | Семантика |
+|---|---|
+| `id`, `task_id` | Immutable identity и Task, определяющая ACL/scope |
+| `author_user_id` | Server-verified author; client claim не принимается |
+| `body` | Непустой нормализованный Markdown-like text до 100 000 characters; у tombstone пустой |
+| `source` | В первой версии всегда `native` |
+| `parent_comment_id` | `NULL` для root либо ссылка непосредственно на root того же Task |
+| `idempotency_key` | Уникален в `(task_id, author_user_id)` и делает create retry-safe |
+| `created_at`, `updated_at`, `deleted_at` | Lifecycle и soft-delete metadata |
+| `resolved_at`, `resolved_by_user_id` | Состояние root thread и resolver |
+| `resolution_comment_id` | Optional root/reply того же thread, фиксирующий resolution |
+| `version` | Optimistic concurrency edit/delete/resolve |
+
+`CommentReaction` имеет composite identity
+`(comment_id, user_id, emoji)` и `created_at`. API задаёт desired state
+`active`, поэтому повторный add/remove идемпотентен. Response агрегирует count и
+`reactedByCurrentUser`, но не раскрывает список User/email.
+
+Любой User, видящий Task, читает threads. Comment mutation требует Editor или
+выше; edit разрешён только author, delete — author либо Project Owner/Manager.
+Удаление оставляет tombstone и сохраняет replies. Reply на reply нормализуется к
+root, а создание reply атомарно переоткрывает resolved thread. `Task.comment_count`
+атомарно равен числу native rows этой Task с `deleted_at IS NULL`.
 
 ### TaskSequence
 
@@ -350,9 +386,9 @@ Label — гибкая классификация, но не подмена stat
 
 Для Linear snapshot сохраняются, среди прочего, branch name, история статусов,
 attachments metadata и комментарии. Импортированные комментарии доступны в
-Task details как read-only archive. Это не означает наличие в MVP отдельного
-редактора комментариев или загрузки файлов: данные остаются import provenance
-и не участвуют в доменных запросах.
+Task details как read-only archive. Они не превращаются в native `Comment`, не
+получают edit/reply/reaction controls и не смешиваются с Activity threads;
+attachments также остаются import provenance.
 
 ## SavedView
 
@@ -437,9 +473,15 @@ Task details как read-only archive. Это не означает наличи
 20. Project export/restore требует effective role `owner`, совпадение source
     current owner и того же Site. Project subtree replace атомарен; staged rows
     никогда не дают read access к live resources.
+21. Comment всегда принадлежит доступной Task; parent/resolution comment
+    принадлежит той же Task и одному root thread. Comment graph имеет только два
+    уровня, а create identity задаёт server-verified User.
+22. Comment create уникален по `(task, author, idempotency_key)`. Edit/delete/
+    resolve проверяют version; reaction unique по `(comment, user, emoji)`.
+    Comment и Task count/timestamp изменяются атомарно.
 
 ## Намеренно не моделируется
 
-`Team`, `Initiative`, `Cycle`, `Milestone`, `Roadmap`, `Comment`, `Document`,
-`Attachment`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment`
-и `Integration` не входят в начальную модель.
+`Team`, `Initiative`, `Cycle`, `Milestone`, `Roadmap`, `Document`, `Attachment`,
+`Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
+`Integration` не входят в начальную модель.

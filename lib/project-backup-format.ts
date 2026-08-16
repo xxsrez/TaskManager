@@ -7,7 +7,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 1 as const;
+export const projectBackupSchemaVersion = 2 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -17,6 +17,8 @@ export const projectBackupTableNames = [
   "projects",
   "releases",
   "tasks",
+  "comments",
+  "comment_reactions",
   "labels",
   "task_labels",
   "task_relations",
@@ -170,6 +172,7 @@ function validateProjectRelationships(
   ) throw new ValidationError("Project backup identity does not match its project row");
 
   const tasks = unique(tables.tasks, "id", "task");
+  const comments = unique(tables.comments, "id", "comment");
   const releases = unique(tables.releases, "id", "release");
   const statuses = unique(tables.workflow_statuses, "id", "workflow status");
   const labels = unique(tables.labels, "id", "label");
@@ -184,6 +187,64 @@ function validateProjectRelationships(
     if (task.parent_task_id !== null && !tasks.has(String(task.parent_task_id))) throw new ValidationError("Task parent is outside the project bundle");
   }
   assertNoParentCycle(tables.tasks, tasks);
+  const commentKeys = new Set<string>();
+  const activeComments = new Map<string, number>();
+  for (const comment of tables.comments) {
+    if (!tasks.has(String(comment.task_id))) throw new ValidationError("Comment is outside the project bundle");
+    if (!String(comment.author_user_id).trim()) throw new ValidationError("Comment author is required");
+    if (!String(comment.idempotency_key).trim()) throw new ValidationError("Comment idempotency key is required");
+    if (comment.source !== "native") throw new ValidationError("Project backup contains a non-native comment");
+    if (!Number.isInteger(comment.version) || Number(comment.version) < 1) {
+      throw new ValidationError("Comment version must be a positive integer");
+    }
+    const key = `${comment.task_id}\u0000${comment.author_user_id}\u0000${comment.idempotency_key}`;
+    if (commentKeys.has(key)) throw new ValidationError("Duplicate comment idempotency key");
+    commentKeys.add(key);
+    if (comment.deleted_at === null) {
+      if (!String(comment.body).trim()) throw new ValidationError("Active comment body cannot be empty");
+      activeComments.set(String(comment.task_id), (activeComments.get(String(comment.task_id)) ?? 0) + 1);
+    }
+    if (comment.parent_comment_id !== null) {
+      const parent = comments.get(String(comment.parent_comment_id));
+      if (!parent || parent.task_id !== comment.task_id || parent.parent_comment_id !== null) {
+        throw new ValidationError("Comment reply must use a root in the same project task");
+      }
+      if (
+        comment.resolved_at !== null ||
+        comment.resolved_by_user_id !== null ||
+        comment.resolution_comment_id !== null
+      ) {
+        throw new ValidationError("Only root comments can carry thread resolution");
+      }
+    }
+    if (comment.resolved_at === null) {
+      if (comment.resolved_by_user_id !== null || comment.resolution_comment_id !== null) {
+        throw new ValidationError("Open comment threads cannot carry resolution metadata");
+      }
+    } else if (comment.resolved_by_user_id === null) {
+      throw new ValidationError("Resolved comment thread requires a resolver");
+    }
+    if (comment.resolution_comment_id !== null) {
+      const resolution = comments.get(String(comment.resolution_comment_id));
+      if (!resolution || (resolution.id !== comment.id && resolution.parent_comment_id !== comment.id)) {
+        throw new ValidationError("Resolution comment must belong to the root thread");
+      }
+    }
+  }
+  for (const task of tables.tasks) {
+    if (task.comment_count !== (activeComments.get(String(task.id)) ?? 0)) {
+      throw new ValidationError("Task comment_count does not match project comments");
+    }
+  }
+  const reactionKeys = new Set<string>();
+  for (const reaction of tables.comment_reactions) {
+    if (!comments.has(String(reaction.comment_id))) throw new ValidationError("Reaction references a missing project comment");
+    if (!String(reaction.user_id).trim()) throw new ValidationError("Reaction user is required");
+    if (!String(reaction.emoji).trim()) throw new ValidationError("Reaction emoji is required");
+    const key = `${reaction.comment_id}\u0000${reaction.user_id}\u0000${reaction.emoji}`;
+    if (reactionKeys.has(key)) throw new ValidationError("Duplicate project comment reaction");
+    reactionKeys.add(key);
+  }
   for (const view of tables.saved_views) {
     if (view.scope_project_id !== identity.projectId) throw new ValidationError("Saved view is outside the backed-up project");
     parseJsonObject(view.query_json, "Saved view query");

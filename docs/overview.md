@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-14
+Последнее обновление: 2026-08-16
 
 ## Замысел
 
@@ -72,6 +72,8 @@ labels, workflow statuses и views по умолчанию отделены от
   Editor/Viewer для standalone task или global saved view, отзыв доступа и
   экран `Shared with me`;
 - создание, редактирование, архивирование и восстановление задач;
+- native comments в карточке задачи: root threads, одноуровневые replies,
+  reactions, resolve/reopen и локальные drafts;
 - настраиваемый workflow и системные категории статусов;
 - task metadata: приоритет, исполнитель, проект, релиз, labels, estimate,
   due date, parent/subtasks и связи между задачами;
@@ -83,15 +85,16 @@ labels, workflow statuses и views по умолчанию отделены от
 - фильтры, группировка, сортировка, видимые поля и сохранённые views;
 - базовый поиск по идентификатору, заголовку и описанию;
 - agent API для чтения проектов/релизов, compact task search, отдельного task
-  detail и создания/изменения задач поверх того же authorization scope;
+  detail, создания/изменения задач и работы с native comment threads поверх
+  того же authorization scope;
 - production hosting на ChatGPT Sites с durable structured storage.
 
 Не входят в MVP:
 
 - teams, initiatives, cycles/sprints и roadmap/timeline;
 - project milestones как отдельная от release сущность;
-- inbox/triage, комментарии, документы и вложения;
-- уведомления, подписки и activity feed;
+- inbox/triage, документы и вложения;
+- mentions, уведомления, подписки и общий workspace activity feed;
 - Git/CI/CD, Slack, email и другие domain-specific integrations; first-party
   agent API из списка выше является отдельной surface продукта;
 - analytics, forecasting, AI-фильтры и генерация release notes;

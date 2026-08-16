@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-14
+Последнее обновление: 2026-08-16
 
 Архитектура реализована первым вертикальным срезом на TypeScript, React 19,
 Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentication
@@ -50,6 +50,7 @@ migrations. Это соответствует
 | Модуль | Ответственность |
 |---|---|
 | Tasks | Task lifecycle, workflow, labels, subtasks, relations, rank |
+| Comments | ACL-scoped native threads, idempotency, reactions и resolution |
 | Projects | Project metadata, scope и вычисляемый progress |
 | Releases | Release lifecycle, состав и project consistency |
 | Views | Filter AST, query compilation, grouping, ordering, display config |
@@ -149,14 +150,15 @@ migrations. Это соответствует
 2. Agent query service применяет тот же ownership/ACL predicate до filters,
    counts, ambiguity resolution и cursor pagination.
 3. Collection use case строит фиксированный compact projection без description,
-   comments, attachments, internal IDs и user emails.
-4. Detail use case по canonical `public_id` загружает одну сущность; большой
-   imported archive остаётся отдельным paginated вызовом.
+   comment bodies, attachments, internal IDs и user emails.
+4. Detail use case по canonical `public_id` загружает одну сущность; native
+   comment threads и большой imported archive остаются разными отдельными
+   paginated вызовами.
 5. REST возвращает versioned schema и request/as-of metadata. MCP публикует
    task-oriented tools с теми же projections. Любой client переходит от summary
    к detail только через явный отдельный запрос. Анонимный MCP handshake может
    получить capabilities и схемы tools для установки connector, но каждый
-   `tools/call` требует bearer token до data query.
+`tools/call` требует bearer token до data query.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в
@@ -164,6 +166,13 @@ migrations. Это соответствует
 [ADR-0008](decisions/0008-oauth-mcp-connector.md). Task commands транслируют
 external refs во внутренние IDs и вызывают те же domain repository methods с
 role checks, release/project validation и optimistic version.
+
+Comment commands сначала разрешают Task тем же ACL predicate, затем работают
+только внутри её `task_id`. Collection cursor связан с Task и упорядочен по
+`(created_at, id)`; root page подгружает bounded replies. Create использует
+уникальный `(task_id, author_user_id, idempotency_key)`, author берётся из token
+identity, а edit/delete/resolve проверяют comment version. Agent projection
+автора содержит только display name и признак current User.
 
 ### Открытие прямой ссылки
 
@@ -269,6 +278,10 @@ attachments: при открытии details одной импортирован
 проверяет ACL этой Task. Content-free admin overview вычисляется только для
 прямого открытия `/admin`; обычный snapshot хранит лишь server-derived признак
 доступности admin surface.
+Native comment bodies также не входят в bootstrap или Task detail. Activity
+отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,
+а comment mutations обновляют Task timestamp и производный `comment_count` в
+одной D1 batch transaction.
 
 Частая команда изменения одной Task возвращает только подтверждённый
 `TaskRecord`, и client атомарно заменяет эту запись в текущем snapshot. Это не
@@ -295,6 +308,8 @@ attachments: при открытии details одной импортирован
   name/summary и release name для prefix search;
 - join table для labels;
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of`;
+- `comments` с task/user/self foreign keys, idempotency и keyset indexes;
+- `comment_reactions` с composite primary key и cascade от comment;
 - `external_records` для owner-scoped provenance идемпотентного импорта;
 - `user_import_sessions` и `user_import_rows` для owner-scoped Project restore
   staging, preview и bounded lifecycle;
@@ -304,8 +319,9 @@ attachments: при открытии details одной импортирован
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
 
-Полнотекстовый индекс, дополнительные assignee/priority/due indexes и
-database-level foreign keys остаются следующими schema slices.
+Полнотекстовый индекс, дополнительные assignee/priority/due indexes и foreign
+keys для остальных старых таблиц остаются следующими schema slices; comments и
+reactions уже используют task/user/self foreign keys.
 Owner consistency и project/release invariants в текущем срезе проверяются на
 server mutation boundary.
 
@@ -369,6 +385,9 @@ saved-view query/display и полный provider metadata в `external_records`
   selection/bulk actions, keyboard controls, Peek, drag rollback и сохранение
   views; Miniflare/D1 integration tests дополнительно проходят repository ACL,
   routes, OAuth, keyset pagination и конкурентный create.
+- Comment tests покрывают identity, Viewer refusal, author/moderator rules,
+  idempotent create/reaction, stale versions, one-level replies, tombstones,
+  stable pagination, Agent privacy projection и backup invariants.
 - Visual regression и accessibility checks следуют
   [спецификации интерфейса](specs/interface.md); сравнение с Linear проверяет
   composition и interaction parity, а не чужие assets.

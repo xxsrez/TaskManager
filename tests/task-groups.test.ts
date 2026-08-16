@@ -3,6 +3,9 @@ import test from "node:test";
 import {
   buildTaskGroups,
   canMoveTaskToGroup,
+  projectTaskGroupMove,
+  rollbackTaskGroupMove,
+  shouldShowEmptyTaskGroups,
   taskGroupCreateDefaults,
   taskGroupMutation,
   tasksInGroupOrder,
@@ -102,6 +105,7 @@ const baseTask: TaskRecord = {
   completedAt: null,
   canceledAt: null,
   archivedAt: null,
+  commentCount: 0,
   version: 1,
   createdAt: now,
   updatedAt: now,
@@ -162,6 +166,48 @@ test("status grouping follows workflow order while first and last tasks change g
     identifier: "TM-2",
   }]), ["Todo", "Done"]);
   assert.deepEqual(labels([]), []);
+});
+
+test("status drag projection changes only status and rank and can roll back safely", () => {
+  const done: WorkflowStatusRecord = {
+    id: "done",
+    ownerUserId: "user-1",
+    name: "Done",
+    category: "completed",
+    color: "#22c55e",
+    position: 1,
+    isDefault: false,
+  };
+  const target = buildTaskGroups({
+    tasks: [],
+    statuses: [done],
+    projects,
+    releases,
+    users,
+    groupBy: "status",
+    showEmptyGroups: true,
+  })[0]!;
+
+  const optimistic = projectTaskGroupMove(baseTask, target, 2_000);
+  assert.equal(optimistic.statusId, done.id);
+  assert.equal(optimistic.rank, 2_000);
+  assert.equal(optimistic.projectId, baseTask.projectId);
+  assert.equal(optimistic.releaseId, baseTask.releaseId);
+  assert.equal(optimistic.priority, baseTask.priority);
+  assert.deepEqual(rollbackTaskGroupMove(optimistic, baseTask, optimistic), baseTask);
+
+  const concurrent = { ...optimistic, version: 2, title: "Server changed" };
+  assert.equal(
+    rollbackTaskGroupMove(concurrent, baseTask, optimistic),
+    concurrent,
+  );
+});
+
+test("dragging exposes empty status targets without changing saved empty-group preferences", () => {
+  assert.equal(shouldShowEmptyTaskGroups("status", false, false), false);
+  assert.equal(shouldShowEmptyTaskGroups("status", false, true), true);
+  assert.equal(shouldShowEmptyTaskGroups("priority", false, true), false);
+  assert.equal(shouldShowEmptyTaskGroups("priority", true, false), true);
 });
 
 test("project and release grouping include explicit unassigned groups", () => {

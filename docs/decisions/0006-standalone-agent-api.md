@@ -8,6 +8,10 @@
 [ADR-0008](0008-oauth-mcp-connector.md). Personal bearer token сохранён для
 scripts, но основной Codex/ChatGPT flow теперь использует OAuth + remote MCP.
 
+Дополнение 2026-08-16: task-oriented surface включает отдельные native comment
+thread queries/commands; comment bodies не добавляются в Task collections или
+detail projection.
+
 ## Контекст
 
 Web UI использует Sites-authenticated JSON routes и полный
@@ -31,8 +35,8 @@ mutations/status transitions. Administration и другие управленч�
    lifecycle metadata.
 4. Browser-authenticated User выдаёт/отзывает credentials через settings
    control plane. После выдачи data API не зависит от Web UI/session.
-5. Scopes — `api:read` и `api:write`. Write scope разрешает только создание
-   и изменение Tasks и не отменяет owner/ACL role.
+5. Scopes — `api:read` и `api:write`. Write scope разрешает только создание и
+   изменение Tasks/native comments и не отменяет owner/ACL role.
 6. Project/Release доступны для чтения и task scope. Их mutations, sharing,
    ownership transfer, workflow configuration, Administration и backup/restore
    отсутствуют во внешнем API.
@@ -51,6 +55,9 @@ mutations/status transitions. Administration и другие управленч�
 - Credential table и migration входят в Sites D1; secret не восстанавливается.
 - Первый slice не редактирует labels/hierarchy/relations, не имеет bulk commands
   и server-side POST idempotency. Их нельзя изображать существующими в OpenAPI.
+- Comment create имеет собственный idempotency key и отдельную optimistic
+  version для edit/delete/resolve; это не меняет отсутствие idempotency record у
+  `POST /tasks`.
 - Hosted rate limits и audit retention требуют решения после измерения нагрузки.
 
 ## Отклонённые варианты

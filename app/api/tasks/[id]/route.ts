@@ -1,12 +1,12 @@
 import { readJson, withUser } from "@/lib/http";
-import { getTask, updateTask } from "@/lib/repository";
+import { getTaskDetail, updateTask } from "@/lib/repository";
 
 export async function GET(
   _request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  return withUser(async (user) => ({ task: await getTask(user, id) }));
+  return withUser(async (user) => getTaskDetail(user, id));
 }
 
 export async function PATCH(

@@ -12,6 +12,15 @@ import {
 } from "./agent-api-contract";
 import { NotFoundError, ValidationError } from "./domain";
 import { createTask, updateTask } from "./repository";
+import {
+  createComment,
+  deleteComment,
+  editComment,
+  getCommentThread,
+  listTaskComments,
+  resolveCommentThread,
+  setCommentReaction,
+} from "./comments";
 import type { AgentAuthorizationContext } from "./agent-api-context";
 import type { AccessRole, UserRecord } from "./types";
 
@@ -22,6 +31,7 @@ const taskScopeCte = (detail: boolean) => `WITH scoped_tasks AS (
     ${detail ? "t.*" : `t.id, t.public_id, t.owner_user_id, t.identifier,
       t.title, t.status_id, t.priority, t.assignee_user_id, t.project_id,
       t.release_id, t.due_date, t.parent_task_id, t.rank, t.archived_at,
+      t.comment_count,
       t.version, t.created_at, t.updated_at,
       CASE WHEN length(t.description) > 0 THEN 1 ELSE 0 END AS has_description`},
     s.name AS status_name,
@@ -636,6 +646,119 @@ export async function updateAgentTask(
   return getAgentTaskDetail(currentUser, String(task.public_id));
 }
 
+export async function listAgentTaskComments(
+  currentUser: UserRecord,
+  taskReference: string,
+  input: { limit?: number; cursor?: string | null } = {},
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const page = await listTaskComments(currentUser, String(task.id), input);
+  return {
+    data: page.threads.map((thread) => ({
+      root: agentComment(thread.root, currentUser.id),
+      replies: thread.replies.map((reply) => agentComment(reply, currentUser.id)),
+    })),
+    page: { hasMore: page.hasMore, nextCursor: page.nextCursor },
+    totalCount: page.totalCount,
+  };
+}
+
+export async function getAgentTaskThread(
+  currentUser: UserRecord,
+  taskReference: string,
+  commentReference: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const thread = await getCommentThread(
+    currentUser,
+    String(task.id),
+    commentReference,
+  );
+  return {
+    root: agentComment(thread.root, currentUser.id),
+    replies: thread.replies.map((reply) => agentComment(reply, currentUser.id)),
+  };
+}
+
+export async function createAgentTaskComment(
+  currentUser: UserRecord,
+  taskReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["body", "idempotencyKey", "parentCommentRef"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const created = await createComment(currentUser, String(task.id), {
+    body: input.body,
+    idempotencyKey: input.idempotencyKey,
+    ...(input.parentCommentRef
+      ? { parentCommentId: String(input.parentCommentRef) }
+      : {}),
+  });
+  return agentComment(created, currentUser.id);
+}
+
+export async function editAgentTaskComment(
+  currentUser: UserRecord,
+  taskReference: string,
+  commentReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["version", "body"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  return agentComment(
+    await editComment(currentUser, String(task.id), commentReference, input),
+    currentUser.id,
+  );
+}
+
+export async function deleteAgentTaskComment(
+  currentUser: UserRecord,
+  taskReference: string,
+  commentReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["version"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  return agentComment(
+    await deleteComment(currentUser, String(task.id), commentReference, input),
+    currentUser.id,
+  );
+}
+
+export async function setAgentCommentReaction(
+  currentUser: UserRecord,
+  taskReference: string,
+  commentReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["emoji", "active"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  return setCommentReaction(
+    currentUser,
+    String(task.id),
+    commentReference,
+    input,
+  );
+}
+
+export async function resolveAgentTaskThread(
+  currentUser: UserRecord,
+  taskReference: string,
+  commentReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["version", "resolved", "resolutionCommentRef"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  return agentComment(
+    await resolveCommentThread(currentUser, String(task.id), commentReference, {
+      version: input.version,
+      resolved: input.resolved,
+      resolutionCommentId: input.resolutionCommentRef ?? null,
+    }),
+    currentUser.id,
+  );
+}
+
 async function loadAccessibleTaskRow(userId: string, reference: string) {
   const rows = await getD1()
     .prepare(
@@ -851,7 +974,28 @@ async function mapTaskSummary(row: DbRow, currentUser: UserRecord) {
       hasDescription: Boolean(row.has_description ?? String(row.description ?? "")),
       subtaskCount: Number(row.subtask_count ?? 0),
       relationCount: Number(row.relation_count ?? 0),
+      commentCount: Number(row.comment_count ?? 0),
     },
+  };
+}
+
+function agentComment(comment: import("./types").CommentRecord, currentUserId: string) {
+  return {
+    ref: comment.id,
+    parentCommentRef: comment.parentCommentId,
+    author: {
+      displayName: comment.author.displayName,
+      isCurrentUser: comment.author.id === currentUserId,
+    },
+    body: comment.body,
+    createdAt: comment.createdAt,
+    updatedAt: comment.updatedAt,
+    deletedAt: comment.deletedAt,
+    resolvedAt: comment.resolvedAt,
+    resolutionCommentRef: comment.resolutionCommentId,
+    version: comment.version,
+    reactions: comment.reactions,
+    permissions: comment.permissions,
   };
 }
 

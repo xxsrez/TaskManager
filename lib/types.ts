@@ -85,7 +85,10 @@ export type TaskRecord = {
   completedAt: string | null;
   canceledAt: string | null;
   archivedAt: string | null;
+  commentCount: number;
   version: number;
+  /** Client-only version of a loaded detail projection retained across a newer summary merge. */
+  detailVersion?: number;
   createdAt: string;
   updatedAt: string;
   accessRole: AccessRole;
@@ -108,6 +111,54 @@ export type TaskRelationRecord = {
   sourceTaskId: string;
   targetTaskId: string;
   type: "blocks" | "related" | "duplicate_of";
+};
+
+export type TaskDetailRecord = {
+  task: TaskRecord;
+  relatedTasks: TaskRecord[];
+  labels: LabelRecord[];
+  taskLabels: TaskLabelAssignment[];
+  relations: TaskRelationRecord[];
+};
+
+export type CommentReactionSummary = {
+  emoji: string;
+  count: number;
+  reactedByCurrentUser: boolean;
+};
+
+export type CommentRecord = {
+  id: string;
+  taskId: string;
+  author: Pick<UserRecord, "id" | "displayName">;
+  body: string;
+  source: "native";
+  parentCommentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+  resolvedAt: string | null;
+  resolutionCommentId: string | null;
+  version: number;
+  reactions: CommentReactionSummary[];
+  permissions: {
+    canEdit: boolean;
+    canDelete: boolean;
+    canReact: boolean;
+    canResolve: boolean;
+  };
+};
+
+export type CommentThreadRecord = {
+  root: CommentRecord;
+  replies: CommentRecord[];
+};
+
+export type CommentPage = {
+  threads: CommentThreadRecord[];
+  totalCount: number;
+  nextCursor: string | null;
+  hasMore: boolean;
 };
 
 export type ExternalSourceRecord = {
@@ -208,6 +259,8 @@ export type SystemBackupCounts = Record<
   | "projects"
   | "releases"
   | "tasks"
+  | "comments"
+  | "comment_reactions"
   | "labels"
   | "task_labels"
   | "task_relations"

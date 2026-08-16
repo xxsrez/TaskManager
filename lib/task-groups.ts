@@ -182,6 +182,72 @@ export function taskGroupMutation(
   return { ...taskGroupCreateDefaults(group), rank };
 }
 
+export function projectTaskGroupMove(
+  task: TaskRecord,
+  group: TaskGroup,
+  rank: number,
+): TaskRecord {
+  const next = { ...task, rank };
+  switch (group.kind) {
+    case "status":
+      next.statusId = group.value!;
+      break;
+    case "priority":
+      next.priority = group.value as Priority;
+      break;
+    case "assignee":
+      next.assigneeUserId = group.value;
+      break;
+    case "project":
+      if (next.projectId !== group.value) next.releaseId = null;
+      next.projectId = group.value;
+      break;
+    case "release":
+      next.releaseId = group.release?.id ?? null;
+      if (group.release) next.projectId = group.release.projectId;
+      break;
+  }
+  return next;
+}
+
+const taskMoveFields = [
+  "statusId",
+  "priority",
+  "assigneeUserId",
+  "projectId",
+  "releaseId",
+  "rank",
+] as const;
+
+export function rollbackTaskGroupMove(
+  current: TaskRecord,
+  original: TaskRecord,
+  optimistic: TaskRecord,
+): TaskRecord {
+  if (current.id !== original.id || current.version !== original.version) {
+    return current;
+  }
+  const changedFields = taskMoveFields.filter(
+    (field) => optimistic[field] !== original[field],
+  );
+  if (changedFields.some((field) => current[field] !== optimistic[field])) {
+    return current;
+  }
+  const restored = { ...current };
+  for (const field of changedFields) {
+    Object.assign(restored, { [field]: original[field] });
+  }
+  return restored;
+}
+
+export function shouldShowEmptyTaskGroups(
+  groupBy: ViewDisplay["groupBy"],
+  configured: boolean,
+  dragging: boolean,
+): boolean {
+  return groupBy === "status" ? dragging : configured;
+}
+
 export function taskGroupCreateDefaults(group: TaskGroup): Record<string, unknown> {
   switch (group.kind) {
     case "status":

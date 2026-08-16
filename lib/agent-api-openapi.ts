@@ -235,6 +235,85 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/tasks/{ref}/comments": {
+      get: {
+        operationId: "listTaskComments",
+        summary: "List bounded native comment threads for an accessible task",
+        parameters: [
+          referenceParameter(),
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 50, default: 25 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: {
+          "200": pagedResponse("Native comment threads", { type: "object", additionalProperties: true }),
+          ...errorResponses,
+        },
+      },
+      post: {
+        operationId: "createTaskComment",
+        summary: "Create a native root comment or reply as the authenticated user",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/CommentCreate"),
+        responses: {
+          "201": envelopeResponse("Created native comment", { $ref: "#/components/schemas/Comment" }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/comments/{commentRef}": {
+      get: {
+        operationId: "getTaskCommentThread",
+        summary: "Get one native root thread with bounded replies",
+        parameters: [referenceParameter(), commentReferenceParameter()],
+        responses: {
+          "200": envelopeResponse("Native comment thread", { type: "object", additionalProperties: true }),
+          ...errorResponses,
+        },
+      },
+      patch: {
+        operationId: "editTaskComment",
+        summary: "Edit the authenticated author's comment with optimistic versioning",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter(), commentReferenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/CommentEdit"),
+        responses: {
+          "200": envelopeResponse("Edited comment", { $ref: "#/components/schemas/Comment" }),
+          ...errorResponses,
+        },
+      },
+      delete: {
+        operationId: "deleteTaskComment",
+        summary: "Soft-delete an authorized comment while preserving its thread",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter(), commentReferenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/CommentVersion"),
+        responses: {
+          "200": envelopeResponse("Deleted comment tombstone", { $ref: "#/components/schemas/Comment" }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/comments/{commentRef}/reactions": {
+      put: {
+        operationId: "setTaskCommentReaction",
+        summary: "Idempotently set the authenticated user's emoji reaction",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter(), commentReferenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/CommentReactionSet"),
+        responses: { "200": envelopeResponse("Reaction summary", { type: "array", items: { type: "object" } }), ...errorResponses },
+      },
+    },
+    "/tasks/{ref}/comments/{commentRef}/resolution": {
+      put: {
+        operationId: "setTaskCommentResolution",
+        summary: "Resolve or reopen a native root thread with optimistic versioning",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter(), commentReferenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/CommentResolutionSet"),
+        responses: { "200": envelopeResponse("Updated root comment", { $ref: "#/components/schemas/Comment" }), ...errorResponses },
+      },
+    },
   },
   components: {
     securitySchemes: {
@@ -461,6 +540,69 @@ export const agentApiOpenApi = {
         },
         additionalProperties: false,
       },
+      Comment: {
+        type: "object",
+        required: ["ref", "author", "body", "createdAt", "updatedAt", "version", "reactions", "permissions"],
+        properties: {
+          ref: { type: "string" },
+          parentCommentRef: { type: ["string", "null"] },
+          author: { type: "object" },
+          body: { type: "string" },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+          deletedAt: { type: ["string", "null"] },
+          resolvedAt: { type: ["string", "null"] },
+          resolutionCommentRef: { type: ["string", "null"] },
+          version: { type: "integer", minimum: 1 },
+          reactions: { type: "array", items: { type: "object" } },
+          permissions: { type: "object" },
+        },
+        additionalProperties: false,
+      },
+      CommentCreate: {
+        type: "object",
+        required: ["body", "idempotencyKey"],
+        properties: {
+          body: { type: "string", minLength: 1, maxLength: 100000 },
+          idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+          parentCommentRef: { type: "string" },
+        },
+        additionalProperties: false,
+      },
+      CommentEdit: {
+        type: "object",
+        required: ["version", "body"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+          body: { type: "string", minLength: 1, maxLength: 100000 },
+        },
+        additionalProperties: false,
+      },
+      CommentVersion: {
+        type: "object",
+        required: ["version"],
+        properties: { version: { type: "integer", minimum: 1 } },
+        additionalProperties: false,
+      },
+      CommentReactionSet: {
+        type: "object",
+        required: ["emoji", "active"],
+        properties: {
+          emoji: { type: "string", minLength: 1, maxLength: 16 },
+          active: { type: "boolean" },
+        },
+        additionalProperties: false,
+      },
+      CommentResolutionSet: {
+        type: "object",
+        required: ["version", "resolved"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+          resolved: { type: "boolean" },
+          resolutionCommentRef: { type: ["string", "null"] },
+        },
+        additionalProperties: false,
+      },
     },
   },
 } as const;
@@ -468,6 +610,15 @@ export const agentApiOpenApi = {
 function referenceParameter() {
   return {
     name: "ref",
+    in: "path",
+    required: true,
+    schema: { type: "string" },
+  } as const;
+}
+
+function commentReferenceParameter() {
+  return {
+    name: "commentRef",
     in: "path",
     required: true,
     schema: { type: "string" },

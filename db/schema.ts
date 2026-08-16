@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnySQLiteColumn,
   index,
   integer,
   primaryKey,
@@ -239,6 +240,59 @@ export const projects = sqliteTable(
   ],
 );
 
+export const comments = sqliteTable(
+  "comments",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+    authorUserId: text("author_user_id").notNull().references(() => users.id),
+    body: text("body").notNull(),
+    source: text("source").notNull().default("native"),
+    parentCommentId: text("parent_comment_id").references(
+      (): AnySQLiteColumn => comments.id,
+      { onDelete: "cascade" },
+    ),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    deletedAt: text("deleted_at"),
+    resolvedAt: text("resolved_at"),
+    resolvedByUserId: text("resolved_by_user_id").references(() => users.id),
+    resolutionCommentId: text("resolution_comment_id").references(
+      (): AnySQLiteColumn => comments.id,
+      { onDelete: "set null" },
+    ),
+    version: integer("version").notNull().default(1),
+  },
+  (table) => [
+    uniqueIndex("idx_comments_task_author_idempotency").on(
+      table.taskId,
+      table.authorUserId,
+      table.idempotencyKey,
+    ),
+    index("idx_comments_task_created").on(
+      table.taskId,
+      table.createdAt,
+      table.id,
+    ),
+    index("idx_comments_parent").on(table.parentCommentId, table.createdAt, table.id),
+  ],
+);
+
+export const commentReactions = sqliteTable(
+  "comment_reactions",
+  {
+    commentId: text("comment_id").notNull().references(() => comments.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    emoji: text("emoji").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.commentId, table.userId, table.emoji] }),
+    index("idx_comment_reactions_lookup").on(table.commentId, table.emoji),
+  ],
+);
+
 export const releases = sqliteTable(
   "releases",
   {
@@ -288,6 +342,7 @@ export const tasks = sqliteTable(
     completedAt: text("completed_at"),
     canceledAt: text("canceled_at"),
     archivedAt: text("archived_at"),
+    commentCount: integer("comment_count").notNull().default(0),
     version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),

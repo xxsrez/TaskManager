@@ -2,7 +2,7 @@
 
 Статус: `Implemented`
 
-Последнее обновление: 2026-08-14
+Последнее обновление: 2026-08-16
 
 ## 1. Назначение и граница
 
@@ -13,7 +13,9 @@ Task Manager предоставляет самостоятельный versioned
 - найти проекты и готовящиеся релизы;
 - получить задачи проекта или релиза в компактной форме;
 - загрузить полный контекст одной выбранной задачи;
-- создать задачу и изменить status, project, release, priority, срок и archive.
+- создать задачу и изменить status, project, release, priority, срок и archive;
+- читать native comment threads, добавлять/reply/edit/delete comments, менять
+  reaction и resolve/reopen state.
 
 API не является обёрткой над `/api/bootstrap`: list queries не загружают и не
 возвращают описания всех задач. UI и внешний API используют одну D1-модель и
@@ -42,12 +44,13 @@ flowchart LR
 ```
 
 - Collections возвращают фиксированные summaries.
-- `TaskSummary` не содержит `description`, imported comments, attachment
-  URLs, relation bodies, internal IDs или user email.
+- `TaskSummary` не содержит `description`, native/imported comment bodies,
+  attachment URLs, relation bodies, internal IDs или user email.
 - `ProjectSummary` не содержит description; `ReleaseSummary` не содержит ни
   description, ни release notes.
 - Полный `TaskDetail` читается только отдельным запросом.
-- Большой imported archive читается отдельным paginated endpoint.
+- Native comments и большой imported archive читаются разными отдельными
+  paginated endpoints.
 - `fields=*` и `include=description` не поддерживаются и отклоняются.
 
 ## 3. Authentication, OAuth и credentials
@@ -128,6 +131,9 @@ restore атомарно отзывает все authentication capabilities, ч
   `lbl_...` refs детерминированно выводятся через SHA-256.
 - User IDs и email не публикуются. Assignee содержит только `displayName` и
   `isCurrentUser`.
+- Comment `ref` является immutable internal identity, безопасной только внутри
+  уже ACL-разрешённой Task. Author содержит `displayName` и `isCurrentUser` без
+  User ID/email.
 
 ## 5. REST v1
 
@@ -146,6 +152,13 @@ restore атомарно отзывает все authentication capabilities, ч
 | `GET /tasks/{ref}` | `api:read` | Один `TaskDetail` |
 | `PATCH /tasks/{ref}` | `api:write` | Изменить Task с optimistic version |
 | `GET /tasks/{ref}/external-context` | `api:read` | Imported context |
+| `GET /tasks/{ref}/comments` | `api:read` | Paginated native root threads с bounded replies |
+| `POST /tasks/{ref}/comments` | `api:write` | Создать root/reply с idempotency key |
+| `GET /tasks/{ref}/comments/{commentRef}` | `api:read` | Один полный native thread |
+| `PATCH /tasks/{ref}/comments/{commentRef}` | `api:write` | Изменить собственный comment с version |
+| `DELETE /tasks/{ref}/comments/{commentRef}` | `api:write` | Создать tombstone с version |
+| `PUT /tasks/{ref}/comments/{commentRef}/reactions` | `api:write` | Задать desired reaction state |
+| `PUT /tasks/{ref}/comments/{commentRef}/resolution` | `api:write` | Resolve/reopen root с version |
 
 Project/Release endpoints read-only: они нужны для ориентации и task scope.
 SavedViews не входят в v1; task query принимает явные filters и не зависит от
@@ -166,6 +179,11 @@ protocol revisions).
 | `get_task_external_context` | `api:read` | Отдельный paginated imported archive |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
+| `list_task_comments`, `get_task_thread` | `api:read` | Читать native threads отдельно от Task detail |
+| `add_task_comment`, `reply_to_task_comment` | `api:write` | Создать root/reply идемпотентно |
+| `edit_task_comment`, `delete_task_comment` | `api:write` | Изменить собственный comment или создать разрешённый tombstone |
+| `set_comment_reaction` | `api:write` | Задать reaction `active=true|false` |
+| `resolve_task_thread` | `api:write` | Resolve/reopen root thread |
 
 `tools/list` сохраняет канонические имена без namespace. Codex app runtime
 может отправлять вызов как `task_manager.<tool>`; transport boundary снимает
@@ -190,7 +208,8 @@ scope check и owner/ACL scope до обращения к repository.
 ### 5.2 Pagination и envelope
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
-External context имеет maximum `100`. Cursor связан с filters, sort и limit;
+External context имеет maximum `100`; native comment roots — maximum `50` и
+до 100 replies на root. Cursor связан с Task, filters, sort и limit;
 cursor другого query отклоняется. Collections используют keyset position из
 стабильного sort value и immutable `public_id`, поэтому вставка или удаление
 строки на уже прочитанной странице не сдвигает следующую страницу. Offset
@@ -234,9 +253,10 @@ compact project/release/assignee/labels, dueDate, updatedAt, version и
 
 `TaskDetail` добавляет description, estimate, rank, lifecycle timestamps,
 access role/canEdit, расширенный project/release context, parent, subtasks,
-relations и provenance counts. Comment bodies и attachment URLs остаются в
-`/external-context`. Detail также возвращает `availableStatuses`, валидные для
-изменения именно этой Task.
+relations и provenance counts. Native `commentCount` присутствует только как
+context hint; bodies читаются через `/comments`. Imported comment bodies и
+attachment URLs остаются в `/external-context`. Detail также возвращает
+`availableStatuses`, валидные для изменения именно этой Task.
 
 `ProjectSummary` возвращает name, summary, status, dates, task counts,
 progress, release count, updatedAt и version. Detail добавляет description и
@@ -274,6 +294,24 @@ Hierarchy, relations, labels, assignee другого User и bulk mutation по
 read-only через API. Task create ещё не имеет server-side idempotency record,
 поэтому client не должен слепо повторять POST после неизвестного network outcome.
 
+### 7.1 Comment commands
+
+`POST /tasks/{ref}/comments` принимает `body`, обязательный `idempotencyKey` и
+optional `parentCommentRef`. Author берётся из bearer identity; неизвестные
+поля, включая client-provided author, отклоняются. Reply на reply сохраняется
+как reply root thread, новый reply переоткрывает resolved root.
+
+Edit/delete/resolve требуют актуальный comment `version`. Edit разрешён только
+author; delete — author либо Owner/Manager соответствующего Project и оставляет
+tombstone. Любой comment write требует `api:write` и effective Editor или выше;
+Viewer сохраняет read access. Reaction PUT принимает `emoji` и desired boolean
+`active`; composite uniqueness делает retry безопасным.
+
+Body нормализует line endings, отбрасывает внешний whitespace, запрещает empty,
+unsupported control characters и размер больше 100 000 characters. Он остаётся
+Markdown-like text: transport не принимает raw rendered HTML. Reactions
+возвращаются как aggregate count + `reactedByCurrentUser`, без списка Users.
+
 ## 8. Errors и authorization
 
 Error envelope:
@@ -303,6 +341,8 @@ Authorization invariants:
 5. API не вызывает admin, backup/restore, sharing, ownership transfer или
    credential management.
 6. Token, hash, internal IDs, emails и response bodies не логируются.
+7. Comment lookup всегда начинается с ACL-разрешения parent Task; comment ref
+   сам по себе не подтверждает существование thread.
 
 ## 9. Версионирование и проверка
 
@@ -330,6 +370,10 @@ Authorization invariants:
    фильтрует по Project и Release, сохраняет compact/detail boundary и cursor.
 9. Новый connector получает `initialize` и `tools/list` без bearer token, но
    анонимный `tools/call` получает `401` и не выполняет repository query.
+10. Native comment create retry не дублирует row; Viewer читает, но не пишет;
+    reply открывает resolved thread; stale edit/delete/resolve получает conflict;
+    Agent author projection не содержит ID/email. Imported archive остаётся
+    отдельным read-only endpoint.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются
 проверенными локальной реализацией.

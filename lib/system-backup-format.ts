@@ -22,7 +22,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 1;
+  schemaVersion: 2;
   exportedAt: string;
   counts: SystemBackupCounts;
   tables: BackupTables;
@@ -31,7 +31,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 1 as const;
+export const systemBackupSchemaVersion = 2 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 1000;
 const maxStagedRowBytes = 1_500_000;
@@ -43,6 +43,8 @@ const timestampColumns = new Set([
   "completed_at",
   "canceled_at",
   "archived_at",
+  "deleted_at",
+  "resolved_at",
   "released_at",
   "imported_at",
   "revoked_at",
@@ -55,6 +57,8 @@ export const backupTableNames = [
   "projects",
   "releases",
   "tasks",
+  "comments",
+  "comment_reactions",
   "labels",
   "task_labels",
   "task_relations",
@@ -76,9 +80,13 @@ export const tableDefinitions = [
   definition("releases", ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "version", "created_at", "updated_at"], "id", {
     target_date: { nullable: true }, released_at: { nullable: true }, version: { number: true, integer: true },
   }),
-  definition("tasks", ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "version", "created_at", "updated_at"], "id", {
-    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, project_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
+  definition("tasks", ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"], "id", {
+    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, project_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, comment_count: { number: true, integer: true }, version: { number: true, integer: true },
   }),
+  definition("comments", ["id", "task_id", "author_user_id", "body", "source", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"], "task_id, created_at, id", {
+    parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
+  }),
+  definition("comment_reactions", ["comment_id", "user_id", "emoji", "created_at"], "comment_id, emoji, user_id"),
   definition("labels", ["id", "owner_user_id", "name", "color", "created_at"], "id"),
   definition("task_labels", ["task_id", "label_id"], "task_id, label_id"),
   definition("task_relations", ["source_task_id", "target_task_id", "type", "creator_user_id", "created_at"], "source_task_id, target_task_id, type"),
@@ -94,6 +102,8 @@ export const tableDefinitions = [
 ] as const satisfies readonly TableDefinition[];
 
 export const liveTableDeleteOrder: BackupTableName[] = [
+  "comment_reactions",
+  "comments",
   "task_labels",
   "task_relations",
   "access_grants",
@@ -297,6 +307,63 @@ function validateRelationships(tables: BackupTables) {
     positiveVersion(task.version, "Task version");
   }
   validateParentCycles(tables.tasks, tasks);
+
+  const comments = uniqueIndex(tables.comments, ["id"], "comments");
+  uniqueIndex(
+    tables.comments,
+    ["task_id", "author_user_id", "idempotency_key"],
+    "comment idempotency keys",
+  );
+  const activeCommentsByTask = new Map<string, number>();
+  for (const comment of tables.comments) {
+    const task = requireReference(tasks, comment.task_id, "Comment task");
+    requireReference(users, comment.author_user_id, "Comment author");
+    nonEmpty(comment.idempotency_key, "Comment idempotency key");
+    oneOf(comment.source, ["native"], "Comment source");
+    if (comment.deleted_at === null) {
+      nonEmpty(comment.body, "Comment body");
+      activeCommentsByTask.set(task.id as string, (activeCommentsByTask.get(task.id as string) ?? 0) + 1);
+    }
+    if (comment.parent_comment_id !== null) {
+      const parent = requireReference(comments, comment.parent_comment_id, "Comment parent");
+      if (parent.task_id !== comment.task_id || parent.parent_comment_id !== null) {
+        throw new ValidationError("Comment replies must use one root in the same task");
+      }
+      if (comment.resolved_at !== null || comment.resolved_by_user_id !== null || comment.resolution_comment_id !== null) {
+        throw new ValidationError("Only root comments can carry thread resolution");
+      }
+    }
+    if (comment.resolved_at === null) {
+      if (comment.resolved_by_user_id !== null || comment.resolution_comment_id !== null) {
+        throw new ValidationError("Open comment threads cannot carry resolution metadata");
+      }
+    } else {
+      requireReference(users, comment.resolved_by_user_id, "Comment resolver");
+      if (comment.resolution_comment_id !== null) {
+        const resolution = requireReference(comments, comment.resolution_comment_id, "Resolution comment");
+        if (resolution.id !== comment.id && resolution.parent_comment_id !== comment.id) {
+          throw new ValidationError("Resolution comment must belong to its thread");
+        }
+      }
+    }
+    positiveVersion(comment.version, "Comment version");
+  }
+  for (const task of tables.tasks) {
+    const actual = activeCommentsByTask.get(String(task.id)) ?? 0;
+    if (task.comment_count !== actual) {
+      throw new ValidationError("Task comment_count does not match native comments");
+    }
+  }
+  uniqueIndex(
+    tables.comment_reactions,
+    ["comment_id", "user_id", "emoji"],
+    "comment reactions",
+  );
+  for (const reaction of tables.comment_reactions) {
+    requireReference(comments, reaction.comment_id, "Reaction comment");
+    requireReference(users, reaction.user_id, "Reaction user");
+    nonEmpty(reaction.emoji, "Reaction emoji");
+  }
 
   const labels = uniqueIndex(tables.labels, ["id"], "labels");
   uniqueIndex(tables.labels, ["owner_user_id", "name"], "label owner/name");

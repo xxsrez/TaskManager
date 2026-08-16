@@ -26,12 +26,27 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
+  assert.equal(backup.schemaVersion, 2);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.counts.sharing, 1);
   assert.equal(validated.warnings.externalRelationsOmitted, 1);
   assert.equal("users" in validated.tables, false);
+});
+
+test("the comment-aware project schema rejects an older bundle explicitly", async () => {
+  const backup = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  await assert.rejects(
+    validateProjectBackup({ ...backup, schemaVersion: 1 }),
+    /unsupported task manager project backup format or version/i,
+  );
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -58,6 +73,21 @@ test("project bundle rejects hierarchy and relations outside the subtree", async
       exportedAt: now,
     }),
     /parent is outside/i,
+  );
+});
+
+test("project bundle rejects invalid native comment state before staging", async () => {
+  const tables = validProjectTables();
+  tables.comments[0]!.source = "linear";
+  await assert.rejects(
+    createProjectBackup({
+      siteOrigin: "https://task-manager.example",
+      tables,
+      sharing: [],
+      externalRelationsOmitted: 0,
+      exportedAt: now,
+    }),
+    /non-native comment/i,
   );
 });
 
@@ -104,7 +134,7 @@ function validProjectTables(): ProjectBackupTables {
         priority: "none", assignee_user_id: null, project_id: "project-1",
         release_id: "release-1", estimate: null, due_date: null, parent_task_id: null,
         rank: 1000, started_at: null, completed_at: null, canceled_at: null,
-        archived_at: null, version: 1, created_at: now, updated_at: now,
+        archived_at: null, comment_count: 1, version: 1, created_at: now, updated_at: now,
       },
       {
         id: "task-2", public_id: "44444444-4444-4444-8444-444444444444",
@@ -113,9 +143,17 @@ function validProjectTables(): ProjectBackupTables {
         priority: "high", assignee_user_id: null, project_id: "project-1",
         release_id: null, estimate: 3, due_date: null, parent_task_id: "task-1",
         rank: 2000, started_at: null, completed_at: null, canceled_at: null,
-        archived_at: null, version: 1, created_at: now, updated_at: now,
+        archived_at: null, comment_count: 0, version: 1, created_at: now, updated_at: now,
       },
     ],
+    comments: [{
+      id: "comment-1", task_id: "task-1", author_user_id: "user-owner",
+      body: "Native project comment", source: "native", parent_comment_id: null,
+      idempotency_key: "backup-comment-1", created_at: now, updated_at: now,
+      deleted_at: null, resolved_at: null, resolved_by_user_id: null,
+      resolution_comment_id: null, version: 1,
+    }],
+    comment_reactions: [{ comment_id: "comment-1", user_id: "user-owner", emoji: "👍", created_at: now }],
     labels: [{ id: "label-1", owner_user_id: "user-owner", name: "Backup", color: "#6b7280", created_at: now }],
     task_labels: [{ task_id: "task-2", label_id: "label-1" }],
     task_relations: [{ source_task_id: "task-1", target_task_id: "task-2", type: "blocks", creator_user_id: "user-owner", created_at: now }],
@@ -137,7 +175,9 @@ function migratedDatabase() {
   for (const migration of [
     "0000_chilly_malice.sql", "0001_wide_skreet.sql", "0002_stiff_madame_hydra.sql",
     "0003_green_white_queen.sql", "0004_large_rocket_racer.sql", "0005_mixed_bruce_banner.sql",
-    "0006_complex_reavers.sql",
+    "0006_complex_reavers.sql", "0007_curious_sharon_carter.sql",
+    "0008_loose_the_fallen.sql", "0009_talented_otto_octavius.sql",
+    "0010_crazy_puma.sql", "0011_conscious_paibok.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

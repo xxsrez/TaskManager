@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-14
+Последнее обновление: 2026-08-16
 
 ## 1. Назначение
 
@@ -348,10 +348,20 @@ List повторяет плотную grouped-list модель Linear.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
 - Timestamps muted и доступны в нижней metadata section.
-- Native activity/comments area не рисуется, поскольку эти функции вне MVP.
-  Для импортированной задачи ниже relations допускается отдельная read-only
-  provenance section с исходными комментариями и attachment links без write
-  controls.
+- Ниже properties, hierarchy и relations располагается `Activity` с native
+  comment threads. Root composer и reply composer сохраняют local draft по
+  current User + Task, поддерживают `Cmd/Ctrl+Enter`, явный submit, retry без
+  дублей и кнопки базового Markdown-like форматирования.
+- Root thread показывает author/avatar, timestamps, body, reactions,
+  resolve/reopen и actions по permissions. Replies всегда одноуровневые;
+  resolved thread свёрнут, permalink прокручивает и подсвечивает comment,
+  длинный body раскрывается через `Show more`.
+- Loading, error/retry, pending и empty states являются частью Activity. Viewer
+  видит threads без composer и mutation controls. На mobile controls имеют
+  touch target не меньше 44px и не создают горизонтальный overflow.
+- Для импортированной задачи ниже native Activity остаётся отдельная сворачиваемая
+  read-only provenance section с исходными comments и attachment links без
+  write controls; импортированные записи не смешиваются с native threads.
 - Изменение title/description происходит inline, с явными saving/error states и
   version conflict handling.
 
@@ -397,6 +407,9 @@ List повторяет плотную grouped-list модель Linear.
   progress, target/released date и task count.
 - Release details содержит description, release notes, status/dates, progress и
   общий task list/board в release scope.
+- Заголовок release surface и metadata используют единое полное имя
+  `<project name> <release name>`; длинное имя сокращается визуально, сохраняя
+  полный текст доступным и не вытесняя actions.
 - Перевод в `released` и изменение выпущенного состава используют explicit
   confirmation, как требует MVP.
 
@@ -626,8 +639,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Display options | Layout/group/order/properties/empty non-status groups | Берём ядро | Status groups с нулевым count всегда скрыты; без per-user defaults и subgrouping |
 | Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
-| Peek | Preview task/project по `Space` | Берём | Без activity/comments |
-| Issue composer/details | Modal composer и details surface | Берём | Без templates, attachments, drafts system |
+| Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
+| Issue composer/details | Modal composer, details и native Activity | Берём | Без task templates, attachments и mentions; comment draft локальный |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
 | Themes | System/light/dark | Берём | Собственные tokens и branding |

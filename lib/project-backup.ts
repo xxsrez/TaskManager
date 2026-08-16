@@ -43,6 +43,16 @@ export async function exportProjectBackup(
     db.prepare(`SELECT ${definition("tasks").columns.join(", ")} FROM tasks WHERE project_id = ?
       AND EXISTS (SELECT 1 FROM projects p WHERE p.id = tasks.project_id AND p.owner_user_id = ?)
       ORDER BY id`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("comments").columns.map((column) => `c.${column}`).join(", ")}
+      FROM comments c JOIN tasks t ON t.id = c.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY c.task_id, c.created_at, c.id`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("comment_reactions").columns.map((column) => `cr.${column}`).join(", ")}
+      FROM comment_reactions cr JOIN comments c ON c.id = cr.comment_id
+      JOIN tasks t ON t.id = c.task_id JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY cr.comment_id, cr.emoji, cr.user_id`).bind(projectId, currentUser.id),
     db.prepare(`SELECT ${definition("labels").columns.map((column) => `l.${column}`).join(", ")}
       FROM labels l WHERE EXISTS (
         SELECT 1 FROM task_labels tl JOIN tasks t ON t.id = tl.task_id
@@ -96,17 +106,19 @@ export async function exportProjectBackup(
     workflow_statuses: 1,
     releases: 2,
     tasks: 3,
-    labels: 4,
-    task_labels: 5,
-    task_relations: 6,
-    saved_views: 7,
-    external_records: 8,
+    comments: 4,
+    comment_reactions: 5,
+    labels: 6,
+    task_labels: 7,
+    task_relations: 8,
+    saved_views: 9,
+    external_records: 10,
   };
   projectBackupTableNames.forEach((name) => {
     const table = definition(name);
     tables[name] = results[resultIndex[name]].results.map((row) => normalizeDbRow(table, row as DbRow));
   });
-  const sharing = results[9].results.map((value) => {
+  const sharing = results[11].results.map((value) => {
     const row = value as DbRow;
     const permission = String(row.permission);
     if (permission !== "manager" && permission !== "editor" && permission !== "viewer") {
@@ -123,7 +135,7 @@ export async function exportProjectBackup(
     siteOrigin,
     tables,
     sharing,
-    externalRelationsOmitted: Number((results[10].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted: Number((results[12].results[0] as DbRow | undefined)?.count ?? 0),
   });
 }
 
@@ -255,6 +267,13 @@ export async function applyProjectBackup(
   if (transition.meta.changes !== 1) throw new ValidationError("Project backup is already being applied");
 
   const statements: D1PreparedStatement[] = [
+    db.prepare(`DELETE FROM comment_reactions WHERE comment_id IN (
+      SELECT c.id FROM comments c JOIN tasks t ON t.id = c.task_id
+      WHERE t.project_id = ?
+    )`).bind(session.project_id),
+    db.prepare(`DELETE FROM comments WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(session.project_id),
     db.prepare(`DELETE FROM task_relations WHERE
       source_task_id IN (SELECT id FROM tasks WHERE project_id = ?) OR
       target_task_id IN (SELECT id FROM tasks WHERE project_id = ?)`)
@@ -330,6 +349,8 @@ async function validateLiveDependenciesAndCollisions(
     db.prepare("SELECT id, public_id FROM releases WHERE project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT id, public_id FROM saved_views WHERE scope_project_id IS NULL OR scope_project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT owner_user_id, source, source_id, target_id FROM external_records"),
+    db.prepare(`SELECT c.id FROM comments c JOIN tasks t ON t.id = c.task_id
+      WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
   ]);
   const statusRows = results[0].results as DbRow[];
   const labelRows = results[1].results as DbRow[];
@@ -366,15 +387,21 @@ async function validateLiveDependenciesAndCollisions(
   for (const project of backup.tables.projects) { add(project.owner_user_id); add(project.creator_user_id); add(project.lead_user_id); }
   for (const release of backup.tables.releases) { add(release.owner_user_id); add(release.creator_user_id); }
   for (const task of backup.tables.tasks) { add(task.owner_user_id); add(task.creator_user_id); add(task.assignee_user_id); }
+  for (const comment of backup.tables.comments) { add(comment.author_user_id); add(comment.resolved_by_user_id); }
+  for (const reaction of backup.tables.comment_reactions) add(reaction.user_id);
   for (const relation of backup.tables.task_relations) add(relation.creator_user_id);
   for (const view of backup.tables.saved_views) add(view.owner_user_id);
   for (const record of backup.tables.external_records) add(record.owner_user_id);
   for (const id of referencedUsers) if (!users.has(id)) throw new ValidationError("Project backup references a user that no longer exists in this Site");
-  assertNoEntityCollisions(backup, results.slice(3));
+  assertNoEntityCollisions(backup, results.slice(3, 8), results[8]);
   return warnings;
 }
 
-function assertNoEntityCollisions(backup: ProjectBackup, results: Array<{ results: unknown[] }>) {
+function assertNoEntityCollisions(
+  backup: ProjectBackup,
+  results: Array<{ results: unknown[] }>,
+  commentRows: { results: unknown[] },
+) {
   const collision = (rows: unknown[], incoming: BackupEntity[], fields: string[]) => {
     for (const row of rows as DbRow[]) for (const item of incoming) for (const field of fields) {
       if (String(row[field]) === String(item[field])) throw new ValidationError(`Project restore collides on ${field}: ${String(item[field])}`);
@@ -388,6 +415,7 @@ function assertNoEntityCollisions(backup: ProjectBackup, results: Array<{ result
   }
   collision(results[2].results, backup.tables.releases, ["id", "public_id"]);
   collision(results[3].results, backup.tables.saved_views, ["id", "public_id"]);
+  collision(commentRows.results, backup.tables.comments, ["id"]);
   const includedExternalIds = new Set(backup.tables.external_records.map((record) => String(record.target_id)));
   for (const live of results[4].results as DbRow[]) for (const record of backup.tables.external_records) {
     if (
@@ -421,6 +449,10 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     db.prepare("SELECT COUNT(*) AS count FROM projects WHERE id = ?").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM releases WHERE project_id = ?").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?").bind(projectId),
+    db.prepare("SELECT COUNT(*) AS count FROM comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
+    db.prepare(`SELECT COUNT(*) AS count FROM comment_reactions WHERE comment_id IN (
+      SELECT c.id FROM comments c JOIN tasks t ON t.id = c.task_id WHERE t.project_id = ?
+    )`).bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM saved_views WHERE scope_project_id = ?").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM task_labels WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
     db.prepare(`SELECT COUNT(*) AS count FROM task_relations WHERE
@@ -436,9 +468,10 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
   ]);
   const counts = results.map((result) => Number((result.results[0] as DbRow | undefined)?.count ?? 0));
   return {
-    projects: counts[0], releases: counts[1], tasks: counts[2], saved_views: counts[3],
-    task_labels: counts[4], task_relations: counts[5], external_records: counts[6],
-    sharing: counts[7], workflow_statuses: 0, labels: 0,
+    projects: counts[0], releases: counts[1], tasks: counts[2], comments: counts[3],
+    comment_reactions: counts[4], saved_views: counts[5], task_labels: counts[6],
+    task_relations: counts[7], external_records: counts[8], sharing: counts[9],
+    workflow_statuses: 0, labels: 0,
   };
 }
 

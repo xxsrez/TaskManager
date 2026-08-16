@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-14
+Последнее обновление: 2026-08-16
 
 ## 1. Цель
 
@@ -35,6 +35,8 @@ MVP должен позволить вести задачи от backlog до п
   application-admin permission.
 - **MCP connector** — remote task-oriented tool surface для Codex/ChatGPT;
   основной Connect flow использует OAuth 2.1 Authorization Code + PKCE.
+- **Comment** — native discussion record одной Task; root Comment создаёт
+  thread, reply принадлежит ровно одному root thread.
 
 ### 2.1 Интерфейсный принцип
 
@@ -157,10 +159,11 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - estimate и due date;
 - parent и subtasks;
 - relations: `blocks`, `related`, `duplicate_of`;
+- native comment threads, replies, reactions и resolved state;
 - created, updated, started, completed, canceled и archived timestamps.
 - для импортированной задачи — source provenance, включая read-only archive
-  исходных комментариев и ссылки на исходные attachments; это не добавляет
-  создание или редактирование comments/uploads в Task Manager.
+  исходных комментариев и ссылки на исходные attachments; этот archive отделён
+  от native comments и не получает write controls.
 
 Assignee обязан быть владельцем Task либо пользователем с доступом к Task или
 её Project. Выбор пользователя без доступа отклоняется.
@@ -189,6 +192,30 @@ Assignee обязан быть владельцем Task либо пользов
 - `duplicate_of` направлено на каноническую задачу; self-relations и дубликаты
   одной связи запрещены.
 - Автоматическое закрытие parent по subtasks не входит в MVP.
+
+### 5.5 Native comments
+
+- Любой User с доступом к Task читает её native comments. Создание, reply,
+  reaction и resolve/reopen требуют не ниже Editor; Viewer не выполняет ни одну
+  comment mutation.
+- Author всегда выводится из server-verified current User. Client не может
+  назначить другого автора. Редактировать comment может только его author;
+  soft-delete разрешён author, Project Owner или Manager и оставляет tombstone,
+  чтобы replies не теряли контекст.
+- Thread имеет один root и одноуровневые replies. Reply на reply нормализуется к
+  root; новый reply автоматически открывает resolved thread.
+- Create требует idempotency key, mutations используют optimistic `version`, а
+  reaction задаётся желаемым состоянием `active`, поэтому retry не создаёт
+  дубликат.
+- Root threads читаются стабильной keyset pagination. Comment bodies не входят
+  в `/api/bootstrap` или Task list/detail projection и запрашиваются отдельным
+  ACL-scoped вызовом при открытии Activity.
+- Body хранится как ограниченный plain Markdown-like text. UI безопасно
+  отрисовывает форматирование без raw HTML и разрешает ссылки только схем
+  `http`, `https` и `mailto`.
+- Локальный draft изолирован ключом current User + Task + optional thread.
+  Mentions, attachments, notifications, subscriptions и общий activity feed не
+  входят в этот срез.
 
 ## 6. Workflow
 
@@ -227,7 +254,8 @@ Assignee обязан быть владельцем Task либо пользов
   roles и application-admin capability сами по себе этого доступа не дают.
 - Export скачивает один versioned logical JSON bundle с Project, его Tasks,
   Releases, project-scoped SavedViews, labels, внутренней hierarchy/relations,
-  provenance и dependency snapshot используемых каталогов.
+  native comments/reactions, provenance и dependency snapshot используемых
+  каталогов.
 - Bundle не содержит Users, identities, API credentials, глобальные views,
   чужие Projects или hosted configuration. Он привязан к исходным immutable
   IDs, current owner и тому же Site.
@@ -354,10 +382,11 @@ completed dates и archived state.
 ### 12.1 Доступ агентов
 
 - Task Manager предоставляет agent API для workspace summary, Projects,
-  Releases, compact task lists, одной полной Task и task create/update.
+  Releases, compact task lists, одной полной Task, task create/update и
+  отдельных native comment threads.
 - List response не содержит task description, release notes, imported comments,
-  attachments или полного provenance. Большой imported archive читается
-  отдельным paginated запросом.
+  native comment bodies, attachments или полного provenance. Imported archive
+  и native comments читаются разными отдельными paginated запросами.
 - Versioned HTTP API применяет те же server-side ownership/ACL rules и domain
   repository commands, что и product UI.
   `/api/bootstrap` остаётся внутренним UI snapshot и не является agent API.
@@ -368,8 +397,9 @@ completed dates и archived state.
 - API credential не наследует admin capability. Внешний API не предоставляет
   backup/restore, sharing, ownership transfer, workflow или credential
   management operations.
-- Reads требуют `api:read`; task create/update — `api:write`. Update требует
-  optimistic version и проходит те же role/domain checks, что UI.
+- Reads требуют `api:read`; task/comment mutations — `api:write`. Update/edit/
+  delete/resolve требуют optimistic version, comment create — idempotency key;
+  все команды проходят те же role/domain checks, что UI.
 - Native connector устанавливается одним plugin и подключается через OAuth
   consent без ручной передачи API secret. Он умеет получать все доступные
   Tasks, фильтровать их по Project/Release и загружать detail только после
@@ -453,7 +483,7 @@ completed dates и archived state.
     live row; обычный User не может вызвать export/import API.
 22. Через agent API получить active/planned releases и compact задачи
     выбранного release: ответы содержат identifiers, titles, statuses и
-    небольшие metadata, но не descriptions, comments или release notes.
+    небольшие metadata, но не descriptions, comment bodies или release notes.
 23. По canonical task reference загрузить одну Task с description, связями и
     provenance summary; imported archive появляется только после отдельного
     запроса. Недоступная Task возвращает тот же `not found`, что неизвестная.
@@ -475,6 +505,12 @@ completed dates и archived state.
 28. Из account menu открыть `Codex setup`, переключиться между `Codex Desktop`
     и `Codex CLI`, скопировать marketplace source или CLI-команды и завершить
     штатный OAuth flow без ручного MCP URL, client ID, secret или API token.
+29. В Task Activity создать comment, повторить request с тем же idempotency key,
+    ответить одним уровнем, поставить reaction, resolve/reopen, отредактировать
+    с актуальной version и получить conflict со stale version. Viewer видит
+    thread, но все mutations получают отказ; imported archive остаётся отдельным
+    read-only provenance block. Те же операции доступны через Agent REST/MCP без
+    user email и без comment bodies в task collections.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -499,3 +535,5 @@ completed dates и archived state.
     спроектированные bulk/metadata commands.
 14. Owner-only Project bundle export/staging/exact restore с preview,
     confirmation, sharing opt-in и rollback tests.
+15. Native task comments: Activity UI, ACL-scoped REST/Agent/MCP commands,
+    idempotency/concurrency, backups и mobile verification.

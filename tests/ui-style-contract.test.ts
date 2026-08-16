@@ -49,6 +49,21 @@ test("sidebar navigation clips and truncates long labels without losing its righ
   assert.match(declarations(".nav-count"), /flex:\s*0\s+0\s+auto\s*;/);
 });
 
+test("release header names truncate before displacing desktop or mobile actions", () => {
+  const cluster = declarations(".title-cluster");
+  assert.match(cluster, /flex:\s*1\s+1\s+auto\s*;/);
+  assert.match(cluster, /overflow:\s*hidden\s*;/);
+  assert.match(declarations(".title-actions"), /flex:\s*0\s+0\s+auto\s*;/);
+  const title = declarations(".title-cluster h1");
+  assert.match(title, /overflow:\s*hidden\s*;/);
+  assert.match(title, /text-overflow:\s*ellipsis\s*;/);
+  assert.match(title, /white-space:\s*nowrap\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.title-cluster h1\s*\{[^}]*max-width:\s*46vw\s*;/,
+  );
+});
+
 test("the mobile close control stays hidden on desktop independently of icon-button order", () => {
   assert.match(declarations(".icon-button.mobile-sidebar-close"), /display:\s*none\s*;/);
   assert.match(
@@ -88,6 +103,50 @@ test("mobile drawer logic centralizes dismissal and restores focus", () => {
   assert.match(taskTracker, /mobileMenuRef\.current\?\.focus\(\)/);
   assert.match(taskTracker, /mobileSidebarCloseRef\.current\?\.focus\(\)/);
   assert.match(taskTracker, /aria-label="Close navigation"[\s\S]*?autoFocus/);
+});
+
+test("mobile task toolbar keeps a visible touch-sized layout switcher", () => {
+  assert.match(declarations(".mobile-layout-switcher"), /display:\s*none\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.mobile-layout-switcher\s*\{[^}]*display:\s*flex\s*;/,
+  );
+  const buttons = declarations(".mobile-layout-switcher button");
+  assert.match(buttons, /min-width:\s*40px\s*;/);
+  assert.match(buttons, /height:\s*40px\s*;/);
+});
+
+test("mobile task rows use a two-line title and wrapping metadata without horizontal overflow", () => {
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-row\s*\{[^}]*grid-template-areas:\s*"check priority identity title"\s*"\. \. metadata metadata"\s*;[^}]*max-width:\s*100%\s*;[^}]*overflow:\s*hidden\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-title\s*\{[^}]*-webkit-line-clamp:\s*2\s*;[^}]*white-space:\s*normal\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.row-metadata\s*\{[^}]*display:\s*flex\s*;[^}]*flex-wrap:\s*wrap\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-list\s*\{[^}]*overflow-x:\s*hidden\s*;/,
+  );
+  assert.match(taskTracker, /aria-label="Open task details"[\s\S]*?onClick=\{\(event\) => \{ event\.stopPropagation\(\); onOpen\(\); \}\}/);
+});
+
+test("pull-to-refresh indicator is mobile-only and respects reduced motion", () => {
+  assert.match(declarations(".pull-refresh-indicator"), /display:\s*none\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.pull-refresh-indicator\s*\{[^}]*display:\s*flex\s*;/,
+  );
+  assert.match(declarations(".pull-refresh-spinner"), /border-radius:\s*50%\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)[\s\S]*?animation-duration:\s*\.01ms\s*!important/,
+  );
 });
 
 test("task rows do not attach a hidden double-click action", () => {

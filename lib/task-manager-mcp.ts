@@ -14,15 +14,22 @@ import {
   parseAgentTaskListQuery,
 } from "./agent-api-contract";
 import {
+  createAgentTaskComment,
+  deleteAgentTaskComment,
+  editAgentTaskComment,
   createAgentTask,
   getAgentProjectDetail,
   getAgentReleaseDetail,
   getAgentTaskDetail,
   getAgentTaskExternalContext,
+  getAgentTaskThread,
   getAgentWorkspace,
   listAgentProjects,
   listAgentReleases,
   listAgentTasks,
+  listAgentTaskComments,
+  resolveAgentTaskThread,
+  setAgentCommentReaction,
   updateAgentTask,
 } from "./agent-api-repository";
 import {
@@ -256,6 +263,149 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
       writeToolCall(context, () => updateAgentTask(context.user, taskRef, defined(input))),
   );
 
+  server.registerTool(
+    "list_task_comments",
+    {
+      title: "List task comment threads",
+      description: "Lists bounded native comment threads after resolving an accessible task. Imported Linear comments remain in get_task_external_context.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        limit: z.number().int().min(1).max(50).optional(),
+        cursor: z.string().min(1).optional(),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ taskRef, limit, cursor }) => toolCall(() =>
+      listAgentTaskComments(context.user, taskRef, { limit, cursor })),
+  );
+
+  server.registerTool(
+    "get_task_thread",
+    {
+      title: "Get task comment thread",
+      description: "Gets one ACL-scoped native root thread with bounded replies.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        commentRef: reference("Comment ref from list_task_comments."),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ taskRef, commentRef }) => toolCall(() =>
+      getAgentTaskThread(context.user, taskRef, commentRef)),
+  );
+
+  server.registerTool(
+    "add_task_comment",
+    {
+      title: "Add task comment",
+      description: "Adds one native root comment as the authenticated user. Reuse the idempotency key when retrying the same write.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        body: z.string().min(1).max(100_000),
+        idempotencyKey: z.string().min(1).max(200),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, ...input }) => writeToolCall(context, () =>
+      createAgentTaskComment(context.user, taskRef, input)),
+  );
+
+  server.registerTool(
+    "reply_to_task_comment",
+    {
+      title: "Reply to task comment",
+      description: "Replies one level deep to a native root thread as the authenticated user and reopens a resolved thread.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        rootCommentRef: reference("Root comment ref."),
+        body: z.string().min(1).max(100_000),
+        idempotencyKey: z.string().min(1).max(200),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, rootCommentRef, ...input }) => writeToolCall(context, () =>
+      createAgentTaskComment(context.user, taskRef, {
+        ...input,
+        parentCommentRef: rootCommentRef,
+      })),
+  );
+
+  server.registerTool(
+    "edit_task_comment",
+    {
+      title: "Edit task comment",
+      description: "Edits the authenticated author's native comment using its current version.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        commentRef: reference("Comment ref."),
+        version: z.number().int().positive(),
+        body: z.string().min(1).max(100_000),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, commentRef, ...input }) => writeToolCall(context, () =>
+      editAgentTaskComment(context.user, taskRef, commentRef, input)),
+  );
+
+  server.registerTool(
+    "delete_task_comment",
+    {
+      title: "Delete task comment",
+      description: "Soft-deletes an authorized native comment while preserving thread structure.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        commentRef: reference("Comment ref."),
+        version: z.number().int().positive(),
+      }),
+      annotations: destructiveWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, commentRef, ...input }) => writeToolCall(context, () =>
+      deleteAgentTaskComment(context.user, taskRef, commentRef, input)),
+  );
+
+  server.registerTool(
+    "set_comment_reaction",
+    {
+      title: "Set comment reaction",
+      description: "Idempotently adds or removes the authenticated user's emoji reaction.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        commentRef: reference("Comment ref."),
+        emoji: z.string().min(1).max(16),
+        active: z.boolean(),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, commentRef, ...input }) => writeToolCall(context, () =>
+      setAgentCommentReaction(context.user, taskRef, commentRef, input)),
+  );
+
+  server.registerTool(
+    "resolve_task_thread",
+    {
+      title: "Resolve or reopen task thread",
+      description: "Sets the desired resolution state of a root thread using its current version.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        rootCommentRef: reference("Root comment ref."),
+        version: z.number().int().positive(),
+        resolved: z.boolean(),
+        resolutionCommentRef: z.string().min(1).max(200).nullable().optional(),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, rootCommentRef, ...input }) => writeToolCall(context, () =>
+      resolveAgentTaskThread(context.user, taskRef, rootCommentRef, input)),
+  );
+
   return server;
 }
 
@@ -372,6 +522,11 @@ const writeAnnotations = {
   destructiveHint: false,
   idempotentHint: false,
   openWorldHint: false,
+} as const;
+
+const destructiveWriteAnnotations = {
+  ...writeAnnotations,
+  destructiveHint: true,
 } as const;
 
 function reference(description: string) {
