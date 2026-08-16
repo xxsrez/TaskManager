@@ -361,7 +361,10 @@ List повторяет плотную grouped-list модель Linear.
   desktop либо full-page route на узком viewport. URL всегда deep-linkable.
 - Header: identifier/breadcrumb, copy link, share для shareable standalone task,
   overflow и close/open-full controls.
-- Main column: inline-editable title, description, subtasks и relations.
+- Main column: inline-editable title, полноформатное read-only Markdown-описание,
+  subtasks и relations. Description переходит в editor только по явному действию
+  `Edit description`; режим чтения не обрезает длинный текст и поддерживает
+  headings, lists, checklists, links, code и перенос длинных строк.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
 - Timestamps muted и доступны в нижней metadata section.
@@ -380,7 +383,9 @@ List повторяет плотную grouped-list модель Linear.
   read-only provenance section с исходными comments и attachment links без
   write controls; импортированные записи не смешиваются с native threads.
 - Изменение title/description происходит inline, с явными saving/error states и
-  version conflict handling.
+  version conflict handling. Focus, scroll, selection и открытие editor не
+  создают dirty draft; dirty начинается только после фактического изменения
+  значения и сбрасывается после успешного save или cancel.
 
 ### 8.3 Peek
 

@@ -2225,6 +2225,7 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
 function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
+  const [editingDescription, setEditingDescription] = useState(false);
   const [estimate, setEstimate] = useState(task.estimate?.toString() ?? "");
   const [rebasing, setRebasing] = useState(false);
   const [dirty, setDirty] = useState<TaskDraftDirty>({
@@ -2297,6 +2298,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
     if (saved === true) {
       setDirty((current) => ({ ...current, [field]: false }));
     }
+    return saved === true;
   }
 
   const showVersionConflict = syncMode === "manual" ||
@@ -2329,17 +2331,63 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
               }
             }}
           />
-          <textarea
-            className="details-description"
-            value={description}
-            onChange={(event) => {
-              setDirty((current) => ({ ...current, description: true }));
-              setDescription(event.target.value);
-            }}
-            placeholder="Add description…"
-            rows={8}
-          />
-          <button className="button secondary save-description" disabled={busy || hasVersionConflict || description === (task.description ?? "")} onClick={() => void saveDraftField("description", { description })}>{busy ? "Saving…" : "Save description"}</button>
+          <section className="task-description-section" aria-label="Description">
+            <header>
+              <span>Description</span>
+              {!editingDescription && (
+                <button
+                  className="button ghost"
+                  type="button"
+                  disabled={hasVersionConflict}
+                  onClick={() => setEditingDescription(true)}
+                >
+                  Edit description
+                </button>
+              )}
+            </header>
+            {editingDescription ? (
+              <div className="task-description-editor">
+                <textarea
+                  className="details-description"
+                  value={description}
+                  onChange={(event) => {
+                    setDirty((current) => ({ ...current, description: true }));
+                    setDescription(event.target.value);
+                  }}
+                  placeholder="Add description…"
+                  rows={12}
+                  autoFocus
+                />
+                <div>
+                  <button
+                    className="button ghost"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => {
+                      setDescription(task.description ?? "");
+                      setDirty((current) => ({ ...current, description: false }));
+                      setEditingDescription(false);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="button secondary save-description"
+                    type="button"
+                    disabled={busy || hasVersionConflict || description === (task.description ?? "")}
+                    onClick={() => void saveDraftField("description", { description })
+                      .then((saved) => saved && setEditingDescription(false))}
+                  >
+                    {busy ? "Saving…" : "Save description"}
+                  </button>
+                </div>
+              </div>
+            ) : description ? (
+              <MarkdownBody body={description} className="task-description-markdown" />
+            ) : (
+              <p className="task-description-empty">No description</p>
+            )}
+          </section>
           <div className="properties-grid">
             <PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} disabled={hasVersionConflict} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} disabled={hasVersionConflict} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow>
@@ -2376,7 +2424,7 @@ function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1><p className="read-only-description">{task.description || "No description"}</p><div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <MarkdownBody body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
 }
 
 function useTaskExternalSource(task: TaskRecord) {
@@ -2675,15 +2723,82 @@ function CommentMarkdown({ body }: { body: string }) {
       code.push(line);
       continue;
     }
-    if (line.startsWith("> ")) blocks.push(<blockquote key={index}>{renderCommentInline(line.slice(2))}</blockquote>);
-    else if (/^[-*] /.test(line)) blocks.push(<div className="comment-list-item" key={index}>• <span>{renderCommentInline(line.slice(2))}</span></div>);
-    else blocks.push(<p key={index}>{renderCommentInline(line) || <br />}</p>);
+    if (line.startsWith("> ")) blocks.push(<blockquote key={index}>{renderMarkdownInline(line.slice(2))}</blockquote>);
+    else if (/^[-*] /.test(line)) blocks.push(<div className="comment-list-item" key={index}>• <span>{renderMarkdownInline(line.slice(2))}</span></div>);
+    else blocks.push(<p key={index}>{renderMarkdownInline(line) || <br />}</p>);
   }
   if (code) blocks.push(<pre key="code-final"><code>{code.join("\n")}</code></pre>);
   return <div className="comment-body">{blocks}</div>;
 }
 
-function renderCommentInline(value: string) {
+function MarkdownBody({ body, className }: { body: string; className: string }) {
+  const lines = body.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let code: string[] | null = null;
+  let list: { ordered: boolean; items: React.ReactNode[]; key: number } | null = null;
+
+  function flushList() {
+    if (!list) return;
+    const current = list;
+    blocks.push(current.ordered
+      ? <ol key={`list-${current.key}`}>{current.items}</ol>
+      : <ul key={`list-${current.key}`}>{current.items}</ul>);
+    list = null;
+  }
+
+  function appendListItem(ordered: boolean, item: React.ReactNode, key: number) {
+    if (!list || list.ordered !== ordered) {
+      flushList();
+      list = { ordered, items: [], key };
+    }
+    list.items.push(<li key={key}>{item}</li>);
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.startsWith("```")) {
+      if (code) {
+        blocks.push(<pre key={`code-${index}`}><code>{code.join("\n")}</code></pre>);
+        code = null;
+      } else {
+        flushList();
+        code = [];
+      }
+      continue;
+    }
+    if (code) {
+      code.push(line);
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    const checklist = line.match(/^[-*]\s+\[([ xX])\]\s+(.+)$/);
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    const ordered = line.match(/^\d+[.)]\s+(.+)$/);
+    if (checklist) {
+      appendListItem(false, <label className="markdown-checklist-item"><input type="checkbox" checked={checklist[1].toLowerCase() === "x"} readOnly disabled /><span>{renderMarkdownInline(checklist[2])}</span></label>, index);
+    } else if (bullet) {
+      appendListItem(false, renderMarkdownInline(bullet[1]), index);
+    } else if (ordered) {
+      appendListItem(true, renderMarkdownInline(ordered[1]), index);
+    } else {
+      flushList();
+      if (heading) {
+        if (heading[1].length === 1) blocks.push(<h2 key={index}>{renderMarkdownInline(heading[2])}</h2>);
+        else if (heading[1].length === 2) blocks.push(<h3 key={index}>{renderMarkdownInline(heading[2])}</h3>);
+        else blocks.push(<h4 key={index}>{renderMarkdownInline(heading[2])}</h4>);
+      } else if (line.startsWith("> ")) {
+        blocks.push(<blockquote key={index}>{renderMarkdownInline(line.slice(2))}</blockquote>);
+      } else if (line.trim()) {
+        blocks.push(<p key={index}>{renderMarkdownInline(line)}</p>);
+      }
+    }
+  }
+  if (code) blocks.push(<pre key="code-final"><code>{code.join("\n")}</code></pre>);
+  flushList();
+  return <div className={className}>{blocks}</div>;
+}
+
+function renderMarkdownInline(value: string) {
   const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
   const nodes: React.ReactNode[] = [];
   let offset = 0;
@@ -2692,7 +2807,7 @@ function renderCommentInline(value: string) {
     const token = match[0];
     const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (link) {
-      const href = safeCommentHref(link[2]);
+      const href = safeMarkdownHref(link[2]);
       nodes.push(href ? <a key={match.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : token);
     } else if (token.startsWith("`")) nodes.push(<code key={match.index}>{token.slice(1, -1)}</code>);
     else if (token.startsWith("**")) nodes.push(<strong key={match.index}>{token.slice(2, -2)}</strong>);
@@ -2703,7 +2818,7 @@ function renderCommentInline(value: string) {
   return nodes;
 }
 
-function safeCommentHref(value: string | undefined) {
+function safeMarkdownHref(value: string | undefined) {
   if (!value) return null;
   try {
     const url = new URL(value);

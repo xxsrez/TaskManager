@@ -152,3 +152,15 @@ test("pull-to-refresh indicator is mobile-only and respects reduced motion", () 
 test("task rows do not attach a hidden double-click action", () => {
   assert.doesNotMatch(taskTracker, /onDoubleClick=\{onPeek\}/);
 });
+
+test("task description reading mode grows fully and wraps long content", () => {
+  const rule = declarations(".task-description-markdown");
+  assert.match(rule, /overflow-wrap:\s*anywhere\s*;/);
+  assert.doesNotMatch(rule, /max-height\s*:/);
+  assert.doesNotMatch(rule, /overflow:\s*hidden\s*;/);
+  assert.match(declarations(".task-description-markdown pre"), /overflow:\s*auto\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-description-section > header \.button, \.task-description-editor \.button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+});

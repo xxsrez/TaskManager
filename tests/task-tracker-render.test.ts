@@ -816,6 +816,44 @@ test("a summary task opens a lightweight loading panel before its body arrives",
   assert.doesNotMatch(markup, /class="details-description"/);
 });
 
+test("editable task details render the full Markdown description before editing", () => {
+  const description = [
+    "# Full description",
+    "",
+    "- [x] Completed item",
+    "- Regular item",
+    "",
+    "[Open source](https://example.com/source)",
+    "",
+    "```ts",
+    "const longValue = true;",
+    "```",
+  ].join("\n");
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        tasks: snapshot.tasks.map((task) => ({ ...task, description })),
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: "task-1",
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /class="task-description-markdown"/);
+  assert.match(markup, /<h2>Full description<\/h2>/);
+  assert.match(markup, /type="checkbox"[^>]*checked=""/);
+  assert.match(markup, /href="https:\/\/example\.com\/source"/);
+  assert.match(markup, /<pre><code>const longValue = true;<\/code><\/pre>/);
+  assert.match(markup, />Edit description</);
+  assert.doesNotMatch(markup, /class="details-description"/);
+  assert.doesNotMatch(markup, />Save description</);
+});
+
 test("viewer task details are read-only and expose no mutation controls", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
