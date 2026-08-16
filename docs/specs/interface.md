@@ -130,6 +130,23 @@ Desktop-first shell повторяет композицию Linear:
   один слой за нажатие.
 - Focus возвращается в control, открывший закрытый layer.
 
+### 3.4 Фоновая синхронизация
+
+- Application shell содержит один невидимый sync coordinator; отдельные list,
+  board, details, navigation и filter surfaces не показывают собственные
+  polling indicators и не расходятся по моменту обновления.
+- Remote create/update/archive/delete обновляет запись на месте без full-page
+  reload, потери текущего layout, scroll или несвязанной selection.
+- Если открытая Task или текущая Project/Release/SavedView удалена либо стала
+  недоступна, details/Peek закрываются, stale selection очищается, а navigation
+  атомарно возвращается в доступный `Workspace` вместо пустого чужого context.
+- Hidden/offline состояние не показывает ошибку само по себе. После возврата
+  coordinator немедленно сверяется; временные failures используют backoff и не
+  создают дублирующиеся banners или requests.
+- Full reset после ACL change или cursor gap сохраняет загруженный Task body и
+  более новые подтверждённые локальные mutations, но удаляет недоступные
+  records из всех UI contexts.
+
 ## 4. Visual system
 
 ### 4.1 Плотность и геометрия

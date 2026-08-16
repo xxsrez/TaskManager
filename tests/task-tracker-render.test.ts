@@ -11,6 +11,7 @@ import {
   mergeDeferredSnapshot,
   mergeSearchTaskSummaries,
   pullRefreshDistance,
+  reconcileTaskDetail,
   rebaseTaskDraft,
   PriorityIcon,
   resolveArchiveBulkAction,
@@ -270,12 +271,142 @@ test("a full deferred snapshot drops revoked tasks but retains tasks created aft
   };
 
   const merged = mergeDeferredSnapshot(
-    { ...snapshot, tasks: [revokedTask, localTask] },
+    {
+      ...snapshot,
+      tasks: [revokedTask, localTask],
+      labels: [{ id: "label-revoked", ownerUserId: "user-1", name: "Old", color: "#777777" }],
+      taskLabels: [{ taskId: revokedTask.id, labelId: "label-revoked" }],
+      relations: [{ sourceTaskId: revokedTask.id, targetTaskId: localTask.id, type: "related" }],
+    },
     { ...snapshot, tasks: [] },
     { taskIdsAtRequest: new Set([revokedTask.id]) },
   );
 
   assert.deepEqual(merged.tasks.map((task) => task.id), [localTask.id]);
+  assert.deepEqual(merged.taskLabels, []);
+  assert.deepEqual(merged.relations, []);
+  assert.deepEqual(merged.labels, []);
+});
+
+test("a full deferred snapshot also drops removed projects, releases, and views from the request set", () => {
+  const project = {
+    id: "project-1",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Stale project",
+    summary: "",
+    description: "",
+    status: "planned" as const,
+    leadUserId: null,
+    startDate: null,
+    targetDate: null,
+    icon: "cube",
+    color: "#777777",
+    archivedAt: null,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const release = {
+    id: "release-1",
+    publicId: "66666666-6666-4666-8666-666666666666",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    projectId: project.id,
+    name: "Stale release",
+    description: "",
+    status: "planned" as const,
+    startDate: null,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    archivedAt: null,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const view = {
+    id: "view-1",
+    publicId: "77777777-7777-4777-8777-777777777777",
+    ownerUserId: "user-1",
+    name: "Stale view",
+    scopeProjectId: project.id,
+    query: {},
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "manual" as const,
+      direction: "asc" as const,
+      showEmptyGroups: true,
+      visibleFields: [],
+    },
+    version: 1,
+    accessRole: "owner" as const,
+  };
+
+  const merged = mergeDeferredSnapshot(
+    { ...snapshot, projects: [project], releases: [release], views: [view] },
+    { ...snapshot, tasks: [] },
+    {
+      projectIdsAtRequest: new Set([project.id]),
+      releaseIdsAtRequest: new Set([release.id]),
+      viewIdsAtRequest: new Set([view.id]),
+    },
+  );
+
+  assert.deepEqual(merged.projects, []);
+  assert.deepEqual(merged.releases, []);
+  assert.deepEqual(merged.views, []);
+});
+
+test("task detail reconciliation replaces synced labels and relations without keeping stale context", () => {
+  const focusedTask = { ...snapshot.tasks[0]!, description: "Loaded body" };
+  const staleRelated = {
+    ...snapshot.tasks[0]!,
+    id: "task-stale",
+    publicId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    identifier: "TM-3",
+    sequenceNumber: 3,
+    title: "Stale related",
+  };
+  const childTask = {
+    ...snapshot.tasks[0]!,
+    id: "task-child",
+    publicId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    identifier: "TM-4",
+    sequenceNumber: 4,
+    title: "Fresh child",
+    parentTaskId: focusedTask.id,
+  };
+  const nextTask = {
+    ...focusedTask,
+    updatedAt: "2026-08-14T09:05:00.000Z",
+  };
+  const reconciled = reconcileTaskDetail(
+    {
+      task: focusedTask,
+      relatedTasks: [staleRelated],
+      labels: [{ id: "label-stale", ownerUserId: "user-1", name: "Stale", color: "#111111" }],
+      taskLabels: [{ taskId: focusedTask.id, labelId: "label-stale" }],
+      relations: [{ sourceTaskId: focusedTask.id, targetTaskId: staleRelated.id, type: "related" }],
+    },
+    nextTask,
+    {
+      tasks: [nextTask, childTask],
+      labels: [{ id: "label-fresh", ownerUserId: "user-1", name: "Fresh", color: "#22aa22" }],
+      taskLabels: [{ taskId: focusedTask.id, labelId: "label-fresh" }],
+      relations: [],
+    },
+    new Set([staleRelated.id]),
+  );
+
+  assert.deepEqual(reconciled.labels.map((label) => label.id), ["label-fresh"]);
+  assert.deepEqual(reconciled.taskLabels, [{ taskId: focusedTask.id, labelId: "label-fresh" }]);
+  assert.deepEqual(reconciled.relations, []);
+  assert.deepEqual(reconciled.relatedTasks.map((task) => task.id), [childTask.id]);
 });
 
 test("search summaries add matches outside the snapshot without discarding loaded details", () => {

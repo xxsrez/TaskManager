@@ -33,11 +33,14 @@
 13. [ADR-0008: OAuth-first MCP connector](decisions/0008-oauth-mcp-connector.md)
     — native Connect flow, PKCE/DCR, remote MCP tools и распространение через
     расширяемый `Srez Marketplace`.
-14. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+14. [ADR-0009: централизованная синхронизация workspace](decisions/0009-central-workspace-synchronization.md)
+    — единый app-shell poller, principal-scoped cursor, ACL-safe change journal
+    и full-reset recovery.
+15. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-15. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+16. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-16. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+17. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -75,6 +78,9 @@ context и scoped task create/update описаны в
 bulk/idempotency в текущий срез не входят.
 ADR-0007 и текущая реализация добавляют portability slice: current Project
 Owner получает logical export, staged preview и atomic exact restore.
+ADR-0009 добавляет единый incremental workspace sync: Tasks, Projects,
+Releases, SavedViews и ACL-состав обновляются из principal-scoped D1 journal с
+полным bootstrap при gap или изменении access scope.
 
 ## Категории
 

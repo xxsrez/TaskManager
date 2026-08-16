@@ -408,6 +408,24 @@ completed dates и archived state.
 Точные representations, routes, OpenAPI contract, authentication и acceptance
 описаны в [спецификации agent API](agent-api.md).
 
+### 12.2 Синхронизация интерфейса
+
+- Hydrated application shell использует один общий sync coordinator для Tasks,
+  Projects, Releases, SavedViews и membership/permissions. List, board,
+  details, navigation, filters и selection не запускают собственные pollers.
+- Видимая online-вкладка получает изменения других sessions через
+  principal-scoped opaque cursor не реже одного раза в минуту. Hidden/offline
+  вкладка приостанавливает запросы и сверяется сразу после возврата.
+- Incremental create/update/archive/delete применяется идемпотентно ко всем
+  surfaces. Удалённая или ставшая недоступной entity исчезает также из details,
+  selection, breadcrumbs и связанных context records.
+- ACL вычисляется сервером до ответа. Grant/revoke, invalid cursor, gap и
+  неизвестный event вызывают полный ACL-scoped bootstrap; клиент не получает
+  payload чужой entity даже как delete metadata.
+- Одновременно выполняется не больше одного sync request. Ошибки сети
+  используют bounded backoff, reconnect продолжает с последнего подтверждённого
+  cursor, а optimistic version conflicts остаются обязательными для writes.
+
 - Все изменения проходят одинаковую серверную валидацию независимо от экрана.
 - Authentication и authorization выполняются server-side. Клиентские owner,
   email, provider и permission claims не считаются доверенными.
@@ -511,6 +529,12 @@ completed dates и archived state.
     thread, но все mutations получают отказ; imported archive остаётся отдельным
     read-only provenance block. Те же операции доступны через Agent REST/MCP без
     user email и без comment bodies в task collections.
+30. Открыть одну account/workspace в двух sessions: создать, изменить,
+    заархивировать и удалить Task, Project, Release и SavedView и увидеть
+    согласованный результат в list, board, details, sidebar и filters не позднее
+    polling interval. Повторная доставка не создаёт дублей; gap/reconnect
+    запускает full reset. После revoke бывший collaborator теряет entity и
+    прямой details context без раскрытия чужого content.
 
 ## 14. Рекомендуемые вертикальные срезы
 

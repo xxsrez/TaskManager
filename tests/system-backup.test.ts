@@ -399,6 +399,7 @@ function migratedDatabase() {
     "0009_talented_otto_octavius.sql",
     "0010_crazy_puma.sql",
     "0011_conscious_paibok.sql",
+    "0012_empty_saracen.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

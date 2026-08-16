@@ -60,7 +60,7 @@ migrations. Это соответствует
 | Administration | Server allowlist, content-free overview и explicit full-state backup/restore |
 | Portability | Owner Project bundles, validation/preview и atomic exact restore |
 | Agent API | Compact/detail projections, versioned REST, remote MCP и OAuth/personal credential scopes |
-| UI shell | Linear-like navigation, shared controls, keyboard, themes и state |
+| UI shell | Linear-like navigation, shared controls, keyboard, themes, единый sync coordinator и state |
 
 Модули — границы кода внутри одного приложения, а не отдельные сервисы. Для MVP
 предпочтителен modular monolith: независимое развёртывание этих частей пока не
@@ -139,6 +139,31 @@ migrations. Это соответствует
 4. API возвращает records и metadata групп; UI рисует list либо board.
 
 Переключение layout не должно менять query semantics или состав task IDs.
+
+### Синхронизация hydrated workspace
+
+1. Server bootstrap возвращает ACL-scoped snapshot и opaque cursor текущего
+   principal.
+2. Один UI-shell coordinator раз в 60 секунд запрашивает `/api/sync`, только
+   когда вкладка видима и online. Одновременно выполняется не больше одного
+   request; `hasMore` вычитывается последовательно.
+3. D1 triggers записывают principal-scoped sequence events в той же transaction,
+   что Task/Project/Release/SavedView/AccessGrant mutation. Journal не содержит
+   пользовательский content.
+4. Sync repository coalesces touched IDs, заново строит current ACL snapshot и
+   возвращает upsert/remove patches. Поэтому moved/revoked entity для прежнего
+   audience становится remove, а чужой content не попадает в response.
+5. Client применяет patches идемпотентно к общему `AppSnapshot`, сохраняя
+   загруженный Task detail поверх нового summary. Details, list, board,
+   navigation, filters и selection используют уже согласованное состояние.
+6. ACL event, invalid/ahead/pruned cursor, gap или неизвестный event требует
+   полного bootstrap. Hidden/offline вкладка приостанавливает timer и сразу
+   синхронизируется после visibility/online; network failures дают bounded
+   backoff до пяти минут.
+
+Контракт и границы решения приняты в
+[ADR-0009](decisions/0009-central-workspace-synchronization.md). Optimistic
+version conflict остаётся write boundary и не заменяется polling.
 
 ### Чтение и task commands через agent API
 
@@ -315,6 +340,8 @@ Native comment bodies также не входят в bootstrap или Task deta
   staging, preview и bounded lifecycle;
 - `admin_import_sessions` и `admin_import_rows` для изолированного preflight,
   payload staging и минимального audit metadata полного restore;
+- `workspace_sync_sequences` и `workspace_change_events` для per-principal
+  cursor, упорядоченного ACL-safe journal и gap recovery;
 - constraint или transactional validation project/release consistency;
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
@@ -388,6 +415,9 @@ saved-view query/display и полный provider metadata в `external_records`
 - Comment tests покрывают identity, Viewer refusal, author/moderator rules,
   idempotent create/reaction, stale versions, one-level replies, tombstones,
   stable pagination, Agent privacy projection и backup invariants.
+- Workspace sync tests покрывают event ordering/coalescing, idempotent patch,
+  create/update/delete, ACL fan-out без outsider leak, revoke reset, cursor gap
+  и bounded reconnect backoff.
 - Visual regression и accessibility checks следуют
   [спецификации интерфейса](specs/interface.md); сравнение с Linear проверяет
   composition и interaction parity, а не чужие assets.

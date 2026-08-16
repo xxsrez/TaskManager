@@ -326,4 +326,28 @@ export type AppSnapshot = {
   relations: TaskRelationRecord[];
   views: SavedViewRecord[];
   collaborators: CollaboratorRecord[];
+  /** Opaque checkpoint for the authenticated principal's incremental UI feed. */
+  syncCursor?: string;
+};
+
+export type WorkspaceSyncCollection<T> = {
+  upsert: T[];
+  remove: string[];
+};
+
+export type WorkspaceSyncChanges = {
+  tasks: WorkspaceSyncCollection<TaskRecord>;
+  projects: WorkspaceSyncCollection<ProjectRecord>;
+  releases: WorkspaceSyncCollection<ReleaseRecord>;
+  views: WorkspaceSyncCollection<SavedViewRecord>;
+  labels: LabelRecord[];
+  taskLabels: TaskLabelAssignment[];
+  relations: TaskRelationRecord[];
+};
+
+export type WorkspaceSyncResponse = {
+  cursor: string;
+  resetRequired: boolean;
+  hasMore: boolean;
+  changes: WorkspaceSyncChanges;
 };

@@ -53,6 +53,7 @@ import {
 } from "./view-contract";
 import { getD1 } from "@/db";
 import { getRuntimeEnvironment } from "./runtime-environment";
+import { encodeWorkspaceSyncCursor } from "./workspace-sync-cursor";
 
 type DbRow = Record<string, unknown>;
 
@@ -200,6 +201,12 @@ export async function getSnapshot(
   const isAdmin = isAdminEmail(user.email, configuredAdminEmails);
   const [snapshotResults, admin] = await Promise.all([
     db.batch<DbRow>([
+      db
+        .prepare(
+          `SELECT last_sequence FROM workspace_sync_sequences
+           WHERE audience_user_id = ?`,
+        )
+        .bind(user.id),
       db
         .prepare(
           `WITH scoped AS (
@@ -495,6 +502,7 @@ export async function getSnapshot(
   ]);
 
   const [
+    syncState,
     tasks,
     projects,
     releases,
@@ -533,6 +541,9 @@ export async function getSnapshot(
       .map(mapRelation),
     views: views.results.map(mapView),
     collaborators: collaborators.results.map(mapCollaborator),
+    syncCursor: encodeWorkspaceSyncCursor(
+      Number((syncState.results[0] as DbRow | undefined)?.last_sequence ?? 0),
+    ),
   };
 }
 
@@ -1026,7 +1037,7 @@ export async function updateTask(
       currentUser.id,
     )
     .run();
-  if ((result.meta.changes ?? 0) !== 1) {
+  if ((result.meta.changes ?? 0) < 1) {
     throw new ConflictError("Task was changed in another session");
   }
   return loadAccessibleTask(currentUser.id, taskId);
@@ -1119,7 +1130,7 @@ export async function bulkUpdateTasks(
     }
   }
   const results = await db.batch(statements);
-  if (results.some((result) => (result.meta.changes ?? 0) !== 1)) {
+  if (results.some((result) => (result.meta.changes ?? 0) < 1)) {
     throw new ConflictError("One or more tasks changed in another session");
   }
   return loadAccessibleTasks(currentUser.id, ids);
@@ -1314,7 +1325,7 @@ export async function revokeAccess(currentUser: UserRecord, grantId: string) {
       .bind(now, grantId, grant.ownerUserId),
     clearAssignee,
   ]);
-  if ((results[0]?.meta.changes ?? 0) !== 1) {
+  if ((results[0]?.meta.changes ?? 0) < 1) {
     throw new NotFoundError("Grant not found");
   }
 }
@@ -1340,7 +1351,7 @@ export async function updateAccessRole(
     )
     .bind(permission, currentUser.id, grantId, grant.ownerUserId)
     .run();
-  if ((result.meta.changes ?? 0) !== 1) throw new NotFoundError("Grant not found");
+  if ((result.meta.changes ?? 0) < 1) throw new NotFoundError("Grant not found");
 }
 
 export async function transferProjectOwnership(
@@ -1410,7 +1421,7 @@ export async function transferProjectOwnership(
         targetUserId,
       ),
   ]);
-  if ((results[0]?.meta.changes ?? 0) !== 1) {
+  if ((results[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Project ownership changed in another session");
   }
 }

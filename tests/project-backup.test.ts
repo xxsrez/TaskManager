@@ -177,7 +177,7 @@ function migratedDatabase() {
     "0003_green_white_queen.sql", "0004_large_rocket_racer.sql", "0005_mixed_bruce_banner.sql",
     "0006_complex_reavers.sql", "0007_curious_sharon_carter.sql",
     "0008_loose_the_fallen.sql", "0009_talented_otto_octavius.sql",
-    "0010_crazy_puma.sql", "0011_conscious_paibok.sql",
+    "0010_crazy_puma.sql", "0011_conscious_paibok.sql", "0012_empty_saracen.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

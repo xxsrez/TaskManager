@@ -382,6 +382,27 @@ export const taskSequences = sqliteTable("task_sequences", {
   lastValue: integer("last_value").notNull(),
 });
 
+export const workspaceSyncSequences = sqliteTable("workspace_sync_sequences", {
+  audienceUserId: text("audience_user_id").primaryKey(),
+  lastSequence: integer("last_sequence").notNull(),
+});
+
+export const workspaceChangeEvents = sqliteTable(
+  "workspace_change_events",
+  {
+    audienceUserId: text("audience_user_id").notNull(),
+    sequence: integer("sequence").notNull(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    operation: text("operation").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.audienceUserId, table.sequence] }),
+    index("idx_workspace_change_events_created").on(table.createdAt),
+  ],
+);
+
 export const labels = sqliteTable(
   "labels",
   {

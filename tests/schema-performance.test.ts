@@ -109,3 +109,41 @@ test("native comments have task counters, relational integrity, and lookup index
     ).some((detail) => detail.includes("idx_comments_parent")),
   );
 });
+
+test("workspace synchronization has per-principal ordering and mutation triggers", () => {
+  const database = migratedDatabase();
+  const sequencePrimaryKey = database
+    .prepare("PRAGMA table_info(workspace_sync_sequences)")
+    .all()
+    .find((column) => column.name === "audience_user_id");
+  assert.equal(sequencePrimaryKey?.pk, 1);
+
+  const eventPrimaryKey = database
+    .prepare("PRAGMA table_info(workspace_change_events)")
+    .all()
+    .filter((column) => Number(column.pk) > 0)
+    .sort((left, right) => Number(left.pk) - Number(right.pk));
+  assert.deepEqual(
+    eventPrimaryKey.map((column) => column.name),
+    ["audience_user_id", "sequence"],
+  );
+
+  const triggers = new Set(
+    database
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+      .all()
+      .map((row) => row.name),
+  );
+  for (const trigger of [
+    "workspace_sync_tasks_insert",
+    "workspace_sync_tasks_update",
+    "workspace_sync_tasks_delete",
+    "workspace_sync_projects_update",
+    "workspace_sync_releases_update",
+    "workspace_sync_views_update",
+    "workspace_sync_views_move",
+    "workspace_sync_access_update",
+  ]) {
+    assert.equal(triggers.has(trigger), true, `${trigger} should exist`);
+  }
+});

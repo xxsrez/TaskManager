@@ -49,6 +49,7 @@ import {
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   TouchEvent as ReactTouchEvent,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -79,6 +80,14 @@ import {
   type ResolvedNavigation,
 } from "@/lib/navigation";
 import { formatReleaseName } from "@/lib/release-presentation";
+import {
+  applyWorkspaceSync,
+  mergeTaskSummary,
+} from "@/lib/workspace-sync-contract";
+import {
+  useWorkspaceSyncCoordinator,
+  type WorkspaceSyncCheckpoint,
+} from "@/components/workspace-sync-coordinator";
 import type {
   AdminOverview,
   AccessRole,
@@ -99,6 +108,7 @@ import type {
   ViewDisplay,
   ViewQuery,
   WorkflowStatusRecord,
+  WorkspaceSyncResponse,
 } from "@/lib/types";
 
 type ShareTarget = {
@@ -202,7 +212,12 @@ export function applyMutationResult(
 export function mergeDeferredSnapshot(
   current: AppSnapshot,
   incoming: AppSnapshot,
-  options: { taskIdsAtRequest?: ReadonlySet<string> } = {},
+  options: {
+    taskIdsAtRequest?: ReadonlySet<string>;
+    projectIdsAtRequest?: ReadonlySet<string>;
+    releaseIdsAtRequest?: ReadonlySet<string>;
+    viewIdsAtRequest?: ReadonlySet<string>;
+  } = {},
 ): AppSnapshot {
   const currentTasks = new Map(current.tasks.map((task) => [task.id, task]));
   const incomingIds = new Set(incoming.tasks.map((task) => task.id));
@@ -212,24 +227,51 @@ export function mergeDeferredSnapshot(
     return !options.taskIdsAtRequest.has(task.id);
   });
   const tasks = incoming.tasks.map((task) =>
-    mergeTaskProjection(currentTasks.get(task.id), task),
+    mergeTaskSummary(currentTasks.get(task.id), task),
   );
+  const mergedTasks = [...retainedTasks, ...tasks];
+  const mergedTaskIds = new Set(mergedTasks.map((task) => task.id));
+  const mergedTaskLabels = mergeUnique(
+    incoming.taskLabels,
+    current.taskLabels,
+    (assignment) => `${assignment.taskId}:${assignment.labelId}`,
+  ).filter(
+    (assignment) => !options.taskIdsAtRequest || mergedTaskIds.has(assignment.taskId),
+  );
+  const mergedRelations = mergeUnique(
+    incoming.relations,
+    current.relations,
+    (relation) => `${relation.sourceTaskId}:${relation.type}:${relation.targetTaskId}`,
+  ).filter(
+    (relation) => !options.taskIdsAtRequest ||
+      (mergedTaskIds.has(relation.sourceTaskId) && mergedTaskIds.has(relation.targetTaskId)),
+  );
+  const retainedLabelIds = new Set(mergedTaskLabels.map((assignment) => assignment.labelId));
+  const incomingLabelIds = new Set(incoming.labels.map((label) => label.id));
 
   return {
-    ...current,
-    tasks: [...retainedTasks, ...tasks],
-    taskWindow: incoming.taskWindow,
-    labels: mergeUnique(incoming.labels, current.labels, (label) => label.id),
-    taskLabels: mergeUnique(
-      incoming.taskLabels,
-      current.taskLabels,
-      (assignment) => `${assignment.taskId}:${assignment.labelId}`,
+    ...incoming,
+    tasks: mergedTasks,
+    projects: mergeResetCollection(
+      current.projects,
+      incoming.projects,
+      options.projectIdsAtRequest,
     ),
-    relations: mergeUnique(
-      incoming.relations,
-      current.relations,
-      (relation) => `${relation.sourceTaskId}:${relation.type}:${relation.targetTaskId}`,
+    releases: mergeResetCollection(
+      current.releases,
+      incoming.releases,
+      options.releaseIdsAtRequest,
     ),
+    views: mergeResetCollection(
+      current.views,
+      incoming.views,
+      options.viewIdsAtRequest,
+    ),
+    labels: mergeUnique(incoming.labels, current.labels, (label) => label.id)
+      .filter((label) => !options.taskIdsAtRequest ||
+        incomingLabelIds.has(label.id) || retainedLabelIds.has(label.id)),
+    taskLabels: mergedTaskLabels,
+    relations: mergedRelations,
   };
 }
 
@@ -258,7 +300,7 @@ export function shouldTriggerPullRefresh(distance: number) {
 }
 
 export async function fetchTaskSnapshot(fetcher: typeof fetch = fetch) {
-  const response = await fetcher("/api/bootstrap");
+  const response = await fetcher("/api/bootstrap", { cache: "no-store" });
   const value = (await response.json()) as AppSnapshot | { error: string };
   if (!response.ok || "error" in value) {
     throw new Error("error" in value ? value.error : "Refresh failed");
@@ -286,27 +328,29 @@ export function mergeSearchTaskSummaries(
   const currentTasks = new Map(current.map((task) => [task.id, task]));
   return [
     ...current.filter((task) => !incomingIds.has(task.id)),
-    ...incoming.map((task) => mergeTaskProjection(currentTasks.get(task.id), task)),
+    ...incoming.map((task) => mergeTaskSummary(currentTasks.get(task.id), task)),
   ];
 }
 
-function mergeTaskProjection(
-  retained: TaskRecord | undefined,
-  incoming: TaskRecord,
-): TaskRecord {
-  if (!retained) return incoming;
-  if (retained.version > incoming.version) return retained;
-  if (retained.version === incoming.version && retained.description !== null) {
-    return retained;
-  }
-  if (retained.description !== null && incoming.description === null) {
-    return {
-      ...incoming,
-      description: retained.description,
-      detailVersion: retained.detailVersion ?? retained.version,
-    };
-  }
-  return incoming;
+function mergeResetCollection<T extends { id: string; version: number }>(
+  current: T[],
+  incoming: T[],
+  idsAtRequest?: ReadonlySet<string>,
+): T[] {
+  const currentById = new Map(current.map((item) => [item.id, item]));
+  const incomingIds = new Set(incoming.map((item) => item.id));
+  const retained = current.filter((item) => {
+    if (incomingIds.has(item.id)) return false;
+    if (!idsAtRequest) return true;
+    return !idsAtRequest.has(item.id);
+  });
+  return [
+    ...retained,
+    ...incoming.map((item) => {
+      const existing = currentById.get(item.id);
+      return existing && existing.version > item.version ? existing : item;
+    }),
+  ];
 }
 
 export function taskMutationVersion(task: TaskRecord): number {
@@ -364,6 +408,55 @@ export function mergeTaskDetailContext(
       ),
       ...detail.relations,
     ],
+  };
+}
+
+export function reconcileTaskDetail(
+  current: TaskDetailRecord,
+  nextTask: TaskRecord,
+  collections: Pick<AppSnapshot, "tasks" | "labels" | "taskLabels" | "relations">,
+  removedTaskIds: ReadonlySet<string> = new Set(),
+): TaskDetailRecord {
+  const taskLabels = collections.taskLabels.filter(
+    (assignment) => assignment.taskId === nextTask.id,
+  );
+  const labelIds = new Set(taskLabels.map((assignment) => assignment.labelId));
+  const labels = mergeUnique(
+    collections.labels.filter((label) => labelIds.has(label.id)),
+    current.labels,
+    (label) => label.id,
+  ).filter((label) => labelIds.has(label.id));
+  const relations = collections.relations.filter(
+    (relation) =>
+      relation.sourceTaskId === nextTask.id ||
+      relation.targetTaskId === nextTask.id,
+  );
+  const relatedPool = mergeSearchTaskSummaries(
+    current.relatedTasks.filter((task) => !removedTaskIds.has(task.id)),
+    collections.tasks.filter((task) => task.id !== nextTask.id),
+  );
+  const relatedIds = new Set<string>();
+  if (nextTask.parentTaskId) relatedIds.add(nextTask.parentTaskId);
+  for (const relation of relations) {
+    relatedIds.add(
+      relation.sourceTaskId === nextTask.id
+        ? relation.targetTaskId
+        : relation.sourceTaskId,
+    );
+  }
+  for (const task of relatedPool) {
+    if (task.parentTaskId === nextTask.id) relatedIds.add(task.id);
+  }
+
+  return {
+    ...current,
+    task: nextTask,
+    labels,
+    taskLabels,
+    relations,
+    relatedTasks: relatedPool.filter(
+      (task) => relatedIds.has(task.id) || task.parentTaskId === nextTask.id,
+    ),
   };
 }
 
@@ -454,6 +547,135 @@ export function TaskTracker({
   const taskReturnPath = useRef(
     navigationPath({ ...initialNavigation, taskId: null }, initialData),
   );
+
+  const captureSyncCheckpoint = useCallback((): WorkspaceSyncCheckpoint => ({
+    taskIds: new Set(dataRef.current.tasks.map((task) => task.id)),
+    projectIds: new Set(dataRef.current.projects.map((project) => project.id)),
+    releaseIds: new Set(dataRef.current.releases.map((release) => release.id)),
+    viewIds: new Set(dataRef.current.views.map((view) => view.id)),
+  }), []);
+  const returnToWorkspaceAfterRemoval = useCallback(() => {
+    setSurface("all");
+    setLayout("list");
+    setActiveTaskId(null);
+    setPeekTaskId(null);
+    taskReturnPath.current = navigationPath(
+      { surface: "all", layout: "list", taskId: null },
+      dataRef.current,
+    );
+    window.history.replaceState(
+      navigationHistoryState({ surface: "all", layout: "list", taskId: null }),
+      "",
+      taskReturnPath.current,
+    );
+  }, []);
+  const applyIncrementalSync = useCallback((response: WorkspaceSyncResponse) => {
+    const removedTaskIds = new Set(response.changes.tasks.remove);
+    const removedProjectIds = new Set(response.changes.projects.remove);
+    const removedReleaseIds = new Set(response.changes.releases.remove);
+    const removedViewIds = new Set(response.changes.views.remove);
+    setData((current) => applyWorkspaceSync(current, response));
+    setSelected((current) => new Set(
+      [...current].filter((taskId) => !removedTaskIds.has(taskId)),
+    ));
+    setPeekTaskId((current) => current && removedTaskIds.has(current) ? null : current);
+    setTaskDetail((current) => {
+      if (!current) return current;
+      if (removedTaskIds.has(current.task.id)) return null;
+      const incoming = response.changes.tasks.upsert.find(
+        (task) => task.id === current.task.id,
+      );
+      return incoming
+        ? reconcileTaskDetail(
+          current,
+          mergeTaskSummary(current.task, incoming),
+          {
+            tasks: response.changes.tasks.upsert,
+            labels: response.changes.labels,
+            taskLabels: response.changes.taskLabels,
+            relations: response.changes.relations,
+          },
+          removedTaskIds,
+        )
+        : current;
+    });
+    if (response.changes.tasks.upsert.length || removedTaskIds.size) {
+      setTaskSearch(null);
+      setRefreshEpoch((current) => current + 1);
+    }
+    const activeTaskWasRemoved = activeTaskId !== null && removedTaskIds.has(activeTaskId);
+    const surfaceWasRemoved =
+      (surface.startsWith("project:") && removedProjectIds.has(surface.slice(8))) ||
+      (surface.startsWith("project-releases:") &&
+        removedProjectIds.has(surface.slice("project-releases:".length))) ||
+      (surface.startsWith("release:") && removedReleaseIds.has(surface.slice(8))) ||
+      (surface.startsWith("view:") && removedViewIds.has(surface.slice(5)));
+    if (activeTaskWasRemoved || surfaceWasRemoved) returnToWorkspaceAfterRemoval();
+  }, [activeTaskId, returnToWorkspaceAfterRemoval, surface]);
+  const applySyncReset = useCallback((
+    incoming: AppSnapshot,
+    checkpoint: WorkspaceSyncCheckpoint,
+  ) => {
+    setData((current) => mergeDeferredSnapshot(current, incoming, {
+      taskIdsAtRequest: checkpoint.taskIds,
+      projectIdsAtRequest: checkpoint.projectIds,
+      releaseIdsAtRequest: checkpoint.releaseIds,
+      viewIdsAtRequest: checkpoint.viewIds,
+    }));
+    setTaskDetail((current) => {
+      if (!current) return current;
+      const incomingTask = incoming.tasks.find((task) => task.id === current.task.id);
+      return incomingTask
+        ? reconcileTaskDetail(
+          current,
+          mergeTaskSummary(current.task, incomingTask),
+          incoming,
+          checkpoint.taskIds,
+        )
+        : checkpoint.taskIds.has(current.task.id)
+          ? null
+          : current;
+    });
+    setSelected((current) => new Set(
+      [...current].filter(
+        (taskId) => incoming.tasks.some((task) => task.id === taskId) ||
+          !checkpoint.taskIds.has(taskId),
+      ),
+    ));
+    setPeekTaskId((current) => current && checkpoint.taskIds.has(current) &&
+      !incoming.tasks.some((task) => task.id === current)
+      ? null
+      : current);
+    setTaskSearch(null);
+    setTaskWindowLoading(false);
+    setRefreshEpoch((current) => current + 1);
+    const activeTaskWasRemoved = activeTaskId !== null &&
+      checkpoint.taskIds.has(activeTaskId) &&
+      !incoming.tasks.some((task) => task.id === activeTaskId);
+    const surfaceWasRemoved =
+      (surface.startsWith("project:") &&
+        checkpoint.projectIds.has(surface.slice(8)) &&
+        !incoming.projects.some((project) => project.id === surface.slice(8))) ||
+      (surface.startsWith("project-releases:") &&
+        checkpoint.projectIds.has(surface.slice("project-releases:".length)) &&
+        !incoming.projects.some(
+          (project) => project.id === surface.slice("project-releases:".length),
+        )) ||
+      (surface.startsWith("release:") &&
+        checkpoint.releaseIds.has(surface.slice(8)) &&
+        !incoming.releases.some((release) => release.id === surface.slice(8))) ||
+      (surface.startsWith("view:") &&
+        checkpoint.viewIds.has(surface.slice(5)) &&
+        !incoming.views.some((view) => view.id === surface.slice(5)));
+    if (activeTaskWasRemoved || surfaceWasRemoved) returnToWorkspaceAfterRemoval();
+  }, [activeTaskId, returnToWorkspaceAfterRemoval, surface]);
+
+  useWorkspaceSyncCoordinator({
+    cursor: data.syncCursor,
+    captureCheckpoint: captureSyncCheckpoint,
+    onIncremental: applyIncrementalSync,
+    onReset: applySyncReset,
+  });
 
   const statusMap = useMemo(
     () => new Map(data.statuses.map((status) => [status.id, status])),
@@ -550,14 +772,19 @@ export function TaskTracker({
       cancelIdleCallback?: (handle: number) => void;
     };
     const loadRemainingTasks = () => {
-      const taskIdsAtRequest = new Set(dataRef.current.tasks.map((task) => task.id));
+      const checkpoint = captureSyncCheckpoint();
       void fetch("/api/bootstrap", { signal: controller.signal })
         .then(async (response) => {
           const value = (await response.json()) as AppSnapshot | { error: string };
           if (!response.ok || "error" in value) {
             throw new Error("error" in value ? value.error : "Task loading failed");
           }
-          setData((current) => mergeDeferredSnapshot(current, value, { taskIdsAtRequest }));
+          setData((current) => mergeDeferredSnapshot(current, value, {
+            taskIdsAtRequest: checkpoint.taskIds,
+            projectIdsAtRequest: checkpoint.projectIds,
+            releaseIdsAtRequest: checkpoint.releaseIds,
+            viewIdsAtRequest: checkpoint.viewIds,
+          }));
           setTaskWindowLoading(false);
         })
         .catch((requestError: unknown) => {
@@ -580,7 +807,7 @@ export function TaskTracker({
       if (idleId !== null) idleWindow.cancelIdleCallback?.(idleId);
       if (timerId !== null) window.clearTimeout(timerId);
     };
-  }, [taskWindowLoading]);
+  }, [captureSyncCheckpoint, taskWindowLoading]);
 
   const activeSavedView = surface.startsWith("view:")
     ? data.views.find((view) => view.id === surface.slice(5))
@@ -634,13 +861,14 @@ export function TaskTracker({
     return runSingleFlight(pullRefreshFlight, async () => {
       setPullRefreshing(true);
       setPullRefreshError("");
-      const taskIdsAtRequest = new Set(
-        dataRef.current.tasks.map((task) => task.id),
-      );
+      const checkpoint = captureSyncCheckpoint();
       try {
         const incoming = await fetchTaskSnapshot();
         setData((current) => mergeDeferredSnapshot(current, incoming, {
-          taskIdsAtRequest,
+          taskIdsAtRequest: checkpoint.taskIds,
+          projectIdsAtRequest: checkpoint.projectIds,
+          releaseIdsAtRequest: checkpoint.releaseIds,
+          viewIdsAtRequest: checkpoint.viewIds,
         }));
         setTaskWindowLoading(false);
         setRefreshEpoch((current) => current + 1);
@@ -739,7 +967,7 @@ export function TaskTracker({
   const activeTaskSummary = taskPool.find((task) => task.id === activeTaskId);
   const activeTask = taskDetail?.task.id === activeTaskId
     ? activeTaskSummary
-      ? mergeTaskProjection(taskDetail.task, activeTaskSummary)
+      ? mergeTaskSummary(taskDetail.task, activeTaskSummary)
       : taskDetail.task
     : activeTaskSummary ?? null;
   const peekTask = taskPool.find((task) => task.id === peekTaskId) ?? null;

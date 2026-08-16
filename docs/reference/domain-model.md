@@ -217,6 +217,26 @@ Project Owner имеет implicit highest access и не представлен 
   ownership уже добавленному участнику. Target становится Owner, прежний Owner
   — Manager; подтверждение target не требуется.
 
+## WorkspaceSyncSequence и WorkspaceChangeEvent
+
+Это operational records синхронизации UI, а не пользовательские сущности и не
+внешний agent API.
+
+| Поле | Семантика |
+|---|---|
+| `audience_user_id` | Authenticated principal, для которого рассчитан event |
+| `last_sequence` | Последний монотонный checkpoint этого principal |
+| `sequence` | Порядок event внутри principal scope |
+| `entity_type`, `entity_id` | Touched Task, Project, Release, SavedView либо workspace reset marker |
+| `operation` | `upsert`, `remove` или `reset` |
+| `created_at` | Время записи journal event |
+
+Journal не хранит entity content. Audience вычисляется в той же D1 transaction,
+что mutation, по current owner/active grants. Read response всегда повторно
+строит актуальный ACL-scoped projection; поэтому старый event не даёт права
+прочитать record. `(audience_user_id, sequence)` уникален. Удаление старых rows
+обязано оставлять обнаруживаемый cursor gap, который приводит к full bootstrap.
+
 ## Task
 
 | Поле | Тип | Обязательность | Семантика |
