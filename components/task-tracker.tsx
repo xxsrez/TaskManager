@@ -129,7 +129,7 @@ type TaskCreateDefaults = Partial<{
   projectId: string | null;
   releaseId: string | null;
 }>;
-type TaskSearchState = {
+export type TaskSearchState = {
   query: string;
   taskIds: string[];
   tasks: TaskRecord[];
@@ -460,6 +460,96 @@ export function reconcileTaskDetail(
   };
 }
 
+export function reconcileTaskDetailFromSync(
+  current: TaskDetailRecord,
+  changes: WorkspaceSyncResponse["changes"],
+): TaskDetailRecord | null {
+  const removedTaskIds = new Set(changes.tasks.remove);
+  if (removedTaskIds.has(current.task.id)) return null;
+
+  const nextFocusedTask = changes.tasks.upsert.find(
+    (task) => task.id === current.task.id,
+  );
+  if (nextFocusedTask) {
+    return reconcileTaskDetail(
+      current,
+      mergeTaskSummary(current.task, nextFocusedTask),
+      {
+        tasks: changes.tasks.upsert,
+        labels: changes.labels,
+        taskLabels: changes.taskLabels,
+        relations: changes.relations,
+      },
+      removedTaskIds,
+    );
+  }
+
+  const relationPeerIds = new Set<string>();
+  for (const relation of current.relations) {
+    if (relation.sourceTaskId === current.task.id) {
+      relationPeerIds.add(relation.targetTaskId);
+    } else if (relation.targetTaskId === current.task.id) {
+      relationPeerIds.add(relation.sourceTaskId);
+    }
+  }
+  const incomingById = new Map(
+    changes.tasks.upsert.map((task) => [task.id, task]),
+  );
+  const reconciled = current.relatedTasks.flatMap((task) => {
+    if (removedTaskIds.has(task.id)) return [];
+    const incoming = incomingById.get(task.id);
+    if (!incoming) return [task];
+    incomingById.delete(task.id);
+    const merged = mergeTaskSummary(task, incoming);
+    return merged.parentTaskId === current.task.id ||
+        current.task.parentTaskId === merged.id ||
+        relationPeerIds.has(merged.id)
+      ? [merged]
+      : [];
+  });
+  for (const task of incomingById.values()) {
+    if (
+      task.parentTaskId === current.task.id ||
+      current.task.parentTaskId === task.id ||
+      relationPeerIds.has(task.id)
+    ) {
+      reconciled.push(task);
+    }
+  }
+  return { ...current, relatedTasks: reconciled };
+}
+
+export function reconcileTaskDetailAfterReset(
+  current: TaskDetailRecord,
+  incoming: AppSnapshot,
+): TaskDetailRecord {
+  const incomingTask = incoming.tasks.find((task) => task.id === current.task.id);
+  return incomingTask
+    ? { ...current, task: mergeTaskSummary(current.task, incomingTask) }
+    : current;
+}
+
+export function reconcileTaskSearch(
+  current: TaskSearchState | null,
+  changes: Pick<WorkspaceSyncResponse["changes"], "tasks">,
+): TaskSearchState | null {
+  if (!current) return current;
+  const removedTaskIds = new Set(changes.tasks.remove);
+  const incomingById = new Map(
+    changes.tasks.upsert.map((task) => [task.id, task]),
+  );
+  return {
+    ...current,
+    taskIds: current.taskIds.filter((taskId) => !removedTaskIds.has(taskId)),
+    tasks: current.tasks
+      .filter((task) => !removedTaskIds.has(task.id))
+      .map((task) => {
+        const incoming = incomingById.get(task.id);
+        return incoming ? mergeTaskSummary(task, incoming) : task;
+      }),
+  };
+}
+
 export function taskMatchesSearch(
   task: TaskRecord,
   needle: string,
@@ -506,6 +596,7 @@ export function TaskTracker({
   const [search, setSearch] = useState("");
   const [taskSearch, setTaskSearch] = useState<TaskSearchState | null>(null);
   const [taskDetail, setTaskDetail] = useState<TaskDetailRecord | null>(null);
+  const [forcedTaskDetailId, setForcedTaskDetailId] = useState<string | null>(null);
   const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -559,6 +650,8 @@ export function TaskTracker({
     setLayout("list");
     setActiveTaskId(null);
     setPeekTaskId(null);
+    setTaskDetail(null);
+    setForcedTaskDetailId(null);
     taskReturnPath.current = navigationPath(
       { surface: "all", layout: "list", taskId: null },
       dataRef.current,
@@ -579,28 +672,11 @@ export function TaskTracker({
       [...current].filter((taskId) => !removedTaskIds.has(taskId)),
     ));
     setPeekTaskId((current) => current && removedTaskIds.has(current) ? null : current);
-    setTaskDetail((current) => {
-      if (!current) return current;
-      if (removedTaskIds.has(current.task.id)) return null;
-      const incoming = response.changes.tasks.upsert.find(
-        (task) => task.id === current.task.id,
-      );
-      return incoming
-        ? reconcileTaskDetail(
-          current,
-          mergeTaskSummary(current.task, incoming),
-          {
-            tasks: response.changes.tasks.upsert,
-            labels: response.changes.labels,
-            taskLabels: response.changes.taskLabels,
-            relations: response.changes.relations,
-          },
-          removedTaskIds,
-        )
-        : current;
-    });
+    setTaskDetail((current) => current
+      ? reconcileTaskDetailFromSync(current, response.changes)
+      : current);
     if (response.changes.tasks.upsert.length || removedTaskIds.size) {
-      setTaskSearch(null);
+      setTaskSearch((current) => reconcileTaskSearch(current, response.changes));
       setRefreshEpoch((current) => current + 1);
     }
     const activeTaskWasRemoved = activeTaskId !== null && removedTaskIds.has(activeTaskId);
@@ -624,17 +700,7 @@ export function TaskTracker({
     }));
     setTaskDetail((current) => {
       if (!current) return current;
-      const incomingTask = incoming.tasks.find((task) => task.id === current.task.id);
-      return incomingTask
-        ? reconcileTaskDetail(
-          current,
-          mergeTaskSummary(current.task, incomingTask),
-          incoming,
-          checkpoint.taskIds,
-        )
-        : checkpoint.taskIds.has(current.task.id)
-          ? null
-          : current;
+      return reconcileTaskDetailAfterReset(current, incoming);
     });
     setSelected((current) => new Set(
       [...current].filter(
@@ -646,12 +712,9 @@ export function TaskTracker({
       !incoming.tasks.some((task) => task.id === current)
       ? null
       : current);
-    setTaskSearch(null);
     setTaskWindowLoading(false);
     setRefreshEpoch((current) => current + 1);
-    const activeTaskWasRemoved = activeTaskId !== null &&
-      checkpoint.taskIds.has(activeTaskId) &&
-      !incoming.tasks.some((task) => task.id === activeTaskId);
+    if (activeTaskId !== null) setForcedTaskDetailId(activeTaskId);
     const surfaceWasRemoved =
       (surface.startsWith("project:") &&
         checkpoint.projectIds.has(surface.slice(8)) &&
@@ -667,7 +730,7 @@ export function TaskTracker({
       (surface.startsWith("view:") &&
         checkpoint.viewIds.has(surface.slice(5)) &&
         !incoming.views.some((view) => view.id === surface.slice(5)));
-    if (activeTaskWasRemoved || surfaceWasRemoved) returnToWorkspaceAfterRemoval();
+    if (surfaceWasRemoved) returnToWorkspaceAfterRemoval();
   }, [activeTaskId, returnToWorkspaceAfterRemoval, surface]);
 
   useWorkspaceSyncCoordinator({
@@ -773,7 +836,7 @@ export function TaskTracker({
     };
     const loadRemainingTasks = () => {
       const checkpoint = captureSyncCheckpoint();
-      void fetch("/api/bootstrap", { signal: controller.signal })
+      void fetch("/api/bootstrap", { cache: "no-store", signal: controller.signal })
         .then(async (response) => {
           const value = (await response.json()) as AppSnapshot | { error: string };
           if (!response.ok || "error" in value) {
@@ -976,31 +1039,47 @@ export function TaskTracker({
     : peekTask?.description === null
       ? peekTask.id
       : null;
+  const taskDetailRequestId = forcedTaskDetailId ?? deferredTaskId;
 
   useEffect(() => {
-    if (!deferredTaskId) return;
+    if (!taskDetailRequestId) return;
     const controller = new AbortController();
-    void fetch(`/api/tasks/${encodeURIComponent(deferredTaskId)}`, {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
+    void (async () => {
+      const response = await fetch(
+        `/api/tasks/${encodeURIComponent(taskDetailRequestId)}`,
+        { cache: "no-store", signal: controller.signal },
+      );
         const value = (await response.json()) as
           | TaskDetailRecord
           | { error: string };
+        if (response.status === 403 || response.status === 404) {
+          setForcedTaskDetailId((current) =>
+            current === taskDetailRequestId ? null : current);
+          setTaskDetail((current) =>
+            current?.task.id === taskDetailRequestId ? null : current);
+          if (activeTaskId === taskDetailRequestId) {
+            returnToWorkspaceAfterRemoval();
+          }
+          return;
+        }
         if (!response.ok || "error" in value) {
           throw new Error("error" in value ? value.error : "Request failed");
         }
         setTaskDetail(value);
-        setData((current) => applyMutationResult(current, { task: value.task }));
-      })
+        setData((current) => mergeTaskDetailContext(current, value));
+        setForcedTaskDetailId((current) =>
+          current === taskDetailRequestId ? null : current);
+      })()
       .catch((requestError: unknown) => {
         if (requestError instanceof DOMException && requestError.name === "AbortError") {
           return;
         }
+        setForcedTaskDetailId((current) =>
+          current === taskDetailRequestId ? null : current);
         setError(requestError instanceof Error ? requestError.message : "Could not load task details");
       });
     return () => controller.abort();
-  }, [deferredTaskId]);
+  }, [activeTaskId, returnToWorkspaceAfterRemoval, taskDetailRequestId]);
   const activeDetailsData = activeTask && taskDetail?.task.id === activeTask.id
     ? mergeTaskDetailContext(data, { ...taskDetail, task: activeTask })
     : data;

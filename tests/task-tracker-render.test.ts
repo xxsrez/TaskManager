@@ -12,6 +12,9 @@ import {
   mergeSearchTaskSummaries,
   pullRefreshDistance,
   reconcileTaskDetail,
+  reconcileTaskDetailAfterReset,
+  reconcileTaskDetailFromSync,
+  reconcileTaskSearch,
   rebaseTaskDraft,
   PriorityIcon,
   resolveArchiveBulkAction,
@@ -407,6 +410,97 @@ test("task detail reconciliation replaces synced labels and relations without ke
   assert.deepEqual(reconciled.taskLabels, [{ taskId: focusedTask.id, labelId: "label-fresh" }]);
   assert.deepEqual(reconciled.relations, []);
   assert.deepEqual(reconciled.relatedTasks.map((task) => task.id), [childTask.id]);
+});
+
+test("task detail reconciliation patches and removes related task summaries", () => {
+  const focusedTask = { ...snapshot.tasks[0]!, description: "Loaded body" };
+  const childTask = {
+    ...snapshot.tasks[0]!,
+    id: "task-child",
+    publicId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    identifier: "TM-4",
+    sequenceNumber: 4,
+    title: "Old child title",
+    parentTaskId: focusedTask.id,
+  };
+  const detail = {
+    task: focusedTask,
+    relatedTasks: [childTask],
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  };
+  const updated = reconcileTaskDetailFromSync(detail, {
+    tasks: { upsert: [{ ...childTask, title: "New child title", version: 2 }], remove: [] },
+    projects: { upsert: [], remove: [] },
+    releases: { upsert: [], remove: [] },
+    views: { upsert: [], remove: [] },
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  });
+  assert.equal(updated?.relatedTasks[0]?.title, "New child title");
+
+  const removed = reconcileTaskDetailFromSync(updated!, {
+    tasks: { upsert: [], remove: [childTask.id] },
+    projects: { upsert: [], remove: [] },
+    releases: { upsert: [], remove: [] },
+    views: { upsert: [], remove: [] },
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  });
+  assert.deepEqual(removed?.relatedTasks, []);
+});
+
+test("reset reconciliation preserves detail-only context until authoritative reload", () => {
+  const focusedTask = { ...snapshot.tasks[0]!, description: "Loaded body" };
+  const relatedTask = {
+    ...snapshot.tasks[0]!,
+    id: "task-related-outside-window",
+    publicId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    identifier: "TM-40",
+    sequenceNumber: 40,
+    title: "Outside bootstrap window",
+  };
+  const detail = {
+    task: focusedTask,
+    relatedTasks: [relatedTask],
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  };
+
+  const reconciled = reconcileTaskDetailAfterReset(detail, {
+    ...snapshot,
+    tasks: [{ ...focusedTask, title: "Fresh focused summary", description: null }],
+  });
+
+  assert.equal(reconciled.task.title, "Fresh focused summary");
+  assert.equal(reconciled.task.description, "Loaded body");
+  assert.deepEqual(reconciled.relatedTasks, [relatedTask]);
+});
+
+test("background sync preserves active search while patching known results", () => {
+  const task = snapshot.tasks[0]!;
+  const current = {
+    query: "direct",
+    taskIds: [task.id],
+    tasks: [task],
+    status: "ready" as const,
+  };
+  const patched = reconcileTaskSearch(current, {
+    tasks: { upsert: [{ ...task, title: "Updated direct", version: 2 }], remove: [] },
+  });
+  assert.equal(patched?.query, "direct");
+  assert.equal(patched?.tasks[0]?.title, "Updated direct");
+
+  const removed = reconcileTaskSearch(patched, {
+    tasks: { upsert: [], remove: [task.id] },
+  });
+  assert.equal(removed?.query, "direct");
+  assert.deepEqual(removed?.taskIds, []);
+  assert.deepEqual(removed?.tasks, []);
 });
 
 test("search summaries add matches outside the snapshot without discarding loaded details", () => {

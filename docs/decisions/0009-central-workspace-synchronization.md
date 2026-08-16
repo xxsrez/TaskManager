@@ -33,9 +33,10 @@ events, но для текущего масштаба не требует WebSoc
    возвращает упорядоченную bounded page и следующий cursor.
 4. Для incremental response сервер повторно строит актуальный ACL-scoped
    projection. Доступная touched entity передаётся как upsert, отсутствующая
-   или ставшая недоступной — как remove. Изменение grant/ownership выдаёт
-   principal-scoped reset event, чтобы целиком пересчитать наследуемый scope и
-   collaborators без утечки существования чужих records.
+   или ставшая недоступной — как remove. Изменение grant/ownership или
+   определения label выдаёт principal-scoped reset event, чтобы целиком
+   пересчитать наследуемый scope и collaborators без утечки существования
+   чужих records.
 5. Клиент применяет страницы по cursor, coalesces повторные изменения одной
    entity и сравнивает `version`/`updated_at`. Повторная доставка идемпотентна;
    загруженный Task body сохраняется поверх более нового summary, пока detail

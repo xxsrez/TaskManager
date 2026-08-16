@@ -200,15 +200,16 @@ test("task label and relation updates ride on the touched task feed", async () =
   const seeded = await getSnapshot(owner);
   const source = seeded.tasks.find((item) => item.title === "Join source")!;
   const target = seeded.tasks.find((item) => item.title === "Join target")!;
+  await database
+    .prepare(
+      `INSERT INTO labels (id, owner_user_id, name, color, created_at)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    )
+    .bind("label-sync", owner.id, "Sync label", "#55aa55")
+    .run();
   const initial = await getSnapshot(owner);
 
   await database.batch([
-    database
-      .prepare(
-        `INSERT INTO labels (id, owner_user_id, name, color, created_at)
-         VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-      )
-      .bind("label-sync", owner.id, "Sync label", "#55aa55"),
     database
       .prepare("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)")
       .bind(source.id, "label-sync"),
@@ -244,6 +245,87 @@ test("task label and relation updates ride on the touched task feed", async () =
   assert.equal(after.tasks.find((task) => task.id === source.id)?.updatedAt, source.updatedAt);
   assert.equal(after.tasks.find((task) => task.id === target.id)?.updatedAt, target.updatedAt);
   assert.equal(after.tasks.find((task) => task.id === source.id)?.version, source.version);
+});
+
+test("label definition changes reset every affected principal without exposing content", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-label-owner",
+    email: "sync-label-owner@example.test",
+  });
+  const collaborator = await getOrCreateUser({
+    ...collaboratorActor,
+    providerAccountKey: "sync-label-collaborator",
+    email: "sync-label-collaborator@example.test",
+  });
+  const beforeCreate = await getSnapshot(owner);
+  await database
+    .prepare(
+      `INSERT INTO labels (id, owner_user_id, name, color, created_at)
+       VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+    )
+    .bind("label-reset", owner.id, "Initial label", "#334455")
+    .run();
+  assert.equal(
+    (await getWorkspaceSync(owner, beforeCreate.syncCursor!)).resetRequired,
+    true,
+  );
+
+  await createProject(owner, { name: "Label reset project" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Label reset project",
+  )!;
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: collaborator.email,
+    permission: "viewer",
+  });
+  await createTask(owner, {
+    title: "Shared labelled task",
+    projectId: project.id,
+  });
+  const task = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Shared labelled task",
+  )!;
+  await database
+    .prepare("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)")
+    .bind(task.id, "label-reset")
+    .run();
+  const ownerInitial = await getSnapshot(owner);
+  const collaboratorInitial = await getSnapshot(collaborator);
+
+  await database
+    .prepare("UPDATE labels SET name = ? WHERE id = ?")
+    .bind("Renamed label", "label-reset")
+    .run();
+  const ownerRename = await getWorkspaceSync(owner, ownerInitial.syncCursor!);
+  const collaboratorRename = await getWorkspaceSync(
+    collaborator,
+    collaboratorInitial.syncCursor!,
+  );
+  assert.equal(ownerRename.resetRequired, true);
+  assert.equal(collaboratorRename.resetRequired, true);
+  assert.deepEqual(collaboratorRename.changes, {
+    tasks: { upsert: [], remove: [] },
+    projects: { upsert: [], remove: [] },
+    releases: { upsert: [], remove: [] },
+    views: { upsert: [], remove: [] },
+    labels: [],
+    taskLabels: [],
+    relations: [],
+  });
+
+  const beforeDelete = await getSnapshot(owner);
+  await database
+    .prepare("DELETE FROM task_labels WHERE task_id = ? AND label_id = ?")
+    .bind(task.id, "label-reset")
+    .run();
+  await database.prepare("DELETE FROM labels WHERE id = ?").bind("label-reset").run();
+  assert.equal(
+    (await getWorkspaceSync(owner, beforeDelete.syncCursor!)).resetRequired,
+    true,
+  );
 });
 
 test("sync fan-out follows current project ACL without exposing unrelated changes", async () => {

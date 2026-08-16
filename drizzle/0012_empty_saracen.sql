@@ -506,3 +506,108 @@ BEGIN
   SET updated_at = updated_at
   WHERE id IN (OLD.source_task_id, OLD.target_task_id);
 END;
+--> statement-breakpoint
+CREATE TRIGGER `workspace_sync_labels_insert`
+AFTER INSERT ON `labels`
+BEGIN
+  INSERT INTO workspace_sync_sequences (audience_user_id, last_sequence)
+  VALUES (NEW.owner_user_id, 1)
+  ON CONFLICT(audience_user_id) DO UPDATE SET last_sequence = last_sequence + 1;
+  INSERT INTO workspace_change_events
+    (audience_user_id, sequence, entity_type, entity_id, operation)
+  SELECT NEW.owner_user_id, last_sequence, 'workspace', NEW.id, 'reset'
+  FROM workspace_sync_sequences
+  WHERE audience_user_id = NEW.owner_user_id;
+END;
+--> statement-breakpoint
+CREATE TRIGGER `workspace_sync_labels_update`
+AFTER UPDATE ON `labels`
+BEGIN
+  INSERT INTO workspace_sync_sequences (audience_user_id, last_sequence)
+  SELECT audience_user_id, 1 FROM (
+    SELECT OLD.owner_user_id AS audience_user_id
+    UNION SELECT NEW.owner_user_id
+    UNION SELECT t.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      WHERE tl.label_id = NEW.id AND t.project_id IS NULL
+    UNION SELECT p.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN projects p ON p.id = t.project_id
+      WHERE tl.label_id = NEW.id
+    UNION SELECT ag.grantee_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN access_grants ag ON ag.revoked_at IS NULL AND (
+        (t.project_id IS NOT NULL AND ag.resource_type = 'project' AND ag.resource_id = t.project_id) OR
+        (t.project_id IS NULL AND ag.resource_type = 'task' AND ag.resource_id = t.id)
+      )
+      WHERE tl.label_id = NEW.id
+  ) WHERE audience_user_id IS NOT NULL
+  ON CONFLICT(audience_user_id) DO UPDATE SET last_sequence = last_sequence + 1;
+  INSERT INTO workspace_change_events
+    (audience_user_id, sequence, entity_type, entity_id, operation)
+  SELECT audience_user_id, sequence.last_sequence, 'workspace', NEW.id, 'reset'
+  FROM (
+    SELECT OLD.owner_user_id AS audience_user_id
+    UNION SELECT NEW.owner_user_id
+    UNION SELECT t.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      WHERE tl.label_id = NEW.id AND t.project_id IS NULL
+    UNION SELECT p.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN projects p ON p.id = t.project_id
+      WHERE tl.label_id = NEW.id
+    UNION SELECT ag.grantee_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN access_grants ag ON ag.revoked_at IS NULL AND (
+        (t.project_id IS NOT NULL AND ag.resource_type = 'project' AND ag.resource_id = t.project_id) OR
+        (t.project_id IS NULL AND ag.resource_type = 'task' AND ag.resource_id = t.id)
+      )
+      WHERE tl.label_id = NEW.id
+  ) audience
+  JOIN workspace_sync_sequences sequence USING (audience_user_id);
+END;
+--> statement-breakpoint
+CREATE TRIGGER `workspace_sync_labels_delete`
+AFTER DELETE ON `labels`
+BEGIN
+  INSERT INTO workspace_sync_sequences (audience_user_id, last_sequence)
+  SELECT audience_user_id, 1 FROM (
+    SELECT OLD.owner_user_id AS audience_user_id
+    UNION SELECT t.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      WHERE tl.label_id = OLD.id AND t.project_id IS NULL
+    UNION SELECT p.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN projects p ON p.id = t.project_id
+      WHERE tl.label_id = OLD.id
+    UNION SELECT ag.grantee_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN access_grants ag ON ag.revoked_at IS NULL AND (
+        (t.project_id IS NOT NULL AND ag.resource_type = 'project' AND ag.resource_id = t.project_id) OR
+        (t.project_id IS NULL AND ag.resource_type = 'task' AND ag.resource_id = t.id)
+      )
+      WHERE tl.label_id = OLD.id
+  ) WHERE audience_user_id IS NOT NULL
+  ON CONFLICT(audience_user_id) DO UPDATE SET last_sequence = last_sequence + 1;
+  INSERT INTO workspace_change_events
+    (audience_user_id, sequence, entity_type, entity_id, operation)
+  SELECT audience_user_id, sequence.last_sequence, 'workspace', OLD.id, 'reset'
+  FROM (
+    SELECT OLD.owner_user_id AS audience_user_id
+    UNION SELECT t.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      WHERE tl.label_id = OLD.id AND t.project_id IS NULL
+    UNION SELECT p.owner_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN projects p ON p.id = t.project_id
+      WHERE tl.label_id = OLD.id
+    UNION SELECT ag.grantee_user_id FROM tasks t
+      JOIN task_labels tl ON tl.task_id = t.id
+      JOIN access_grants ag ON ag.revoked_at IS NULL AND (
+        (t.project_id IS NOT NULL AND ag.resource_type = 'project' AND ag.resource_id = t.project_id) OR
+        (t.project_id IS NULL AND ag.resource_type = 'task' AND ag.resource_id = t.id)
+      )
+      WHERE tl.label_id = OLD.id
+  ) audience
+  JOIN workspace_sync_sequences sequence USING (audience_user_id);
+END;
