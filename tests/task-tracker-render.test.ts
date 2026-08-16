@@ -21,6 +21,7 @@ import {
   runSingleFlight,
   shouldTriggerPullRefresh,
   taskMutationVersion,
+  taskDraftSyncMode,
   taskMatchesSearch,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
@@ -179,7 +180,7 @@ test("a newer deferred summary keeps loaded content without masking its optimist
   assert.equal(taskMutationVersion(task), 3);
 });
 
-test("task details surface a concurrent summary conflict without returning to loading", () => {
+test("a clean task detail does not surface a manual conflict for a newer summary", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
       initialData: {
@@ -202,12 +203,21 @@ test("task details surface a concurrent summary conflict without returning to lo
     }),
   );
 
-  assert.match(markup, /This task changed elsewhere/);
-  assert.match(markup, /Load latest and keep draft/);
+  assert.doesNotMatch(markup, /This task changed elsewhere/);
+  assert.doesNotMatch(markup, /Load latest and keep draft/);
   assert.doesNotMatch(markup, /window\.location\.reload/);
   assert.match(markup, /<select disabled=""/);
   assert.match(markup, /archive-action" disabled=""/);
   assert.doesNotMatch(markup, /Loading task details/);
+});
+
+test("task draft sync mode auto-applies clean updates and preserves dirty drafts", () => {
+  const clean = { title: false, description: false, estimate: false };
+  const dirty = { ...clean, description: true };
+
+  assert.equal(taskDraftSyncMode(false, clean), "none");
+  assert.equal(taskDraftSyncMode(true, clean), "auto");
+  assert.equal(taskDraftSyncMode(true, dirty), "manual");
 });
 
 test("rebasing a concurrent task keeps dirty draft fields and refreshes untouched fields", () => {

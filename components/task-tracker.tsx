@@ -381,6 +381,14 @@ export function rebaseTaskDraft(
   };
 }
 
+export function taskDraftSyncMode(
+  hasVersionConflict: boolean,
+  dirty: TaskDraftDirty,
+): "none" | "auto" | "manual" {
+  if (!hasVersionConflict) return "none";
+  return Object.values(dirty).some(Boolean) ? "manual" : "auto";
+}
+
 export function mergeTaskDetailContext(
   current: AppSnapshot,
   detail: TaskDetailRecord,
@@ -1257,22 +1265,34 @@ export function TaskTracker({
     return saved;
   }
 
-  async function refreshTaskDetail(taskId: string): Promise<TaskRecord | null> {
+  const refreshTaskDetail = useCallback(async (taskId: string): Promise<TaskRecord | null> => {
     setError("");
     try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`);
+      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+        cache: "no-store",
+      });
       const value = (await response.json()) as TaskDetailRecord | { error: string };
       if (!response.ok || "error" in value) {
         throw new Error("error" in value ? value.error : "Could not refresh task");
       }
-      setTaskDetail(value);
-      setData((current) => applyMutationResult(current, { task: value.task }));
+      const retained = dataRef.current.tasks.find((task) => task.id === taskId);
+      if (retained && retained.version > value.task.version) return retained;
+      setTaskDetail((current) =>
+        current?.task.id === taskId && current.task.version > value.task.version
+          ? current
+          : value,
+      );
+      setData((current) => {
+        const currentTask = current.tasks.find((task) => task.id === taskId);
+        if (currentTask && currentTask.version > value.task.version) return current;
+        return mergeTaskDetailContext(current, value);
+      });
       return value.task;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Could not refresh task");
       return null;
     }
-  }
+  }, []);
 
   async function downloadSystemBackup() {
     setSystemBackupBusy(true);
@@ -1879,7 +1899,7 @@ export function TaskTracker({
         <BulkBar count={selected.size} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes })} onRebase={() => refreshTaskDetail(activeTask.id)} onShare={() => setDialog("share")} busy={busy} />}</div>}
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "project" && <EntityDialog title="Create project" icon={<FolderKanban size={17} />} fields={[{ name: "name", label: "Project name", required: true }, { name: "summary", label: "Short summary" }, { name: "targetDate", label: "Target date", type: "date" }]} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
@@ -2202,17 +2222,47 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
   return <Modal onClose={onClose} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">New task</span><button type="button" className="icon-button" onClick={onClose}><X size={15} /></button></div><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="">No project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><div className="modal-footer"><span className="shortcut-hint"><kbd>⌘</kbd><kbd>Enter</kbd> to create</span><button className="button primary" disabled={busy || !title.trim()}>{busy ? "Creating…" : "Create task"}</button></div></form></Modal>;
 }
 
-function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onRebase: () => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
+function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [estimate, setEstimate] = useState(task.estimate?.toString() ?? "");
   const [rebasing, setRebasing] = useState(false);
-  const dirty = useRef<TaskDraftDirty>({
+  const [dirty, setDirty] = useState<TaskDraftDirty>({
     title: false,
     description: false,
     estimate: false,
   });
+  const autoRebaseVersion = useRef<number | null>(null);
+  const [autoRebaseFailed, setAutoRebaseFailed] = useState(false);
   const source = useTaskExternalSource(task);
+  const hasVersionConflict = task.detailVersion !== undefined && task.detailVersion < task.version;
+  const syncMode = taskDraftSyncMode(hasVersionConflict, dirty);
+
+  const rebaseDraft = useCallback(async () => {
+    setRebasing(true);
+    setAutoRebaseFailed(false);
+    const latest = await onRebase(task.id);
+    if (latest && latest.version >= task.version) {
+      const next = rebaseTaskDraft(
+        { title, description, estimate },
+        dirty,
+        latest,
+      );
+      setTitle(next.title);
+      setDescription(next.description);
+      setEstimate(next.estimate);
+    } else {
+      setAutoRebaseFailed(true);
+    }
+    setRebasing(false);
+  }, [description, dirty, estimate, onRebase, task.id, task.version, title]);
+
+  useEffect(() => {
+    if (syncMode !== "auto" || autoRebaseVersion.current === task.version) return;
+    autoRebaseVersion.current = task.version;
+    void rebaseDraft();
+  }, [rebaseDraft, syncMode, task.version]);
+
   if (!canEditContent(task.accessRole)) {
     return <ReadOnlyTaskDetails task={task} data={data} source={source} onClose={onClose} onOpenTask={onOpenTask} />;
   }
@@ -2239,31 +2289,18 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
     }
   }
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource} full />;
-  const hasVersionConflict = task.detailVersion !== undefined && task.detailVersion < task.version;
-
-  async function rebaseDraft() {
-    setRebasing(true);
-    const latest = await onRebase();
-    if (latest) {
-      const next = rebaseTaskDraft(
-        { title, description, estimate },
-        dirty.current,
-        latest,
-      );
-      setTitle(next.title);
-      setDescription(next.description);
-      setEstimate(next.estimate);
-    }
-    setRebasing(false);
-  }
-
   async function saveDraftField(
     field: keyof TaskDraftDirty,
     input: Record<string, unknown>,
   ) {
     const saved = await onSave(input);
-    if (saved === true) dirty.current[field] = false;
+    if (saved === true) {
+      setDirty((current) => ({ ...current, [field]: false }));
+    }
   }
+
+  const showVersionConflict = syncMode === "manual" ||
+    (syncMode === "auto" && autoRebaseFailed);
 
   return (
     <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -2273,7 +2310,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
           <div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div>
         </header>
         <div className="details-body">
-          {hasVersionConflict && (
+          {showVersionConflict && (
             <div className="task-version-conflict" role="alert">
               <p>This task changed elsewhere. Your draft is preserved in this panel; load the latest version before saving.</p>
               <button className="button secondary" type="button" disabled={rebasing} onClick={() => void rebaseDraft()}>{rebasing ? "Loading latest…" : "Load latest and keep draft"}</button>
@@ -2283,7 +2320,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
             className="details-title"
             value={title}
             onChange={(event) => {
-              dirty.current.title = true;
+              setDirty((current) => ({ ...current, title: true }));
               setTitle(event.target.value);
             }}
             onBlur={() => {
@@ -2296,7 +2333,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
             className="details-description"
             value={description}
             onChange={(event) => {
-              dirty.current.description = true;
+              setDirty((current) => ({ ...current, description: true }));
               setDescription(event.target.value);
             }}
             placeholder="Add description…"
@@ -2310,7 +2347,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
             <PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ projectId: event.target.value || null })}><option value="">No project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={hasVersionConflict || !task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow>
-            <PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => { dirty.current.estimate = true; setEstimate(event.target.value); }} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (!hasVersionConflict && value !== task.estimate) void saveDraftField("estimate", { estimate: value }); }} /></PropertyRow>
+            <PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => { setDirty((current) => ({ ...current, estimate: true })); setEstimate(event.target.value); }} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (!hasVersionConflict && value !== task.estimate) void saveDraftField("estimate", { estimate: value }); }} /></PropertyRow>
           </div>
           {labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}
           {(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}
