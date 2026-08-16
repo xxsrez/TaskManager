@@ -16,6 +16,11 @@ React/Vinext UI, server routes, D1 schema и migrations, вход через Cha
 обязательным, но ещё не реализован: доступный Sites contract пока не даёт
 подтверждённого external-provider adapter.
 
+Sites разделены на production `task-manager` и отдельный UAT
+`task-manager-uat`. Обычные delivery и тестовые данные направляются в UAT;
+production deploy выполняется только по прямой команде пользователя. Plugin
+Task Manager остаётся подключён к production.
+
 ## Локальный запуск
 
 ```bash
@@ -38,4 +43,6 @@ npm run dev
 - [Решение об интерфейсном паритете с Linear](docs/decisions/0002-linear-interface-parity.md)
 - [Решение о Project backup](docs/decisions/0007-project-backup.md)
 - [Решение о стеке и authentication delivery](docs/decisions/0003-implementation-stack-and-auth-delivery.md)
+- [Решение о production/UAT Sites](docs/decisions/0010-production-and-uat-sites.md)
+- [Runbook релизов Sites](docs/operations/sites-release.md)
 - [Исследование Linear](docs/reports/2026-08-13-linear-product-study.md)

@@ -36,11 +36,15 @@
 14. [ADR-0009: централизованная синхронизация workspace](decisions/0009-central-workspace-synchronization.md)
     — единый app-shell poller, principal-scoped cursor, ACL-safe change journal
     и full-reset recovery.
-15. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+15. [ADR-0010: раздельные production и UAT Sites](decisions/0010-production-and-uat-sites.md)
+    — отдельные Sites/D1, production approval boundary и UAT по умолчанию.
+16. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
+    environment bindings, проверки и recovery.
+17. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-16. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+18. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-17. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+19. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -81,10 +85,15 @@ Owner получает logical export, staged preview и atomic exact restore.
 ADR-0009 добавляет единый incremental workspace sync: Tasks, Projects,
 Releases, SavedViews и ACL-состав обновляются из principal-scoped D1 journal с
 полным bootstrap при gap или изменении access scope.
+ADR-0010 разделяет Sites на production `task-manager` и отдельный UAT
+`task-manager-uat`: default binding и обычная delivery ведут в UAT, production
+deploy требует прямой команды пользователя, а marketplace plugin остаётся на
+production endpoint.
 
 ## Категории
 
 - `specs/` — предлагаемое и требуемое поведение продукта.
 - `reference/` — стабильная справочная модель предметной области.
 - `decisions/` — принятые архитектурно значимые решения и их последствия.
+- `operations/` — проверяемые release, recovery и эксплуатационные процедуры.
 - `reports/` — датированные исследования; они не подменяют спецификацию.

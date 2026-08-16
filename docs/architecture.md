@@ -23,26 +23,34 @@ Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentica
   групповых запросах;
 - единая Linear-like interaction и component model для list, board, details,
   filters, selection и contextual actions;
-- managed deployment и durable structured storage в ChatGPT Sites.
+- managed deployment в раздельные production/UAT ChatGPT Sites и durable
+  structured storage в независимых D1.
 
 ## Контекст
 
 ```mermaid
 flowchart LR
-    U[Пользователь] --> SITE[ChatGPT Site / Web UI]
-    AG[HTTP API client] --> RT
-    CG[Sign in with ChatGPT] --> RT[Sites server runtime]
-    G[Google identity provider] --> RT
-    SITE --> RT
-    RT --> IA[Identity and Access]
-    IA --> D[Domain modules]
-    D --> DB[(Sites D1)]
+    U[Пользователь] --> PROD[Production Site: task-manager]
+    QA[Проверка] --> UAT[UAT Site: task-manager-uat]
+    PLUGIN[Task Manager plugin] --> PRT[Production runtime]
+    API[Direct UAT smoke] --> URT[UAT runtime]
+    CG[Sign in with ChatGPT] --> PRT
+    CG --> URT
+    G[Google identity provider] --> PRT
+    G --> URT
+    PROD --> PRT
+    UAT --> URT
+    PRT --> PIA[Identity, Access, Domain]
+    URT --> UIA[Identity, Access, Domain]
+    PIA --> PDB[(Production D1)]
+    UIA --> UDB[(UAT D1)]
 ```
 
-ChatGPT Sites — production target, D1 — relational binding для
-структурированных пользовательских данных. Приложение использует Vinext/Vite,
-prepared D1 queries за repository boundary и Drizzle Kit для versioned SQL
-migrations. Это соответствует
+ChatGPT Sites — hosting target для двух изолированных сред, D1 — отдельный
+relational binding структурированных данных каждой среды. Приложение использует
+Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
+одинаковых versioned SQL migrations. Environment/release boundary принят в
+[ADR-0010](decisions/0010-production-and-uat-sites.md). Это соответствует
 [официальной документации Sites](https://learn.chatgpt.com/docs/sites).
 
 ## Логические модули
@@ -68,18 +76,23 @@ migrations. Это соответствует
 
 ## Hosting и runtime boundary
 
-- Sites project связывается с локальным repository через
-  `.openai/hosting.json`, который создаётся/обновляется только provisioning
-  workflow и содержит binding metadata, а не secrets.
-- Structured records сохраняются через D1 binding. R2 не требуется, пока в
+- Default `.openai/hosting.json` связывает repository с UAT Site
+  `task-manager-uat`; production binding хранится отдельно в
+  `.openai/hosting.production.json`. Оба файла создаются или обновляются только
+  после Sites provisioning и содержат binding metadata, а не secrets.
+- Каждая среда имеет отдельную D1. Structured records, Site-scoped identities,
+  OAuth grants и test data между ними не разделяются. R2 не требуется, пока в
   продукте нет uploads.
 - Provider credentials и session secrets задаются только в hosted environment
   settings; локально перечисляются лишь имена переменных в `.env.example`.
 - `TASK_MANAGER_ADMIN_EMAILS` хранится в hosted environment и разбирается как
   нормализованный comma-separated allowlist. Значение не коммитится в source.
-- Save version создаёт reviewable deployment candidate; Deploy version делает
-  выбранную версию production. Documentation-only изменение этого репозитория
-  не является deployment.
+- UAT source push/save/deploy входит в обычную проверенную delivery и не требует
+  дополнительного approval. Любая production source push/save/deploy требует
+  прямой текущей команды пользователя, явно разрешающей production release.
+  Documentation-only изменение этого репозитория не является deployment.
+- Task Manager marketplace plugin продолжает использовать production
+  `/api/mcp`; UAT не участвует в обычном plugin OAuth/data plane.
 - Site может быть доступен в интернете как sign-in shell, но application data
   всегда требует authenticated User. Site audience и in-app authorization
   проверяются независимо.
