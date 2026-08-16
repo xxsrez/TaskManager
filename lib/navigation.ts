@@ -5,6 +5,7 @@ export type IssueFilter = "all" | "active" | "backlog" | "archived";
 
 export type NavigationTarget =
   | { kind: "root" }
+  | { kind: "workspace" }
   | { kind: "admin" }
   | { kind: "shared" }
   | { kind: "issues"; filter: IssueFilter; layout: Layout }
@@ -53,6 +54,9 @@ export function parseNavigationSegments(
   segments: string[],
 ): NavigationTarget | null {
   if (segments.length === 0) return { kind: "root" };
+  if (segments.length === 1 && segments[0] === "workspace") {
+    return { kind: "workspace" };
+  }
   if (segments.length === 1 && segments[0] === "admin") {
     return { kind: "admin" };
   }
@@ -86,8 +90,8 @@ export function resolveNavigationTarget(
   target: NavigationTarget,
   data: AppSnapshot,
 ): ResolvedNavigation | null {
-  if (target.kind === "root") {
-    return { surface: "all", layout: "list", taskId: null };
+  if (target.kind === "root" || target.kind === "workspace") {
+    return { surface: "workspace", layout: "list", taskId: null };
   }
   if (target.kind === "admin") {
     return data.isAdmin
@@ -184,6 +188,7 @@ export function navigationPath(
   }
 
   const { surface, layout } = navigation;
+  if (surface === "workspace") return "/workspace";
   if (surface === "admin") return "/admin";
   if (surface === "views" || surface === "projects" || surface === "releases") {
     return `/${surface}`;
@@ -242,6 +247,7 @@ export function legacyRedirectPath(
   const canonical = navigationPath(resolved, data);
 
   if (
+    target.kind === "root" ||
     target.kind === "legacyTask" ||
     target.kind === "legacyRelease" ||
     target.kind === "legacyBuiltInView"

@@ -738,18 +738,18 @@ export function TaskTracker({
     viewIds: new Set(dataRef.current.views.map((view) => view.id)),
   }), []);
   const returnToWorkspaceAfterRemoval = useCallback(() => {
-    setSurface("all");
+    setSurface("workspace");
     setLayout("list");
     setActiveTaskId(null);
     setPeekTaskId(null);
     setTaskDetail(null);
     setForcedTaskDetailId(null);
     taskReturnPath.current = navigationPath(
-      { surface: "all", layout: "list", taskId: null },
+      { surface: "workspace", layout: "list", taskId: null },
       dataRef.current,
     );
     window.history.replaceState(
-      navigationHistoryState({ surface: "all", layout: "list", taskId: null }),
+      navigationHistoryState({ surface: "workspace", layout: "list", taskId: null }),
       "",
       taskReturnPath.current,
     );
@@ -1203,7 +1203,10 @@ export function TaskTracker({
   const scopedReleases = projectReleaseSurfaceId
     ? data.releases.filter((release) => release.projectId === projectReleaseSurfaceId)
     : data.releases;
-  const surfaceCount = surface === "views"
+  const surfaceCount = surface === "workspace"
+    ? data.tasks.filter((task) => !task.archivedAt).length +
+      data.projects.length + data.releases.length + data.views.length
+    : surface === "views"
     ? builtInViews.length + data.views.length
     : surface === "admin" && data.admin
       ? data.admin.registeredUserCount
@@ -1604,6 +1607,13 @@ export function TaskTracker({
       }
       if (typing) return;
       if (surface === "admin") return;
+      if (surface === "workspace") {
+        if (event.key.toLowerCase() === "c") {
+          event.preventDefault();
+          openCreate();
+        }
+        return;
+      }
       if (event.key.toLowerCase() === "c") {
         event.preventDefault();
         if (canCreateTask) openCreate();
@@ -1673,9 +1683,10 @@ export function TaskTracker({
         <div className="sidebar-head">
           <a
             className="workspace-switcher"
-            href={navigationPath({ surface: "all", layout: "list", taskId: null }, data)}
+            href={navigationPath({ surface: "workspace", layout: "list", taskId: null }, data)}
             title="Go to workspace"
-            onClick={(event) => handleLocalLink(event, () => navigateSurface("all", "list"))}
+            aria-current={surface === "workspace" ? "page" : undefined}
+            onClick={(event) => handleLocalLink(event, () => navigateSurface("workspace", "list"))}
           >
             <span className="product-mark">T</span>
             {!sidebarCompact && <span className="workspace-name">Task Manager</span>}
@@ -1852,7 +1863,7 @@ export function TaskTracker({
                   const current = index === breadcrumbs.length - 1;
                   const targetSurface = item.surface;
                   return (
-                    <div className="breadcrumb-step" key={`${item.label}:${index}`}>
+                    <div className="breadcrumb-step" key={`${item.label}:${index}`} aria-current={current ? "page" : undefined}>
                       {index > 0 && <ChevronRight size={12} className="breadcrumb-chevron" aria-hidden="true" />}
                       {current || !targetSurface ? (
                         <h1 className="breadcrumb-current" title={item.label}>{item.label}</h1>
@@ -1970,7 +1981,18 @@ export function TaskTracker({
         {data.taskWindow?.truncated && !taskWindowLoading && !searchNeedle && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
         {(busy || taskWindowLoading) && <div className="progress-line" aria-label={busy ? "Saving" : "Loading remaining tasks"} />}
 
-        {surface === "admin" && data.admin ? (
+        {surface === "workspace" ? (
+          <WorkspaceOverviewSurface
+            data={data}
+            statusMap={statusMap}
+            projectMap={projectMap}
+            onOpen={(nextSurface, nextLayout = "list") => navigateSurface(nextSurface, nextLayout)}
+            onOpenTask={openTask}
+            onCreateTask={() => openCreate()}
+            onCreateProject={() => setDialog("project")}
+            onCreateRelease={() => setDialog("release")}
+          />
+        ) : surface === "admin" && data.admin ? (
           <AdminSurface overview={data.admin} timeZone={data.user.timezone} />
         ) : surface === "views" ? (
           <ViewsSurface data={data} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} />
@@ -3346,6 +3368,209 @@ function DialogHeader({ title, icon, onClose }: { title: string; icon: React.Rea
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }
 function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () => void; children: React.ReactNode; className?: string; ariaLabel?: string }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={ariaLabel}>{children}</div></div>; }
 
+function WorkspaceOverviewSurface({
+  data,
+  statusMap,
+  projectMap,
+  onOpen,
+  onOpenTask,
+  onCreateTask,
+  onCreateProject,
+  onCreateRelease,
+}: {
+  data: AppSnapshot;
+  statusMap: Map<string, WorkflowStatusRecord>;
+  projectMap: Map<string, ProjectRecord>;
+  onOpen: (surface: string, layout?: Layout) => void;
+  onOpenTask: (taskId: string) => void;
+  onCreateTask: () => void;
+  onCreateProject: () => void;
+  onCreateRelease: () => void;
+}) {
+  const openTasks = data.tasks.filter((task) => !task.archivedAt);
+  const activeCount = openTasks.filter((task) => {
+    const category = statusMap.get(task.statusId)?.category;
+    return category === "unstarted" || category === "started";
+  }).length;
+  const backlogCount = openTasks.filter(
+    (task) => statusMap.get(task.statusId)?.category === "backlog",
+  ).length;
+  const recentTasks = [...openTasks]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 5);
+  const recentProjects = [...data.projects]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 4);
+  const recentReleases = [...data.releases]
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .slice(0, 4);
+  const recentViews = data.views.slice(0, 4);
+  const sharedProjects = data.projects.filter((project) => project.accessRole !== "owner");
+  const sharedTasks = openTasks.filter(
+    (task) => task.projectId === null && task.accessRole !== "owner",
+  );
+  const sharedViews = data.views.filter(
+    (view) => view.scopeProjectId === null && view.accessRole !== "owner",
+  );
+  const sharedCount = sharedProjects.length + sharedTasks.length + sharedViews.length;
+  const isEmpty =
+    openTasks.length === 0 &&
+    data.projects.length === 0 &&
+    data.releases.length === 0 &&
+    data.views.length === 0;
+  const canCreateRelease = data.projects.some((project) => canEditContent(project.accessRole));
+
+  return (
+    <div className="workspace-overview">
+      {isEmpty && (
+        <section className="workspace-empty-banner" aria-labelledby="workspace-empty-title">
+          <span className="workspace-empty-icon"><Boxes size={20} /></span>
+          <div>
+            <h2 id="workspace-empty-title">Your workspace is ready</h2>
+            <p>Create a task or project to start organizing work. Every section will stay scoped to resources you can access.</p>
+          </div>
+          <div className="workspace-empty-actions">
+            <button className="button primary" type="button" onClick={onCreateTask}><Plus size={14} />New task</button>
+            <button className="button ghost" type="button" onClick={onCreateProject}><FolderKanban size={14} />New project</button>
+          </div>
+        </section>
+      )}
+
+      <section className="workspace-section" aria-labelledby="workspace-my-work">
+        <WorkspaceSectionHeader
+          id="workspace-my-work"
+          title="My work"
+          description="A compact view of the tasks available to you."
+          href="/issues"
+          label="All tasks"
+          onOpen={() => onOpen("all")}
+        />
+        <div className="workspace-metrics">
+          <WorkspaceMetric href="/issues/active" label="Active" value={activeCount} icon={<Zap size={16} />} onOpen={() => onOpen("active")} />
+          <WorkspaceMetric href="/issues/backlog" label="Backlog" value={backlogCount} icon={<Inbox size={16} />} onOpen={() => onOpen("backlog")} />
+          <WorkspaceMetric href="/projects" label="Projects" value={data.projects.length} icon={<FolderKanban size={16} />} onOpen={() => onOpen("projects")} />
+          <WorkspaceMetric href="/shared" label="Shared with me" value={sharedCount} icon={<UsersRound size={16} />} onOpen={() => onOpen("shared")} />
+        </div>
+        <div className="workspace-panel workspace-recent-panel">
+          <div className="workspace-panel-title"><h3>Recent tasks</h3><button className="button ghost compact" type="button" onClick={onCreateTask}><Plus size={13} />New task</button></div>
+          {recentTasks.length ? (
+            <ul className="workspace-record-list">
+              {recentTasks.map((task) => {
+                const status = statusMap.get(task.statusId);
+                return (
+                  <li key={task.id}>
+                    <a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, () => onOpenTask(task.id))}>
+                      <span className="workspace-record-icon">{status ? <StatusIcon status={status} /> : <Circle size={13} />}</span>
+                      <span className="workspace-record-copy"><b>{task.title}</b><small>{task.identifier} · {status?.name ?? "Unknown status"}</small></span>
+                      <time dateTime={task.updatedAt}>{shortDate(task.updatedAt.slice(0, 10))}</time>
+                      <ChevronRight size={14} aria-hidden="true" />
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <WorkspaceSectionEmpty title="No recent tasks" description="Tasks you create or can access will appear here." />
+          )}
+        </div>
+      </section>
+
+      <div className="workspace-overview-grid">
+        <section className="workspace-section workspace-panel" aria-labelledby="workspace-projects">
+          <WorkspaceSectionHeader id="workspace-projects" title="Projects" description="Owned and shared outcomes." href="/projects" label="All projects" onOpen={() => onOpen("projects")} />
+          {recentProjects.length ? (
+            <ul className="workspace-record-list">
+              {recentProjects.map((project) => {
+                const tasks = openTasks.filter((task) => task.projectId === project.id);
+                return (
+                  <li key={project.id}>
+                    <a href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(`project:${project.id}`))}>
+                      <span className="workspace-record-icon" style={{ color: project.color }}><FolderKanban size={15} /></span>
+                      <span className="workspace-record-copy"><b>{project.name}</b><small>{tasks.length} tasks · {completion(tasks, data.statuses)}% complete</small></span>
+                      {project.accessRole !== "owner" && <span className="status-badge">Shared</span>}
+                      <ChevronRight size={14} aria-hidden="true" />
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : <WorkspaceSectionEmpty title="No projects yet" description="Create a project to group work around an outcome." />}
+          <button className="workspace-create-link" type="button" onClick={onCreateProject}><Plus size={13} />Create project</button>
+        </section>
+
+        <section className="workspace-section workspace-panel" aria-labelledby="workspace-releases">
+          <WorkspaceSectionHeader id="workspace-releases" title="Releases" description="Current delivery scopes with project context." href="/releases" label="All releases" onOpen={() => onOpen("releases")} />
+          {recentReleases.length ? (
+            <ul className="workspace-record-list">
+              {recentReleases.map((release) => {
+                const project = projectMap.get(release.projectId);
+                const tasks = openTasks.filter((task) => task.releaseId === release.id);
+                const href = project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases";
+                return (
+                  <li key={release.id}>
+                    <a href={href} onClick={(event) => handleLocalLink(event, () => onOpen(`release:${release.id}`))}>
+                      <span className="workspace-record-icon"><Rocket size={15} /></span>
+                      <span className="workspace-record-copy"><b>{formatReleaseName(project?.name, release.name)}</b><small>{tasks.length} tasks · {completion(tasks, data.statuses)}% complete</small></span>
+                      <span className={`status-badge release-${release.status}`}>{release.status}</span>
+                      <ChevronRight size={14} aria-hidden="true" />
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : <WorkspaceSectionEmpty title="No releases yet" description="Releases you can access will appear with their project context." />}
+          {canCreateRelease && <button className="workspace-create-link" type="button" onClick={onCreateRelease}><Plus size={13} />Create release</button>}
+        </section>
+
+        <section className="workspace-section workspace-panel" aria-labelledby="workspace-views">
+          <WorkspaceSectionHeader id="workspace-views" title="Saved views" description="Reusable perspectives over accessible tasks." href="/views" label="All views" onOpen={() => onOpen("views")} />
+          {recentViews.length ? (
+            <ul className="workspace-record-list">
+              {recentViews.map((view) => (
+                <li key={view.id}>
+                  <a href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}>
+                    <span className="workspace-record-icon"><Zap size={15} /></span>
+                    <span className="workspace-record-copy"><b>{view.name}</b><small>{view.scopeProjectId ? "Project-scoped" : "Workspace view"} · {view.display.layout}</small></span>
+                    {view.accessRole !== "owner" && <span className="status-badge">Shared</span>}
+                    <ChevronRight size={14} aria-hidden="true" />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : <WorkspaceSectionEmpty title="No saved views yet" description="Saved filters will appear here without copying tasks." />}
+        </section>
+
+        <section className="workspace-section workspace-panel" aria-labelledby="workspace-shared">
+          <WorkspaceSectionHeader id="workspace-shared" title="Shared with me" description="Top-level resources other people granted you." href="/shared" label="Open shared" onOpen={() => onOpen("shared")} />
+          {sharedCount ? (
+            <div className="workspace-shared-summary">
+              <WorkspaceSharedCount label="Projects" value={sharedProjects.length} />
+              <WorkspaceSharedCount label="Tasks" value={sharedTasks.length} />
+              <WorkspaceSharedCount label="Views" value={sharedViews.length} />
+            </div>
+          ) : <WorkspaceSectionEmpty title="Nothing shared yet" description="Resources shared with your account will appear here." />}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceSectionHeader({ id, title, description, href, label, onOpen }: { id: string; title: string; description: string; href: string; label: string; onOpen: () => void }) {
+  return <header className="workspace-section-header"><div><h2 id={id}>{title}</h2><p>{description}</p></div><a href={href} onClick={(event) => handleLocalLink(event, onOpen)}>{label}<ChevronRight size={13} aria-hidden="true" /></a></header>;
+}
+
+function WorkspaceMetric({ href, label, value, icon, onOpen }: { href: string; label: string; value: number; icon: React.ReactNode; onOpen: () => void }) {
+  return <a className="workspace-metric" href={href} onClick={(event) => handleLocalLink(event, onOpen)}><span className="workspace-metric-icon">{icon}</span><span><b>{value}</b><small>{label}</small></span><ChevronRight size={14} aria-hidden="true" /></a>;
+}
+
+function WorkspaceSectionEmpty({ title, description }: { title: string; description: string }) {
+  return <div className="workspace-section-empty"><b>{title}</b><p>{description}</p></div>;
+}
+
+function WorkspaceSharedCount({ label, value }: { label: string; value: number }) {
+  return <span><b>{value}</b><small>{label}</small></span>;
+}
+
 function ViewsSurface({ data, statusMap, onOpen }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void }) { return <div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{data.views.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>; }
 function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
 function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); const releaseName = formatReleaseName(project?.name, release.name); return <a className="release-row" key={release.id} aria-label={releaseName} title={releaseName} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{releaseName}</b></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
@@ -3439,7 +3664,7 @@ function surfaceBreadcrumbs(
 ): BreadcrumbItem[] {
   const workspace: BreadcrumbItem = {
     label: "Workspace",
-    surface: "all",
+    surface: "workspace",
     layout: "list",
   };
   const current = (label: string): BreadcrumbItem => ({ label });
@@ -3449,6 +3674,7 @@ function surfaceBreadcrumbs(
     layout,
   });
 
+  if (surface === "workspace") return [current("Workspace")];
   if (surface === "admin") return [workspace, current("Administration")];
   if (surface === "views") return [workspace, current("Views")];
   if (surface === "projects") return [workspace, current("Projects")];
@@ -3505,7 +3731,7 @@ function surfaceBreadcrumbs(
   const builtIn = builtInViews.find((item) => item.id === surface);
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
-function isCollectionSurface(surface: string) { return surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
+function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
 function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot): ShareTarget | null {
   const projectTarget = (project: ProjectRecord | undefined): ShareTarget | null => {
     if (!project || (project.accessRole !== "owner" && project.accessRole !== "manager")) return null;

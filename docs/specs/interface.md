@@ -90,8 +90,9 @@ Desktop-first shell повторяет композицию Linear:
   сегмент обозначает текущую surface и не является ссылкой. Минимальные цепочки:
   `Workspace → Views → SavedView`, `Workspace → Projects → Project` и
   `Workspace → Projects → Project → Releases → Release`.
-- Workspace root первого среза — `/issues`; туда ведут и product mark/name в
-  sidebar, и первый сегмент breadcrumb.
+- Workspace overview имеет canonical URL `/workspace`; туда ведут product
+  mark/name в sidebar и первый сегмент breadcrumb. `/` перенаправляется на
+  `/workspace`, а `My tasks` остаётся отдельной task surface `/issues`.
 - Открытие task/project из списка не теряет filter, scroll и selection context.
 - Публичный URL использует отдельный стабильный UUID `public-id`. Внутренний
   primary key, Linear source ID и import provenance в URL не попадают. Entity
@@ -99,6 +100,7 @@ Desktop-first shell повторяет композицию Linear:
 
   | Surface | Прямой URL |
   |---|---|
+  | Workspace overview | `/workspace` |
   | Issues / board | `/issues`, `/issues/board` |
   | Built-in issue view | `/issues/{active|backlog|archived}` |
   | Views / Saved view | `/views`, `/views/{view-public-id}` |
@@ -152,6 +154,23 @@ Desktop-first shell повторяет композицию Linear:
 - Full reset после ACL change или cursor gap сохраняет загруженный Task body и
   более новые подтверждённые локальные mutations, но удаляет недоступные
   records из всех UI contexts.
+
+### 3.5 Workspace overview
+
+- Overview — самостоятельная landing surface, а не переименованный task list.
+  Он использует спокойную Linear-like hierarchy: compact metrics, Recent tasks
+  и отдельные sections Projects, Releases, Saved views и Shared with me.
+- Все links остаются настоящими anchors и ведут в существующие canonical
+  surfaces. Current breadcrumb segment статичен, а product mark и ancestor
+  `Workspace` ведут обратно на `/workspace`.
+- Summary rows содержат только название/identifier, status, counts, progress и
+  project qualification. Description, labels, relations, comment bodies и
+  imported archive остаются lazy и не загружаются ради overview.
+- Shared counts учитывают только top-level shared Projects, standalone Tasks и
+  global SavedViews, не дублируя унаследованные project children.
+- На mobile metrics и sections складываются в одну колонку, строки переносят
+  текст, а overview не создаёт horizontal overflow. Empty sections и общий
+  empty state имеют явные headings и доступные create/navigation actions.
 
 ## 4. Visual system
 
@@ -661,6 +680,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Surface/паттерн Linear | Task Manager | Статус MVP | Осознанное отличие |
 |---|---|---|---|
 | Left application sidebar | My tasks, Shared, Views, Projects, Releases | Берём | Без teams/inbox/initiatives |
+| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace без teams, initiatives и cross-user analytics |
 | Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
 | Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
 | Filters | Searchable property formula | Берём ядро | Только `AND` |
@@ -697,7 +717,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 ## 18. Официальные референсы Linear
 
-Проверены 2026-08-14; перед реализацией крупных surfaces требуется повторная
+Проверены 2026-08-16; перед реализацией крупных surfaces требуется повторная
 сверка, потому что интерфейс Linear развивается.
 
 - [Board layout](https://linear.app/docs/board-layout)
@@ -712,4 +732,6 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 - [Custom Views](https://linear.app/docs/custom-views)
 - [Search](https://linear.app/docs/search)
 - [Project overview](https://linear.app/docs/project-overview)
+- [Projects](https://linear.app/docs/projects)
+- [Workspaces](https://linear.app/docs/workspaces)
 - [Preferences](https://linear.app/docs/account-preferences)

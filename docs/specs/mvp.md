@@ -97,6 +97,24 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   «last active» означает последний подтверждённый запрос, а не доказанный новый
   sign-in внутри уже действующей Sites session.
 
+### 3.2 Workspace overview
+
+- Канонический корень авторизованного продукта — `/workspace`; прежний `/`
+  перенаправляется туда. `My tasks` остаётся отдельной task surface `/issues`.
+- Overview показывает только доступные текущему User компактные итоги: active и
+  backlog Tasks, последние Tasks, Projects и их progress, Releases с Project
+  context, SavedViews и верхнеуровневые ресурсы `Shared with me`.
+- Overview строится из того же server-authorized ACL-scoped snapshot. Он не
+  загружает task descriptions, labels, relations, native comments, imported
+  external context или admin aggregates и не вводит отдельный unscoped query.
+- Create actions показываются только там, где User может создать ресурс:
+  standalone Task и Project доступны авторизованному User, а Release — только
+  при наличии редактируемого Project.
+- Product mark/name и первый сегмент breadcrumb ведут на `/workspace`;
+  Back/Forward, direct link и mobile navigation сохраняют canonical route.
+- Empty state отдельно объясняет отсутствие доступных records и предлагает
+  только разрешённые действия, не подменяя его административной статистикой.
+
 ## 4. Изоляция данных и sharing
 
 - Все Tasks, Projects, Releases, SavedViews, Labels и WorkflowStatuses приватны
@@ -493,11 +511,14 @@ completed dates и archived state.
 18. Проверить основные surfaces в light/dark theme и сверить composition,
     controls и interaction states с актуальным Linear reference по
     [UI-спецификации](interface.md), не используя бренд или assets Linear.
-19. Открыть индексы `/issues`, `/views`, `/projects`, `/releases`, список
-    releases внутри Project и скопировать прямые URL saved view, его board,
-    Project, Release и Task; открыть каждый в новой вкладке, получить ту же
-    entity/layout, проверить редирект старого internal-ID URL, Back/Forward и
-    одинаковый `not found` для неизвестного и недоступного ID.
+19. Открыть `/workspace` как отдельный ACL-scoped overview, перейти из него в
+    `My tasks`, Projects, Releases, SavedViews и `Shared with me`, затем открыть
+    индексы `/issues`, `/views`, `/projects`, `/releases`, список releases
+    внутри Project и скопировать прямые URL saved view, его board, Project,
+    Release и Task. Проверить owner/shared/empty scenarios, отсутствие lazy и
+    admin content в overview, mobile layout без horizontal overflow, редирект
+    `/` и старого internal-ID URL, Back/Forward и одинаковый `not found` для
+    неизвестного и недоступного ID.
 20. Войти администратором, открыть `/admin` и увидеть актуальные user/activity
     aggregates; повторить прямой запрос обычным User и получить fail-closed
     результат без email, counts или подтверждения существования admin surface.

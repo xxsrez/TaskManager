@@ -149,6 +149,19 @@ test("pull-to-refresh indicator is mobile-only and respects reduced motion", () 
   );
 });
 
+test("workspace overview collapses to one column without horizontal overflow", () => {
+  assert.match(declarations(".workspace-overview"), /overflow-y:\s*auto\s*;/);
+  assert.match(declarations(".workspace-overview"), /overflow-x:\s*hidden\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.workspace-overview-grid\s*\{[^}]*grid-template-columns:\s*1fr\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.workspace-metrics\s*\{[^}]*grid-template-columns:\s*1fr\s*;/,
+  );
+});
+
 test("task rows do not attach a hidden double-click action", () => {
   assert.doesNotMatch(taskTracker, /onDoubleClick=\{onPeek\}/);
 });

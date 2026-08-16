@@ -100,6 +100,117 @@ test("bulk archive action restores an entirely archived selection", () => {
   );
 });
 
+test("workspace overview is a distinct linked surface", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: {
+        surface: "workspace",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /<div class="breadcrumb-step" aria-current="page"><h1 class="breadcrumb-current" title="Workspace">Workspace<\/h1>/);
+  assert.match(markup, /My work/);
+  assert.match(markup, /Recent tasks/);
+  assert.match(markup, /href="\/issues\/active"/);
+  assert.match(markup, /href="\/issues\/33333333-3333-4333-8333-333333333333"/);
+  assert.match(markup, /Projects/);
+  assert.match(markup, /Releases/);
+  assert.match(markup, /Saved views/);
+  assert.match(markup, /Shared with me/);
+  assert.doesNotMatch(markup, /Search tasks…/);
+});
+
+test("workspace overview counts only accessible top-level shared resources", () => {
+  const sharedProject = {
+    id: "project-shared",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    ownerUserId: "user-2",
+    creatorUserId: "user-2",
+    name: "Shared project",
+    summary: "",
+    description: "",
+    status: "active",
+    leadUserId: null,
+    startDate: null,
+    targetDate: null,
+    color: "#7766dd",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "viewer" as const,
+  };
+  const sharedView = {
+    id: "view-shared",
+    publicId: "77777777-7777-4777-8777-777777777777",
+    ownerUserId: "user-2",
+    name: "Shared view",
+    scopeProjectId: null,
+    query: {},
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "manual" as const,
+      direction: "asc" as const,
+      showEmptyGroups: true,
+      visibleFields: [],
+    },
+    version: 1,
+    accessRole: "viewer" as const,
+  };
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        projects: [sharedProject],
+        tasks: snapshot.tasks.map((task) => ({
+          ...task,
+          ownerUserId: "user-2",
+          accessRole: "viewer" as const,
+        })),
+        views: [sharedView],
+      },
+      initialNavigation: { surface: "workspace", layout: "list", taskId: null },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(
+    markup,
+    /<a class="workspace-metric" href="\/shared"[^>]*>[\s\S]*?<b>3<\/b><small>Shared with me<\/small>/,
+  );
+  assert.match(markup, /Shared project/);
+  assert.match(markup, /Shared view/);
+  assert.match(markup, /<b>1<\/b><small>Projects<\/small>/);
+  assert.match(markup, /<b>1<\/b><small>Tasks<\/small>/);
+  assert.match(markup, /<b>1<\/b><small>Views<\/small>/);
+});
+
+test("workspace overview has explicit empty states without admin data", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: { ...snapshot, tasks: [] },
+      initialNavigation: {
+        surface: "workspace",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /Your workspace is ready/);
+  assert.match(markup, /No recent tasks/);
+  assert.match(markup, /No projects yet/);
+  assert.match(markup, /No releases yet/);
+  assert.match(markup, /No saved views yet/);
+  assert.doesNotMatch(markup, /Administration/);
+});
+
 test("bulk archive action archives an active selection", () => {
   assert.deepEqual(resolveArchiveBulkAction([{ archivedAt: null }]), {
     archived: true,
@@ -1118,7 +1229,7 @@ test("Codex CLI setup exposes verified plugin commands and recovery steps", () =
   assert.match(markup, /Show my tasks in Task Manager/);
 });
 
-test("workspace controls navigate to the root without a false dropdown affordance", () => {
+test("workspace controls navigate to the overview without a false dropdown affordance", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
       initialData: snapshot,
@@ -1132,9 +1243,9 @@ test("workspace controls navigate to the root without a false dropdown affordanc
   );
 
   const workspaceControl = markup.match(/<a class="workspace-switcher"[\s\S]*?<\/a>/)?.[0] ?? "";
-  assert.match(workspaceControl, /href="\/issues"/);
+  assert.match(workspaceControl, /href="\/workspace"/);
   assert.doesNotMatch(workspaceControl, /chevron-down/);
-  assert.match(markup, /<a class="breadcrumb-link" href="\/issues">Workspace<\/a>/);
+  assert.match(markup, /<a class="breadcrumb-link" href="\/workspace">Workspace<\/a>/);
 });
 
 test("mobile shell exposes complete navigation and view controls", () => {

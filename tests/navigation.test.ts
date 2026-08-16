@@ -44,6 +44,7 @@ const snapshot = {
 } as AppSnapshot;
 
 test("short REST paths cover issue, view, project, and release collections", () => {
+  assert.deepEqual(parseNavigationPath("/workspace"), { kind: "workspace" });
   assert.deepEqual(parseNavigationPath("/admin"), { kind: "admin" });
   assert.deepEqual(parseNavigationPath("/issues"), {
     kind: "issues",
@@ -62,6 +63,26 @@ test("short REST paths cover issue, view, project, and release collections", () 
     parseNavigationPath(`/projects/${projectPublicId}/releases`),
     { kind: "projectReleases", projectId: projectPublicId },
   );
+});
+
+test("workspace has a canonical route and the old root redirects to it", () => {
+  const workspace = parseNavigationPath("/workspace");
+  const root = parseNavigationPath("/");
+  assert.ok(workspace);
+  assert.ok(root);
+  assert.deepEqual(resolveNavigationTarget(workspace, snapshot), {
+    surface: "workspace",
+    layout: "list",
+    taskId: null,
+  });
+  assert.equal(
+    navigationPath(
+      { surface: "workspace", layout: "list", taskId: null },
+      snapshot,
+    ),
+    "/workspace",
+  );
+  assert.equal(legacyRedirectPath(root, snapshot), "/workspace");
 });
 
 test("admin navigation fails closed unless the server snapshot grants access", () => {

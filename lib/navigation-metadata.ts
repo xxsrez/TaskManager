@@ -16,6 +16,9 @@ export function metadataForNavigation(
       title = `${task.identifier}: ${task.title} – Task Manager`;
       description = summary(task.description || task.title);
     }
+  } else if (navigation.surface === "workspace") {
+    title = "Workspace – Task Manager";
+    description = "Your tasks, projects, releases, saved views, and shared resources in one overview.";
   } else if (navigation.surface.startsWith("project:")) {
     const project = data.projects.find(
       (item) => item.id === navigation.surface.slice(8),

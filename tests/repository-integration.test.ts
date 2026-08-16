@@ -60,6 +60,7 @@ after(async () => {
 test("project ACL is enforced by repository reads and writes", async () => {
   const owner = await getOrCreateUser(ownerActor);
   const collaborator = await getOrCreateUser(collaboratorActor);
+  const outsider = await getOrCreateUser(outsiderActor);
   await createProject(owner, { name: "Shared project" });
   const project = (await getSnapshot(owner)).projects[0]!;
   await createTask(owner, { title: "Private project task", projectId: project.id });
@@ -73,6 +74,10 @@ test("project ACL is enforced by repository reads and writes", async () => {
   });
   const viewerSnapshot = await getSnapshot(collaborator);
   assert.equal(viewerSnapshot.tasks[0]?.id, task.id);
+  assert.ok(viewerSnapshot.projects.some((item) => item.id === project.id));
+  const outsiderSnapshot = await getSnapshot(outsider);
+  assert.ok(!outsiderSnapshot.projects.some((item) => item.id === project.id));
+  assert.ok(!outsiderSnapshot.tasks.some((item) => item.id === task.id));
   await assert.rejects(
     updateTask(collaborator, task.id, { version: task.version, title: "Denied" }),
     PermissionError,

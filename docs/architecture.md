@@ -211,9 +211,10 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
 
 1. Server route нормализует catch-all segments ровно через один
    percent-decode/encode cycle, независимо от того, передал runtime decoded или
-   encoded params, затем разбирает allowlisted path contract `/issues`,
-   `/views`, `/projects`, `/releases`, project-scoped releases и layout
-   `list|board`; неизвестные extra segments отклоняются.
+   encoded params, затем разбирает allowlisted path contract `/workspace`,
+   `/issues`, `/views`, `/projects`, `/releases`, project-scoped releases и
+   layout `list|board`; неизвестные extra segments отклоняются. `/` является
+   legacy entry и перенаправляется на `/workspace`.
 2. Repository строит ограниченный ACL-scoped snapshot; для issue route точечно
    загружает адресованную Task по internal/public ID тем же ACL predicate и
    добавляет её в snapshot. Поэтому Task за пределами стартового окна всё равно
@@ -288,6 +289,11 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
 `taskWindow.truncated=true`, а UI показывает границу вместо молчаливой иллюзии
 полного workspace. Команды создания/изменения Task, Project, Release, SavedView
 и AccessGrant остаются отдельными route handlers.
+Workspace overview `/workspace` повторно использует этот ACL-scoped snapshot и
+его compact summary projections для навигационных итогов. Отдельного overview
+endpoint с cross-user counts нет: task bodies, labels, relations, native
+comments, imported external context и admin aggregates остаются вне overview и
+загружаются только своими authorization-scoped путями по запросу.
 Task rows в этом snapshot являются summary projection: они содержат поля list,
 board, grouping и navigation, но вместо `description` передают явный `null`.
 Открытие Task отдельно запрашивает полную запись через `GET /api/tasks/{id}` с
