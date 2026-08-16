@@ -56,19 +56,19 @@ BEGIN
   DELETE FROM workspace_sync_invalidations WHERE rowid = NEW.rowid;
 END;
 --> statement-breakpoint
-DROP TRIGGER `workspace_sync_task_labels_insert`;
+DROP TRIGGER IF EXISTS `workspace_sync_task_labels_insert`;
 --> statement-breakpoint
-DROP TRIGGER `workspace_sync_task_labels_delete`;
+DROP TRIGGER IF EXISTS `workspace_sync_task_labels_delete`;
 --> statement-breakpoint
-DROP TRIGGER `workspace_sync_task_relations_insert`;
+DROP TRIGGER IF EXISTS `workspace_sync_task_relations_insert`;
 --> statement-breakpoint
-DROP TRIGGER `workspace_sync_task_relations_delete`;
+DROP TRIGGER IF EXISTS `workspace_sync_task_relations_delete`;
 --> statement-breakpoint
-DROP TRIGGER `workspace_sync_labels_insert`;
+DROP TRIGGER IF EXISTS `workspace_sync_labels_insert`;
 --> statement-breakpoint
-DROP TRIGGER `workspace_sync_labels_update`;
+DROP TRIGGER IF EXISTS `workspace_sync_labels_update`;
 --> statement-breakpoint
-DROP TRIGGER `workspace_sync_labels_delete`;
+DROP TRIGGER IF EXISTS `workspace_sync_labels_delete`;
 --> statement-breakpoint
 CREATE TRIGGER `workspace_sync_task_labels_insert`
 AFTER INSERT ON `task_labels`

@@ -18,6 +18,13 @@ function migratedDatabase() {
   return database;
 }
 
+function migrationSql(name: string) {
+  return readFileSync(
+    new URL(`../drizzle/${name}`, import.meta.url),
+    "utf8",
+  ).replaceAll("--> statement-breakpoint", "");
+}
+
 function planDetails(database: DatabaseSync, sql: string): string[] {
   return database
     .prepare(`EXPLAIN QUERY PLAN ${sql}`)
@@ -166,4 +173,27 @@ test("workspace synchronization has per-principal ordering and mutation triggers
       "DELETE FROM workspace_change_events WHERE created_at < CURRENT_TIMESTAMP",
     ).some((detail) => detail.includes("idx_workspace_change_events_created")),
   );
+});
+
+test("the selective sync migration tolerates missing legacy reset triggers", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readdirSync(new URL("../drizzle", import.meta.url))
+    .filter((name) => name.endsWith(".sql") && name < "0013_rapid_gravity.sql")
+    .sort();
+  for (const migration of migrations) database.exec(migrationSql(migration));
+  database.exec(`
+    DROP TRIGGER workspace_sync_labels_insert;
+    DROP TRIGGER workspace_sync_labels_update;
+    DROP TRIGGER workspace_sync_labels_delete;
+  `);
+
+  assert.doesNotThrow(() => database.exec(migrationSql("0013_rapid_gravity.sql")));
+  const triggers = new Set(
+    database.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+      .all()
+      .map((row) => row.name),
+  );
+  assert.equal(triggers.has("workspace_sync_labels_insert"), false);
+  assert.equal(triggers.has("workspace_sync_labels_update"), true);
+  assert.equal(triggers.has("workspace_sync_labels_delete"), true);
 });
