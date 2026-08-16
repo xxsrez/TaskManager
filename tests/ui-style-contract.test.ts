@@ -159,6 +159,8 @@ test("task description reading mode grows fully and wraps long content", () => {
   assert.doesNotMatch(rule, /max-height\s*:/);
   assert.doesNotMatch(rule, /overflow:\s*hidden\s*;/);
   assert.match(declarations(".task-description-markdown pre"), /overflow:\s*auto\s*;/);
+  assert.match(declarations(".task-description-markdown ul"), /list-style:\s*disc\s*;/);
+  assert.match(declarations(".task-description-markdown ol"), /list-style:\s*decimal\s*;/);
   assert.match(
     css,
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-description-section > header \.button, \.task-description-editor \.button\s*\{[^}]*min-height:\s*44px\s*;/,
