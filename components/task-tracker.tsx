@@ -434,6 +434,12 @@ export function taskDraftValueChanged(value: string, baseline: string): boolean 
   return value !== baseline;
 }
 
+export function resizeTaskTitle(textarea: HTMLTextAreaElement | null): void {
+  if (!textarea) return;
+  textarea.style.height = "0px";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+
 export function mergeTaskDetailContext(
   current: AppSnapshot,
   detail: TaskDetailRecord,
@@ -2348,10 +2354,31 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
     estimate: false,
   });
   const autoRebaseKey = useRef<string | null>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const cancelTitleSave = useRef(false);
   const [autoRebaseFailed, setAutoRebaseFailed] = useState(false);
   const source = useTaskExternalSource(task);
   const hasVersionConflict = taskNeedsDetailRefresh(task);
   const syncMode = taskDraftSyncMode(hasVersionConflict, dirty);
+
+  useEffect(() => {
+    resizeTaskTitle(titleRef.current);
+  }, [title]);
+
+  useEffect(() => {
+    const resize = () => resizeTaskTitle(titleRef.current);
+    window.addEventListener("resize", resize);
+    const observer = typeof ResizeObserver === "undefined" || !titleRef.current?.parentElement
+      ? null
+      : new ResizeObserver(resize);
+    if (observer && titleRef.current?.parentElement) {
+      observer.observe(titleRef.current.parentElement);
+    }
+    return () => {
+      window.removeEventListener("resize", resize);
+      observer?.disconnect();
+    };
+  }, [task.id]);
 
   const rebaseDraft = useCallback(async () => {
     setRebasing(true);
@@ -2437,15 +2464,40 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
               <button className="button secondary" type="button" disabled={rebasing} onClick={() => void rebaseDraft()}>{rebasing ? "Loading latest…" : "Load latest and keep draft"}</button>
             </div>
           )}
-          <input
+          <textarea
+            ref={titleRef}
             className="details-title"
+            rows={1}
+            aria-label="Task title"
             value={title}
             onChange={(event) => {
-              const nextTitle = event.target.value;
+              const nextTitle = event.target.value.replace(/[\r\n]+/g, " ");
+              cancelTitleSave.current = false;
               setDirty((current) => ({ ...current, title: taskDraftValueChanged(nextTitle, task.title) }));
               setTitle(nextTitle);
             }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                cancelTitleSave.current = true;
+                setTitle(task.title);
+                setDirty((current) => ({ ...current, title: false }));
+                event.currentTarget.blur();
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+            }}
             onBlur={() => {
+              if (cancelTitleSave.current) {
+                cancelTitleSave.current = false;
+                return;
+              }
+              if (!title.trim()) {
+                setTitle(task.title);
+                setDirty((current) => ({ ...current, title: false }));
+                return;
+              }
               if (!hasVersionConflict && title.trim() && title !== task.title) {
                 void saveDraftField("title", { title });
               }

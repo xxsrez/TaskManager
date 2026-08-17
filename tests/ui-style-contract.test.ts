@@ -188,3 +188,52 @@ test("task description reading mode grows fully and wraps long content", () => {
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-description-section > header \.button, \.task-description-editor \.button\s*\{[^}]*min-height:\s*44px\s*;/,
   );
 });
+
+test("task details title grows to wrapped content across mobile and desktop viewports", () => {
+  assert.match(
+    taskTracker,
+    /<textarea[\s\S]*?className="details-title"[\s\S]*?rows=\{1\}/,
+  );
+  assert.match(taskTracker, /event\.key === "Escape"[\s\S]*?cancelTitleSave\.current = true/);
+  assert.match(taskTracker, /onBlur=\{\(\) => \{[\s\S]*?if \(cancelTitleSave\.current\)/);
+
+  const editableTitle = declarations(".details-title");
+  assert.match(editableTitle, /min-width:\s*0\s*;/);
+  assert.match(editableTitle, /max-width:\s*100%\s*;/);
+  assert.match(editableTitle, /resize:\s*none\s*;/);
+  assert.match(editableTitle, /overflow-wrap:\s*anywhere\s*;/);
+  assert.match(editableTitle, /word-break:\s*break-word\s*;/);
+  assert.doesNotMatch(editableTitle, /white-space:\s*nowrap\s*;/);
+  assert.doesNotMatch(editableTitle, /text-overflow:\s*ellipsis\s*;/);
+  assert.doesNotMatch(editableTitle, /line-clamp/);
+
+  const readOnlyTitle = declarations(".read-only-title");
+  assert.match(readOnlyTitle, /max-width:\s*100%\s*;/);
+  assert.match(readOnlyTitle, /overflow-wrap:\s*anywhere\s*;/);
+  assert.match(readOnlyTitle, /word-break:\s*break-word\s*;/);
+  assert.doesNotMatch(readOnlyTitle, /white-space:\s*nowrap\s*;/);
+  assert.doesNotMatch(readOnlyTitle, /line-clamp/);
+
+  assert.match(
+    taskTracker,
+    /<aside className="details-panel">[\s\S]*?<\/header>[\s\S]*?<div className="details-body">[\s\S]*?<textarea[\s\S]*?className="details-title"/,
+  );
+
+  const panelMatch = css.match(/(?:^|\n)\.details-panel\s*\{([^}]+)\}/);
+  assert.ok(panelMatch, "Missing standalone .details-panel rule");
+  const panel = panelMatch[1];
+  assert.match(panel, /width:\s*min\(680px,\s*calc\(100vw\s*-\s*48px\)\)\s*;/);
+  assert.match(declarations(".details-body"), /overflow-x:\s*hidden\s*;/);
+  assert.match(declarations(".details-body"), /overflow-y:\s*auto\s*;/);
+
+  for (const width of [390, 844, 1280, 1440]) {
+    if (width <= 640) {
+      assert.match(
+        css,
+        /@media\s*\(max-width:\s*640px\)[\s\S]*?\.details-panel\s*\{[^}]*width:\s*100vw\s*;[^}]*max-width:\s*100vw\s*;[^}]*height:\s*100dvh\s*;/,
+      );
+    } else {
+      assert.match(panel, /max-width:\s*100%\s*;/);
+    }
+  }
+});
