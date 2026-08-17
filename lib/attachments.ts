@@ -325,25 +325,28 @@ export async function getAttachmentContent(
     if (attachment.kind !== "image") {
       throw new NotFoundError("Attachment thumbnail not found");
     }
-    const object = await getAttachmentBucket().get(attachment.objectKey);
-    if (!object) throw new NotFoundError("Attachment not found");
-    const images = getRuntimeEnvironment().IMAGES;
-    if (!images) throw new Error("Cloudflare Images binding `IMAGES` is unavailable.");
-    const transformed = await images
-      .input(object.body)
-      .transform({ width: 480, height: 360, fit: "scale-down" })
-      .output({ format: "image/webp", quality: 78 });
-    const response = await transformed.response();
-    if (!response.ok || !response.body) {
-      throw new Error("Attachment thumbnail generation failed");
+    try {
+      const object = await getAttachmentBucket().get(attachment.objectKey);
+      if (!object) throw new NotFoundError("Attachment not found");
+      const images = getRuntimeEnvironment().IMAGES;
+      if (!images) return originalImageFallback(attachment);
+      const transformed = await images
+        .input(object.body)
+        .transform({ width: 480, height: 360, fit: "scale-down" })
+        .output({ format: "image/webp", quality: 78 });
+      const response = await transformed.response();
+      if (!response.ok || !response.body) return originalImageFallback(attachment);
+      return new Response(response.body, {
+        headers: privateContentHeaders(attachment, true, {
+          "accept-ranges": "none",
+          "content-type": "image/webp",
+          "x-attachment-variant": "thumbnail",
+        }),
+      });
+    } catch (error) {
+      if (error instanceof NotFoundError) throw error;
+      return originalImageFallback(attachment);
     }
-    return new Response(response.body, {
-      headers: privateContentHeaders(attachment, true, {
-        "accept-ranges": "none",
-        "content-type": "image/webp",
-        "x-attachment-variant": "thumbnail",
-      }),
-    });
   }
 
   const range = parseRange(options.rangeHeader, attachment.byteSize);
@@ -372,6 +375,18 @@ export async function getAttachmentContent(
   return new Response(object.body, {
     status: range ? 206 : 200,
     headers: privateContentHeaders(attachment, options.preview, headers),
+  });
+}
+
+async function originalImageFallback(attachment: AttachmentRecord) {
+  const object = await getAttachmentBucket().get(attachment.objectKey);
+  if (!object) throw new NotFoundError("Attachment not found");
+  return new Response(object.body, {
+    headers: privateContentHeaders(attachment, true, {
+      "accept-ranges": "none",
+      "content-length": String(attachment.byteSize),
+      "x-attachment-variant": "original-fallback",
+    }),
   });
 }
 

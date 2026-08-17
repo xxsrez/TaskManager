@@ -413,7 +413,20 @@ test("binary HTTP routes authenticate before bounded upload and preserve private
     },
   );
   thumbnailTransformFails = false;
-  assert.equal(failedThumbnail.status, 500);
+  assert.equal(failedThumbnail.status, 200);
+  assert.equal(failedThumbnail.headers.get("content-type"), "image/png");
+  assert.equal(
+    failedThumbnail.headers.get("x-attachment-variant"),
+    "original-fallback",
+  );
+  assert.deepEqual(
+    new Uint8Array(await failedThumbnail.arrayBuffer()),
+    Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+    ]),
+  );
   const originalImage = await getAttachmentContentRoute(
     new Request(
       `https://example.test/api/tasks/${task.id}/attachments/${image.publicId}/content?disposition=inline`,
