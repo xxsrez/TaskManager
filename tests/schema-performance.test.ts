@@ -117,6 +117,31 @@ test("native comments have task counters, relational integrity, and lookup index
   );
 });
 
+test("native attachments enforce task ownership shape and use lifecycle indexes", () => {
+  const database = migratedDatabase();
+  const foreignKeys = database.prepare("PRAGMA foreign_key_list(attachments)").all();
+  assert.ok(
+    foreignKeys.some(
+      (foreignKey) =>
+        foreignKey.table === "tasks" &&
+        foreignKey.from === "task_id" &&
+        foreignKey.on_delete === "CASCADE",
+    ),
+  );
+  assert.ok(
+    planDetails(
+      database,
+      "SELECT id FROM attachments WHERE task_id = 'task-1' AND state = 'ready' ORDER BY created_at, id",
+    ).some((detail) => detail.includes("idx_attachments_task_state_created")),
+  );
+  assert.ok(
+    planDetails(
+      database,
+      "SELECT id FROM attachments WHERE state = 'deleted' AND deleted_at < CURRENT_TIMESTAMP",
+    ).some((detail) => detail.includes("idx_attachments_cleanup")),
+  );
+});
+
 test("workspace synchronization has per-principal ordering and mutation triggers", () => {
   const database = migratedDatabase();
   const sequencePrimaryKey = database

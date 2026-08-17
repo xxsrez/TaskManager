@@ -127,6 +127,38 @@ export type TaskDetailRecord = {
   relations: TaskRelationRecord[];
 };
 
+export type AttachmentKind = "file" | "image";
+export type AttachmentState =
+  | "pending"
+  | "uploading"
+  | "ready"
+  | "failed"
+  | "deleted";
+
+export type AttachmentRecord = {
+  id: string;
+  publicId: string;
+  taskId: string;
+  uploaderUserId: string;
+  originalFilename: string;
+  displayName: string;
+  mediaType: string;
+  byteSize: number;
+  checksumSha256: string;
+  objectKey: string;
+  kind: AttachmentKind;
+  state: AttachmentState;
+  imageWidth: number | null;
+  imageHeight: number | null;
+  variants: Record<string, unknown>;
+  uploadExpiresAt: string | null;
+  failureCode: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
 export type CommentReactionSummary = {
   emoji: string;
   count: number;

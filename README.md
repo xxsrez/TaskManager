@@ -12,7 +12,9 @@ Task Manager — компактная система управления раб
 В репозитории уже есть первый рабочий вертикальный срез для ChatGPT Sites:
 React/Vinext UI, server routes, D1 schema и migrations, вход через ChatGPT,
 изолированные owner scopes и ролевой sharing (`owner`, `manager`, `editor`,
-`viewer`). Google sign-in остаётся
+`viewer`), а также foundation нативных Task attachments в private R2. UI
+вложений и Agent/MCP/backup integration поставляются следующими срезами.
+Google sign-in остаётся
 обязательным, но ещё не реализован: доступный Sites contract пока не даёт
 подтверждённого external-provider adapter.
 
@@ -44,5 +46,7 @@ npm run dev
 - [Решение о Project backup](docs/decisions/0007-project-backup.md)
 - [Решение о стеке и authentication delivery](docs/decisions/0003-implementation-stack-and-auth-delivery.md)
 - [Решение о production/UAT Sites](docs/decisions/0010-production-and-uat-sites.md)
+- [Решение о нативных Attachment и R2](docs/decisions/0011-native-attachments-and-r2.md)
 - [Runbook релизов Sites](docs/operations/sites-release.md)
+- [Runbook вложений](docs/operations/attachments.md)
 - [Исследование Linear](docs/reports/2026-08-13-linear-product-study.md)

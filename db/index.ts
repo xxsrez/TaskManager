@@ -5,3 +5,11 @@ export function getD1(): D1Database {
   if (!binding) throw new Error("Cloudflare D1 binding `DB` is unavailable.");
   return binding;
 }
+
+export function getAttachmentBucket(): R2Bucket {
+  const binding = getRuntimeEnvironment().ATTACHMENTS;
+  if (!binding) {
+    throw new Error("Cloudflare R2 binding `ATTACHMENTS` is unavailable.");
+  }
+  return binding;
+}

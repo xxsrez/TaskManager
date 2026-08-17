@@ -38,13 +38,17 @@
     и full-reset recovery.
 15. [ADR-0010: раздельные production и UAT Sites](decisions/0010-production-and-uat-sites.md)
     — отдельные Sites/D1, production approval boundary и UAT по умолчанию.
-16. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
+16. [ADR-0011: нативные Attachment и приватный R2](decisions/0011-native-attachments-and-r2.md)
+    — metadata lifecycle, content security, ACL и cleanup.
+17. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
-17. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+18. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
+    cleanup и recovery.
+19. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-18. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+20. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-19. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+21. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -89,6 +93,10 @@ ADR-0010 разделяет Sites на production `task-manager` и отдель
 `task-manager-uat`: default binding и обычная delivery ведут в UAT, production
 deploy требует прямой команды пользователя, а marketplace plugin остаётся на
 production endpoint.
+ADR-0011 и migration `0014` добавляют нативный Attachment foundation: D1
+metadata, private environment-isolated R2, ACL-scoped upload/list/range routes,
+content inspection, retry safety и recoverable cleanup. UI, Agent/MCP и
+attachment-aware backup остаются отдельными следующими срезами.
 
 ## Категории
 

@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-16
+Последнее обновление: 2026-08-17
 
 Документ фиксирует логическую модель, а не конкретную ORM или SQL-схему.
 Имена полей могут адаптироваться к выбранному стеку, но семантика и инварианты
@@ -32,6 +32,8 @@ erDiagram
     TASK ||--o{ TASK_RELATION : source
     TASK ||--o{ TASK_RELATION : target
     TASK ||--o{ COMMENT : discusses
+    TASK ||--o{ ATTACHMENT : contains
+    USER ||--o{ ATTACHMENT : uploads
     USER ||--o{ COMMENT : authors
     COMMENT ||--o{ COMMENT : root_of
     COMMENT ||--o{ COMMENT_REACTION : receives
@@ -278,6 +280,33 @@ Labels задаются связующей таблицей `task_labels(task_id
 identity опираются на `public_id`, поскольку у разных owners возможен
 одинаковый `TM-123`. `id` остаётся ключом внутренних связей и идемпотентного
 импорта; `public_id` не меняется при повторном импорте.
+
+## Attachment
+
+`Attachment` — metadata приватного бинарного объекта одной Task. Он не является
+share target и каждый раз наследует текущий effective access Task.
+
+| Поле | Семантика |
+|---|---|
+| `id`, `public_id` | Immutable internal identity и непрозрачная external reference |
+| `task_id`, `uploader_user_id` | Единственная Task и server-verified uploader |
+| `original_filename`, `display_name` | Нормализованные имена только для отображения; ни одно не участвует в object key |
+| `media_type`, `byte_size`, `checksum_sha256` | Проверенные сервером content metadata |
+| `object_key` | Непрозрачный environment-scoped R2 key, не выдаваемый клиенту |
+| `kind` | `file` или безопасно декодированное raster `image` |
+| `state` | `pending`, `uploading`, `ready`, `failed` или `deleted` |
+| `image_width`, `image_height`, `variant_metadata_json` | Bounded image metadata и будущие variants |
+| `idempotency_key` | Уникален по `(task_id, uploader_user_id)` и не допускает retry-дубликат |
+| `upload_expires_at`, `failure_code` | Cleanup незавершённого upload и безопасный operational result |
+| `version`, `created_at`, `updated_at`, `deleted_at` | Optimistic concurrency и recoverable-delete lifecycle |
+
+Metadata хранится в D1, body — только в приватном R2 bucket текущей среды.
+Viewer читает metadata/content, Editor и более сильные project roles могут
+загружать, удалять и восстанавливать в grace period. Archive/restore Task не
+меняет Attachment. Grant/revoke, перенос Task и ownership transfer немедленно
+меняют доступ через повторную Task ACL-проверку. Необратимый Task purge обязан
+сначала удалить его R2 objects; cleanup удаляет просроченные `uploading`,
+`failed` и `deleted` objects bounded batches.
 
 ## Comment и CommentReaction
 

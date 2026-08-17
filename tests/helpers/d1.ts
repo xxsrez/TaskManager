@@ -7,14 +7,19 @@ import {
 
 export async function createD1TestHarness(
   variables: Record<string, string> = {},
+  options: { r2?: boolean } = {},
 ) {
   const miniflare = new Miniflare({
     compatibilityDate: "2026-05-22",
     modules: true,
     script: "export default { fetch() { return new Response('ok'); } };",
     d1Databases: ["DB"],
+    ...(options.r2 ? { r2Buckets: ["ATTACHMENTS"] } : {}),
   });
   const database = await miniflare.getD1Database("DB");
+  const attachmentBucket = options.r2
+    ? await miniflare.getR2Bucket("ATTACHMENTS")
+    : undefined;
   const migrations = readdirSync(new URL("../../drizzle", import.meta.url))
     .filter((name) => name.endsWith(".sql"))
     .sort();
@@ -32,10 +37,14 @@ export async function createD1TestHarness(
   }
   configureRuntimeEnvironment({
     DB: database as unknown as D1Database,
+    ...(attachmentBucket
+      ? { ATTACHMENTS: attachmentBucket as unknown as R2Bucket }
+      : {}),
     ...variables,
   });
   return {
     database: database as unknown as D1Database,
+    attachmentBucket: attachmentBucket as unknown as R2Bucket | undefined,
     async dispose() {
       resetRuntimeEnvironmentForTests();
       await miniflare.dispose();

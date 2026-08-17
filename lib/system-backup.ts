@@ -26,6 +26,7 @@ export { maxSystemBackupBytes } from "./system-backup-format";
 export async function exportSystemBackup(currentUser: UserRecord): Promise<SystemBackup> {
   assertConfiguredAdmin(currentUser);
   const db = getD1();
+  await assertNoNativeAttachments(db);
   const results = await db.batch(
     tableDefinitions.map((table) =>
       db.prepare(`SELECT ${table.columns.join(", ")} FROM ${table.name} ORDER BY ${table.orderBy}`),
@@ -90,6 +91,7 @@ export async function applySystemBackup(
     throw new ValidationError("Invalid staged backup reference");
   }
   const db = getD1();
+  await assertNoNativeAttachments(db);
   const session = await db
     .prepare(`SELECT source_exported_at, counts_json FROM admin_import_sessions
       WHERE id = ? AND created_by_user_id = ? AND payload_sha256 = ?
@@ -124,6 +126,17 @@ export async function applySystemBackup(
     exportedAt: session.source_exported_at,
     counts: JSON.parse(session.counts_json) as SystemBackupCounts,
   };
+}
+
+async function assertNoNativeAttachments(db: D1Database) {
+  const row = await db
+    .prepare("SELECT id FROM attachments LIMIT 1")
+    .first();
+  if (row) {
+    throw new ValidationError(
+      "System backup/restore is disabled while native attachments exist until the attachment-aware backup format is available",
+    );
+  }
 }
 
 function assertConfiguredAdmin(user: UserRecord) {

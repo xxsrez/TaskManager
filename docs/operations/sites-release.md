@@ -29,6 +29,8 @@ synthetic test data.
    deploy её без дополнительного approval.
 6. Дождаться terminal success, проверить UAT URL, authenticated application
    smoke, migrations и отсутствие Worker errors.
+   Для release с native attachments дополнительно выполнить
+   [R2 smoke](attachments.md#release-preflight-и-smoke).
 7. Повторно прочитать access policy и убедиться, что она не изменилась.
 
 UAT test data создаются только внутри UAT identity scope. Они могут покрывать

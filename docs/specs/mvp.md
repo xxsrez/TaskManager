@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-16
+Последнее обновление: 2026-08-17
 
 ## 1. Цель
 
@@ -37,6 +37,8 @@ MVP должен позволить вести задачи от backlog до п
   основной Connect flow использует OAuth 2.1 Authorization Code + PKCE.
 - **Comment** — native discussion record одной Task; root Comment создаёт
   thread, reply принадлежит ровно одному root thread.
+- **Attachment** — приватный файл или raster image одной Task: metadata
+  хранится в D1, body — в environment-isolated R2 и не имеет публичного URL.
 
 ### 2.1 Интерфейсный принцип
 
@@ -178,6 +180,7 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - parent и subtasks;
 - relations: `blocks`, `related`, `duplicate_of`;
 - native comment threads, replies, reactions и resolved state;
+- native attachments с проверенным type/size/checksum и processing state;
 - created, updated, started, completed, canceled и archived timestamps.
 - для импортированной задачи — source provenance, включая read-only archive
   исходных комментариев и ссылки на исходные attachments; этот archive отделён
@@ -232,8 +235,25 @@ Assignee обязан быть владельцем Task либо пользов
   отрисовывает форматирование без raw HTML и разрешает ссылки только схем
   `http`, `https` и `mailto`.
 - Локальный draft изолирован ключом current User + Task + optional thread.
-  Mentions, attachments, notifications, subscriptions и общий activity feed не
-  входят в этот срез.
+  Mentions, attachments именно к comment, notifications, subscriptions и общий
+  activity feed не входят в этот срез.
+
+### 5.6 Native attachments
+
+- Attachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
+  читать/download/preview; upload, recoverable delete и restore требуют Editor.
+- Upload принимает bounded binary body с обязательным idempotency key. Сервер
+  проверяет magic bytes, MIME, размер и raster dimensions, вычисляет SHA-256 и
+  формирует случайный environment-scoped object key без filename.
+- HTML и SVG отклоняются. Не-image content всегда скачивается как attachment;
+  raster preview получает `nosniff`, private/no-store и не использует public или
+  долговечный signed URL. Range request повторяет Task ACL до R2 read.
+- `deleted` metadata восстанавливается в grace period; отдельный bounded cleanup
+  удаляет R2 object перед metadata row. Просроченные uploads переходят в
+  предсказуемый failed state, а orphan cleanup повторяем и идемпотентен.
+- Attachment bodies, object keys и delivery URLs не входят в bootstrap, sync,
+  compact task list или Agent collection. Metadata загружается отдельным
+  ACL-scoped endpoint после открытия Task details.
 
 ## 6. Workflow
 
@@ -403,8 +423,9 @@ completed dates и archived state.
   Releases, compact task lists, одной полной Task, task create/update и
   отдельных native comment threads.
 - List response не содержит task description, release notes, imported comments,
-  native comment bodies, attachments или полного provenance. Imported archive
-  и native comments читаются разными отдельными paginated запросами.
+  native comment bodies, attachment metadata/bodies или полного provenance.
+  Imported archive, native comments и native attachments читаются отдельными
+  ACL-scoped запросами.
 - Versioned HTTP API применяет те же server-side ownership/ACL rules и domain
   repository commands, что и product UI.
   `/api/bootstrap` остаётся внутренним UI snapshot и не является agent API.
@@ -563,6 +584,11 @@ completed dates и archived state.
     polling interval. Повторная доставка не создаёт дублей; gap/reconnect
     запускает full reset. После revoke бывший collaborator теряет entity и
     прямой details context без раскрытия чужого content.
+31. Owner и Editor загружают PDF/raster image с idempotency key; Viewer читает
+    metadata и Range/download, outsider получает такой же `not found`, как для
+    неизвестной Task. После revoke доступ исчезает немедленно. MIME confusion,
+    HTML/SVG, corrupted или oversized image отклоняются; delete восстанавливаем
+    до grace cutoff, а cleanup не оставляет R2 object или live metadata orphan.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -589,3 +615,6 @@ completed dates и archived state.
     confirmation, sharing opt-in и rollback tests.
 15. Native task comments: Activity UI, ACL-scoped REST/Agent/MCP commands,
     idempotency/concurrency, backups и mobile verification.
+16. Native attachment foundation: D1 metadata, раздельные R2 bindings,
+    ACL-scoped binary routes, content inspection, retry/cleanup и UAT smoke;
+    UI, Agent/MCP и backup integration идут отдельными следующими срезами.

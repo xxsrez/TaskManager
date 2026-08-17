@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnySQLiteColumn,
+  check,
   index,
   integer,
   primaryKey,
@@ -374,6 +375,65 @@ export const tasks = sqliteTable(
     ),
     index("idx_tasks_title_search").on(sql`lower(${table.title})`),
     index("idx_tasks_identifier_search").on(sql`lower(${table.identifier})`),
+  ],
+);
+
+export const attachments = sqliteTable(
+  "attachments",
+  {
+    id: text("id").primaryKey(),
+    publicId: text("public_id").notNull(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    uploaderUserId: text("uploader_user_id")
+      .notNull()
+      .references(() => users.id),
+    originalFilename: text("original_filename").notNull(),
+    displayName: text("display_name").notNull(),
+    mediaType: text("media_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    checksumSha256: text("checksum_sha256").notNull(),
+    objectKey: text("object_key").notNull(),
+    kind: text("kind").notNull(),
+    state: text("state").notNull().default("uploading"),
+    imageWidth: integer("image_width"),
+    imageHeight: integer("image_height"),
+    variantMetadataJson: text("variant_metadata_json").notNull().default("{}"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    uploadExpiresAt: text("upload_expires_at"),
+    failureCode: text("failure_code"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    deletedAt: text("deleted_at"),
+  },
+  (table) => [
+    uniqueIndex("idx_attachments_public_id").on(table.publicId),
+    uniqueIndex("idx_attachments_object_key").on(table.objectKey),
+    uniqueIndex("idx_attachments_task_uploader_idempotency").on(
+      table.taskId,
+      table.uploaderUserId,
+      table.idempotencyKey,
+    ),
+    index("idx_attachments_task_state_created").on(
+      table.taskId,
+      table.state,
+      table.createdAt,
+      table.id,
+    ),
+    index("idx_attachments_cleanup").on(
+      table.state,
+      table.deletedAt,
+      table.uploadExpiresAt,
+      table.updatedAt,
+    ),
+    check("attachments_kind_check", sql`${table.kind} IN ('file', 'image')`),
+    check(
+      "attachments_state_check",
+      sql`${table.state} IN ('pending', 'uploading', 'ready', 'failed', 'deleted')`,
+    ),
+    check("attachments_byte_size_check", sql`${table.byteSize} >= 0`),
   ],
 );
 

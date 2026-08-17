@@ -25,6 +25,7 @@ export async function exportProjectBackup(
   siteOrigin: string,
 ): Promise<ProjectBackup> {
   const db = getD1();
+  await assertProjectHasNoNativeAttachments(db, projectId);
   const definition = (name: string) => {
     const value = projectBackupTableDefinitions.find((table) => table.name === name);
     if (!value) throw new Error(`Missing project backup table definition: ${name}`);
@@ -259,6 +260,7 @@ export async function applyProjectBackup(
   const live = await db.prepare("SELECT owner_user_id FROM projects WHERE id = ?").bind(session.project_id).first<{ owner_user_id: string }>();
   if (live && live.owner_user_id !== currentUser.id) throw new NotFoundError("Project not found");
   if (live && !input.currentBackupDownloaded) throw new ValidationError("Download the current project backup before replacing it");
+  if (live) await assertProjectHasNoNativeAttachments(db, session.project_id);
   await assertAssigneesAndLeadRemainAccessible(db, input.importId, currentUser.id, session.project_id, input.restoreSharing);
   const transition = await db.prepare(`UPDATE user_import_sessions SET status = 'applying'
     WHERE id = ? AND created_by_user_id = ? AND kind = 'project_backup'
@@ -333,6 +335,25 @@ export async function applyProjectBackup(
     counts: preview.counts,
     sharingRestored: input.restoreSharing,
   };
+}
+
+async function assertProjectHasNoNativeAttachments(
+  db: D1Database,
+  projectId: string,
+) {
+  const row = await db
+    .prepare(
+      `SELECT a.id FROM attachments a
+       JOIN tasks t ON t.id = a.task_id
+       WHERE t.project_id = ? LIMIT 1`,
+    )
+    .bind(projectId)
+    .first();
+  if (row) {
+    throw new ValidationError(
+      "Project backup/restore is disabled while native attachments exist until the attachment-aware backup format is available",
+    );
+  }
 }
 
 async function validateLiveDependenciesAndCollisions(

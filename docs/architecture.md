@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-16
+Последнее обновление: 2026-08-17
 
 Архитектура реализована первым вертикальным срезом на TypeScript, React 19,
 Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentication
@@ -44,6 +44,8 @@ flowchart LR
     URT --> UIA[Identity, Access, Domain]
     PIA --> PDB[(Production D1)]
     UIA --> UDB[(UAT D1)]
+    PIA --> PR2[(Production private R2)]
+    UIA --> UR2[(UAT private R2)]
 ```
 
 ChatGPT Sites — hosting target для двух изолированных сред, D1 — отдельный
@@ -59,6 +61,7 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 |---|---|
 | Tasks | Task lifecycle, workflow, labels, subtasks, relations, rank |
 | Comments | ACL-scoped native threads, idempotency, reactions и resolution |
+| Attachments | D1 metadata, private R2 objects, sniffing, range delivery и cleanup |
 | Projects | Project metadata, scope и вычисляемый progress |
 | Releases | Release lifecycle, состав и project consistency |
 | Views | Filter AST, query compilation, grouping, ordering, display config |
@@ -80,9 +83,10 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
   `task-manager-uat`; production binding хранится отдельно в
   `.openai/hosting.production.json`. Оба файла создаются или обновляются только
   после Sites provisioning и содержат binding metadata, а не secrets.
-- Каждая среда имеет отдельную D1. Structured records, Site-scoped identities,
-  OAuth grants и test data между ними не разделяются. R2 не требуется, пока в
-  продукте нет uploads.
+- Каждая среда имеет отдельные D1 и private R2 bucket. Structured records,
+  Site-scoped identities, OAuth grants, attachment object keys и test data
+  между ними не разделяются. Runtime binding нативных вложений —
+  `ATTACHMENTS`; environment scope дополнительно входит в каждый object key.
 - Provider credentials и session secrets задаются только в hosted environment
   settings; локально перечисляются лишь имена переменных в `.env.example`.
 - `TASK_MANAGER_ADMIN_EMAILS` хранится в hosted environment и разбирается как
@@ -330,6 +334,14 @@ attachments: при открытии details одной импортирован
 проверяет ACL этой Task. Content-free admin overview вычисляется только для
 прямого открытия `/admin`; обычный snapshot хранит лишь server-derived признак
 доступности admin surface.
+Native attachment metadata/body также не входят в bootstrap или compact Task
+projection. `/api/tasks/{id}/attachments` лениво читает bounded metadata, а
+`.../{attachmentRef}/content` повторяет Task ACL непосредственно перед private
+R2 read, поддерживает один bounded Range и всегда возвращает `private,
+no-store` + `nosniff`. Object key не выходит за server boundary; non-image
+content принудительно скачивается. Контракт принят в
+[ADR-0011](decisions/0011-native-attachments-and-r2.md).
+
 Native comment bodies также не входят в bootstrap или Task detail. Activity
 отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,
 а comment mutations обновляют Task timestamp и производный `comment_count` в
