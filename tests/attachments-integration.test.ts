@@ -22,9 +22,13 @@ import {
   createTask,
   getOrCreateUser,
   getSnapshot,
+  getTask,
   grantAccess,
   revokeAccess,
+  updateTask,
 } from "../lib/repository";
+import { buildTaskImageToken } from "../lib/task-description-format";
+import { updateAgentTask } from "../lib/agent-api-repository";
 import { exportProjectBackup } from "../lib/project-backup";
 import { exportSystemBackup } from "../lib/system-backup";
 import { getWorkspaceSync } from "../lib/workspace-sync";
@@ -300,6 +304,96 @@ test("attachment mutations emit a bounded lazy invalidation for other sessions",
   assert.deepEqual(response.changes.tasks.upsert, []);
   assert.deepEqual(response.changes.invalidations.taskAttachments, [task.id]);
   assert.deepEqual(response.changes.invalidations.taskDetails, []);
+});
+
+test("Task descriptions accept only ready same-Task images and block deletion while referenced", async () => {
+  const { owner, project, task } = await setupSharedTask("Description images");
+  const imageBytes = Uint8Array.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+  ]);
+  const image = await createAttachment(owner, task.id, {
+    body: imageBytes,
+    filename: "diagram.png",
+    claimedMediaType: "image/png",
+    idempotencyKey: "description-image",
+  });
+  const token = buildTaskImageToken(image.publicId, "Architecture diagram", "Request flow");
+  let detail = await getTask(owner, task.id);
+  detail = await updateTask(owner, detail.id, {
+    version: detail.version,
+    description: `## Design\n\n${token}\n\nSafe [link](https://example.test).`,
+  });
+  assert.match(detail.description ?? "", /attachment:v1:/);
+  await assert.rejects(
+    deleteAttachment(owner, task.id, image.publicId, image.version),
+    (error: unknown) => error instanceof ValidationError && /description/.test(error.message),
+  );
+
+  const otherTask = await createTask(owner, {
+    title: "Other Task",
+    projectId: project.id,
+  });
+  const otherDetail = await getTask(owner, otherTask.id);
+  await assert.rejects(
+    updateTask(owner, otherTask.id, {
+      version: otherDetail.version,
+      description: token,
+    }),
+    ValidationError,
+  );
+  await assert.rejects(
+    updateTask(owner, detail.id, {
+      version: detail.version,
+      description: "![Missing](attachment:v1:guessed-reference)",
+    }),
+    ValidationError,
+  );
+  await assert.rejects(
+    updateTask(owner, detail.id, {
+      version: detail.version,
+      description: `Broken ${"attachment:v1:"}${image.publicId}`,
+    }),
+    ValidationError,
+  );
+
+  const document = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\nnot an image\n%%EOF"),
+    filename: "notes.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "description-document",
+  });
+  await assert.rejects(
+    updateTask(owner, detail.id, {
+      version: detail.version,
+      description: buildTaskImageToken(document.publicId, "Not raster"),
+    }),
+    ValidationError,
+  );
+
+  detail = await updateTask(owner, detail.id, {
+    version: detail.version,
+    description: "The binary remains attached after removing its embed.",
+  });
+  const agentDetail = await updateAgentTask(owner, detail.publicId, {
+    version: detail.version,
+    description: token,
+  });
+  assert.match(agentDetail.description ?? "", /attachment:v1:/);
+  const agentRemoved = await updateAgentTask(owner, detail.publicId, {
+    version: agentDetail.version,
+    description: "The Agent path enforces the same repository invariant.",
+  });
+  const removed = await deleteAttachment(owner, detail.id, image.publicId, image.version);
+  assert.equal(removed.state, "deleted");
+  await assert.rejects(
+    updateAgentTask(owner, detail.publicId, {
+      version: agentRemoved.version,
+      description: token,
+    }),
+    ValidationError,
+  );
 });
 
 test("binary HTTP routes authenticate before bounded upload and preserve private range delivery", async () => {

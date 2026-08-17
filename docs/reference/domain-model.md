@@ -255,7 +255,7 @@ journal rows старше 30 дней удаляются не чаще раза 
 | `owner_user_id` | UUID | да | Владелец и tenant scope записи |
 | `identifier` | string | да | Immutable human ID, например `TM-123` |
 | `title` | string | да | Непустой заголовок |
-| `description` | Markdown/text | нет | Подробный контекст |
+| `description` | Markdown/text | нет | Подробный контекст; native raster image использует versioned token `![alt](attachment:v1:<public-ref> "caption")` |
 | `status_id` | UUID | да | Ссылка на `WorkflowStatus` |
 | `priority` | enum | да | `none`, `low`, `medium`, `high`, `urgent` |
 | `assignee_id` | UUID | нет | User с доступом к Task |
@@ -309,6 +309,15 @@ Viewer читает metadata/content, Editor и более сильные projec
 `failed` и `deleted` objects bounded batches.
 Изменение Attachment публикует отдельную lazy-инвалидацию Task ID; это не
 меняет `Task.version` и не заставляет перечитывать её description/relations.
+
+`attachment:v1:` — versioned reference scheme внутри Task description. В token
+допустим только `public_id` готового `kind=image` Attachment той же Task; R2 key
+и delivery URL не сохраняются. Repository проверяет этот invariant до
+description write и повторяет его в SQL predicate, чтобы concurrent delete не
+создал битую ссылку. Delete Attachment симметрично отклоняется, пока актуальная
+description содержит его token. Alt обязателен, caption optional; оба остаются
+пользовательским Markdown text. Один Attachment может встречаться в description
+несколько раз и по-прежнему имеет один lifecycle record.
 
 ## Comment и CommentReaction
 

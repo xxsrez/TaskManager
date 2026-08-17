@@ -8,11 +8,17 @@
 `schemaVersion` logical backup повышена до `2`, старый schema `1` отклоняется
 до staging как несовместимый.
 
+Дополнение 2026-08-18: Task description может содержать native image token
+`attachment:v1:<public-ref>`, но schema `2` не переносит Attachment metadata и
+R2 objects. Поэтому export/import сохраняют fail-closed guard при наличии
+любого native Attachment; отдельно переносить description с embed нельзя.
+
 ## Контекст
 
-Task Manager хранит всё текущее product state в одной Sites D1: Users,
+Task Manager хранит структурированное product state в Sites D1: Users,
 identities, ownership, grants, каталоги и пользовательские records. Внешнего
-object storage пока нет. Владельцу приложения нужен переносимый снимок для
+object storage для native Attachment находится в private R2. Владельцу
+приложения нужен переносимый снимок для
 восстановления после ошибочного изменения, проверки другой версии и ручной
 операционной страховки.
 
@@ -60,6 +66,10 @@ admin boundary.
     обычным repository methods возможность просматривать чужие records.
 11. Успешный replace удаляет все API credentials в той же D1 batch transaction.
     После restore каждый User обязан выдать новый token.
+12. До новой attachment-aware schema export и restore отклоняются, если
+    существует native Attachment. Частичный logical snapshot, который сохранил
+    бы description token или metadata без соответствующего R2 object, не
+    создаётся и не применяется.
 
 ## Последствия
 

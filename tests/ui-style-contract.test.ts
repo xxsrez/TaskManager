@@ -11,6 +11,10 @@ const taskAttachments = readFileSync(
   new URL("../components/task-attachments.tsx", import.meta.url),
   "utf8",
 );
+const taskDescriptionEditor = readFileSync(
+  new URL("../components/task-description-editor.tsx", import.meta.url),
+  "utf8",
+);
 
 function declarations(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -264,5 +268,23 @@ test("attachment UI has bounded cards, authenticated thumbnails, and mobile touc
   assert.match(
     css,
     /@media\s*\(max-width:\s*640px\)[\s\S]*?\.composer-attachments > div:first-child \.button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+});
+
+test("native description images use private refs, cursor upload, and responsive rendering", () => {
+  assert.match(taskDescriptionEditor, /startTaskAttachmentUpload/);
+  assert.match(taskDescriptionEditor, /event\.clipboardData\.files/);
+  assert.match(taskDescriptionEditor, /event\.dataTransfer\.files/);
+  assert.match(taskDescriptionEditor, /selectionStart/);
+  assert.match(taskDescriptionEditor, /buildTaskImageToken/);
+  assert.doesNotMatch(taskDescriptionEditor, /https?:\/\//);
+  assert.match(taskAttachments, /Used in description/);
+  assert.match(taskAttachments, /Remove from description first/);
+  assert.match(taskAttachments, /TaskDescriptionImage/);
+  assert.match(declarations(".task-description-image"), /width:\s*min\(100%,\s*620px\)\s*;/);
+  assert.match(declarations(".task-description-image img"), /max-width:\s*100%\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-description-upload \.icon-button\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;/,
   );
 });

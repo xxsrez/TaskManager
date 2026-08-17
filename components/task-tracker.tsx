@@ -89,9 +89,13 @@ import {
   type WorkspaceSyncCheckpoint,
 } from "@/components/workspace-sync-coordinator";
 import {
+  type PublicAttachmentRecord,
   startTaskAttachmentUpload,
   TaskAttachments,
+  TaskDescriptionImage,
 } from "@/components/task-attachments";
+import { TaskDescriptionEditor } from "@/components/task-description-editor";
+import { parseTaskImageLine } from "@/lib/task-description-format";
 import type {
   AdminOverview,
   AccessRole,
@@ -2488,6 +2492,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [editingDescription, setEditingDescription] = useState(false);
+  const [descriptionUploadActive, setDescriptionUploadActive] = useState(false);
   const [estimate, setEstimate] = useState(task.estimate?.toString() ?? "");
   const [rebasing, setRebasing] = useState(false);
   const [dirty, setDirty] = useState<TaskDraftDirty>({
@@ -2661,19 +2666,17 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
             </header>
             {editingDescription ? (
               <div className="task-description-editor">
-                <textarea
-                  className="details-description"
+                <TaskDescriptionEditor
+                  taskId={task.id}
                   value={description}
-                  onChange={(event) => {
-                    const nextDescription = event.target.value;
+                  onChange={(nextDescription) => {
                     setDirty((current) => ({ ...current, description: taskDraftValueChanged(nextDescription, task.description ?? "") }));
                     setDescription(nextDescription);
                   }}
-                  placeholder="Add description…"
-                  rows={12}
-                  autoFocus
+                  onUploadActiveChange={setDescriptionUploadActive}
+                  disabled={busy || hasVersionConflict}
                 />
-                <div>
+                <div className="task-description-editor-actions">
                   <button
                     className="button ghost"
                     type="button"
@@ -2689,7 +2692,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
                   <button
                     className="button secondary save-description"
                     type="button"
-                    disabled={busy || hasVersionConflict || description === (task.description ?? "")}
+                    disabled={busy || descriptionUploadActive || hasVersionConflict || description === (task.description ?? "")}
                     onClick={() => void saveDraftField("description", { description })
                       .then((saved) => saved && setEditingDescription(false))}
                   >
@@ -2698,7 +2701,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
                 </div>
               </div>
             ) : description ? (
-              <MarkdownBody body={description} className="task-description-markdown" />
+              <TaskDescriptionMarkdown task={task} body={description} className="task-description-markdown" />
             ) : (
               <p className="task-description-empty">No description</p>
             )}
@@ -2715,7 +2718,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
           {labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}
           {(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}
           {relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}
-          <TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite />
+          <TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite description={task.description} />
           <TaskActivity task={task} currentUser={data.user} canWrite />
           {sourceContent}
           <div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div>
@@ -2740,7 +2743,7 @@ function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <MarkdownBody body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} /><TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <TaskDescriptionMarkdown task={task} body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} description={task.description} /><TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
 }
 
 function useTaskExternalSource(task: TaskRecord) {
@@ -3056,7 +3059,72 @@ function CommentMarkdown({ body }: { body: string }) {
   return <div className="comment-body">{blocks}</div>;
 }
 
-function MarkdownBody({ body, className }: { body: string; className: string }) {
+function TaskDescriptionMarkdown({
+  task,
+  body,
+  className,
+}: {
+  task: TaskRecord;
+  body: string;
+  className: string;
+}) {
+  const [attachmentState, setAttachmentState] = useState<{
+    key: string;
+    records: Map<string, PublicAttachmentRecord>;
+  }>({ key: "", records: new Map() });
+  const imageRefKey = [...new Set(
+    body
+      .split("\n")
+      .map((line) => parseTaskImageLine(line)?.ref)
+      .filter((ref): ref is string => Boolean(ref)),
+  )].sort().join(",");
+
+  useEffect(() => {
+    if (!imageRefKey) return;
+    const controller = new AbortController();
+    const requestedRefs = new Set(imageRefKey.split(","));
+    void fetch(`/api/tasks/${encodeURIComponent(task.id)}/attachments`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const value = await response.json() as
+          | { attachments: PublicAttachmentRecord[] }
+          | { error?: string };
+        if (!response.ok || !("attachments" in value)) {
+          throw new Error("Native images could not be loaded");
+        }
+        setAttachmentState({
+          key: imageRefKey,
+          records: new Map(value.attachments
+            .filter((attachment) => requestedRefs.has(attachment.ref))
+            .map((attachment) => [attachment.ref, attachment])),
+        });
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setAttachmentState({ key: imageRefKey, records: new Map() });
+      });
+    return () => controller.abort();
+  }, [imageRefKey, task.id, task.attachmentInvalidationCursor]);
+
+  const attachments = attachmentState.key === imageRefKey
+    ? attachmentState.records
+    : null;
+  return <MarkdownBody body={body} className={className} taskId={task.id} attachments={attachments} />;
+}
+
+function MarkdownBody({
+  body,
+  className,
+  taskId,
+  attachments,
+}: {
+  body: string;
+  className: string;
+  taskId?: string;
+  attachments?: Map<string, PublicAttachmentRecord> | null;
+}) {
   const lines = body.split("\n");
   const blocks: React.ReactNode[] = [];
   let code: string[] | null = null;
@@ -3093,6 +3161,22 @@ function MarkdownBody({ body, className }: { body: string; className: string }) 
     }
     if (code) {
       code.push(line);
+      continue;
+    }
+    const nativeImage = taskId ? parseTaskImageLine(line) : null;
+    if (nativeImage) {
+      flushList();
+      blocks.push(
+        <TaskDescriptionImage
+          key={`image-${index}-${nativeImage.ref}`}
+          taskId={taskId!}
+          attachment={attachments === null || attachments === undefined
+            ? undefined
+            : attachments.get(nativeImage.ref) ?? null}
+          alt={nativeImage.alt}
+          caption={nativeImage.caption}
+        />,
+      );
       continue;
     }
     const heading = line.match(/^(#{1,3})\s+(.+)$/);

@@ -277,6 +277,15 @@ release notes. Project/Release detail возвращают `workflowStatuses`, �
 `description`, `statusRef`, `priority`, `projectRef`, `releaseRef`,
 `estimate`, `dueDate`, `rank`, `archived`.
 
+`description` может содержать native raster reference только в формате
+`![alt](attachment:v1:<public-ref> "optional caption")`. Это не отдельная
+Agent/MCP upload capability: сначала image должен стать готовым Attachment этой
+же Task через authenticated application upload. Общий repository path для REST,
+MCP и UI отклоняет malformed, cross-Task, non-image, deleted или неготовый
+reference; ошибка не подтверждает существование недоступного resource. Task
+create с native reference отклоняется, потому что Attachment ещё не может
+принадлежать создаваемой Task.
+
 ```json
 {
   "version": 7,

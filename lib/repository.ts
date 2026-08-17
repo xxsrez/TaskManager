@@ -54,6 +54,10 @@ import {
 import { getD1 } from "@/db";
 import { getRuntimeEnvironment } from "./runtime-environment";
 import { encodeWorkspaceSyncCursor } from "./workspace-sync-cursor";
+import {
+  taskDescriptionAttachmentPredicate,
+  validateTaskDescriptionAttachments,
+} from "./task-description-attachments";
 
 type DbRow = Record<string, unknown>;
 
@@ -954,6 +958,8 @@ export async function createTask(
 ) {
   const db = getD1();
   const title = requireTitle(input.title);
+  const description = optionalText(input.description);
+  await validateTaskDescriptionAttachments(null, description);
   const project = input.projectId
     ? await loadAccessibleProject(currentUser.id, String(input.projectId))
     : null;
@@ -1028,7 +1034,7 @@ export async function createTask(
       `TM-${sequence}`,
       sequence,
       title,
-      optionalText(input.description),
+      description,
       status.id,
       input.priority ? priority(input.priority) : "none",
       assigneeUserId,
@@ -1136,9 +1142,14 @@ export async function updateTask(
   const title = Object.hasOwn(input, "title")
     ? requireTitle(input.title)
     : task.title;
-  const description = Object.hasOwn(input, "description")
+  const descriptionChanged = Object.hasOwn(input, "description");
+  const description = descriptionChanged
     ? optionalText(input.description)
-    : task.description;
+    : task.description ?? "";
+  const descriptionRefs = descriptionChanged
+    ? await validateTaskDescriptionAttachments(task.id, description)
+    : [];
+  const descriptionPredicate = taskDescriptionAttachmentPredicate(descriptionRefs);
   const nextPriority = Object.hasOwn(input, "priority")
     ? priority(input.priority)
     : task.priority;
@@ -1164,7 +1175,7 @@ export async function updateTask(
         assignee_user_id = ?, project_id = ?, release_id = ?, estimate = ?, due_date = ?, rank = ?,
         started_at = ?, completed_at = ?, canceled_at = ?, archived_at = ?,
         version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ? AND (
+       WHERE id = ? AND version = ?${descriptionPredicate.sql} AND (
          (tasks.project_id IS NOT NULL AND (
            EXISTS (
              SELECT 1 FROM projects p
@@ -1204,6 +1215,7 @@ export async function updateTask(
       now,
       taskId,
       expectedVersion,
+      ...descriptionPredicate.bindings,
       currentUser.id,
       currentUser.id,
       currentUser.id,

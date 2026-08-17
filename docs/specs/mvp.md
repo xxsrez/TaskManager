@@ -258,6 +258,20 @@ Assignee обязан быть владельцем Task либо пользов
   retry/cancel, safe download, recoverable delete/restore и Viewer read-only
   state. Raster list использует отдельный authenticated server thumbnail;
   full-size original загружается только в preview/download.
+- Markdown description может встроить только готовый raster Attachment той же
+  Task через версионированный стабильный token
+  `![alt](attachment:v1:<public-ref> "caption")`. Token хранит непрозрачный
+  reference, а не R2 key, public URL или signed URL. Editor вставляет image из
+  picker/drop/paste в текущую позицию курсора, показывает progress/retry/cancel
+  и оставляет alt/caption редактируемыми как текст.
+- При каждом create/update description server проверяет синтаксис token,
+  текущую Task, `kind=image` и `state=ready`; тот же repository invariant
+  действует для UI, REST Agent API и MCP. Чужой, угаданный, удалённый,
+  незавершённый или non-image Attachment отклоняется без раскрытия его
+  существования. Attachment нельзя удалить, пока description на него ссылается.
+- Read-only Markdown renderer лениво получает только ACL-scoped metadata,
+  показывает responsive image/optional caption, открывает private full preview
+  и при недоступности использует безопасный placeholder без утечки URL.
 - Composer сначала создаёт Task и лишь затем загружает выбранные files с
   устойчивыми idempotency keys. Partial failure оставляет созданную Task и
   успешные Attachment records видимыми, явно предлагает retry и не создаёт

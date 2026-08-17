@@ -1027,6 +1027,8 @@ test("editable task details render the full Markdown description before editing"
     "",
     "[Open source](https://example.com/source)",
     "",
+    "![Architecture](attachment:v1:88ff4153-cb23-4043-aab8-6fbc97800762 \"Request flow\")",
+    "",
     "```ts",
     "const longValue = true;",
     "```",
@@ -1050,6 +1052,8 @@ test("editable task details render the full Markdown description before editing"
   assert.match(markup, /<h2>Full description<\/h2>/);
   assert.match(markup, /type="checkbox"[^>]*checked=""/);
   assert.match(markup, /href="https:\/\/example\.com\/source"/);
+  assert.match(markup, /Loading image…/);
+  assert.doesNotMatch(markup, /attachment:v1:/);
   assert.match(markup, /<pre><code>const longValue = true;<\/code><\/pre>/);
   assert.match(markup, />Edit description</);
   assert.match(markup, />Attachments</);

@@ -35,7 +35,13 @@ bootstrap или публичный URL. Attachment обязан менять д
 7. Bodies, keys и delivery URLs не входят в bootstrap/sync/Agent collections.
    UI читает metadata лениво, thumbnail создаётся Worker binding `IMAGES`, а
    отдельная `task_attachments` invalidation обновляет только mounted consumer.
-   Markdown embeds, Agent/MCP и backup/restore расширяются отдельными срезами.
+8. Markdown image embed хранится как versioned token
+   `![alt](attachment:v1:<public-ref> "caption")`. Общий repository invariant
+   для UI, Agent REST и MCP требует ready raster Attachment той же Task и
+   блокирует delete, пока reference используется. Renderer лениво разрешает
+   reference через текущий Task ACL и никогда не сохраняет content URL.
+   Отдельные upload commands для Agent/MCP и attachment-aware backup/restore
+   остаются следующими срезами.
 
 ## Последствия
 

@@ -463,7 +463,24 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .markdown-checklist-item input { width: 14px; height: 14px; flex: 0 0 14px; margin: 3px 0 0; accent-color: var(--accent); }
 .task-description-empty { min-height: 80px; margin: 0; color: var(--muted); font-style: italic; }
 .task-description-editor { display: grid; gap: 9px; }
-.task-description-editor > div { display: flex; justify-content: flex-end; gap: 7px; }
+.task-description-editor-actions { display: flex; justify-content: flex-end; gap: 7px; }
+.task-description-input { position: relative; min-width: 0; display: grid; gap: 7px; padding: 7px; border: 1px solid transparent; border-radius: 9px; }
+.task-description-input.drag-active { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.task-description-editor-toolbar { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.task-description-editor-toolbar > span { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.task-description-drop-message { position: absolute; z-index: 2; inset: 47px 7px 76px; display: grid; place-items: center; border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--raised) 90%, transparent); color: var(--accent); font-size: 11px; pointer-events: none; }
+.task-description-upload { min-width: 0; min-height: 42px; display: flex; align-items: center; gap: 7px; padding: 6px 7px; border-radius: 7px; background: var(--surface-subtle); }
+.task-description-upload > div { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.task-description-upload b, .task-description-upload span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.task-description-upload span { color: var(--muted); }
+.task-description-upload.failed span, .task-description-upload.canceled span { color: var(--danger); }
+.task-description-upload progress { width: 100%; height: 3px; accent-color: var(--accent); }
+.task-description-image-help { margin: 0; color: var(--muted); font-size: 9px; line-height: 14px; }
+.task-description-image { width: min(100%, 620px); margin: 12px 0 16px; }
+.task-description-image > button { width: 100%; max-height: 420px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-subtle); cursor: zoom-in; }
+.task-description-image img { width: auto; max-width: 100%; height: auto; max-height: 420px; object-fit: contain; }
+.task-description-image figcaption { margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 15px; text-align: center; }
+.task-description-image-placeholder { min-height: 96px; display: grid; place-items: center; margin: 10px 0; border: 1px dashed var(--border-strong); border-radius: 8px; background: var(--surface-subtle); color: var(--muted); font-size: 11px; }
 .details-description { width: 100%; min-height: 220px; padding: 10px 11px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 7px; outline: 0; background: var(--surface-subtle); color: var(--text-secondary); line-height: 21px; }
 .details-description:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 9%, transparent); }
 .save-description { margin: 0; }
@@ -506,6 +523,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .attachment-main progress { width: min(220px, 100%); height: 3px; margin-top: 4px; overflow: hidden; border: 0; border-radius: 999px; background: var(--border); accent-color: var(--accent); }
 .attachment-inline-error, .attachment-fallback { color: var(--danger); font-size: 9px; line-height: 13px; overflow-wrap: anywhere; }
 .attachment-fallback { color: var(--muted); }
+.attachment-usage { width: max-content; max-width: 100%; padding: 1px 5px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-size: 8px; line-height: 13px; }
 .attachment-actions { display: flex; align-items: center; gap: 2px; }
 .attachment-actions .attachment-restore { min-height: 30px; padding-inline: 7px; }
 .attachment-lightbox { position: fixed; z-index: 120; inset: 0; display: grid; place-items: center; padding: 18px; background: rgba(7, 7, 9, .82); backdrop-filter: blur(4px); }
@@ -846,6 +864,10 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .row-more { width: 40px; height: 40px; opacity: 1; }
   .properties-grid { grid-template-columns: 1fr; }
   .task-description-section > header .button, .task-description-editor .button { min-height: 44px; }
+  .task-description-input { padding-inline: 0; }
+  .task-description-editor-toolbar > span { white-space: normal; }
+  .task-description-upload .icon-button { width: 44px; height: 44px; flex: 0 0 44px; }
+  .task-description-image > button, .task-description-image img { max-height: 70dvh; }
   .comment-menu > summary { width: 40px; height: 40px; opacity: 1; }
   .comment-actions button { min-height: 36px; }
   .comment-toolbar button { width: 40px; height: 40px; }

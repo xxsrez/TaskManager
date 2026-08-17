@@ -8,6 +8,10 @@ import {
 } from "./domain";
 import { getTask } from "./repository";
 import { getRuntimeEnvironment } from "./runtime-environment";
+import {
+  TASK_IMAGE_REFERENCE_SCHEME,
+  taskDescriptionUsesAttachment,
+} from "./task-description-format";
 import type {
   AttachmentKind,
   AttachmentRecord,
@@ -407,15 +411,32 @@ export async function deleteAttachment(
   if (current.state !== "ready" && current.state !== "failed") {
     throw new ConflictError("Attachment cannot be deleted in its current state");
   }
+  if (taskDescriptionUsesAttachment(task.description, current.publicId)) {
+    throw new ValidationError(
+      "Remove this image from the Task description before deleting it",
+    );
+  }
   const now = new Date().toISOString();
   const row = await getD1()
     .prepare(
       `UPDATE attachments
        SET state = 'deleted', deleted_at = ?, version = version + 1, updated_at = ?
        WHERE id = ? AND task_id = ? AND version = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM tasks embedded_task
+           WHERE embedded_task.id = attachments.task_id
+             AND instr(embedded_task.description, ?) > 0
+         )
        RETURNING *`,
     )
-    .bind(now, now, current.id, task.id, expectedVersion)
+    .bind(
+      now,
+      now,
+      current.id,
+      task.id,
+      expectedVersion,
+      `${TASK_IMAGE_REFERENCE_SCHEME}${current.publicId}`,
+    )
     .first<DbRow>();
   if (!row) throw new ConflictError("Attachment was changed in another session");
   return mapAttachment(row);

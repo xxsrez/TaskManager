@@ -346,6 +346,14 @@ content принудительно скачивается. Для raster list ro
 metadata, не вызывая bootstrap или Task-detail rebase. Контракт принят в
 [ADR-0011](decisions/0011-native-attachments-and-r2.md).
 
+Description хранит native raster embed как versioned opaque reference
+`attachment:v1:<public-id>`, но не object key или content URL. Все Task-write
+entrypoints сходятся в repository validator: он требует ready image той же Task
+и добавляет race-safe `EXISTS` predicates в update. Attachment delete применяет
+обратный guard по актуальной description. Renderer распознаёт только отдельный
+Markdown image block, лениво читает ACL-scoped metadata и строит private content
+route уже после server authorization; stale reference становится placeholder.
+
 Native comment bodies также не входят в bootstrap или Task detail. Activity
 отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,
 а comment mutations обновляют Task timestamp и производный `comment_count` в
@@ -420,6 +428,10 @@ saved-view query/display и полный provider metadata в `external_records`
    D1 batch transaction удаляет live rows, вставляет verified staged rows,
    отмечает session applied и очищает payload. Batch failure откатывает весь
    cutover.
+6. Пока attachment-aware backup/restore не реализован, export и restore
+   fail-closed при наличии native Attachment. Native image token не ослабляет
+   этот guard: перенос одной description без соответствующего D1 lifecycle и
+   R2 object запрещён.
 
 ### Project backup и restore
 

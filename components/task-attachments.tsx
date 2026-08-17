@@ -23,6 +23,9 @@ import {
   useState,
 } from "react";
 import type { TaskRecord, UserRecord } from "@/lib/types";
+import { taskDescriptionUsesAttachment } from "@/lib/task-description-format";
+
+const taskAttachmentChangedEvent = "task-manager:attachment-changed";
 
 export type PublicAttachmentRecord = {
   ref: string;
@@ -84,6 +87,12 @@ export function startTaskAttachmentUpload(
   return { promise, cancel: () => request.abort() };
 }
 
+export function notifyTaskAttachmentChanged(taskId: string) {
+  window.dispatchEvent(new CustomEvent(taskAttachmentChangedEvent, {
+    detail: { taskId },
+  }));
+}
+
 type LocalUpload = {
   id: string;
   key: string;
@@ -98,11 +107,13 @@ export function TaskAttachments({
   currentUser,
   users,
   canWrite,
+  description,
 }: {
   task: TaskRecord;
   currentUser: UserRecord;
   users: UserRecord[];
   canWrite: boolean;
+  description?: string | null;
 }) {
   const [attachments, setAttachments] = useState<PublicAttachmentRecord[]>([]);
   const [uploads, setUploads] = useState<LocalUpload[]>([]);
@@ -153,6 +164,15 @@ export function TaskAttachments({
     void load(controller.signal);
     return () => controller.abort();
   }, [load, task.attachmentInvalidationCursor]);
+
+  useEffect(() => {
+    function handleAttachmentChange(event: Event) {
+      const changedTaskId = (event as CustomEvent<{ taskId?: string }>).detail?.taskId;
+      if (changedTaskId === task.id) void load();
+    }
+    window.addEventListener(taskAttachmentChangedEvent, handleAttachmentChange);
+    return () => window.removeEventListener(taskAttachmentChangedEvent, handleAttachmentChange);
+  }, [load, task.id]);
 
   const allUsers = useMemo(() => {
     const byId = new Map(users.map((user) => [user.id, user]));
@@ -227,6 +247,7 @@ export function TaskAttachments({
           });
       setAttachments((current) => upsertAttachment(current, value.attachment));
       if (action === "delete" && previewRef === attachment.ref) setPreviewRef(null);
+      notifyTaskAttachmentChanged(task.id);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Attachment action failed");
       await load();
@@ -322,18 +343,31 @@ export function TaskAttachments({
             </div>
           </article>
         ))}
-        {attachments.map((attachment) => (
-          <AttachmentCard
-            key={attachment.ref}
-            taskId={task.id}
-            attachment={attachment}
-            uploader={allUsers.get(attachment.uploaderUserId)}
-            canWrite={canWrite}
-            onPreview={() => setPreviewRef(attachment.ref)}
-            onDelete={() => void mutateAttachment(attachment, "delete")}
-            onRestore={() => void mutateAttachment(attachment, "restore")}
-          />
-        ))}
+        {attachments.map((attachment) => {
+          const usedInDescription = taskDescriptionUsesAttachment(
+            description,
+            attachment.ref,
+          );
+          return (
+            <AttachmentCard
+              key={attachment.ref}
+              taskId={task.id}
+              attachment={attachment}
+              uploader={allUsers.get(attachment.uploaderUserId)}
+              canWrite={canWrite}
+              usedInDescription={usedInDescription}
+              onPreview={() => setPreviewRef(attachment.ref)}
+              onDelete={() => {
+                if (usedInDescription) {
+                  setError("Remove this image from the description before removing the attachment.");
+                } else {
+                  void mutateAttachment(attachment, "delete");
+                }
+              }}
+              onRestore={() => void mutateAttachment(attachment, "restore")}
+            />
+          );
+        })}
       </div>
       {previewIndex >= 0 && (
         <AttachmentPreview
@@ -349,11 +383,68 @@ export function TaskAttachments({
   );
 }
 
+export function TaskDescriptionImage({
+  taskId,
+  attachment,
+  alt,
+  caption,
+}: {
+  taskId: string;
+  attachment: PublicAttachmentRecord | null | undefined;
+  alt: string;
+  caption: string | null;
+}) {
+  const [thumbnailFailed, setThumbnailFailed] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  if (attachment === undefined) {
+    return <span className="task-description-image-placeholder" role="status">Loading image…</span>;
+  }
+  if (!attachment || attachment.kind !== "image" || attachment.state !== "ready") {
+    return <span className="task-description-image-placeholder" role="img" aria-label={alt}>Image unavailable</span>;
+  }
+  const content = attachmentContentPath(taskId, attachment.ref);
+  const source = thumbnailFailed
+    ? `${content}?disposition=inline`
+    : `${content}?variant=thumbnail&disposition=inline`;
+  return (
+    <figure className="task-description-image">
+      {unavailable ? (
+        <span className="task-description-image-placeholder" role="img" aria-label={alt}>Image unavailable</span>
+      ) : (
+        <button type="button" onClick={() => setPreviewOpen(true)} aria-label={`Preview ${alt}`}>
+          <img
+            src={source}
+            alt={alt}
+            width={attachment.imageWidth ?? undefined}
+            height={attachment.imageHeight ?? undefined}
+            onError={() => {
+              if (!thumbnailFailed) setThumbnailFailed(true);
+              else setUnavailable(true);
+            }}
+          />
+        </button>
+      )}
+      {caption && <figcaption>{caption}</figcaption>}
+      {previewOpen && (
+        <AttachmentPreview
+          taskId={taskId}
+          images={[attachment]}
+          index={0}
+          onIndex={() => undefined}
+          onClose={() => setPreviewOpen(false)}
+        />
+      )}
+    </figure>
+  );
+}
+
 function AttachmentCard({
   taskId,
   attachment,
   uploader,
   canWrite,
+  usedInDescription,
   onPreview,
   onDelete,
   onRestore,
@@ -362,6 +453,7 @@ function AttachmentCard({
   attachment: PublicAttachmentRecord;
   uploader?: UserRecord;
   canWrite: boolean;
+  usedInDescription: boolean;
   onPreview: () => void;
   onDelete: () => void;
   onRestore: () => void;
@@ -395,13 +487,14 @@ function AttachmentCard({
         <small>
           {deleted ? "Removed · recovery available" : `${formatBytes(attachment.byteSize)} · ${uploader?.displayName ?? "Unknown uploader"} · ${relativeAttachmentTime(attachment.createdAt)}`}
         </small>
+        {usedInDescription && !deleted && <span className="attachment-usage">Used in description</span>}
         {thumbnailFailed && attachment.kind === "image" && !deleted && <span className="attachment-fallback">Preview fallback uses the original image</span>}
       </div>
       <div className="attachment-actions">
         {!deleted && (
           <a className="icon-button" href={content} title="Download original" aria-label={`Download ${attachment.filename}`}><Download size={14} /></a>
         )}
-        {canWrite && !deleted && <button type="button" className="icon-button" title="Remove attachment" aria-label={`Remove ${attachment.filename}`} onClick={onDelete}><Trash2 size={14} /></button>}
+        {canWrite && !deleted && <button type="button" className="icon-button" title={usedInDescription ? "Remove from description first" : "Remove attachment"} aria-label={`Remove ${attachment.filename}`} onClick={onDelete}><Trash2 size={14} /></button>}
         {canWrite && deleted && <button type="button" className="button ghost attachment-restore" onClick={onRestore}><RotateCcw size={13} />Restore</button>}
       </div>
     </article>

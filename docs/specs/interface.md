@@ -396,6 +396,16 @@ List повторяет плотную grouped-list модель Linear.
   subtasks и relations. Description переходит в editor только по явному действию
   `Edit description`; режим чтения не обрезает длинный текст и поддерживает
   headings, lists, checklists, links, code и перенос длинных строк.
+- Description editor содержит `Insert image` и принимает PNG/JPEG/GIF через
+  picker, drop или paste. Upload показывает progress, cancel и retry; после
+  успеха в текущую позицию курсора вставляется стабильный native image token с
+  filename-derived alt. Пользователь может редактировать alt, optional caption
+  и перемещать или удалить token как обычный Markdown block. Пока upload активен,
+  сохранение description недоступно.
+- Native image в режиме чтения занимает доступную ширину без горизонтального
+  overflow, сохраняет aspect ratio, показывает caption и открывает тот же
+  private full-preview contract, что Attachment gallery. Loading, invalid и
+  недоступный reference имеют локальный placeholder без публичного URL.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
 - Timestamps muted и доступны в нижней metadata section.
@@ -407,6 +417,9 @@ List повторяет плотную grouped-list модель Linear.
   переключает card на original fallback. Full preview — modal dialog с focus
   trap, `Esc`, arrows, previous/next, zoom-to-fit и download original. Generic
   file всегда использует safe download.
+- Gallery отмечает image, используемый в description, статусом
+  `Used in description`; remove для такого image блокируется и предлагает
+  сначала удалить token из description. Удаление token не удаляет Attachment.
 - После секции вложений располагается `Activity` с native
   comment threads. Root composer и reply composer сохраняют local draft по
   current User + Task, поддерживают `Cmd/Ctrl+Enter`, явный submit, retry без
