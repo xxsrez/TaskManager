@@ -9,6 +9,7 @@ import {
 import {
   AgentApiError,
   encodeKeysetCursor,
+  parseAgentAttachmentListQuery,
   parseAgentTaskListQuery,
 } from "../lib/agent-api-contract";
 import { agentApiOpenApi } from "../lib/agent-api-openapi";
@@ -81,6 +82,35 @@ test("task collection parser rejects unknown fields and cross-query cursors", as
   );
 });
 
+test("attachment collection parser uses a resource-bound keyset cursor", async () => {
+  const first = await parseAgentAttachmentListQuery(
+    new URLSearchParams("limit=2&include_deleted=true"),
+    "task-ref-one",
+  );
+  assert.equal(first.limit, 2);
+  assert.equal(first.includeDeleted, true);
+  const cursor = encodeKeysetCursor(
+    { values: ["2026-08-17T20:00:00.000Z"], id: "attachment-ref" },
+    first.fingerprint,
+  );
+  const resumed = await parseAgentAttachmentListQuery(
+    new URLSearchParams(`limit=2&include_deleted=true&cursor=${cursor}`),
+    "task-ref-one",
+  );
+  assert.deepEqual(resumed.after, {
+    values: ["2026-08-17T20:00:00.000Z"],
+    id: "attachment-ref",
+  });
+  await assert.rejects(
+    parseAgentAttachmentListQuery(
+      new URLSearchParams(`limit=2&include_deleted=true&cursor=${cursor}`),
+      "task-ref-two",
+    ),
+    (error: unknown) =>
+      error instanceof AgentApiError && error.code === "invalid_argument",
+  );
+});
+
 test("OpenAPI exposes task work but no administration or sharing operations", () => {
   const paths = Object.keys(agentApiOpenApi.paths);
   assert.equal(paths.includes("/tasks"), true);
@@ -89,6 +119,12 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/releases"), true);
   assert.equal(paths.includes("/tasks/{ref}/comments"), true);
   assert.equal(paths.includes("/tasks/{ref}/comments/{commentRef}"), true);
+  assert.equal(paths.includes("/tasks/{ref}/attachments"), true);
+  assert.equal(paths.includes("/tasks/{ref}/attachments/{attachmentRef}"), true);
+  assert.equal(
+    paths.includes("/tasks/{ref}/attachments/{attachmentRef}/content"),
+    true,
+  );
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/comments"].post.operationId,
     "createTaskComment",
@@ -118,4 +154,10 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     { oauth2: ["api:write"] },
     { personalToken: [] },
   ]);
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/attachments"].post.requestBody.content[
+      "application/octet-stream"
+    ].schema.format,
+    "binary",
+  );
 });

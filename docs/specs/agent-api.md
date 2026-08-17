@@ -2,7 +2,7 @@
 
 Статус: `Implemented`
 
-Последнее обновление: 2026-08-16
+Последнее обновление: 2026-08-18
 
 ## 1. Назначение и граница
 
@@ -16,6 +16,9 @@ Task Manager предоставляет самостоятельный versioned
 - создать задачу и изменить status, project, release, priority, срок и archive;
 - читать native comment threads, добавлять/reply/edit/delete comments, менять
   reaction и resolve/reopen state.
+- отдельно перечислять, загружать, скачивать и удалять private native Task
+  attachments; raster ref можно затем вставить в description через обычный
+  versioned `update_task`.
 
 API не является обёрткой над `/api/bootstrap`: list queries не загружают и не
 возвращают описания всех задач. UI и внешний API используют одну D1-модель и
@@ -49,8 +52,9 @@ flowchart LR
 - `ProjectSummary` не содержит description; `ReleaseSummary` не содержит ни
   description, ни release notes.
 - Полный `TaskDetail` читается только отдельным запросом.
-- Native comments и большой imported archive читаются разными отдельными
-  paginated endpoints.
+- Native comments, native attachment metadata и большой imported archive
+  читаются разными отдельными paginated endpoints; binary body возвращает
+  только отдельный bearer-protected content endpoint.
 - `fields=*` и `include=description` не поддерживаются и отклоняются.
 
 ## 3. Authentication, OAuth и credentials
@@ -151,6 +155,12 @@ restore атомарно отзывает все authentication capabilities, ч
 | `POST /tasks` | `api:write` | Создать Task и вернуть `TaskDetail` |
 | `GET /tasks/{ref}` | `api:read` | Один `TaskDetail` |
 | `PATCH /tasks/{ref}` | `api:write` | Изменить Task с optimistic version |
+| `GET /tasks/{ref}/attachments` | `api:read` | Paginated native Attachment metadata |
+| `POST /tasks/{ref}/attachments` | `api:write` | Bounded binary upload с idempotency key |
+| `GET /tasks/{ref}/attachments/{attachmentRef}` | `api:read` | Metadata и private content links |
+| `PATCH /tasks/{ref}/attachments/{attachmentRef}` | `api:write` | Restore с optimistic version |
+| `DELETE /tasks/{ref}/attachments/{attachmentRef}` | `api:write` | Recoverable delete с optimistic version |
+| `GET /tasks/{ref}/attachments/{attachmentRef}/content` | `api:read` | Original/thumbnail; original поддерживает Range |
 | `GET /tasks/{ref}/external-context` | `api:read` | Imported context |
 | `GET /tasks/{ref}/comments` | `api:read` | Paginated native root threads с bounded replies |
 | `POST /tasks/{ref}/comments` | `api:write` | Создать root/reply с idempotency key |
@@ -179,6 +189,9 @@ protocol revisions).
 | `get_task_external_context` | `api:read` | Отдельный paginated imported archive |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
+| `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |
+| `upload_task_attachment` | `api:write` | Принять native OpenAI file input и идемпотентно сохранить binary |
+| `delete_task_attachment` | `api:write` | Recoverable delete с optimistic version |
 | `list_task_comments`, `get_task_thread` | `api:read` | Читать native threads отдельно от Task detail |
 | `add_task_comment`, `reply_to_task_comment` | `api:write` | Создать root/reply идемпотентно |
 | `edit_task_comment`, `delete_task_comment` | `api:write` | Изменить собственный comment или создать разрешённый tombstone |
@@ -208,8 +221,9 @@ scope check и owner/ACL scope до обращения к repository.
 ### 5.2 Pagination и envelope
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
-External context имеет maximum `100`; native comment roots — maximum `50` и
-до 100 replies на root. Cursor связан с Task, filters, sort и limit;
+External context и native attachments имеют maximum `100`; native comment
+roots — maximum `50` и до 100 replies на root. Cursor связан с Task, filters,
+sort и limit;
 cursor другого query отклоняется. Collections используют keyset position из
 стабильного sort value и immutable `public_id`, поэтому вставка или удаление
 строки на уже прочитанной странице не сдвигает следующую страницу. Offset
@@ -253,10 +267,11 @@ compact project/release/assignee/labels, dueDate, updatedAt, version и
 
 `TaskDetail` добавляет description, estimate, rank, lifecycle timestamps,
 access role/canEdit, расширенный project/release context, parent, subtasks,
-relations и provenance counts. Native `commentCount` присутствует только как
-context hint; bodies читаются через `/comments`. Imported comment bodies и
-attachment URLs остаются в `/external-context`. Detail также возвращает
-`availableStatuses`, валидные для изменения именно этой Task.
+relations и provenance counts. Native `commentCount` и `attachmentCount`
+присутствуют только как context hints; bodies/metadata читаются через
+`/comments` и `/attachments`. Imported comment bodies и attachment URLs
+остаются в `/external-context`. Detail также возвращает `availableStatuses`,
+валидные для изменения именно этой Task.
 
 `ProjectSummary` возвращает name, summary, status, dates, task counts,
 progress, release count, updatedAt и version. Detail добавляет description и
@@ -278,13 +293,13 @@ release notes. Project/Release detail возвращают `workflowStatuses`, �
 `estimate`, `dueDate`, `rank`, `archived`.
 
 `description` может содержать native raster reference только в формате
-`![alt](attachment:v1:<public-ref> "optional caption")`. Это не отдельная
-Agent/MCP upload capability: сначала image должен стать готовым Attachment этой
-же Task через authenticated application upload. Общий repository path для REST,
-MCP и UI отклоняет malformed, cross-Task, non-image, deleted или неготовый
-reference; ошибка не подтверждает существование недоступного resource. Task
-create с native reference отклоняется, потому что Attachment ещё не может
-принадлежать создаваемой Task.
+`![alt](attachment:v1:<public-ref> "optional caption")`. Сначала image должен
+стать готовым Attachment этой же Task через Agent REST upload или MCP
+`upload_task_attachment`; затем ref вставляется обычным versioned Task update.
+Общий repository path для REST, MCP и UI отклоняет malformed, cross-Task,
+non-image, deleted или неготовый reference; ошибка не подтверждает существование
+недоступного resource. Task create с native reference отклоняется, потому что
+Attachment ещё не может принадлежать создаваемой Task.
 
 ```json
 {
@@ -320,6 +335,31 @@ Body нормализует line endings, отбрасывает внешний 
 unsupported control characters и размер больше 100 000 characters. Он остаётся
 Markdown-like text: transport не принимает raw rendered HTML. Reactions
 возвращаются как aggregate count + `reactedByCurrentUser`, без списка Users.
+
+### 7.2 Native attachment commands
+
+`POST /tasks/{ref}/attachments` принимает raw binary body. Обязательны
+`Idempotency-Key`, percent-encoded `X-Attachment-Filename` и фактический
+`Content-Type`; сервер всё равно проверяет magic bytes, размер, raster
+dimensions и SHA-256. Response не содержит internal Task/uploader IDs, R2 key,
+public или долговечный signed URL. Original/thumbnail URLs указывают только на
+Agent API и требуют тот же bearer token при каждом чтении.
+
+`GET /tasks/{ref}/attachments` использует стабильную keyset pagination по
+`createdAt/ref`. `include_deleted=true` доступен только Editor и выше. Delete
+требует `X-Attachment-Version`, остаётся recoverable в grace period и
+отклоняется, пока description использует image ref; REST `PATCH` с
+`{"version": n, "deleted": false}` выполняет restore.
+
+MCP `upload_task_attachment` следует актуальному OpenAI file-input contract:
+верхнеуровневое поле `file` объявлено в `_meta["openai/fileParams"]`, содержит
+обязательные `download_url`/`file_id` и optional `mime_type`/`file_name`.
+Временный URL не сохраняется и не логируется. Worker принимает только HTTPS URL
+на OpenAI/OpenAIusercontent host, не передаёт credentials, вручную проверяет
+каждый redirect и ограничивает как declared, так и фактически прочитанный body.
+После server fetch действуют те же content inspection, idempotency и Task ACL,
+что для REST/UI upload. Contract основан на официальном
+[OpenAI plugin reference](https://developers.openai.com/plugins/reference).
 
 ## 8. Errors и authorization
 
@@ -383,6 +423,11 @@ Authorization invariants:
     reply открывает resolved thread; stale edit/delete/resolve получает conflict;
     Agent author projection не содержит ID/email. Imported archive остаётся
     отдельным read-only endpoint.
+11. Agent REST upload/list/get/range/delete повторяет Task ACL, не публикует
+    internal IDs/R2 keys и сохраняет стабильную attachment pagination. MCP
+    `tools/list` объявляет четыре attachment tools, а upload schema содержит
+    `_meta["openai/fileParams"]`; invalid/private redirect, oversized body,
+    MIME mismatch и stale version отклоняются до небезопасной mutation.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются
 проверенными локальной реализацией.

@@ -78,6 +78,44 @@ export async function withAgentApi<T>(
   }
 }
 
+export async function withAgentApiResponse(
+  request: Request,
+  requiredScope: ApiScope,
+  action: (context: AgentAuthorizationContext) => Promise<Response>,
+): Promise<Response> {
+  const requestId = `req_${crypto.randomUUID()}`;
+  try {
+    const context = await authenticateAgentRequest(request, requiredScope);
+    const response = await action(context);
+    response.headers.set("Cache-Control", "private, no-store");
+    response.headers.set("X-Request-Id", requestId);
+    return response;
+  } catch (error) {
+    const mapped = mapApiError(error);
+    if (mapped.status >= 500) console.error(error);
+    const response = agentJson(
+      {
+        error: {
+          code: mapped.code,
+          message: mapped.message,
+          requestId,
+          ...(mapped.details === undefined ? {} : { details: mapped.details }),
+        },
+      },
+      mapped.status,
+      requestId,
+    );
+    if (mapped.status === 401 || mapped.code === "insufficient_scope") {
+      const errorCode = mapped.status === 401 ? "invalid_token" : "insufficient_scope";
+      response.headers.set(
+        "WWW-Authenticate",
+        `Bearer resource_metadata="${oauthProtectedResourceMetadataUrl(publicOrigin(request))}", scope="${requiredScope}", error="${errorCode}"`,
+      );
+    }
+    return response;
+  }
+}
+
 function agentJson(
   value: unknown,
   status: number,

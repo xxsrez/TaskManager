@@ -252,8 +252,9 @@ Assignee обязан быть владельцем Task либо пользов
   удаляет R2 object перед metadata row. Просроченные uploads переходят в
   предсказуемый failed state, а orphan cleanup повторяем и идемпотентен.
 - Attachment bodies, object keys и delivery URLs не входят в bootstrap, sync,
-  compact task list или Agent collection. Metadata загружается отдельным
-  ACL-scoped endpoint после открытия Task details.
+  compact task list или Agent Task collection. Metadata загружается отдельным
+  ACL-scoped endpoint после открытия Task details. Agent REST/MCP возвращают
+  только bounded metadata и bearer-protected Agent content URLs.
 - Details показывает lazy attachment count/list, XHR upload progress,
   retry/cancel, safe download, recoverable delete/restore и Viewer read-only
   state. Raster list использует отдельный authenticated server thumbnail;
@@ -445,8 +446,8 @@ completed dates и archived state.
 ### 12.1 Доступ агентов
 
 - Task Manager предоставляет agent API для workspace summary, Projects,
-  Releases, compact task lists, одной полной Task, task create/update и
-  отдельных native comment threads.
+  Releases, compact task lists, одной полной Task, task create/update,
+  отдельных native comment threads и native Attachment metadata/binary.
 - List response не содержит task description, release notes, imported comments,
   native comment bodies, attachment metadata/bodies или полного provenance.
   Imported archive, native comments и native attachments читаются отдельными
@@ -461,9 +462,10 @@ completed dates и archived state.
 - API credential не наследует admin capability. Внешний API не предоставляет
   backup/restore, sharing, ownership transfer, workflow или credential
   management operations.
-- Reads требуют `api:read`; task/comment mutations — `api:write`. Update/edit/
-  delete/resolve требуют optimistic version, comment create — idempotency key;
-  все команды проходят те же role/domain checks, что UI.
+- Reads требуют `api:read`; task/comment/attachment mutations — `api:write`.
+  Update/edit/delete/resolve требуют optimistic version, comment/attachment
+  create — idempotency key; все команды проходят те же role/domain checks, что
+  UI.
 - Native connector устанавливается одним plugin и подключается через OAuth
   consent без ручной передачи API secret. Он умеет получать все доступные
   Tasks, фильтровать их по Project/Release и загружать detail только после
@@ -614,6 +616,11 @@ completed dates и archived state.
     неизвестной Task. После revoke доступ исчезает немедленно. MIME confusion,
     HTML/SVG, corrupted или oversized image отклоняются; delete восстанавливаем
     до grace cutoff, а cleanup не оставляет R2 object или live metadata orphan.
+32. Через Agent REST и MCP отдельно получить native attachment metadata,
+    загрузить binary, скачать original/thumbnail и выполнить versioned delete.
+    `get_task` сообщает только count; list не содержит body/internal IDs/R2 key.
+    MCP file input проходит bounded OpenAI HTTPS fetch без credentials и
+    private redirect; raster ref вставляется только отдельным `update_task`.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -640,6 +647,9 @@ completed dates и archived state.
     confirmation, sharing opt-in и rollback tests.
 15. Native task comments: Activity UI, ACL-scoped REST/Agent/MCP commands,
     idempotency/concurrency, backups и mobile verification.
-16. Native attachment foundation: D1 metadata, раздельные R2 bindings,
-    ACL-scoped binary routes, content inspection, retry/cleanup и UAT smoke;
-    UI, Agent/MCP и backup integration идут отдельными следующими срезами.
+16. Native attachment foundation и UI: D1 metadata, раздельные R2 bindings,
+    ACL-scoped binary routes, content inspection, retry/cleanup, details/
+    composer, description images и UAT smoke.
+17. Native attachments для Agent REST/MCP: progressive metadata, private binary
+    delivery, OpenAI file input, versioned delete и transport/security tests.
+18. Attachment-aware system/project backup и restore.

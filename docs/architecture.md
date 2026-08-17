@@ -200,10 +200,11 @@ version conflict остаётся write boundary и не заменяется po
 2. Agent query service применяет тот же ownership/ACL predicate до filters,
    counts, ambiguity resolution и cursor pagination.
 3. Collection use case строит фиксированный compact projection без description,
-   comment bodies, attachments, internal IDs и user emails.
+   comment bodies, attachment metadata/bodies, internal IDs и user emails.
 4. Detail use case по canonical `public_id` загружает одну сущность; native
-   comment threads и большой imported archive остаются разными отдельными
-   paginated вызовами.
+   comment threads, native Attachment metadata и большой imported archive
+   остаются разными отдельными paginated вызовами. Только detail добавляет
+   bounded attachment count hint.
 5. REST возвращает versioned schema и request/as-of metadata. MCP публикует
    task-oriented tools с теми же projections. Любой client переходит от summary
    к detail только через явный отдельный запрос. Анонимный MCP handshake может
@@ -353,6 +354,16 @@ entrypoints сходятся в repository validator: он требует ready 
 обратный guard по актуальной description. Renderer распознаёт только отдельный
 Markdown image block, лениво читает ACL-scoped metadata и строит private content
 route уже после server authorization; stale reference становится placeholder.
+
+Agent REST повторяет эту boundary через `/api/agent/v1/tasks/{ref}/attachments`:
+metadata использует Task-bound keyset cursor, upload читает raw body только после
+bearer/scope проверки, а content route повторно разрешает Task ACL перед R2.
+Projection исключает internal Task/uploader IDs и object key; URL ведёт обратно
+на bearer-protected Agent API. MCP использует тот же command service. Его
+OpenAI file input скачивается bounded fetch с `credentials=omit`, manual
+redirect validation и allowlist OpenAI HTTPS hosts; временный URL не попадает в
+D1 или logs. После fetch общий Attachment repository снова проверяет magic,
+claim, pixels, checksum, idempotency и effective Editor role.
 
 Native comment bodies также не входят в bootstrap или Task detail. Activity
 отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,

@@ -4,6 +4,18 @@ import {
   GET as getAttachmentContentRoute,
 } from "../app/api/tasks/[id]/attachments/[attachmentRef]/content/route";
 import {
+  GET as getAgentAttachmentContentRoute,
+} from "../app/api/agent/v1/tasks/[ref]/attachments/[attachmentRef]/content/route";
+import {
+  DELETE as deleteAgentAttachmentRoute,
+  GET as getAgentAttachmentRoute,
+} from "../app/api/agent/v1/tasks/[ref]/attachments/[attachmentRef]/route";
+import {
+  GET as listAgentAttachmentsRoute,
+  POST as createAgentAttachmentRoute,
+} from "../app/api/agent/v1/tasks/[ref]/attachments/route";
+import { POST as mcpPost } from "../app/api/mcp/route";
+import {
   GET as listAttachmentsRoute,
   POST as createAttachmentRoute,
 } from "../app/api/tasks/[id]/attachments/route";
@@ -29,6 +41,8 @@ import {
 } from "../lib/repository";
 import { buildTaskImageToken } from "../lib/task-description-format";
 import { updateAgentTask } from "../lib/agent-api-repository";
+import { getAgentTaskDetail } from "../lib/agent-api-repository";
+import { issueApiCredential } from "../lib/api-credentials";
 import { exportProjectBackup } from "../lib/project-backup";
 import { exportSystemBackup } from "../lib/system-backup";
 import { getWorkspaceSync } from "../lib/workspace-sync";
@@ -548,6 +562,257 @@ test("binary HTTP routes authenticate before bounded upload and preserve private
   assert.equal((await hidden.json() as { error: string }).error, "One or more tasks were not found");
   assert.ok(owner && viewer && outsider);
 });
+
+test("Agent attachment routes and MCP tools preserve binary transport and bearer ACL", async (t) => {
+  const { owner, viewer, outsider, task } = await setupSharedTask("Agent attachments");
+  const ownerCredential = await issueApiCredential(owner, {
+    name: "agent-attachment-owner",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const viewerCredential = await issueApiCredential(viewer, {
+    name: "agent-attachment-viewer",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const outsiderCredential = await issueApiCredential(outsider, {
+    name: "agent-attachment-outsider",
+    scopes: ["api:read"],
+    expiresInDays: 1,
+  });
+  const endpoint = `https://example.test/api/agent/v1/tasks/${task.publicId}/attachments`;
+  const context = { params: Promise.resolve({ ref: task.publicId }) };
+
+  const upload = (key: string, filename: string, body: string) =>
+    createAgentAttachmentRoute(
+      new Request(endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${ownerCredential.token}`,
+          "content-type": "application/pdf",
+          "idempotency-key": key,
+          "x-attachment-filename": encodeURIComponent(filename),
+        },
+        body,
+      }),
+      context,
+    );
+  const firstResponse = await upload(
+    "agent-route-one",
+    "agent-one.pdf",
+    "%PDF-1.7\none\n%%EOF",
+  );
+  assert.equal(firstResponse.status, 201);
+  const first = (await firstResponse.json()) as {
+    data: Record<string, unknown> & { ref: string; version: number; links: { original: string } };
+  };
+  assert.equal(first.data.filename, "agent-one.pdf");
+  for (const privateField of ["id", "taskId", "uploaderUserId", "objectKey"]) {
+    assert.equal(Object.hasOwn(first.data, privateField), false, privateField);
+  }
+  await upload("agent-route-two", "agent-two.pdf", "%PDF-1.7\ntwo\n%%EOF");
+
+  const pageOneResponse = await listAgentAttachmentsRoute(
+    new Request(`${endpoint}?limit=1`, {
+      headers: { authorization: `Bearer ${viewerCredential.token}` },
+    }),
+    context,
+  );
+  assert.equal(pageOneResponse.status, 200);
+  const pageOne = (await pageOneResponse.json()) as {
+    data: Array<{ ref: string }>;
+    page: { hasMore: boolean; nextCursor: string };
+  };
+  assert.equal(pageOne.data.length, 1);
+  assert.equal(pageOne.page.hasMore, true);
+  const pageTwoResponse = await listAgentAttachmentsRoute(
+    new Request(`${endpoint}?limit=1&cursor=${pageOne.page.nextCursor}`, {
+      headers: { authorization: `Bearer ${viewerCredential.token}` },
+    }),
+    context,
+  );
+  const pageTwo = (await pageTwoResponse.json()) as {
+    data: Array<{ ref: string }>;
+    page: { hasMore: boolean };
+  };
+  assert.equal(pageTwo.data.length, 1);
+  assert.notEqual(pageTwo.data[0]?.ref, pageOne.data[0]?.ref);
+  assert.equal(pageTwo.page.hasMore, false);
+
+  const metadataContext = {
+    params: Promise.resolve({
+      ref: task.publicId,
+      attachmentRef: first.data.ref,
+    }),
+  };
+  const metadataResponse = await getAgentAttachmentRoute(
+    new Request(`${endpoint}/${first.data.ref}`, {
+      headers: { authorization: `Bearer ${viewerCredential.token}` },
+    }),
+    metadataContext,
+  );
+  assert.equal(metadataResponse.status, 200);
+  const contentResponse = await getAgentAttachmentContentRoute(
+    new Request(first.data.links.original, {
+      headers: {
+        authorization: `Bearer ${viewerCredential.token}`,
+        range: "bytes=0-7",
+      },
+    }),
+    metadataContext,
+  );
+  assert.equal(contentResponse.status, 206);
+  assert.equal(new TextDecoder().decode(await contentResponse.arrayBuffer()), "%PDF-1.7");
+
+  const hidden = await getAgentAttachmentRoute(
+    new Request(`${endpoint}/${first.data.ref}`, {
+      headers: { authorization: `Bearer ${outsiderCredential.token}` },
+    }),
+    metadataContext,
+  );
+  assert.equal(hidden.status, 404);
+  const deleted = await deleteAgentAttachmentRoute(
+    new Request(`${endpoint}/${first.data.ref}`, {
+      method: "DELETE",
+      headers: {
+        authorization: `Bearer ${ownerCredential.token}`,
+        "x-attachment-version": String(first.data.version),
+      },
+    }),
+    metadataContext,
+  );
+  assert.equal(deleted.status, 200);
+  const deletedBody = (await deleted.json()) as { data: { state: string } };
+  assert.equal(deletedBody.data.state, "deleted");
+  const viewerDeletedList = await listAgentAttachmentsRoute(
+    new Request(`${endpoint}?include_deleted=true`, {
+      headers: { authorization: `Bearer ${viewerCredential.token}` },
+    }),
+    context,
+  );
+  assert.equal(viewerDeletedList.status, 403);
+  assert.equal((await getAgentTaskDetail(owner, task.publicId)).contextHints.attachmentCount, 1);
+
+  let mcpDownloads = 0;
+  t.mock.method(globalThis, "fetch", async (request: RequestInfo | URL) => {
+    mcpDownloads += 1;
+    assert.equal(
+      request instanceof Request ? request.url : String(request),
+      "https://files.openaiusercontent.com/uploads/mcp.pdf",
+    );
+    return new Response("%PDF-1.7\nmcp\n%%EOF", {
+      headers: { "content-type": "application/pdf" },
+    });
+  });
+  const mcpEndpoint = "https://example.test/api/mcp";
+  const mcpHeaders = {
+    authorization: `Bearer ${ownerCredential.token}`,
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  const deniedUpload = await mcpPost(
+    new Request(mcpEndpoint, {
+      method: "POST",
+      headers: {
+        ...mcpHeaders,
+        authorization: `Bearer ${viewerCredential.token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 9,
+        method: "tools/call",
+        params: {
+          name: "upload_task_attachment",
+          arguments: {
+            taskRef: task.publicId,
+            file: {
+              download_url:
+                "https://files.openaiusercontent.com/uploads/mcp.pdf",
+              file_id: "file_mcp_denied",
+              mime_type: "application/pdf",
+              file_name: "denied.pdf",
+            },
+            idempotencyKey: "mcp-viewer-denied",
+          },
+        },
+      }),
+    }),
+  );
+  const deniedResult = await mcpResult(deniedUpload);
+  assert.equal(deniedResult.result.isError, true);
+  assert.equal(mcpDownloads, 0);
+  const mcpUpload = await mcpPost(
+    new Request(mcpEndpoint, {
+      method: "POST",
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 10,
+        method: "tools/call",
+        params: {
+          name: "upload_task_attachment",
+          arguments: {
+            taskRef: task.publicId,
+            file: {
+              download_url:
+                "https://files.openaiusercontent.com/uploads/mcp.pdf",
+              file_id: "file_mcp_attachment",
+              mime_type: "application/pdf",
+              file_name: "mcp.pdf",
+            },
+            idempotencyKey: "mcp-agent-upload",
+          },
+        },
+      }),
+    }),
+  );
+  assert.equal(mcpUpload.status, 200);
+  const uploadResult = await mcpResult(mcpUpload);
+  const uploaded = uploadResult.result.structuredContent.data as {
+    ref: string;
+    filename: string;
+  };
+  assert.equal(uploaded.filename, "mcp.pdf");
+  assert.equal(mcpDownloads, 1);
+
+  const mcpList = await mcpPost(
+    new Request(mcpEndpoint, {
+      method: "POST",
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 11,
+        method: "tools/call",
+        params: {
+          name: "list_task_attachments",
+          arguments: { taskRef: task.publicId, limit: 10 },
+        },
+      }),
+    }),
+  );
+  const listResult = await mcpResult(mcpList);
+  const listedAttachments = listResult.result.structuredContent.data as Array<{
+    ref: string;
+  }>;
+  assert.ok(listedAttachments.some((attachment) => attachment.ref === uploaded.ref));
+});
+
+async function mcpResult(response: Response) {
+  const text = await response.text();
+  const payload = text.startsWith("event:")
+    ? text
+        .split("\n")
+        .find((line) => line.startsWith("data:"))!
+        .slice("data:".length)
+        .trim()
+    : text;
+  return JSON.parse(payload) as {
+    result: {
+      isError?: boolean;
+      structuredContent: { data: unknown };
+    };
+  };
+}
 
 test("legacy logical backups fail closed instead of orphaning native attachment objects", async () => {
   const { owner, project, task } = await setupSharedTask("Attachment backup guard");

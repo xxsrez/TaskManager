@@ -77,6 +77,13 @@ export type AgentExternalContextQuery = {
   fingerprint: string;
 };
 
+export type AgentAttachmentListQuery = {
+  limit: number;
+  after: AgentKeysetPosition | null;
+  includeDeleted: boolean;
+  fingerprint: string;
+};
+
 const taskQueryParameters = new Set([
   "limit",
   "cursor",
@@ -260,6 +267,44 @@ export async function parseAgentReleaseListQuery(
   };
 }
 
+export async function parseAgentAttachmentListQuery(
+  searchParams: URLSearchParams,
+  taskReference: string,
+): Promise<AgentAttachmentListQuery> {
+  rejectUnknownParameters(
+    searchParams,
+    new Set(["limit", "cursor", "include_deleted"]),
+  );
+  const limit = integerParameter(searchParams.get("limit"), 50, 1, 100, "limit");
+  const includeDeleted = booleanParameter(
+    searchParams.get("include_deleted"),
+    false,
+    "include_deleted",
+  );
+  const fingerprint = await digestReference(
+    "query",
+    JSON.stringify({
+      limit,
+      includeDeleted,
+      taskReference,
+      resource: "native-attachments",
+    }),
+  );
+  const after = decodeKeysetCursor(searchParams.get("cursor"), fingerprint);
+  if (
+    after &&
+    (after.values.length !== 1 || typeof after.values[0] !== "string")
+  ) {
+    throw new AgentApiError("invalid_argument", "Cursor is invalid", 400);
+  }
+  return {
+    limit,
+    after,
+    includeDeleted,
+    fingerprint,
+  };
+}
+
 export async function parseAgentExternalContextQuery(
   searchParams: URLSearchParams,
   taskReference: string,
@@ -406,13 +451,17 @@ function integerParameter(
   return number;
 }
 
-function booleanParameter(value: string | null, fallback: boolean): boolean {
+function booleanParameter(
+  value: string | null,
+  fallback: boolean,
+  name = "archived",
+): boolean {
   if (value === null) return fallback;
   if (value === "true") return true;
   if (value === "false") return false;
   throw new AgentApiError(
     "invalid_argument",
-    "archived must be true or false",
+    `${name} must be true or false`,
     400,
   );
 }

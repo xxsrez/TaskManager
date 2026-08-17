@@ -5,12 +5,23 @@ import {
   catalogReference,
   encodeCursor,
   encodeKeysetCursor,
+  type AgentAttachmentListQuery,
   type AgentKeysetPosition,
   type AgentProjectListQuery,
   type AgentReleaseListQuery,
   type AgentTaskListQuery,
 } from "./agent-api-contract";
-import { NotFoundError, ValidationError } from "./domain";
+import {
+  createAttachment,
+  deleteAttachment,
+  getAttachmentContent,
+  getTaskAttachment,
+  listTaskAttachments,
+  restoreAttachment,
+  type AttachmentContentOptions,
+  type CreateAttachmentInput,
+} from "./attachments";
+import { NotFoundError, PermissionError, ValidationError } from "./domain";
 import { createTask, updateTask } from "./repository";
 import {
   createComment,
@@ -22,7 +33,7 @@ import {
   setCommentReaction,
 } from "./comments";
 import type { AgentAuthorizationContext } from "./agent-api-context";
-import type { AccessRole, UserRecord } from "./types";
+import type { AccessRole, AttachmentRecord, UserRecord } from "./types";
 
 type DbRow = Record<string, unknown>;
 
@@ -220,15 +231,24 @@ export async function getAgentTaskDetail(
 ) {
   const row = await loadAccessibleTaskRow(currentUser.id, reference);
   const summary = await mapTaskSummary(row, currentUser);
-  const [parent, subtasks, relations, provenance, availableStatuses] = await Promise.all([
+  const [
+    parent,
+    subtasks,
+    relations,
+    provenance,
+    availableStatuses,
+    attachmentCount,
+  ] = await Promise.all([
     loadParentTask(currentUser, nullableString(row.parent_task_id)),
     loadSubtasks(currentUser, String(row.id)),
     loadRelations(currentUser, String(row.id)),
     loadProvenanceSummary(String(row.id), String(row.owner_user_id)),
     loadStatusSummaries(String(row.owner_user_id)),
+    loadNativeAttachmentCount(String(row.id)),
   ]);
   return {
     ...summary,
+    contextHints: { ...summary.contextHints, attachmentCount },
     description: String(row.description ?? ""),
     estimate: nullableNumber(row.estimate),
     rank: Number(row.rank),
@@ -646,6 +666,130 @@ export async function updateAgentTask(
   return getAgentTaskDetail(currentUser, String(task.public_id));
 }
 
+export async function listAgentTaskAttachments(
+  currentUser: UserRecord,
+  taskReference: string,
+  input: AgentAttachmentListQuery,
+  origin: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const after = input.after
+    ? {
+        createdAt: String(input.after.values[0]),
+        ref: input.after.id,
+      }
+    : null;
+  const page = await listTaskAttachments(currentUser, String(task.id), {
+    includeDeleted: input.includeDeleted,
+    limit: input.limit,
+    after,
+  });
+  const items = page.items.map((attachment) =>
+    agentAttachment(attachment, String(task.public_id), origin),
+  );
+  return {
+    data: items,
+    page: {
+      hasMore: page.hasMore,
+      nextCursor: page.hasMore
+        ? encodeKeysetCursor(
+            {
+              values: [page.items.at(-1)!.createdAt],
+              id: page.items.at(-1)!.publicId,
+            },
+            input.fingerprint,
+          )
+        : null,
+    },
+    totalCount: page.totalCount,
+  };
+}
+
+export async function getAgentTaskAttachment(
+  currentUser: UserRecord,
+  taskReference: string,
+  attachmentReference: string,
+  origin: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const attachment = await getTaskAttachment(
+    currentUser,
+    String(task.id),
+    attachmentReference,
+  );
+  return agentAttachment(attachment, String(task.public_id), origin);
+}
+
+export async function createAgentTaskAttachment(
+  currentUser: UserRecord,
+  taskReference: string,
+  input: CreateAttachmentInput,
+  origin: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const attachment = await createAttachment(currentUser, String(task.id), input);
+  return agentAttachment(attachment, String(task.public_id), origin);
+}
+
+export async function assertAgentTaskAttachmentWriteAccess(
+  currentUser: UserRecord,
+  taskReference: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  if (!canEditContent(String(task.access_role) as AccessRole)) {
+    throw new PermissionError("Editor access is required");
+  }
+}
+
+export async function deleteAgentTaskAttachment(
+  currentUser: UserRecord,
+  taskReference: string,
+  attachmentReference: string,
+  expectedVersion: number,
+  origin: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const attachment = await deleteAttachment(
+    currentUser,
+    String(task.id),
+    attachmentReference,
+    expectedVersion,
+  );
+  return agentAttachment(attachment, String(task.public_id), origin);
+}
+
+export async function restoreAgentTaskAttachment(
+  currentUser: UserRecord,
+  taskReference: string,
+  attachmentReference: string,
+  expectedVersion: number,
+  origin: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const attachment = await restoreAttachment(
+    currentUser,
+    String(task.id),
+    attachmentReference,
+    expectedVersion,
+  );
+  return agentAttachment(attachment, String(task.public_id), origin);
+}
+
+export async function getAgentTaskAttachmentContent(
+  currentUser: UserRecord,
+  taskReference: string,
+  attachmentReference: string,
+  options: AttachmentContentOptions,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  return getAttachmentContent(
+    currentUser,
+    String(task.id),
+    attachmentReference,
+    options,
+  );
+}
+
 export async function listAgentTaskComments(
   currentUser: UserRecord,
   taskReference: string,
@@ -920,6 +1064,17 @@ async function loadProvenanceSummary(taskId: string, ownerUserId: string) {
   };
 }
 
+async function loadNativeAttachmentCount(taskId: string) {
+  const row = await getD1()
+    .prepare(
+      `SELECT COUNT(*) AS count FROM attachments
+       WHERE task_id = ? AND state <> 'deleted'`,
+    )
+    .bind(taskId)
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
 async function resolveStatusReference(ownerUserId: string, reference: string) {
   const rows = await getD1()
     .prepare(
@@ -975,6 +1130,44 @@ async function mapTaskSummary(row: DbRow, currentUser: UserRecord) {
       subtaskCount: Number(row.subtask_count ?? 0),
       relationCount: Number(row.relation_count ?? 0),
       commentCount: Number(row.comment_count ?? 0),
+    },
+  };
+}
+
+function agentAttachment(
+  attachment: AttachmentRecord,
+  taskReference: string,
+  origin: string,
+) {
+  const task = encodeURIComponent(taskReference);
+  const ref = encodeURIComponent(attachment.publicId);
+  const base = new URL(`/api/agent/v1/tasks/${task}/attachments/${ref}`, origin);
+  return {
+    ref: attachment.publicId,
+    filename: attachment.displayName,
+    mediaType: attachment.mediaType,
+    byteSize: attachment.byteSize,
+    checksumSha256: attachment.checksumSha256,
+    kind: attachment.kind,
+    state: attachment.state,
+    imageWidth: attachment.imageWidth,
+    imageHeight: attachment.imageHeight,
+    variants: attachment.variants,
+    failureCode: attachment.failureCode,
+    version: attachment.version,
+    createdAt: attachment.createdAt,
+    updatedAt: attachment.updatedAt,
+    deletedAt: attachment.deletedAt,
+    links: {
+      metadata: base.toString(),
+      original:
+        attachment.state === "ready"
+          ? `${base.toString()}/content?variant=original`
+          : null,
+      thumbnail:
+        attachment.state === "ready" && attachment.kind === "image"
+          ? `${base.toString()}/content?variant=thumbnail`
+          : null,
     },
   };
 }

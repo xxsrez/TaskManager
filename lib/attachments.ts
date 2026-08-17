@@ -281,7 +281,11 @@ export async function createAttachment(
 export async function listTaskAttachments(
   currentUser: UserRecord,
   taskId: string,
-  options: { includeDeleted?: boolean; limit?: number } = {},
+  options: {
+    includeDeleted?: boolean;
+    limit?: number;
+    after?: { createdAt: string; ref: string } | null;
+  } = {},
 ) {
   const task = await getTask(currentUser, taskId);
   if (options.includeDeleted && !canEditContent(task.accessRole)) {
@@ -292,25 +296,49 @@ export async function listTaskAttachments(
     ? Math.min(100, Math.max(1, requestedLimit))
     : 50;
   const statePredicate = options.includeDeleted ? "" : "AND state <> 'deleted'";
-  const [rows, count] = await getD1().batch<DbRow>([
-    getD1()
+  const afterPredicate = options.after
+    ? "AND (created_at > ? OR (created_at = ? AND public_id > ?))"
+    : "";
+  const db = getD1();
+  const listStatement = db
       .prepare(
         `SELECT * FROM attachments
-         WHERE task_id = ? ${statePredicate}
-         ORDER BY created_at, id LIMIT ?`,
+         WHERE task_id = ? ${statePredicate} ${afterPredicate}
+         ORDER BY created_at, public_id LIMIT ?`,
+      );
+  const rowsStatement = options.after
+    ? listStatement.bind(
+        task.id,
+        options.after.createdAt,
+        options.after.createdAt,
+        options.after.ref,
+        limit + 1,
       )
-      .bind(task.id, limit),
-    getD1()
+    : listStatement.bind(task.id, limit + 1);
+  const [rows, count] = await db.batch<DbRow>([
+    rowsStatement,
+    db
       .prepare(
         `SELECT COUNT(*) AS count FROM attachments
          WHERE task_id = ? ${statePredicate}`,
       )
       .bind(task.id),
   ]);
+  const hasMore = rows.results.length > limit;
   return {
-    items: (rows.results as DbRow[]).map(mapAttachment),
+    items: (rows.results as DbRow[]).slice(0, limit).map(mapAttachment),
     totalCount: Number((count.results[0] as DbRow | undefined)?.count ?? 0),
+    hasMore,
   };
+}
+
+export async function getTaskAttachment(
+  currentUser: UserRecord,
+  taskId: string,
+  attachmentRef: string,
+) {
+  const task = await getTask(currentUser, taskId);
+  return loadTaskAttachment(task.id, attachmentRef);
 }
 
 export async function getAttachmentContent(

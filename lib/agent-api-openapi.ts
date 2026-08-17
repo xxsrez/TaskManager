@@ -213,6 +213,138 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/tasks/{ref}/attachments": {
+      get: {
+        operationId: "listTaskAttachments",
+        summary: "List one bounded page of private native attachment metadata",
+        parameters: [
+          referenceParameter(),
+          {
+            name: "limit",
+            in: "query",
+            schema: { type: "integer", minimum: 1, maximum: 100, default: 50 },
+          },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+          {
+            name: "include_deleted",
+            in: "query",
+            schema: { type: "boolean", default: false },
+            description: "Editor-only recovery view.",
+          },
+        ],
+        responses: {
+          "200": listResponse("Native attachment metadata", {
+            $ref: "#/components/schemas/Attachment",
+          }),
+          ...errorResponses,
+        },
+      },
+      post: {
+        operationId: "uploadTaskAttachment",
+        summary: "Upload one bounded binary into private Task storage",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [
+          referenceParameter(),
+          requiredHeader("Idempotency-Key", "Stable retry key for the identical binary."),
+          requiredHeader(
+            "X-Attachment-Filename",
+            "Percent-encoded original filename.",
+          ),
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            "application/octet-stream": {
+              schema: { type: "string", format: "binary" },
+            },
+            "application/pdf": {
+              schema: { type: "string", format: "binary" },
+            },
+            "image/png": {
+              schema: { type: "string", format: "binary" },
+            },
+            "image/jpeg": {
+              schema: { type: "string", format: "binary" },
+            },
+          },
+        },
+        responses: {
+          "201": envelopeResponse("Created native attachment", {
+            $ref: "#/components/schemas/Attachment",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/attachments/{attachmentRef}": {
+      get: {
+        operationId: "getTaskAttachment",
+        summary: "Get one native attachment's metadata and private content links",
+        parameters: [referenceParameter(), attachmentReferenceParameter()],
+        responses: {
+          "200": envelopeResponse("Native attachment metadata", {
+            $ref: "#/components/schemas/Attachment",
+          }),
+          ...errorResponses,
+        },
+      },
+      patch: {
+        operationId: "restoreTaskAttachment",
+        summary: "Restore a soft-deleted attachment during its recovery window",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter(), attachmentReferenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/AttachmentRestore"),
+        responses: {
+          "200": envelopeResponse("Restored native attachment", {
+            $ref: "#/components/schemas/Attachment",
+          }),
+          ...errorResponses,
+        },
+      },
+      delete: {
+        operationId: "deleteTaskAttachment",
+        summary: "Soft-delete an unreferenced attachment using its current version",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [
+          referenceParameter(),
+          attachmentReferenceParameter(),
+          requiredHeader("X-Attachment-Version", "Current optimistic version."),
+        ],
+        responses: {
+          "200": envelopeResponse("Deleted native attachment", {
+            $ref: "#/components/schemas/Attachment",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/attachments/{attachmentRef}/content": {
+      get: {
+        operationId: "downloadTaskAttachment",
+        summary: "Download an ACL-checked original or image thumbnail",
+        parameters: [
+          referenceParameter(),
+          attachmentReferenceParameter(),
+          {
+            name: "variant",
+            in: "query",
+            schema: { enum: ["original", "thumbnail"], default: "original" },
+          },
+          {
+            name: "Range",
+            in: "header",
+            schema: { type: "string" },
+            description: "Single byte range for the original variant.",
+          },
+        ],
+        responses: {
+          "200": binaryResponse("Original or thumbnail content"),
+          "206": binaryResponse("Partial original content"),
+          "416": { description: "Requested byte range is unsatisfiable" },
+          ...errorResponses,
+        },
+      },
+    },
     "/tasks/{ref}/external-context": {
       get: {
         operationId: "getTaskExternalContext",
@@ -540,6 +672,57 @@ export const agentApiOpenApi = {
         },
         additionalProperties: false,
       },
+      Attachment: {
+        type: "object",
+        required: [
+          "ref",
+          "filename",
+          "mediaType",
+          "byteSize",
+          "checksumSha256",
+          "kind",
+          "state",
+          "version",
+          "links",
+        ],
+        properties: {
+          ref: { type: "string" },
+          filename: { type: "string" },
+          mediaType: { type: "string" },
+          byteSize: { type: "integer", minimum: 1 },
+          checksumSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          kind: { enum: ["image", "file"] },
+          state: { enum: ["uploading", "ready", "failed", "deleted"] },
+          imageWidth: { type: ["integer", "null"] },
+          imageHeight: { type: ["integer", "null"] },
+          variants: { type: "object" },
+          failureCode: { type: ["string", "null"] },
+          version: { type: "integer", minimum: 1 },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+          deletedAt: { type: ["string", "null"], format: "date-time" },
+          links: {
+            type: "object",
+            required: ["metadata", "original", "thumbnail"],
+            properties: {
+              metadata: { type: "string", format: "uri" },
+              original: { type: ["string", "null"], format: "uri" },
+              thumbnail: { type: ["string", "null"], format: "uri" },
+            },
+            additionalProperties: false,
+          },
+        },
+        additionalProperties: false,
+      },
+      AttachmentRestore: {
+        type: "object",
+        required: ["version", "deleted"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+          deleted: { const: false },
+        },
+        additionalProperties: false,
+      },
       Comment: {
         type: "object",
         required: ["ref", "author", "body", "createdAt", "updatedAt", "version", "reactions", "permissions"],
@@ -625,6 +808,25 @@ function commentReferenceParameter() {
   } as const;
 }
 
+function attachmentReferenceParameter() {
+  return {
+    name: "attachmentRef",
+    in: "path",
+    required: true,
+    schema: { type: "string" },
+  } as const;
+}
+
+function requiredHeader(name: string, description: string) {
+  return {
+    name,
+    in: "header",
+    required: true,
+    description,
+    schema: { type: "string" },
+  } as const;
+}
+
 function jsonRequest(schemaReference: string) {
   return {
     required: true,
@@ -646,6 +848,18 @@ function envelopeResponse(description: string, dataSchema: object) {
           additionalProperties: false,
         },
       },
+    },
+  } as const;
+}
+
+function binaryResponse(description: string) {
+  return {
+    description,
+    content: {
+      "application/octet-stream": {
+        schema: { type: "string", format: "binary" },
+      },
+      "image/*": { schema: { type: "string", format: "binary" } },
     },
   } as const;
 }

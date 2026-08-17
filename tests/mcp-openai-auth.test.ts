@@ -234,9 +234,37 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     "delete_task_comment",
     "set_comment_reaction",
     "resolve_task_thread",
+    "list_task_attachments",
+    "get_task_attachment",
+    "upload_task_attachment",
+    "delete_task_attachment",
   ]) {
     assert.ok(listBody.result.tools.some((tool) => tool.name === name), name);
   }
+  const uploadTool = listBody.result.tools.find(
+    (tool) => tool.name === "upload_task_attachment",
+  ) as {
+    _meta?: Record<string, unknown>;
+    inputSchema?: {
+      type?: string;
+      properties?: {
+        file?: {
+          properties?: Record<string, unknown>;
+          required?: string[];
+        };
+      };
+    };
+  } | undefined;
+  assert.deepEqual(uploadTool?._meta?.["openai/fileParams"], ["file"]);
+  assert.equal(uploadTool?.inputSchema?.type, "object");
+  assert.deepEqual(uploadTool?.inputSchema?.properties?.file?.required, [
+    "download_url",
+    "file_id",
+  ]);
+  assert.deepEqual(
+    Object.keys(uploadTool?.inputSchema?.properties?.file?.properties ?? {}),
+    ["download_url", "file_id", "mime_type", "file_name"],
+  );
 
   const callResponse = await mcpPost(
     new Request(endpoint, {

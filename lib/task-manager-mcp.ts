@@ -8,30 +8,38 @@ import type { ApiScope } from "./api-credential-crypto";
 import type { AgentAuthorizationContext } from "./agent-api-context";
 import {
   AgentApiError,
+  parseAgentAttachmentListQuery,
   parseAgentExternalContextQuery,
   parseAgentProjectListQuery,
   parseAgentReleaseListQuery,
   parseAgentTaskListQuery,
 } from "./agent-api-contract";
 import {
+  assertAgentTaskAttachmentWriteAccess,
+  createAgentTaskAttachment,
   createAgentTaskComment,
+  deleteAgentTaskAttachment,
   deleteAgentTaskComment,
   editAgentTaskComment,
   createAgentTask,
   getAgentProjectDetail,
   getAgentReleaseDetail,
   getAgentTaskDetail,
+  getAgentTaskAttachment,
   getAgentTaskExternalContext,
   getAgentTaskThread,
   getAgentWorkspace,
   listAgentProjects,
   listAgentReleases,
   listAgentTasks,
+  listAgentTaskAttachments,
   listAgentTaskComments,
   resolveAgentTaskThread,
   setAgentCommentReaction,
   updateAgentTask,
 } from "./agent-api-repository";
+import { fetchMcpFileInput } from "./agent-file-input";
+import { attachmentLimits } from "./attachments";
 import {
   ConflictError,
   NotFoundError,
@@ -56,6 +64,13 @@ const taskFields = {
   estimate: z.number().finite().nonnegative().nullable().optional(),
   dueDate: z.string().nullable().optional().describe("ISO 8601 calendar date or null."),
 };
+
+const mcpFileInputSchema = z.object({
+  download_url: z.string().url().describe("Temporary OpenAI file download URL."),
+  file_id: z.string().min(1).max(512).describe("OpenAI file identifier."),
+  mime_type: z.string().min(1).max(200).optional(),
+  file_name: z.string().min(1).max(512).optional(),
+});
 
 export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
   const server = new McpServer({ name: "task-manager", version: "1.0.0" });
@@ -195,7 +210,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get task",
       description:
-        "Gets a complete task after selection: description, lifecycle, project/release, relations, subtasks, provenance, access, version, and valid workflow statuses.",
+        "Gets a complete task after selection: description, lifecycle, project/release, relations, subtasks, provenance, native attachment count, access, version, and valid workflow statuses. Call list_task_attachments only when attachment metadata is needed.",
       inputSchema: z.object({ taskRef: reference("Task ref or identifier. Prefer the canonical ref from list_tasks.") }),
       annotations: readAnnotations,
       _meta: toolSecurity("api:read"),
@@ -261,6 +276,124 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, ...input }) =>
       writeToolCall(context, () => updateAgentTask(context.user, taskRef, defined(input))),
+  );
+
+  server.registerTool(
+    "list_task_attachments",
+    {
+      title: "List native task attachments",
+      description:
+        "Lists one bounded page of private native attachment metadata after resolving an accessible task. Binary content and imported attachment links are not included.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        limit: z.number().int().min(1).max(100).optional(),
+        cursor: z.string().min(1).optional(),
+        includeDeleted: z.boolean().optional().describe("Editor-only; default false."),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ taskRef, limit, cursor, includeDeleted }) =>
+      toolCall(async () => {
+        const query = await parseAgentAttachmentListQuery(
+          queryParameters(
+            { limit, cursor, includeDeleted },
+            { includeDeleted: "include_deleted" },
+          ),
+          taskRef,
+        );
+        return listAgentTaskAttachments(
+          context.user,
+          taskRef,
+          query,
+          toolOrigin(context),
+        );
+      }),
+  );
+
+  server.registerTool(
+    "get_task_attachment",
+    {
+      title: "Get native task attachment",
+      description:
+        "Gets metadata and bearer-protected original/thumbnail URLs for one native attachment. It never returns an R2 key or public object URL.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        attachmentRef: reference("Attachment ref from list_task_attachments."),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ taskRef, attachmentRef }) =>
+      toolCall(() =>
+        getAgentTaskAttachment(
+          context.user,
+          taskRef,
+          attachmentRef,
+          toolOrigin(context),
+        )),
+  );
+
+  server.registerTool(
+    "upload_task_attachment",
+    {
+      title: "Upload native task attachment",
+      description:
+        "Uploads one OpenAI-provided file into the selected Task's private storage. Reuse idempotencyKey only when retrying the identical file. To embed a raster image, insert its attachment:v1 ref with update_task after upload succeeds.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        file: mcpFileInputSchema,
+        idempotencyKey: z.string().min(1).max(200),
+      }),
+      annotations: idempotentOpenWorldWriteAnnotations,
+      _meta: {
+        ...toolSecurity("api:write"),
+        "openai/fileParams": ["file"],
+      },
+    },
+    async ({ taskRef, file, idempotencyKey }) =>
+      writeToolCall(context, async () => {
+        await assertAgentTaskAttachmentWriteAccess(context.user, taskRef);
+        const downloaded = await fetchMcpFileInput(file, {
+          maxBytes: attachmentLimits().maxBytes,
+        });
+        return createAgentTaskAttachment(
+          context.user,
+          taskRef,
+          {
+            body: downloaded.body,
+            filename: downloaded.filename,
+            claimedMediaType: downloaded.mediaType,
+            idempotencyKey,
+          },
+          toolOrigin(context),
+        );
+      }),
+  );
+
+  server.registerTool(
+    "delete_task_attachment",
+    {
+      title: "Delete native task attachment",
+      description:
+        "Soft-deletes one unreferenced native attachment using its current version. Remove any description image token first; recovery remains available through the REST API during the grace period.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        attachmentRef: reference("Attachment ref from list_task_attachments."),
+        version: z.number().int().positive(),
+      }),
+      annotations: destructiveWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, attachmentRef, version }) =>
+      writeToolCall(context, () =>
+        deleteAgentTaskAttachment(
+          context.user,
+          taskRef,
+          attachmentRef,
+          version,
+          toolOrigin(context),
+        )),
   );
 
   server.registerTool(
@@ -524,6 +657,16 @@ const writeAnnotations = {
   openWorldHint: false,
 } as const;
 
+const idempotentWriteAnnotations = {
+  ...writeAnnotations,
+  idempotentHint: true,
+} as const;
+
+const idempotentOpenWorldWriteAnnotations = {
+  ...idempotentWriteAnnotations,
+  openWorldHint: true,
+} as const;
+
 const destructiveWriteAnnotations = {
   ...writeAnnotations,
   destructiveHint: true,
@@ -531,6 +674,13 @@ const destructiveWriteAnnotations = {
 
 function reference(description: string) {
   return z.string().min(1).max(200).describe(description);
+}
+
+function toolOrigin(context: AgentAuthorizationContext) {
+  if (!context.resource) {
+    throw new Error("MCP resource origin is unavailable");
+  }
+  return new URL(context.resource).origin;
 }
 
 function defined(input: Record<string, unknown>) {

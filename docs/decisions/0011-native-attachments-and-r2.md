@@ -4,6 +4,9 @@
 
 Дата решения: 2026-08-17
 
+Дополнение 2026-08-18: private Attachment transport добавлен в Agent REST и
+MCP без расширения принятой storage/ACL boundary.
+
 ## Контекст
 
 D1 хранит структурированные данные, но binary body не должен попадать в D1,
@@ -32,7 +35,8 @@ bootstrap или публичный URL. Attachment обязан менять д
    Restore проверяет version, cutoff и наличие object. Bounded garbage cleanup
    сначала удаляет object и затем metadata; interrupted upload становится
    `failed`, а Task purge обязан вызвать object cleanup до удаления rows.
-7. Bodies, keys и delivery URLs не входят в bootstrap/sync/Agent collections.
+7. Bodies, keys и delivery URLs не входят в bootstrap/sync/compact Agent Task
+   collections.
    UI читает metadata лениво, thumbnail создаётся Worker binding `IMAGES`, а
    отдельная `task_attachments` invalidation обновляет только mounted consumer.
 8. Markdown image embed хранится как versioned token
@@ -40,8 +44,16 @@ bootstrap или публичный URL. Attachment обязан менять д
    для UI, Agent REST и MCP требует ready raster Attachment той же Task и
    блокирует delete, пока reference используется. Renderer лениво разрешает
    reference через текущий Task ACL и никогда не сохраняет content URL.
-   Отдельные upload commands для Agent/MCP и attachment-aware backup/restore
-   остаются следующими срезами.
+9. Agent REST предоставляет отдельные paginated metadata, raw binary upload,
+   metadata/content и recoverable delete/restore routes. Response публикует
+   только `public_id`, проверенную metadata и bearer-protected API URLs; internal
+   Task/uploader IDs, object key и public/signed R2 URL остаются скрыты.
+10. MCP предоставляет `list/get/upload/delete` tools. Upload использует OpenAI
+    `_meta["openai/fileParams"]`: server ограниченно скачивает временный HTTPS
+    URL без credentials, перепроверяет каждый redirect по OpenAI host allowlist
+    и затем вызывает тот же content-inspection/idempotency path. Временный URL
+    и `file_id` не становятся storage identity. Attachment-aware backup/restore
+    остаётся следующим отдельным срезом.
 
 ## Последствия
 

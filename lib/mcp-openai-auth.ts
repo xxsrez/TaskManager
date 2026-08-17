@@ -134,6 +134,8 @@ function decorateJsonValue(value: unknown) {
 const writeToolNames = new Set([
   "create_task",
   "update_task",
+  "upload_task_attachment",
+  "delete_task_attachment",
   "add_task_comment",
   "reply_to_task_comment",
   "edit_task_comment",

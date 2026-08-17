@@ -96,8 +96,10 @@ production endpoint.
 ADR-0011 и migrations `0014`–`0015` добавляют нативные Attachment: D1 metadata,
 private environment-isolated R2, ACL-scoped upload/list/range routes, content
 inspection, retry safety, recoverable cleanup, details/composer UI,
-server-generated thumbnails и lazy multi-session invalidation. Agent/MCP и
-attachment-aware backup остаются отдельными следующими срезами.
+server-generated thumbnails, description images и lazy multi-session
+invalidation. Agent REST/MCP теперь добавляют paginated metadata, private binary
+delivery, OpenAI native file input и versioned delete. Attachment-aware backup
+остаётся отдельным следующим срезом.
 
 ## Категории
 

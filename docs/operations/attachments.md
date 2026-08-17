@@ -40,6 +40,20 @@ metadata не редактируется вручную. Любое provision/mi
    upload progress.
 7. После deploy повторно проверить access policy Site. R2 bucket policy не
    должна становиться public.
+8. Через UAT personal bearer credential вызвать Agent REST: list с двумя
+   страницами, raw upload, metadata, original Range, thumbnail и versioned
+   delete/restore. Проверить отсутствие internal IDs/object key в JSON и
+   немедленный `404` после ACL revoke.
+9. `tools/list` должен объявлять `list_task_attachments`,
+   `get_task_attachment`, `upload_task_attachment` и `delete_task_attachment`,
+   `api:read`/`api:write` security schemes и
+   `_meta["openai/fileParams"]=["file"]` для upload. Полный MCP upload smoke
+   выполнять только клиентом, который передаёт нативный OpenAI file object;
+   base64, local path и произвольный URL не являются fallback transport.
+
+Fresh-chat smoke установленного marketplace plugin направлен в production и
+выполняется только после отдельно разрешённого production Site/plugin release.
+UAT-проверка не переключает production plugin на `task-manager-uat`.
 
 ## Recovery
 
