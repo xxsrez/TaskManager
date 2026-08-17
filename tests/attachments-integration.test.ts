@@ -27,6 +27,7 @@ import {
 } from "../lib/repository";
 import { exportProjectBackup } from "../lib/project-backup";
 import { exportSystemBackup } from "../lib/system-backup";
+import { getWorkspaceSync } from "../lib/workspace-sync";
 import { createD1TestHarness } from "./helpers/d1";
 
 const ownerActor = {
@@ -57,6 +58,8 @@ const outsiderActor = {
 let dispose: (() => Promise<void>) | undefined;
 let database: D1Database;
 let bucket: R2Bucket;
+let thumbnailTransforms = 0;
+let thumbnailTransformFails = false;
 
 before(async () => {
   const harness = await createD1TestHarness({
@@ -66,7 +69,29 @@ before(async () => {
     TASK_MANAGER_ATTACHMENT_MAX_IMAGE_PIXELS: "1000000",
     TASK_MANAGER_ATTACHMENT_DELETE_GRACE_SECONDS: "60",
     TASK_MANAGER_ADMIN_EMAILS: ownerActor.email,
-  }, { r2: true });
+  }, {
+    r2: true,
+    images: {
+      input(stream) {
+        return {
+          transform() {
+            return {
+              async output() {
+                thumbnailTransforms += 1;
+                return {
+                  response: () => thumbnailTransformFails
+                    ? new Response(null, { status: 502 })
+                    : new Response(stream, {
+                        headers: { "content-type": "image/webp" },
+                      }),
+                };
+              },
+            };
+          },
+        };
+      },
+    },
+  });
   database = harness.database;
   bucket = harness.attachmentBucket!;
   dispose = harness.dispose;
@@ -228,7 +253,7 @@ test("content inspection rejects active, mismatched, corrupted, and oversized up
 });
 
 test("deletion is recoverable during grace and garbage collection removes objects without orphans", async () => {
-  const { owner, task } = await setupSharedTask("Attachment cleanup");
+  const { owner, viewer, task } = await setupSharedTask("Attachment cleanup");
   const attachment = await createAttachment(owner, task.id, {
     body: new TextEncoder().encode("%PDF-1.7\ncleanup\n%%EOF"),
     filename: "cleanup.pdf",
@@ -237,6 +262,11 @@ test("deletion is recoverable during grace and garbage collection removes object
   });
   const deleted = await deleteAttachment(owner, task.id, attachment.publicId, attachment.version);
   assert.equal(deleted.state, "deleted");
+  assert.equal((await listTaskAttachments(owner, task.id, { includeDeleted: true })).items[0]?.state, "deleted");
+  await assert.rejects(
+    listTaskAttachments(viewer, task.id, { includeDeleted: true }),
+    PermissionError,
+  );
   assert.ok(await bucket.head(attachment.objectKey));
   const restored = await restoreAttachment(owner, task.id, attachment.publicId, deleted.version);
   assert.equal(restored.state, "ready");
@@ -253,6 +283,23 @@ test("deletion is recoverable during grace and garbage collection removes object
     await database.prepare("SELECT id FROM attachments WHERE id = ?").bind(deletedAgain.id).first(),
     null,
   );
+});
+
+test("attachment mutations emit a bounded lazy invalidation for other sessions", async () => {
+  const { owner, viewer, task } = await setupSharedTask("Attachment sync");
+  const baseline = await getSnapshot(viewer);
+  await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\nsync\n%%EOF"),
+    filename: "sync.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "sync-pdf",
+  });
+
+  const response = await getWorkspaceSync(viewer, baseline.syncCursor!);
+  assert.equal(response.resetRequired, false);
+  assert.deepEqual(response.changes.tasks.upsert, []);
+  assert.deepEqual(response.changes.invalidations.taskAttachments, [task.id]);
+  assert.deepEqual(response.changes.invalidations.taskDetails, []);
 });
 
 test("binary HTTP routes authenticate before bounded upload and preserve private range delivery", async () => {
@@ -327,6 +374,56 @@ test("binary HTTP routes authenticate before bounded upload and preserve private
   );
   assert.equal(content.status, 206);
   assert.equal(new TextDecoder().decode(await content.arrayBuffer()), "%%EOF");
+
+  configureActorResolverForTests(async () => ownerActor);
+  const image = await createAttachment(owner, task.id, {
+    body: Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+    ]),
+    filename: "preview.png",
+    claimedMediaType: "image/png",
+    idempotencyKey: "route-thumbnail",
+  });
+  configureActorResolverForTests(async () => viewerActor);
+  const thumbnail = await getAttachmentContentRoute(
+    new Request(
+      `https://example.test/api/tasks/${task.id}/attachments/${image.publicId}/content?variant=thumbnail`,
+    ),
+    {
+      params: Promise.resolve({
+        id: task.id,
+        attachmentRef: image.publicId,
+      }),
+    },
+  );
+  assert.equal(thumbnail.status, 200);
+  assert.equal(thumbnail.headers.get("content-type"), "image/webp");
+  assert.equal(thumbnail.headers.get("x-attachment-variant"), "thumbnail");
+  assert.equal(thumbnailTransforms, 1);
+
+  thumbnailTransformFails = true;
+  const failedThumbnail = await getAttachmentContentRoute(
+    new Request(
+      `https://example.test/api/tasks/${task.id}/attachments/${image.publicId}/content?variant=thumbnail`,
+    ),
+    {
+      params: Promise.resolve({ id: task.id, attachmentRef: image.publicId }),
+    },
+  );
+  thumbnailTransformFails = false;
+  assert.equal(failedThumbnail.status, 500);
+  const originalImage = await getAttachmentContentRoute(
+    new Request(
+      `https://example.test/api/tasks/${task.id}/attachments/${image.publicId}/content?disposition=inline`,
+    ),
+    {
+      params: Promise.resolve({ id: task.id, attachmentRef: image.publicId }),
+    },
+  );
+  assert.equal(originalImage.status, 200);
+  assert.equal(originalImage.headers.get("content-type"), "image/png");
 
   configureActorResolverForTests(async () => outsiderActor);
   const hidden = await getAttachmentContentRoute(

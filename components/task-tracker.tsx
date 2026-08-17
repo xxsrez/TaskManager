@@ -88,6 +88,10 @@ import {
   useWorkspaceSyncCoordinator,
   type WorkspaceSyncCheckpoint,
 } from "@/components/workspace-sync-coordinator";
+import {
+  startTaskAttachmentUpload,
+  TaskAttachments,
+} from "@/components/task-attachments";
 import type {
   AdminOverview,
   AccessRole,
@@ -234,6 +238,9 @@ function mergeTaskMutation(
   }
   if (retained.commentInvalidationCursor !== undefined) {
     clientState.commentInvalidationCursor = retained.commentInvalidationCursor;
+  }
+  if (retained.attachmentInvalidationCursor !== undefined) {
+    clientState.attachmentInvalidationCursor = retained.attachmentInvalidationCursor;
   }
   if (retained.externalSourceInvalidationCursor !== undefined) {
     clientState.externalSourceInvalidationCursor =
@@ -1321,6 +1328,35 @@ export function TaskTracker({
     }
   }
 
+  async function createTaskForComposer(
+    input: Record<string, unknown>,
+  ): Promise<TaskRecord | null> {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const value = (await response.json()) as
+        | (AppSnapshot & { createdTask: { id: string; publicId: string } })
+        | { error: string };
+      if (!response.ok || "error" in value) {
+        throw new Error("error" in value ? value.error : "Task could not be created");
+      }
+      const { createdTask, ...snapshot } = value;
+      const task = snapshot.tasks.find((item) => item.id === createdTask.id) ?? null;
+      setData(snapshot);
+      return task;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Task could not be created");
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function updateClientTask(
     taskId: string,
     update: (task: TaskRecord) => TaskRecord,
@@ -2021,7 +2057,7 @@ export function TaskTracker({
 
       {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
-      {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={createTaskForComposer} busy={busy} />}
       {dialog === "project" && <EntityDialog title="Create project" icon={<FolderKanban size={17} />} fields={[{ name: "name", label: "Project name", required: true }, { name: "summary", label: "Short summary" }, { name: "targetDate", label: "Target date", type: "date" }]} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => canEditContent(project.accessRole))} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "view" && canSaveView && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} groupBy={currentGroupBy} scopeProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
@@ -2313,7 +2349,16 @@ function StatusIcon({ status }: { status: WorkflowStatusRecord }) {
   return <span className={`status-icon status-${status.category}`} style={{ "--status-color": status.color } as React.CSSProperties}>{status.category === "completed" && <Check size={9} />}</span>;
 }
 
-function TaskComposer({ data, contextProject, contextRelease, defaults, onClose, onSubmit, busy }: { data: AppSnapshot; contextProject: string | null; contextRelease: string | null; defaults: TaskCreateDefaults; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
+type ComposerAttachment = {
+  id: string;
+  key: string;
+  file: File;
+  progress: number;
+  status: "queued" | "uploading" | "failed" | "canceled" | "complete";
+  error: string | null;
+};
+
+function TaskComposer({ data, contextProject, contextRelease, defaults, onClose, onSubmit, busy }: { data: AppSnapshot; contextProject: string | null; contextRelease: string | null; defaults: TaskCreateDefaults; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<TaskRecord | null>; busy: boolean }) {
   const editableProjects = data.projects.filter((project) => canEditContent(project.accessRole));
   const initialReleaseId = defaults.releaseId !== undefined
     ? defaults.releaseId ?? ""
@@ -2338,8 +2383,105 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
   const assignees = taskAssigneeOptions(data, projectId || null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const submit = (event?: FormEvent) => { event?.preventDefault(); if (title.trim()) void onSubmit({ title, description, projectId: projectId || null, releaseId: releaseId || null, statusId, priority, assigneeUserId: assigneeUserId || null }); };
-  return <Modal onClose={onClose} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">New task</span><button type="button" className="icon-button" onClick={onClose}><X size={15} /></button></div><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="">No project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><div className="modal-footer"><span className="shortcut-hint"><kbd>⌘</kbd><kbd>Enter</kbd> to create</span><button className="button primary" disabled={busy || !title.trim()}>{busy ? "Creating…" : "Create task"}</button></div></form></Modal>;
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [createdTask, setCreatedTask] = useState<TaskRecord | null>(null);
+  const [composerError, setComposerError] = useState("");
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const activeUploads = useRef(new Map<string, () => void>());
+
+  useEffect(() => () => {
+    for (const cancel of activeUploads.current.values()) cancel();
+    activeUploads.current.clear();
+  }, []);
+
+  function patchAttachment(id: string, patch: Partial<ComposerAttachment>) {
+    setAttachments((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  function addFiles(files: FileList | File[]) {
+    const additions = Array.from(files).map((file) => ({
+      id: crypto.randomUUID(),
+      key: `task-composer-attachment:${crypto.randomUUID()}`,
+      file,
+      progress: 0,
+      status: "queued" as const,
+      error: null,
+    }));
+    setAttachments((current) => [...current, ...additions]);
+  }
+
+  async function uploadOne(task: TaskRecord, attachment: ComposerAttachment) {
+    patchAttachment(attachment.id, { status: "uploading", progress: 0, error: null });
+    const running = startTaskAttachmentUpload(
+      task.id,
+      attachment.file,
+      attachment.key,
+      (progress) => patchAttachment(attachment.id, { progress }),
+    );
+    activeUploads.current.set(attachment.id, running.cancel);
+    try {
+      await running.promise;
+      patchAttachment(attachment.id, { status: "complete", progress: 100, error: null });
+      return true;
+    } catch (requestError) {
+      const canceled = requestError instanceof DOMException && requestError.name === "AbortError";
+      patchAttachment(attachment.id, {
+        status: canceled ? "canceled" : "failed",
+        error: canceled
+          ? "Upload canceled"
+          : requestError instanceof Error
+            ? requestError.message
+            : "Upload failed",
+      });
+      return false;
+    } finally {
+      activeUploads.current.delete(attachment.id);
+    }
+  }
+
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (!title.trim() || busy) return;
+    setComposerError("");
+    const task = createdTask ?? await onSubmit({
+      title,
+      description,
+      projectId: projectId || null,
+      releaseId: releaseId || null,
+      statusId,
+      priority,
+      assigneeUserId: assigneeUserId || null,
+    });
+    if (!task) {
+      setComposerError("Task was not created. No files were uploaded.");
+      return;
+    }
+    setCreatedTask(task);
+    const pending = attachments.filter((item) => item.status !== "complete");
+    let failed = 0;
+    for (const attachment of pending) {
+      if (!(await uploadOne(task, attachment))) failed += 1;
+    }
+    if (failed === 0) onClose();
+    else setComposerError(`${task.identifier} was created, but ${failed} file${failed === 1 ? "" : "s"} still need retry.`);
+  }
+
+  function closeComposer() {
+    for (const cancel of activeUploads.current.values()) cancel();
+    onClose();
+  }
+
+  const pendingCount = attachments.filter((item) => item.status !== "complete").length;
+  return <Modal onClose={closeComposer} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">{createdTask ? `${createdTask.identifier} created` : "New task"}</span><button type="button" className="icon-button" onClick={closeComposer}><X size={15} /></button></div><fieldset className="composer-fields" disabled={Boolean(createdTask)}><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="">No project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div></fieldset><section className={`composer-attachments ${dragActive ? "drag-active" : ""}`} aria-label="Task attachments" onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false); }} onDrop={(event) => { event.preventDefault(); setDragActive(false); addFiles(event.dataTransfer.files); }} onPaste={(event) => { if (!event.clipboardData.files.length) return; event.preventDefault(); addFiles(event.clipboardData.files); }}><div><button className="button ghost" type="button" disabled={Boolean(createdTask)} onClick={() => fileInputRef.current?.click()}><Paperclip size={14} />Add files</button><span>{attachments.length ? `${attachments.length} selected` : "Files upload after Task creation"}</span></div><input ref={fileInputRef} className="visually-hidden" type="file" multiple aria-label="Choose files for the new task" disabled={Boolean(createdTask)} onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.target.value = ""; }} />{attachments.length > 0 && <div className="composer-attachment-list" aria-live="polite">{attachments.map((attachment) => <article key={attachment.id}><FileAttachmentIcon filename={attachment.file.name} /><div><b title={attachment.file.name}>{attachment.file.name}</b><small>{attachment.status === "uploading" ? `${attachment.progress}% uploaded` : attachment.status === "complete" ? "Attached" : attachment.error ?? attachment.status}</small>{attachment.status === "uploading" && <progress value={attachment.progress} max="100" aria-label={`Upload progress for ${attachment.file.name}`} />}</div>{attachment.status === "uploading" ? <button className="icon-button" type="button" aria-label={`Cancel ${attachment.file.name}`} onClick={() => activeUploads.current.get(attachment.id)?.()}><X size={14} /></button> : attachment.status === "failed" || attachment.status === "canceled" ? <button className="icon-button" type="button" aria-label={`Retry ${attachment.file.name}`} onClick={() => createdTask && void uploadOne(createdTask, attachment)}><RotateComposerIcon /></button> : !createdTask ? <button className="icon-button" type="button" aria-label={`Remove ${attachment.file.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={14} /></button> : null}</article>)}</div>}</section>{composerError && <p className="composer-upload-error" role="alert">{composerError}</p>}<div className="modal-footer"><span className="shortcut-hint">{createdTask ? "The Task is saved; closing never leaves orphan files." : <><kbd>⌘</kbd><kbd>Enter</kbd> to create</>}</span><button className="button primary" disabled={busy || !title.trim() || attachments.some((item) => item.status === "uploading")}>{busy ? "Creating…" : createdTask ? pendingCount ? `Retry ${pendingCount} file${pendingCount === 1 ? "" : "s"}` : "Done" : attachments.length ? "Create and upload" : "Create task"}</button></div></form></Modal>;
+}
+
+function FileAttachmentIcon({ filename }: { filename: string }) {
+  return <span className="composer-attachment-icon" aria-hidden="true">{filename.split(".").at(-1)?.slice(0, 4).toUpperCase() || "FILE"}</span>;
+}
+
+function RotateComposerIcon() {
+  return <span aria-hidden="true">↻</span>;
 }
 
 function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
@@ -2573,6 +2715,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
           {labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}
           {(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}
           {relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}
+          <TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite />
           <TaskActivity task={task} currentUser={data.user} canWrite />
           {sourceContent}
           <div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div>
@@ -2597,7 +2740,7 @@ function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <MarkdownBody body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <MarkdownBody body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} /><TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
 }
 
 function useTaskExternalSource(task: TaskRecord) {

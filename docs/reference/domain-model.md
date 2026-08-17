@@ -295,7 +295,7 @@ share target и каждый раз наследует текущий effective 
 | `object_key` | Непрозрачный environment-scoped R2 key, не выдаваемый клиенту |
 | `kind` | `file` или безопасно декодированное raster `image` |
 | `state` | `pending`, `uploading`, `ready`, `failed` или `deleted` |
-| `image_width`, `image_height`, `variant_metadata_json` | Bounded image metadata и будущие variants |
+| `image_width`, `image_height`, `variant_metadata_json` | Bounded image metadata и зарезервированное описание persisted variants; текущий thumbnail генерируется server-side по запросу |
 | `idempotency_key` | Уникален по `(task_id, uploader_user_id)` и не допускает retry-дубликат |
 | `upload_expires_at`, `failure_code` | Cleanup незавершённого upload и безопасный operational result |
 | `version`, `created_at`, `updated_at`, `deleted_at` | Optimistic concurrency и recoverable-delete lifecycle |
@@ -307,6 +307,8 @@ Viewer читает metadata/content, Editor и более сильные projec
 меняют доступ через повторную Task ACL-проверку. Необратимый Task purge обязан
 сначала удалить его R2 objects; cleanup удаляет просроченные `uploading`,
 `failed` и `deleted` objects bounded batches.
+Изменение Attachment публикует отдельную lazy-инвалидацию Task ID; это не
+меняет `Task.version` и не заставляет перечитывать её description/relations.
 
 ## Comment и CommentReaction
 
@@ -535,9 +537,12 @@ attachments также остаются import provenance.
 22. Comment create уникален по `(task, author, idempotency_key)`. Edit/delete/
     resolve проверяют version; reaction unique по `(comment, user, emoji)`.
     Comment и Task count/timestamp изменяются атомарно.
+23. Attachment всегда принадлежит Task и повторяет её текущий ACL перед metadata
+    или object read. Idempotency уникальна для Task/uploader; object key не
+    раскрывает filename, delete восстанавливаем до cleanup cutoff.
 
 ## Намеренно не моделируется
 
-`Team`, `Initiative`, `Cycle`, `Milestone`, `Roadmap`, `Document`, `Attachment`,
-`Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
+`Team`, `Initiative`, `Cycle`, `Milestone`, `Roadmap`, `Document`,
+`CommentAttachment`, `Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
 `Integration` не входят в начальную модель.

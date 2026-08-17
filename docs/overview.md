@@ -87,13 +87,15 @@ labels, workflow statuses и views по умолчанию отделены от
 - agent API для чтения проектов/релизов, compact task search, отдельного task
   detail, создания/изменения задач и работы с native comment threads поверх
   того же authorization scope;
+- native Task attachments в private object storage с ACL-scoped upload,
+  thumbnail/preview/download и recoverable delete;
 - production hosting на ChatGPT Sites с durable structured storage.
 
 Не входят в MVP:
 
 - teams, initiatives, cycles/sprints и roadmap/timeline;
 - project milestones как отдельная от release сущность;
-- inbox/triage, документы и вложения;
+- inbox/triage, документы и вложения именно к comments;
 - mentions, уведомления, подписки и общий workspace activity feed;
 - Git/CI/CD, Slack, email и другие domain-specific integrations; first-party
   agent API из списка выше является отдельной surface продукта;

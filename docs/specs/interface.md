@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-16
+Последнее обновление: 2026-08-17
 
 ## 1. Назначение
 
@@ -378,6 +378,12 @@ List повторяет плотную grouped-list модель Linear.
 - `Cmd/Ctrl+Enter` создаёт, `Esc` закрывает с защитой dirty draft.
 - Создание из project, release, group или board column предварительно заполняет
   соответствующие properties и показывает их пользователю.
+- Composer принимает несколько файлов через picker или dropzone. Устойчивый
+  контракт — сначала server создаёт Task, затем UI последовательно загружает
+  выбранные файлы с неизменяемыми idempotency keys. При частичном результате
+  modal остаётся открыт, называет уже созданную Task и даёт retry/cancel по
+  каждому файлу; failed create не начинает upload, поэтому orphan object не
+  возникает.
 - Полноценная система persisted drafts и templates не входит в MVP.
 
 ### 8.2 Task details
@@ -393,7 +399,15 @@ List повторяет плотную grouped-list модель Linear.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
 - Timestamps muted и доступны в нижней metadata section.
-- Ниже properties, hierarchy и relations располагается `Activity` с native
+- Ниже properties, hierarchy и relations располагается lazy секция
+  `Attachments`: count, Add files для Editor+, picker/drop/paste, progress,
+  retry/cancel, compact file cards и recoverable remove/restore. Viewer видит
+  те же metadata, download и preview без mutation controls.
+- Raster card использует ACL-scoped server thumbnail; ошибка thumbnail
+  переключает card на original fallback. Full preview — modal dialog с focus
+  trap, `Esc`, arrows, previous/next, zoom-to-fit и download original. Generic
+  file всегда использует safe download.
+- После секции вложений располагается `Activity` с native
   comment threads. Root composer и reply composer сохраняют local draft по
   current User + Task, поддерживают `Cmd/Ctrl+Enter`, явный submit, retry без
   дублей и кнопки базового Markdown-like форматирования.
@@ -688,7 +702,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
-| Issue composer/details | Modal composer, details и native Activity | Берём | Без task templates, attachments и mentions; comment draft локальный |
+| Issue composer/details | Modal composer, details, native attachments и Activity | Берём | Без task templates, comment attachments и mentions; Task-file upload после create с честным partial result |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
 | Themes | System/light/dark | Берём | Собственные tokens и branding |
@@ -717,7 +731,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 ## 18. Официальные референсы Linear
 
-Проверены 2026-08-16; перед реализацией крупных surfaces требуется повторная
+Проверены 2026-08-17; перед реализацией крупных surfaces требуется повторная
 сверка, потому что интерфейс Linear развивается.
 
 - [Board layout](https://linear.app/docs/board-layout)
@@ -727,6 +741,9 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 - [Custom Views](https://linear.app/docs/custom-views)
 - [Peek preview](https://linear.app/docs/peek)
 - [Create issues](https://linear.app/docs/creating-issues)
+- [Editor](https://linear.app/docs/editor)
+- [Comment on issues](https://linear.app/docs/comment-on-issues)
+- [Upload a file to Linear](https://linear.app/developers/how-to-upload-a-file-to-linear)
 - [Edit issues](https://linear.app/docs/editing-issues)
 - [Filters](https://linear.app/docs/filters)
 - [Custom Views](https://linear.app/docs/custom-views)

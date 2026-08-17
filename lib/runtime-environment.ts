@@ -1,6 +1,18 @@
+export type TaskManagerImagesBinding = {
+  input(stream: ReadableStream): {
+    transform(options: Record<string, unknown>): {
+      output(options: {
+        format: string;
+        quality: number;
+      }): Promise<{ response(): Response }>;
+    };
+  };
+};
+
 export type TaskManagerRuntimeEnvironment = {
   DB?: D1Database;
   ATTACHMENTS?: R2Bucket;
+  IMAGES?: TaskManagerImagesBinding;
   TASK_MANAGER_ADMIN_EMAILS?: string;
   TASK_MANAGER_PUBLIC_ORIGIN?: string;
   TASK_MANAGER_OAUTH_CLIENT_ORIGINS?: string;

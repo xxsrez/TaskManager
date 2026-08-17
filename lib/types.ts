@@ -94,6 +94,7 @@ export type TaskRecord = {
   /** Client-only cursors make repeated delivery idempotent for lazy consumers. */
   detailInvalidationCursor?: string;
   commentInvalidationCursor?: string;
+  attachmentInvalidationCursor?: string;
   externalSourceInvalidationCursor?: string;
   createdAt: string;
   updatedAt: string;
@@ -381,6 +382,7 @@ export type WorkspaceSyncChanges = {
   invalidations: {
     taskDetails: string[];
     taskComments: string[];
+    taskAttachments: string[];
     taskExternalSources: string[];
   };
   /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */

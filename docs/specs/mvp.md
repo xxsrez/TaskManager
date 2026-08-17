@@ -254,6 +254,17 @@ Assignee обязан быть владельцем Task либо пользов
 - Attachment bodies, object keys и delivery URLs не входят в bootstrap, sync,
   compact task list или Agent collection. Metadata загружается отдельным
   ACL-scoped endpoint после открытия Task details.
+- Details показывает lazy attachment count/list, XHR upload progress,
+  retry/cancel, safe download, recoverable delete/restore и Viewer read-only
+  state. Raster list использует отдельный authenticated server thumbnail;
+  full-size original загружается только в preview/download.
+- Composer сначала создаёт Task и лишь затем загружает выбранные files с
+  устойчивыми idempotency keys. Partial failure оставляет созданную Task и
+  успешные Attachment records видимыми, явно предлагает retry и не создаёт
+  object без Task.
+- Attachment insert/update/delete создают ID-only `task_attachments`
+  invalidation. Открытый lazy consumer перечитывает только metadata; локальный
+  progress и обычный workspace snapshot не заменяются.
 
 ## 6. Workflow
 

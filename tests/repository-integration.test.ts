@@ -126,8 +126,14 @@ test("task route maps authentication and validation boundaries", async () => {
     body: JSON.stringify({ title: "Created through route" }),
   }));
   assert.equal(created.status, 200);
-  const payload = await created.json() as { tasks: Array<{ title: string }> };
-  assert.ok(payload.tasks.some((task) => task.title === "Created through route"));
+  const payload = await created.json() as {
+    tasks: Array<{ id: string; title: string }>;
+    createdTask: { id: string; publicId: string };
+  };
+  assert.equal(
+    payload.tasks.find((task) => task.title === "Created through route")?.id,
+    payload.createdTask.id,
+  );
 });
 
 test("grouping moves preserve project and release invariants", async () => {

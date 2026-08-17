@@ -140,6 +140,17 @@ test("native attachments enforce task ownership shape and use lifecycle indexes"
       "SELECT id FROM attachments WHERE state = 'deleted' AND deleted_at < CURRENT_TIMESTAMP",
     ).some((detail) => detail.includes("idx_attachments_cleanup")),
   );
+  const syncTriggers = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'workspace_sync_attachments_%'")
+    .all();
+  assert.deepEqual(
+    syncTriggers.map((trigger) => trigger.name).sort(),
+    [
+      "workspace_sync_attachments_delete",
+      "workspace_sync_attachments_insert",
+      "workspace_sync_attachments_update",
+    ],
+  );
 });
 
 test("workspace synchronization has per-principal ordering and mutation triggers", () => {

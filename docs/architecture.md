@@ -339,7 +339,11 @@ projection. `/api/tasks/{id}/attachments` лениво читает bounded meta
 `.../{attachmentRef}/content` повторяет Task ACL непосредственно перед private
 R2 read, поддерживает один bounded Range и всегда возвращает `private,
 no-store` + `nosniff`. Object key не выходит за server boundary; non-image
-content принудительно скачивается. Контракт принят в
+content принудительно скачивается. Для raster list route `variant=thumbnail`
+передаёт private R2 stream в binding `IMAGES`, возвращает bounded WebP и не
+открывает public URL. Migration `0015` публикует отдельную ID-only
+`task_attachments` invalidation: только mounted attachment consumer перечитывает
+metadata, не вызывая bootstrap или Task-detail rebase. Контракт принят в
 [ADR-0011](decisions/0011-native-attachments-and-r2.md).
 
 Native comment bodies также не входят в bootstrap или Task detail. Activity

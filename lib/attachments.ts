@@ -35,6 +35,7 @@ export type CreateAttachmentInput = {
 export type AttachmentContentOptions = {
   rangeHeader?: string | null;
   preview: boolean;
+  variant?: "original" | "thumbnail";
 };
 
 export function publicAttachment(record: AttachmentRecord) {
@@ -191,7 +192,8 @@ export async function createAttachment(
          WHERE (
            SELECT COUNT(*) FROM attachments
            WHERE task_id = ? AND state IN ('pending', 'uploading', 'ready')
-         ) < ?`,
+         ) < ?
+         RETURNING id`,
       )
       .bind(
         attachmentId,
@@ -214,8 +216,8 @@ export async function createAttachment(
         task.id,
         limits.maxCount,
       )
-      .run();
-    if ((inserted.meta.changes ?? 0) !== 1) {
+      .first<{ id: string }>();
+    if (!inserted) {
       throw new ValidationError(
         `Task already has the maximum of ${limits.maxCount} attachments`,
       );
@@ -278,6 +280,9 @@ export async function listTaskAttachments(
   options: { includeDeleted?: boolean; limit?: number } = {},
 ) {
   const task = await getTask(currentUser, taskId);
+  if (options.includeDeleted && !canEditContent(task.accessRole)) {
+    throw new PermissionError("Editor access is required to list deleted attachments");
+  }
   const requestedLimit = Number(options.limit ?? 50);
   const limit = Number.isSafeInteger(requestedLimit)
     ? Math.min(100, Math.max(1, requestedLimit))
@@ -314,6 +319,31 @@ export async function getAttachmentContent(
   const attachment = await loadTaskAttachment(task.id, attachmentRef);
   if (attachment.state !== "ready") {
     throw new NotFoundError("Attachment not found");
+  }
+
+  if (options.variant === "thumbnail") {
+    if (attachment.kind !== "image") {
+      throw new NotFoundError("Attachment thumbnail not found");
+    }
+    const object = await getAttachmentBucket().get(attachment.objectKey);
+    if (!object) throw new NotFoundError("Attachment not found");
+    const images = getRuntimeEnvironment().IMAGES;
+    if (!images) throw new Error("Cloudflare Images binding `IMAGES` is unavailable.");
+    const transformed = await images
+      .input(object.body)
+      .transform({ width: 480, height: 360, fit: "scale-down" })
+      .output({ format: "image/webp", quality: 78 });
+    const response = await transformed.response();
+    if (!response.ok || !response.body) {
+      throw new Error("Attachment thumbnail generation failed");
+    }
+    return new Response(response.body, {
+      headers: privateContentHeaders(attachment, true, {
+        "accept-ranges": "none",
+        "content-type": "image/webp",
+        "x-attachment-variant": "thumbnail",
+      }),
+    });
   }
 
   const range = parseRange(options.rangeHeader, attachment.byteSize);
@@ -451,10 +481,10 @@ export async function purgeAttachmentGarbage(now = new Date()) {
           .run();
       } else {
         const result = await getD1()
-          .prepare("DELETE FROM attachments WHERE id = ? AND state = ?")
+          .prepare("DELETE FROM attachments WHERE id = ? AND state = ? RETURNING id")
           .bind(attachment.id, attachment.state)
-          .run();
-        purged += result.meta.changes ?? 0;
+          .first<{ id: string }>();
+        purged += result ? 1 : 0;
       }
     } catch {
       failed += 1;

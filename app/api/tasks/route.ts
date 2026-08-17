@@ -12,7 +12,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const input = await readJson(request);
   return withUser(async (user) => {
-    await createTask(user, input);
-    return getSnapshot(user);
+    const createdTask = await createTask(user, input);
+    return { ...(await getSnapshot(user)), createdTask };
   });
 }

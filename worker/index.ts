@@ -4,7 +4,10 @@ import {
   handleImageOptimization,
 } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
-import { configureRuntimeEnvironment } from "../lib/runtime-environment";
+import {
+  configureRuntimeEnvironment,
+  type TaskManagerImagesBinding,
+} from "../lib/runtime-environment";
 
 interface Env {
   ASSETS: Fetcher;
@@ -20,16 +23,7 @@ interface Env {
   TASK_MANAGER_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS?: string;
   TASK_MANAGER_ATTACHMENT_DELETE_GRACE_SECONDS?: string;
   TASK_MANAGER_ATTACHMENT_FAILED_RETENTION_SECONDS?: string;
-  IMAGES: {
-    input(stream: ReadableStream): {
-      transform(options: Record<string, unknown>): {
-        output(options: {
-          format: string;
-          quality: number;
-        }): Promise<{ response(): Response }>;
-      };
-    };
-  };
+  IMAGES: TaskManagerImagesBinding;
 }
 
 interface ExecutionContext {

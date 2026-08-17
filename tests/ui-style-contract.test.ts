@@ -7,6 +7,10 @@ const taskTracker = readFileSync(
   new URL("../components/task-tracker.tsx", import.meta.url),
   "utf8",
 );
+const taskAttachments = readFileSync(
+  new URL("../components/task-attachments.tsx", import.meta.url),
+  "utf8",
+);
 
 function declarations(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -236,4 +240,29 @@ test("task details title grows to wrapped content across mobile and desktop view
       assert.match(panel, /max-width:\s*100%\s*;/);
     }
   }
+});
+
+test("attachment UI has bounded cards, authenticated thumbnails, and mobile touch controls", () => {
+  assert.match(taskAttachments, /\?variant=thumbnail&disposition=inline/);
+  assert.match(taskAttachments, /thumbnailFailed \? original : thumbnail/);
+  assert.match(taskAttachments, /if \(!thumbnailFailed\) setThumbnailFailed\(true\)/);
+  assert.match(taskAttachments, /new XMLHttpRequest\(\)/);
+  assert.match(taskAttachments, /Idempotency-Key/);
+  assert.match(taskAttachments, /role="dialog" aria-modal="true"/);
+  assert.match(taskAttachments, /event\.key === "Escape"/);
+  assert.match(declarations(".attachment-card"), /grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\)\s+auto\s*;/);
+  assert.match(declarations(".attachment-main b"), /text-overflow:\s*ellipsis\s*;/);
+  assert.match(declarations(".attachment-preview-canvas"), /overflow:\s*auto\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.attachment-card \.icon-button\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.modal\.composer-modal\s*\{[^}]*width:\s*100vw\s*;[^}]*min-height:\s*100dvh\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.composer-attachments > div:first-child \.button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
 });

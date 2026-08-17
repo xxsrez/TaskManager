@@ -5,8 +5,12 @@
 Дата решения: 2026-08-14
 
 Дополнение 2026-08-16: native task comments добавлены в MVP; для их Activity
-surface действуют те же Linear-like composition и interaction rules. Mentions,
-attachments, notifications и общий activity feed остаются исключены.
+surface действуют те же Linear-like composition и interaction rules.
+
+Дополнение 2026-08-17: native Task attachments добавлены в composer/details;
+переносятся ожидаемые picker/drop/progress/preview patterns без копирования
+assets. Comment attachments, mentions, notifications и общий activity feed
+остаются исключены.
 
 ## Контекст
 

@@ -94,6 +94,7 @@ export async function getWorkspaceSync(
   const invalidatedTaskIds = [
     ...touched.task_detail,
     ...touched.task_comments,
+    ...touched.task_attachments,
     ...touched.task_external_source,
   ];
   const projection = await getWorkspaceSyncProjection(user, {
@@ -138,6 +139,7 @@ function emptyChanges(): WorkspaceSyncChanges {
     invalidations: {
       taskDetails: [],
       taskComments: [],
+      taskAttachments: [],
       taskExternalSources: [],
     },
     labels: [],
@@ -153,6 +155,7 @@ type IncrementalEntity =
   | "saved_view"
   | "task_detail"
   | "task_comments"
+  | "task_attachments"
   | "task_external_source";
 
 function isIncrementalEntity(value: string): value is IncrementalEntity {
@@ -162,6 +165,7 @@ function isIncrementalEntity(value: string): value is IncrementalEntity {
     value === "saved_view" ||
     value === "task_detail" ||
     value === "task_comments" ||
+    value === "task_attachments" ||
     value === "task_external_source";
 }
 
@@ -173,6 +177,7 @@ function coalesceTouchedEntities(rows: ChangeRow[]) {
     saved_view: new Set<string>(),
     task_detail: new Set<string>(),
     task_comments: new Set<string>(),
+    task_attachments: new Set<string>(),
     task_external_source: new Set<string>(),
   };
   for (const row of rows) {
@@ -196,6 +201,9 @@ function buildChanges(
     invalidations: {
       taskDetails: [...touched.task_detail].filter((id) => accessibleTaskIds.has(id)),
       taskComments: [...touched.task_comments].filter((id) => accessibleTaskIds.has(id)),
+      taskAttachments: [...touched.task_attachments].filter((id) =>
+        accessibleTaskIds.has(id)
+      ),
       taskExternalSources: [...touched.task_external_source].filter((id) =>
         accessibleTaskIds.has(id)
       ),

@@ -93,9 +93,10 @@ ADR-0010 разделяет Sites на production `task-manager` и отдель
 `task-manager-uat`: default binding и обычная delivery ведут в UAT, production
 deploy требует прямой команды пользователя, а marketplace plugin остаётся на
 production endpoint.
-ADR-0011 и migration `0014` добавляют нативный Attachment foundation: D1
-metadata, private environment-isolated R2, ACL-scoped upload/list/range routes,
-content inspection, retry safety и recoverable cleanup. UI, Agent/MCP и
+ADR-0011 и migrations `0014`–`0015` добавляют нативные Attachment: D1 metadata,
+private environment-isolated R2, ACL-scoped upload/list/range routes, content
+inspection, retry safety, recoverable cleanup, details/composer UI,
+server-generated thumbnails и lazy multi-session invalidation. Agent/MCP и
 attachment-aware backup остаются отдельными следующими срезами.
 
 ## Категории

@@ -16,6 +16,7 @@ export async function GET(
   const url = new URL(request.url);
   return withUser(async (user) => {
     const page = await listTaskAttachments(user, id, {
+      includeDeleted: url.searchParams.get("includeDeleted") === "true",
       limit: url.searchParams.has("limit")
         ? Number(url.searchParams.get("limit"))
         : undefined,

@@ -6,6 +6,8 @@
 ## Bindings и конфигурация
 
 - Logical R2 binding: `ATTACHMENTS`.
+- Raster thumbnails используют обязательный Worker binding `IMAGES`; source
+  остаётся в private R2 и не получает public URL.
 - UAT и production используют разные private buckets. Bucket нельзя делать
   public, повторно использовать между Sites или копировать вместе с test data.
 - `TASK_MANAGER_ATTACHMENT_SCOPE` различается по средам (`uat`, `production`);
@@ -21,9 +23,11 @@ metadata не редактируется вручную. Любое provision/mi
 ## Release preflight и smoke
 
 1. Проверить, что target hosting binding соответствует среде, `r2` равен
-   `ATTACHMENTS`, а D1 содержит migration `0014`.
-2. Загрузить небольшой PDF и PNG от Owner/Editor; проверить metadata, SHA-256,
-   `ready` и отсутствие filename в object key.
+   `ATTACHMENTS`, Worker имеет `IMAGES`, а D1 содержит migrations `0014` и
+   `0015`.
+2. Через Task details и composer загрузить небольшой PDF и несколько PNG от
+   Owner/Editor; проверить progress/retry, metadata, SHA-256, `ready`, thumbnail
+   WebP и отсутствие filename в object key.
 3. Viewer читает список, full download и Range. Outsider и revoked Viewer
    получают `404` без подтверждения существования Attachment.
 4. Проверить `Content-Disposition`, `private, no-store`, `nosniff`; PDF не
@@ -31,7 +35,10 @@ metadata не редактируется вручную. Любое provision/mi
    получают bounded `400` без R2 orphan.
 5. Delete сохраняет object до grace; restore возвращает `ready`. Cleanup после
    cutoff удаляет object и metadata. В UAT используются только synthetic files.
-6. После deploy повторно проверить access policy Site. R2 bucket policy не
+6. Открыть ту же Task во второй сессии: `task_attachments` invalidation должна
+   обновить только attachment list, не полный bootstrap и не текущий local
+   upload progress.
+7. После deploy повторно проверить access policy Site. R2 bucket policy не
    должна становиться public.
 
 ## Recovery

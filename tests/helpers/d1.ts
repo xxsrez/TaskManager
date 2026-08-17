@@ -3,11 +3,12 @@ import { Miniflare } from "miniflare";
 import {
   configureRuntimeEnvironment,
   resetRuntimeEnvironmentForTests,
+  type TaskManagerImagesBinding,
 } from "../../lib/runtime-environment";
 
 export async function createD1TestHarness(
   variables: Record<string, string> = {},
-  options: { r2?: boolean } = {},
+  options: { r2?: boolean; images?: TaskManagerImagesBinding } = {},
 ) {
   const miniflare = new Miniflare({
     compatibilityDate: "2026-05-22",
@@ -40,6 +41,7 @@ export async function createD1TestHarness(
     ...(attachmentBucket
       ? { ATTACHMENTS: attachmentBucket as unknown as R2Bucket }
       : {}),
+    ...(options.images ? { IMAGES: options.images } : {}),
     ...variables,
   });
   return {

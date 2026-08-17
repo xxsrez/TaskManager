@@ -33,8 +33,9 @@ bootstrap или публичный URL. Attachment обязан менять д
    сначала удаляет object и затем metadata; interrupted upload становится
    `failed`, а Task purge обязан вызвать object cleanup до удаления rows.
 7. Bodies, keys и delivery URLs не входят в bootstrap/sync/Agent collections.
-   UI uploads, Markdown embeds, Agent/MCP и backup/restore расширяются отдельными
-   срезами поверх этого foundation.
+   UI читает metadata лениво, thumbnail создаётся Worker binding `IMAGES`, а
+   отдельная `task_attachments` invalidation обновляет только mounted consumer.
+   Markdown embeds, Agent/MCP и backup/restore расширяются отдельными срезами.
 
 ## Последствия
 

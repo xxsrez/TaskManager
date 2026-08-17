@@ -567,6 +567,7 @@ test("task detail reconciliation patches and removes related task summaries", ()
     invalidations: {
       taskDetails: [],
       taskComments: [],
+      taskAttachments: [],
       taskExternalSources: [],
     },
     labels: [],
@@ -583,6 +584,7 @@ test("task detail reconciliation patches and removes related task summaries", ()
     invalidations: {
       taskDetails: [],
       taskComments: [],
+      taskAttachments: [],
       taskExternalSources: [],
     },
     labels: [],
@@ -612,6 +614,7 @@ test("task detail invalidation marks loaded same-version context for lazy refres
     invalidations: {
       taskDetails: [focusedTask.id],
       taskComments: [],
+      taskAttachments: [],
       taskExternalSources: [],
     },
     labels: [],
@@ -630,6 +633,7 @@ test("task detail invalidation marks loaded same-version context for lazy refres
     invalidations: {
       taskDetails: [focusedTask.id],
       taskComments: [],
+      taskAttachments: [],
       taskExternalSources: [],
     },
     labels: [],
@@ -647,6 +651,7 @@ test("task detail invalidation marks loaded same-version context for lazy refres
     invalidations: {
       taskDetails: [focusedTask.id],
       taskComments: [],
+      taskAttachments: [],
       taskExternalSources: [],
     },
     labels: [],
@@ -1047,6 +1052,8 @@ test("editable task details render the full Markdown description before editing"
   assert.match(markup, /href="https:\/\/example\.com\/source"/);
   assert.match(markup, /<pre><code>const longValue = true;<\/code><\/pre>/);
   assert.match(markup, />Edit description</);
+  assert.match(markup, />Attachments</);
+  assert.match(markup, />Add files</);
   assert.doesNotMatch(markup, /class="details-description"/);
   assert.doesNotMatch(markup, />Save description</);
 });
@@ -1082,6 +1089,8 @@ test("viewer task details are read-only and expose no mutation controls", () => 
   assert.doesNotMatch(markup, /Save description/);
   assert.doesNotMatch(markup, /Members &amp; access/);
   assert.match(markup, />Activity</);
+  assert.match(markup, />Attachments</);
+  assert.doesNotMatch(markup, />Add files</);
   assert.doesNotMatch(markup, /Leave a comment/);
 });
 
