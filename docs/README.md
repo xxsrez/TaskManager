@@ -59,6 +59,9 @@
 25. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
+26. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
+    — environment inventory, удалённые public surfaces, сохранённое migration
+    evidence и отдельная production authority boundary.
 
 ## Статусы документов
 

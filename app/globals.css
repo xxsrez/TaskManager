@@ -683,12 +683,6 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .attachment-preview-nav:hover { background: rgba(255,255,255,.18); }
 .attachment-preview-nav.previous { left: 22px; }
 .attachment-preview-nav.next { right: 22px; }
-.source-metadata { display: grid; gap: 7px; color: var(--text-secondary); font-size: 11px; }
-.source-metadata > span, .source-metadata > a { display: flex; align-items: center; gap: 7px; }
-.source-metadata a { color: var(--accent); }
-.source-metadata a:hover { text-decoration: underline; }
-.source-metadata code { overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
-.source-metadata > .source-reconciliation-warning { color: var(--danger); }
 .task-activity { gap: 14px; }
 .activity-header { display: flex; align-items: center; justify-content: space-between; }
 .activity-header > h2 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--muted); font-size: 11px; font-weight: 560; text-transform: uppercase; letter-spacing: .04em; }

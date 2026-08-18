@@ -9,7 +9,6 @@ import type { AgentAuthorizationContext } from "./agent-api-context";
 import {
   AgentApiError,
   parseAgentAttachmentListQuery,
-  parseAgentExternalContextQuery,
   parseAgentProjectListQuery,
   parseAgentReleaseListQuery,
   parseAgentSavedViewListQuery,
@@ -31,7 +30,6 @@ import {
   getAgentSavedViewDetail,
   getAgentTaskDetail,
   getAgentTaskAttachment,
-  getAgentTaskExternalContext,
   getAgentTaskThread,
   getAgentWorkspace,
   listAgentProjects,
@@ -278,36 +276,12 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get task",
       description:
-        "Gets a complete task after selection: description, lifecycle, project/release, relations, subtasks, provenance, native attachment count, access, version, and valid workflow statuses. Call list_task_attachments only when attachment metadata is needed.",
+        "Gets a complete task after selection: description, lifecycle, project/release, relations, subtasks, native attachment count, access, version, and valid workflow statuses. Call list_task_attachments only when attachment metadata is needed.",
       inputSchema: z.object({ taskRef: reference("Task ref or identifier. Prefer the canonical ref from list_tasks.") }),
       annotations: readAnnotations,
       _meta: toolSecurity("api:read"),
     },
     async ({ taskRef }) => toolCall(() => getAgentTaskDetail(context.user, taskRef)),
-  );
-
-  server.registerTool(
-    "get_task_external_context",
-    {
-      title: "Get imported task context",
-      description:
-        "Gets import provenance, source attachment links, source URL, branch metadata, and migrated/exception counts when get_task reports external provenance. Historical comment bodies are returned only by list_task_comments.",
-      inputSchema: z.object({
-        taskRef: reference("Canonical task ref."),
-        limit: z.number().int().min(1).max(100).optional(),
-        cursor: z.string().min(1).optional(),
-      }),
-      annotations: readAnnotations,
-      _meta: toolSecurity("api:read"),
-    },
-    async ({ taskRef, limit, cursor }) =>
-      toolCall(async () => {
-        const query = await parseAgentExternalContextQuery(
-          queryParameters({ limit, cursor }),
-          taskRef,
-        );
-        return getAgentTaskExternalContext(context.user, taskRef, query);
-      }),
   );
 
   server.registerTool(

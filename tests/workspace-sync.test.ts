@@ -677,7 +677,7 @@ test("native comments and reactions emit lazy comment invalidations", async () =
   assert.deepEqual(reacted.changes.invalidations.taskComments, [task.id]);
 });
 
-test("external task context emits an ID-only lazy invalidation", async () => {
+test("migration provenance changes stay out of the product sync contract", async () => {
   const owner = await getOrCreateUser({
     ...ownerActor,
     providerAccountKey: "sync-external-owner",
@@ -697,7 +697,12 @@ test("external task context emits an ID-only lazy invalidation", async () => {
 
   const response = await getWorkspaceSync(owner, initial.syncCursor!);
   assert.deepEqual(response.changes.tasks.upsert, []);
-  assert.deepEqual(response.changes.invalidations.taskExternalSources, [task.id]);
+  assert.deepEqual(response.changes.invalidations, {
+    taskDetails: [],
+    taskComments: [],
+    taskActivities: [],
+    taskAttachments: [],
+  });
   assert.deepEqual(response.changes.labels, []);
   assert.deepEqual(response.changes.taskLabels, []);
   assert.deepEqual(response.changes.relations, []);
@@ -817,7 +822,6 @@ test("lazy invalidations preserve cached bodies and apply idempotently by cursor
       taskComments: [task.id],
       taskActivities: [task.id],
       taskAttachments: [task.id],
-      taskExternalSources: [task.id],
     },
   });
 
@@ -830,7 +834,6 @@ test("lazy invalidations preserve cached bodies and apply idempotently by cursor
   assert.equal(once.tasks[0]?.commentInvalidationCursor, response.cursor);
   assert.equal(once.tasks[0]?.activityInvalidationCursor, response.cursor);
   assert.equal(once.tasks[0]?.attachmentInvalidationCursor, response.cursor);
-  assert.equal(once.tasks[0]?.externalSourceInvalidationCursor, response.cursor);
   assert.deepEqual(once.taskLabels, current.taskLabels);
 });
 
@@ -851,7 +854,6 @@ function emptySyncResponse(
         taskComments: [],
         taskActivities: [],
         taskAttachments: [],
-        taskExternalSources: [],
       },
       labels: [],
       taskLabels: [],
@@ -914,7 +916,6 @@ function baseSnapshot(): AppSnapshot {
       createdAt: now,
       updatedAt: now,
       accessRole: "owner",
-      hasExternalSource: false,
     }],
     labels: [],
     taskLabels: [],

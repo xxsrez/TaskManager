@@ -80,12 +80,6 @@ export type AgentSavedViewListQuery = {
   fingerprint: string;
 };
 
-export type AgentExternalContextQuery = {
-  limit: number;
-  offset: number;
-  fingerprint: string;
-};
-
 export type AgentAttachmentListQuery = {
   limit: number;
   after: AgentKeysetPosition | null;
@@ -345,29 +339,6 @@ export async function parseAgentAttachmentListQuery(
   };
 }
 
-export async function parseAgentExternalContextQuery(
-  searchParams: URLSearchParams,
-  taskReference: string,
-): Promise<AgentExternalContextQuery> {
-  rejectUnknownParameters(searchParams, new Set(["limit", "cursor"]));
-  const limit = integerParameter(searchParams.get("limit"), 50, 1, 100, "limit");
-  const fingerprint = await digestReference(
-    "query",
-    JSON.stringify({ limit, taskReference, resource: "external-context" }),
-  );
-  return {
-    limit,
-    offset: decodeCursorOffset(searchParams.get("cursor"), fingerprint),
-    fingerprint,
-  };
-}
-
-export function encodeCursor(offset: number, fingerprint: string): string {
-  return base64UrlEncode(
-    new TextEncoder().encode(JSON.stringify({ offset, fingerprint })),
-  );
-}
-
 export function encodeKeysetCursor(
   position: AgentKeysetPosition,
   fingerprint: string,
@@ -393,28 +364,6 @@ export async function digestReference(
     new TextEncoder().encode(value),
   );
   return `${prefix}_${base64UrlEncode(new Uint8Array(digest)).slice(0, 22)}`;
-}
-
-export function decodeCursorOffset(
-  value: string | null,
-  fingerprint: string,
-): number {
-  if (value === null) return 0;
-  try {
-    const parsed = JSON.parse(
-      new TextDecoder().decode(base64UrlDecode(value)),
-    ) as { offset?: unknown; fingerprint?: unknown };
-    if (
-      !Number.isInteger(parsed.offset) ||
-      Number(parsed.offset) < 0 ||
-      parsed.fingerprint !== fingerprint
-    ) {
-      throw new Error("invalid cursor");
-    }
-    return Number(parsed.offset);
-  } catch {
-    throw new AgentApiError("invalid_argument", "Cursor is invalid", 400);
-  }
 }
 
 export function decodeKeysetCursor(

@@ -64,12 +64,7 @@ function mapActivityEvent(row: DbRow): ActivityEventRecord {
       kind: actorKind,
     },
     payload: safeObject(row.payload_json),
-    source,
-    historical: source === "linear" ? {
-      sourceRecordId: String(row.source_record_id),
-      sourceEventId: row.source_event_id == null ? null : String(row.source_event_id),
-      sourceIndex: Number(row.source_index),
-    } : null,
+    source: source === "native" ? "native" : "historical",
     createdAt: String(row.created_at),
   };
 }

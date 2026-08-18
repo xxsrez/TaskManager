@@ -96,7 +96,6 @@ export async function getWorkspaceSync(
     ...touched.task_comments,
     ...touched.task_activity,
     ...touched.task_attachments,
-    ...touched.task_external_source,
   ];
   const projection = await getWorkspaceSyncProjection(user, {
     taskIds: [...touched.task],
@@ -142,7 +141,6 @@ function emptyChanges(): WorkspaceSyncChanges {
       taskComments: [],
       taskActivities: [],
       taskAttachments: [],
-      taskExternalSources: [],
     },
     labels: [],
     taskLabels: [],
@@ -208,9 +206,6 @@ function buildChanges(
       taskComments: [...touched.task_comments].filter((id) => accessibleTaskIds.has(id)),
       taskActivities: [...touched.task_activity].filter((id) => accessibleTaskIds.has(id)),
       taskAttachments: [...touched.task_attachments].filter((id) =>
-        accessibleTaskIds.has(id)
-      ),
-      taskExternalSources: [...touched.task_external_source].filter((id) =>
         accessibleTaskIds.has(id)
       ),
     },

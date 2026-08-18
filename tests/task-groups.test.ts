@@ -117,7 +117,6 @@ const baseTask: TaskRecord = {
   createdAt: now,
   updatedAt: now,
   accessRole: "owner",
-  hasExternalSource: false,
 };
 
 test("priority grouping creates ordered empty groups and preserves task order", () => {

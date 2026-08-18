@@ -56,8 +56,8 @@ flowchart LR
 - `ProjectSummary` не содержит description; `ReleaseSummary` не содержит ни
   description, ни release notes.
 - Полный `TaskDetail` читается только отдельным запросом.
-- Task Activity, unified comments, native attachment metadata и import provenance
-  читаются разными отдельными endpoints; binary body возвращает
+- Task Activity, unified comments и native attachment metadata читаются
+  разными отдельными endpoints; provider provenance отсутствует в contract, а binary body возвращает
   только отдельный bearer-protected content endpoint.
 - `fields=*` и `include=description` не поддерживаются и отклоняются.
 
@@ -176,7 +176,6 @@ restore атомарно отзывает все authentication capabilities, ч
 | `PATCH /tasks/{ref}/attachments/{attachmentRef}` | `api:write` | Restore с optimistic version |
 | `DELETE /tasks/{ref}/attachments/{attachmentRef}` | `api:write` | Recoverable delete с optimistic version |
 | `GET /tasks/{ref}/attachments/{attachmentRef}/content` | `api:read` | Original/thumbnail; original поддерживает Range |
-| `GET /tasks/{ref}/external-context` | `api:read` | Imported context |
 | `GET /tasks/{ref}/comments` | `api:read` | Paginated native root threads с bounded replies |
 | `POST /tasks/{ref}/comments` | `api:write` | Создать root/reply с idempotency key |
 | `GET /tasks/{ref}/comments/{commentRef}` | `api:read` | Один полный native thread |
@@ -206,7 +205,6 @@ protocol revisions).
 | `list_labels` | `api:read` | Найти active либо archived Label и canonical ref |
 | `list_tasks` | `api:read` | Все доступные Tasks или filters Project/Release/status/priority/assignee/search |
 | `get_task` | `api:read` | Полный контекст выбранной Task и актуальная version |
-| `get_task_external_context` | `api:read` | Import provenance, attachment links и reconciliation counts без comment bodies |
 | `list_task_activity` | `api:read` | Читать bounded native/historical Activity отдельно от Task detail |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
@@ -303,14 +301,15 @@ owner catalogs, доступных через owned/shared Projects; `archived=t
 
 `TaskDetail` добавляет description, estimate, rank, lifecycle timestamps,
 access role/canEdit, расширенный project/release context, parent, subtasks,
-relations и provenance counts. Native `commentCount` и `attachmentCount`
+relations. Native `commentCount` и `attachmentCount`
 присутствуют только как context hints; bodies/metadata читаются через
 `/activity`, `/comments` и `/attachments`. Activity event содержит `ref`,
 `eventType`, privacy-minimized actor display snapshot/kind, structured payload,
-source/historical provenance, timestamp и schema version; User ID/email не
-выдаётся. Historical comment bodies находятся в том же `/comments`,
-а `/external-context` возвращает source/attachment metadata и migrated/exception
-counts без дублирования bodies. Detail также возвращает `availableStatuses`,
+provider-neutral `source=native|historical`, timestamp и schema version; User
+ID/email и migration source identifiers не выдаются. Historical comment bodies
+находятся в том же `/comments`; source
+URLs, legacy attachment links, branch metadata и reconciliation counts в Agent
+API не возвращаются. Detail также возвращает `availableStatuses`,
 валидные для изменения именно этой Task.
 
 `ProjectSummary` возвращает name, code/lock/sequence, summary, lifecycle
@@ -507,8 +506,8 @@ Authorization invariants:
     reply открывает resolved thread; stale edit/delete/resolve получает conflict;
     Agent author projection не содержит ID/email. Historical author имеет
     `kind=historical`, `id=null`; source facts нельзя edit/delete, но Editor+
-    может reply/react/resolve. External context возвращает только
-    reconciliation counts и provenance, не raw comment bodies.
+    может reply/react/resolve. Provider provenance и raw migration evidence не
+    входят ни в Task detail, ни в отдельный public endpoint/tool.
 11. Agent REST upload/list/get/range/delete повторяет Task ACL, не публикует
     internal IDs/R2 keys и сохраняет стабильную attachment pagination. MCP
     `tools/list` объявляет четыре attachment tools, а upload schema содержит

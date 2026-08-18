@@ -142,7 +142,7 @@ Desktop-first shell повторяет композицию Linear:
 - Изменение label назначения пересылает authoritative task-scoped label context
   только затронутой Task и сразу согласует chips в list, board, Peek и details;
   полный owner catalog ради этого не загружается. Lazy relations, native
-  comments и import provenance не пересылаются в background patch.
+  comments и migration metadata не пересылаются в background patch.
   Invalidation активной чистой details/Peek/activity поверхности запускает
   точечный refetch; закрытая поверхность только сохраняет stale marker до
   открытия. Dirty description или estimate draft не затирается и остаётся в
@@ -168,7 +168,7 @@ Desktop-first shell повторяет композицию Linear:
   `Workspace` ведут обратно на `/workspace`.
 - Summary rows содержат только название/identifier, status, counts, progress и
   project qualification. Description, labels, relations, comment bodies и
-  unified comment threads и import provenance остаются lazy и не загружаются
+  unified comment threads остаются lazy и не загружаются
   ради overview.
 - Shared counts учитывают только top-level shared Projects и global SavedViews,
   не дублируя унаследованные project children.
@@ -481,11 +481,10 @@ List повторяет плотную grouped-list модель Linear.
 - Sync invalidation сбрасывает только загруженную event page открытой Task;
   закрытая Activity не получает event bodies. Load older добавляет прежние
   events без повторов и сохраняет стабильный порядок при новых mutations.
-- Для импортированной задачи provenance section не повторяет comment bodies:
-  она показывает source link, attachment links и migrated/exception counts.
-  Exception count визуально предупреждает о необходимости operator
-  reconciliation; raw source доступен только через защищённый backup/D1
-  runbook, а не публичный Task UI.
+- Provider provenance section после cutover отсутствует. Source links, legacy
+  attachment links, branch metadata и reconciliation counts не показываются в
+  Task details/Peek; raw evidence доступно только через защищённый backup/D1
+  runbook и датированный migration report.
 - Изменение title/description происходит inline, с явными saving/error states и
   version conflict handling. Focus, scroll, selection и открытие editor не
   создают dirty draft; dirty начинается только после фактического изменения

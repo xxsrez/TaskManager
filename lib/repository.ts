@@ -32,7 +32,6 @@ import {
 import type {
   AppSnapshot,
   CollaboratorRecord,
-  ExternalSourceRecord,
   LabelRecord,
   Priority,
   ProjectRecord,
@@ -234,10 +233,6 @@ export async function getSnapshot(
         .prepare(
           `WITH scoped AS (
              SELECT ${snapshotTaskProjection},
-               EXISTS (
-                 SELECT 1 FROM external_records er
-                 WHERE er.target_type = 'task' AND er.target_id = t.id
-               ) AS has_external_source,
                CASE
                  WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
                  WHEN t.project_id IS NOT NULL THEN (
@@ -610,10 +605,6 @@ export async function getWorkspaceSyncProjection(
       .prepare(
         `WITH scoped AS (
            SELECT ${snapshotTaskProjection},
-             EXISTS (
-               SELECT 1 FROM external_records er
-               WHERE er.target_type = 'task' AND er.target_id = t.id
-             ) AS has_external_source,
              CASE
                WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
                WHEN t.project_id IS NOT NULL THEN (
@@ -770,33 +761,6 @@ function sqlPlaceholders(values: readonly string[]): string {
   return values.length ? values.map(() => "?").join(", ") : "NULL";
 }
 
-export async function getTaskExternalSource(
-  currentUser: UserRecord,
-  taskId: string,
-): Promise<ExternalSourceRecord | null> {
-  await loadAccessibleTask(currentUser.id, taskId);
-  const row = await getD1()
-    .prepare(
-      `SELECT er.target_type, er.target_id, er.source, er.source_id,
-              er.source_url, er.metadata_json,
-              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS comments_migrated,
-              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS comment_exceptions
-              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS activity_migrated
-              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS activity_exceptions
-       FROM external_records er
-       WHERE er.target_type = 'task' AND er.target_id = ? AND er.source = 'linear'
-       ORDER BY er.imported_at DESC
-       LIMIT 1`,
-    )
-    .bind(taskId)
-    .first<DbRow>();
-  return row ? mapExternalSource(row) : null;
-}
-
 export async function getTask(
   currentUser: UserRecord,
   taskId: string,
@@ -891,10 +855,6 @@ export async function searchTaskSummaries(
     .prepare(
       `WITH scoped AS (
          SELECT ${snapshotTaskProjection},
-           EXISTS (
-             SELECT 1 FROM external_records er
-             WHERE er.target_type = 'task' AND er.target_id = t.id
-           ) AS has_external_source,
            CASE
              WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
              WHEN t.project_id IS NOT NULL THEN (
@@ -1044,10 +1004,6 @@ export async function queryTaskSummaries(
   const rows = await getD1().prepare(
     `WITH scoped AS (
        SELECT t.*, s.category AS status_category,
-         EXISTS (
-           SELECT 1 FROM external_records er
-           WHERE er.target_type = 'task' AND er.target_id = t.id
-         ) AS has_external_source,
          CASE
            WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
            WHEN t.project_id IS NOT NULL THEN (
@@ -1086,7 +1042,7 @@ export async function queryTaskSummaries(
        v.estimate, v.due_date, v.parent_task_id, v.rank,
        v.started_at, v.completed_at, v.canceled_at, v.archived_at,
        v.comment_count, v.version, v.created_at, v.updated_at,
-       v.has_external_source, v.access_role
+       v.access_role
      FROM visible_tasks v
      WHERE ${predicates.join(" AND ")}
      ORDER BY v.updated_at DESC, v.id DESC
@@ -3612,10 +3568,6 @@ async function loadAccessibleTasks(userId: string, taskIds: string[]) {
     .prepare(
       `WITH scoped AS (
          SELECT t.*,
-           EXISTS (
-             SELECT 1 FROM external_records er
-             WHERE er.target_type = 'task' AND er.target_id = t.id
-           ) AS has_external_source,
            CASE
              WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
              WHEN t.project_id IS NOT NULL THEN (
@@ -4065,7 +4017,6 @@ function mapTask(row: DbRow): TaskRecord {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     accessRole: effectiveRole(row.access_role),
-    hasExternalSource: Number(row.has_external_source ?? 0) === 1,
   };
 }
 
@@ -4099,64 +4050,6 @@ function mapRelation(row: DbRow): TaskRelationRecord {
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
-  };
-}
-
-function mapExternalSource(row: DbRow): ExternalSourceRecord {
-  const metadata = safeJson<Record<string, unknown>>(row.metadata_json, {});
-  const attachments = Array.isArray(metadata.attachments)
-    ? metadata.attachments
-        .map((value) => {
-          if (!value || typeof value !== "object" || Array.isArray(value)) {
-            return null;
-          }
-          const attachment = value as Record<string, unknown>;
-          if (
-            typeof attachment.title !== "string" ||
-            typeof attachment.url !== "string"
-          ) {
-            return null;
-          }
-          return {
-            title: attachment.title,
-            subtitle:
-              typeof attachment.subtitle === "string"
-                ? attachment.subtitle
-                : null,
-            url: attachment.url,
-          };
-        })
-        .filter(
-          (
-            value,
-          ): value is ExternalSourceRecord["attachments"][number] =>
-            value !== null,
-        )
-    : [];
-  return {
-    targetType: String(
-      row.target_type,
-    ) as ExternalSourceRecord["targetType"],
-    targetId: String(row.target_id),
-    source: "linear",
-    sourceId: String(row.source_id),
-    sourceUrl: nullableString(row.source_url),
-    gitBranchName:
-      typeof metadata.gitBranchName === "string"
-        ? metadata.gitBranchName
-        : null,
-    attachments,
-    stateHistoryEntries: Array.isArray(metadata.stateHistory)
-      ? metadata.stateHistory.length
-      : 0,
-    commentMigration: {
-      migrated: Number(row.comments_migrated ?? 0),
-      exceptions: Number(row.comment_exceptions ?? 0),
-    },
-    activityMigration: {
-      migrated: Number(row.activity_migrated ?? 0),
-      exceptions: Number(row.activity_exceptions ?? 0),
-    },
   };
 }
 
@@ -4258,13 +4151,4 @@ function projectColor(value: unknown): string {
 
 function nullableString(value: unknown): string | null {
   return value == null ? null : String(value);
-}
-
-function safeJson<T>(value: unknown, fallback: T): T {
-  if (typeof value !== "string") return fallback;
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return fallback;
-  }
 }

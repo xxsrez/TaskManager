@@ -6,6 +6,9 @@
 
 ## Назначение
 
+> После runtime cutover 2026-08-18 deployed Linear import route отсутствует.
+> Этот runbook сохраняет offline reconciliation и rollback procedure.
+
 Процедура проверяет migration `0023`, native append-only Activity, перенос
 `external_records.metadata_json.stateHistory`, reconciliation, backup/restore и
 UAT smoke. Она не разрешает production deploy или изменение production data:
@@ -65,7 +68,7 @@ Migration выполняет одну schema sequence:
    `invalid_activity_collection` с `source_index=-1`;
 5. добавляет immutable-event trigger и `task_activity` sync invalidations.
 
-Future `/api/import/linear` использует тот же planning contract до writes,
+Offline migration planner использует тот же planning contract до writes,
 детерминированные `(source_record_id, source_index)` identities и возвращает
 `activityMigrated`/`activityExceptions`. Повторный import обновляет outcome,
 но не дублирует event.

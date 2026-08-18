@@ -279,14 +279,12 @@ export async function getAgentTaskDetail(
     parent,
     subtasks,
     relations,
-    provenance,
     availableStatuses,
     attachmentCount,
   ] = await Promise.all([
     loadParentTask(currentUser, nullableString(row.parent_task_id)),
     loadSubtasks(currentUser, String(row.id)),
     loadRelations(currentUser, String(row.id)),
-    loadProvenanceSummary(String(row.id), String(row.owner_user_id)),
     loadStatusSummaries(String(row.owner_user_id)),
     loadNativeAttachmentCount(String(row.id)),
   ]);
@@ -329,59 +327,7 @@ export async function getAgentTaskDetail(
     parent,
     subtasks,
     relations,
-    provenance,
     availableStatuses,
-  };
-}
-
-export async function getAgentTaskExternalContext(
-  currentUser: UserRecord,
-  reference: string,
-  input: { limit: number; offset: number; fingerprint: string },
-) {
-  void input;
-  const task = await loadAccessibleTaskRow(currentUser.id, reference);
-  const row = await getD1()
-    .prepare(
-      `SELECT er.source, er.source_url, er.metadata_json,
-              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS comments_migrated,
-              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS comment_exceptions
-              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS activity_migrated
-              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
-               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS activity_exceptions
-       FROM external_records er
-       WHERE er.target_type = 'task' AND er.target_id = ? AND er.owner_user_id = ?
-       ORDER BY er.imported_at DESC LIMIT 1`,
-    )
-    .bind(task.id, task.owner_user_id)
-    .first<DbRow>();
-  if (!row) throw new NotFoundError("External context not found");
-  const metadata = safeJson<Record<string, unknown>>(row.metadata_json, {});
-  return {
-    data: {
-      source: String(row.source),
-      sourceUrl: nullableString(row.source_url),
-      gitBranchName:
-        typeof metadata.gitBranchName === "string"
-          ? metadata.gitBranchName
-          : null,
-      attachments: externalAttachments(metadata.attachments),
-      commentMigration: {
-        migrated: Number(row.comments_migrated ?? 0),
-        exceptions: Number(row.comment_exceptions ?? 0),
-      },
-      activityMigration: {
-        migrated: Number(row.activity_migrated ?? 0),
-        exceptions: Number(row.activity_exceptions ?? 0),
-      },
-    },
-    page: {
-      hasMore: false,
-      nextCursor: null,
-    },
   };
 }
 
@@ -1198,10 +1144,6 @@ export async function listAgentTaskActivity(
       },
       payload: privacyMinimizedActivityPayload(event.payload),
       source: event.source,
-      historical: event.historical ? {
-        sourceEventId: event.historical.sourceEventId,
-        sourceIndex: event.historical.sourceIndex,
-      } : null,
       createdAt: event.createdAt,
       schemaVersion: event.schemaVersion,
     })),
@@ -1499,37 +1441,6 @@ function relationPresentation(
     return "related";
   }
   return direction === "outgoing" ? "blocks" : "blocked_by";
-}
-
-async function loadProvenanceSummary(taskId: string, ownerUserId: string) {
-  const row = await getD1()
-    .prepare(
-      `SELECT source, source_url,
-         COALESCE(json_array_length(metadata_json, '$.comments'), 0)
-           AS comment_count,
-         COALESCE(json_array_length(metadata_json, '$.attachments'), 0)
-           AS attachment_count,
-         (SELECT COUNT(*) FROM activity_migration_outcomes outcome
-          WHERE outcome.source_record_id = external_records.id
-            AND outcome.outcome = 'migrated') AS activity_count
-       FROM external_records
-       WHERE target_type = 'task' AND target_id = ? AND owner_user_id = ?
-       ORDER BY imported_at DESC LIMIT 1`,
-    )
-    .bind(taskId, ownerUserId)
-    .first<DbRow>();
-  if (!row) return null;
-  const commentCount = Number(row.comment_count ?? 0);
-  const attachmentCount = Number(row.attachment_count ?? 0);
-  const activityCount = Number(row.activity_count ?? 0);
-  return {
-    source: String(row.source),
-    sourceUrl: nullableString(row.source_url),
-    commentCount,
-    attachmentCount,
-    activityCount,
-    hasExternalContext: commentCount > 0 || attachmentCount > 0 || activityCount > 0,
-  };
 }
 
 async function loadNativeAttachmentCount(taskId: string) {
@@ -1892,22 +1803,6 @@ function safeJson<T>(value: unknown, fallback: T): T {
   } catch {
     return fallback;
   }
-}
-
-function externalAttachments(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-    const item = entry as Record<string, unknown>;
-    if (typeof item.title !== "string" || typeof item.url !== "string") {
-      return [];
-    }
-    return [{
-      title: item.title,
-      subtitle: typeof item.subtitle === "string" ? item.subtitle : null,
-      url: item.url,
-    }];
-  });
 }
 
 function assertOnlyKeys(

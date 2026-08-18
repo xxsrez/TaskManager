@@ -112,11 +112,9 @@ export type TaskRecord = {
   commentInvalidationCursor?: string;
   activityInvalidationCursor?: string;
   attachmentInvalidationCursor?: string;
-  externalSourceInvalidationCursor?: string;
   createdAt: string;
   updatedAt: string;
   accessRole: AccessRole;
-  hasExternalSource: boolean;
 };
 
 export type LabelRecord = {
@@ -201,11 +199,8 @@ export type CommentRecord = {
     kind: "user" | "historical";
   };
   body: string;
-  source: "native" | "linear";
+  source: "native" | "historical";
   historical: {
-    sourceRecordId: string;
-    sourceCommentId: string;
-    sourceParentCommentId: string | null;
     originalCreatedAt: string;
     originalUpdatedAt: string;
     quotedText: string | null;
@@ -249,12 +244,7 @@ export type ActivityEventRecord = {
     kind: "user" | "historical" | "system";
   };
   payload: Record<string, unknown>;
-  source: "native" | "linear";
-  historical: null | {
-    sourceRecordId: string;
-    sourceEventId: string | null;
-    sourceIndex: number;
-  };
+  source: "native" | "historical";
   createdAt: string;
 };
 
@@ -263,29 +253,6 @@ export type ActivityPage = {
   totalCount: number;
   nextCursor: string | null;
   hasMore: boolean;
-};
-
-export type ExternalSourceRecord = {
-  targetType: "task" | "project" | "release" | "saved_view" | "label" | "workflow_status";
-  targetId: string;
-  source: "linear";
-  sourceId: string;
-  sourceUrl: string | null;
-  gitBranchName: string | null;
-  attachments: Array<{
-    title: string;
-    subtitle: string | null;
-    url: string;
-  }>;
-  stateHistoryEntries: number;
-  commentMigration: {
-    migrated: number;
-    exceptions: number;
-  };
-  activityMigration: {
-    migrated: number;
-    exceptions: number;
-  };
 };
 
 export type SavedViewRecord = {
@@ -536,7 +503,6 @@ export type WorkspaceSyncChanges = {
     taskComments: string[];
     taskActivities: string[];
     taskAttachments: string[];
-    taskExternalSources: string[];
   };
   /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   labels: LabelRecord[];

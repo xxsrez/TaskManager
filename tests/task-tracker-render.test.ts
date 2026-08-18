@@ -114,7 +114,6 @@ const snapshot: AppSnapshot = {
       createdAt: now,
       updatedAt: now,
       accessRole: "owner",
-      hasExternalSource: false,
     },
   ],
   labels: [],
@@ -783,7 +782,6 @@ test("task detail reconciliation patches and removes related task summaries", ()
       taskComments: [],
       taskActivities: [],
       taskAttachments: [],
-      taskExternalSources: [],
     },
     labels: [],
     taskLabels: [],
@@ -801,7 +799,6 @@ test("task detail reconciliation patches and removes related task summaries", ()
       taskComments: [],
       taskActivities: [],
       taskAttachments: [],
-      taskExternalSources: [],
     },
     labels: [],
     taskLabels: [],
@@ -832,7 +829,6 @@ test("task detail invalidation marks loaded same-version context for lazy refres
       taskComments: [],
       taskActivities: [],
       taskAttachments: [],
-      taskExternalSources: [],
     },
     labels: [],
     taskLabels: [],
@@ -852,7 +848,6 @@ test("task detail invalidation marks loaded same-version context for lazy refres
       taskComments: [],
       taskActivities: [],
       taskAttachments: [],
-      taskExternalSources: [],
     },
     labels: [],
     taskLabels: [],
@@ -871,7 +866,6 @@ test("task detail invalidation marks loaded same-version context for lazy refres
       taskComments: [],
       taskActivities: [],
       taskAttachments: [],
-      taskExternalSources: [],
     },
     labels: [],
     taskLabels: [],
@@ -1425,15 +1419,12 @@ test("comment drafts are isolated by authenticated user and task", () => {
   );
 });
 
-test("imported task details defer provenance until the panel opens", () => {
+test("Task details do not expose provider import provenance after cutover", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
       initialData: {
         ...snapshot,
-        tasks: snapshot.tasks.map((task) => ({
-          ...task,
-          hasExternalSource: true,
-        })),
+        tasks: snapshot.tasks,
       },
       initialNavigation: {
         surface: "all",
@@ -1444,7 +1435,7 @@ test("imported task details defer provenance until the panel opens", () => {
     }),
   );
 
-  assert.match(markup, /Loading import provenance/);
+  assert.doesNotMatch(markup, /Import provenance|source record|branch metadata/i);
 });
 
 test("an administrator sees registration and activity statistics", () => {

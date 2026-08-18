@@ -18,9 +18,9 @@ relation ref, create-idempotency и требуют Editor+ на обеих Proje
 `duplicate_of` также требует Task version и атомарно меняет status.
 
 Дополнение 2026-08-18: imported comment bodies читаются через те же unified
-comment endpoints, что native discussions. External context оставляет только
-provenance, attachment links и reconciliation counts; historical author/source
-facts не выдаются за User identity и недоступны для edit/delete.
+comment endpoints, что native discussions. После lossless runtime cutover
+`external-context` удалён из REST/OpenAPI/MCP; source URLs, attachment links и
+branch metadata не входят в Agent contract.
 
 ## Контекст
 
@@ -39,8 +39,8 @@ mutations/status transitions. Administration и другие управленч�
 1. Внешний data plane — REST под `/api/agent/v1` с OpenAPI 3.1.
    `/api/bootstrap` остаётся внутренним UI contract.
 2. Collections используют server-enforced compact projections. Entity bodies
-   доступны только detail endpoints; unified comments и import provenance
-   вынесены в разные lazy endpoints.
+   доступны только detail endpoints; unified comments, Activity и native
+   Attachments используют отдельные ACL-scoped endpoints.
 3. Data plane аутентифицируется personal bearer token, а не Sites
    headers/cookie. D1 хранит только SHA-256 hash, prefix, owner, scopes и
    lifecycle metadata.

@@ -82,7 +82,6 @@ function response(cursor: string, hasMore: boolean): WorkspaceSyncResponse {
         taskComments: [],
         taskActivities: [],
         taskAttachments: [],
-        taskExternalSources: [],
       },
       labels: [],
       taskLabels: [],

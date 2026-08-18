@@ -6,7 +6,6 @@ import {
 } from "../app/api/tasks/[id]/comments/route";
 import {
   createAgentTaskComment,
-  getAgentTaskExternalContext,
   listAgentTaskComments,
 } from "../lib/agent-api-repository";
 import { configureActorResolverForTests } from "../lib/auth";
@@ -27,7 +26,6 @@ import {
   getOrCreateUser,
   getSnapshot,
   getTask,
-  getTaskExternalSource,
   grantAccess,
   revokeAccess,
 } from "../lib/repository";
@@ -302,7 +300,13 @@ test("migrated history joins native threads without impersonation or mutable aud
   assert.equal(historicalRoot.author.id, null);
   assert.equal(historicalRoot.author.kind, "historical");
   assert.equal(historicalRoot.author.displayName, "Historical Ada");
+  assert.equal(historicalRoot.source, "historical");
   assert.equal(historicalRoot.historical?.quotedText, "Quoted source");
+  assert.deepEqual(Object.keys(historicalRoot.historical ?? {}).sort(), [
+    "originalCreatedAt",
+    "originalUpdatedAt",
+    "quotedText",
+  ]);
   assert.equal(historicalRoot.permissions.canEdit, false);
   assert.equal(historicalRoot.permissions.canDelete, false);
   assert.equal(historicalRoot.permissions.canReact, false);
@@ -332,15 +336,14 @@ test("migrated history joins native threads without impersonation or mutable aud
   assert.equal(reopened.root.resolvedAt, null);
   assert.equal(reopened.replies.at(-1)?.body, "Native continuation");
 
-  const provenance = await getTaskExternalSource(owner, task.id);
-  assert.deepEqual(provenance?.commentMigration, { migrated: 2, exceptions: 1 });
-  const agentProvenance = await getAgentTaskExternalContext(owner, task.publicId, {
-    limit: 50,
-    offset: 0,
-    fingerprint: "history-provenance",
-  });
-  assert.deepEqual(agentProvenance.data.commentMigration, { migrated: 2, exceptions: 1 });
-  assert.equal(Object.hasOwn(agentProvenance.data, "comments"), false);
+  const migrationOutcomes = await database.prepare(
+    `SELECT outcome, COUNT(*) AS count FROM comment_migration_outcomes
+     WHERE task_id = ? GROUP BY outcome ORDER BY outcome`,
+  ).bind(task.id).all<{ outcome: string; count: number }>();
+  assert.deepEqual(migrationOutcomes.results, [
+    { outcome: "exception", count: 1 },
+    { outcome: "migrated", count: 2 },
+  ]);
 
   const facts = await database.prepare(
     `SELECT body, author_user_id, historical_author_name, historical_created_at,
@@ -356,6 +359,12 @@ test("migrated history joins native threads without impersonation or mutable aud
     historical_quoted_text: "Quoted source",
     created_at: "2025-01-01T00:00:00.000Z",
   });
+  const agentHistory = await listAgentTaskComments(owner, task.publicId, { limit: 20 });
+  const agentHistoryJson = JSON.stringify(agentHistory);
+  assert.equal(agentHistoryJson.includes(sourceRecordId), false);
+  assert.equal(agentHistoryJson.includes("sourceRecordId"), false);
+  assert.equal(agentHistoryJson.includes("sourceCommentId"), false);
+  assert.equal(agentHistoryJson.includes("sourceParentCommentId"), false);
   await assert.rejects(
     database.prepare("UPDATE comments SET body = 'database mutation' WHERE id = ?")
       .bind(rootId).run(),

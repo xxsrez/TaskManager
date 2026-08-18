@@ -2,7 +2,6 @@
 /* eslint-disable @next/next/no-html-link-for-pages */
 
 import {
-  AlertTriangle,
   Archive,
   ArchiveRestore,
   ArrowDown,
@@ -20,7 +19,6 @@ import {
   Copy,
   Download,
   FolderKanban,
-  GitBranch,
   Inbox,
   LayoutList,
   Link2,
@@ -118,7 +116,6 @@ import type {
   CommentPage,
   CommentRecord,
   CommentThreadRecord,
-  ExternalSourceRecord,
   LabelRecord,
   Priority,
   ProjectRecord,
@@ -404,10 +401,6 @@ function mergeTaskMutation(
   if (retained.attachmentInvalidationCursor !== undefined) {
     clientState.attachmentInvalidationCursor = retained.attachmentInvalidationCursor;
   }
-  if (retained.externalSourceInvalidationCursor !== undefined) {
-    clientState.externalSourceInvalidationCursor =
-      retained.externalSourceInvalidationCursor;
-  }
   return Object.keys(clientState).length
     ? { ...incoming, ...clientState }
     : incoming;
@@ -670,12 +663,6 @@ function mergeLoadedTask(
       : {}),
     ...(activityInvalidationCursor !== undefined
       ? { activityInvalidationCursor }
-      : {}),
-    ...(retained?.externalSourceInvalidationCursor !== undefined
-      ? {
-          externalSourceInvalidationCursor:
-            retained.externalSourceInvalidationCursor,
-        }
       : {}),
   };
 }
@@ -2961,7 +2948,6 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onMove, onSetPar
     }).catch(() => undefined);
     return () => controller.abort();
   }, [task.id]);
-  const source = useTaskExternalSource(task);
   const hasVersionConflict = taskNeedsDetailRefresh(task);
   const syncMode = taskDraftSyncMode(hasVersionConflict, dirty);
 
@@ -3015,7 +3001,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onMove, onSetPar
   }, [rebaseDraft, syncMode, task.detailStale, task.version]);
 
   if (!canEditContent(task.accessRole)) {
-    return <ReadOnlyTaskDetails task={task} data={data} source={source} onClose={onClose} onOpenTask={onOpenTask} />;
+    return <ReadOnlyTaskDetails task={task} data={data} onClose={onClose} onOpenTask={onOpenTask} />;
   }
   const statuses = data.statuses.filter(
     (status) => status.ownerUserId === task.ownerUserId &&
@@ -3043,7 +3029,6 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onMove, onSetPar
     candidate.projectId === task.projectId &&
     (!candidate.archivedAt || candidate.id === task.parentTaskId) &&
     !wouldCreateHierarchyCycle(task.id, candidate.id, taskMap));
-  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} full />;
   async function saveDraftField(
     field: keyof TaskDraftDirty,
     input: Record<string, unknown>,
@@ -3222,7 +3207,6 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onMove, onSetPar
           />
           <TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite description={task.description} />
           <TaskActivity task={task} currentUser={data.user} canWrite />
-          {sourceContent}
           <div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span>{task.completedAt && <span>Completed {longDate(task.completedAt)}</span>}</div>
           <button className="button danger ghost archive-action" disabled={hasVersionConflict} onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button>
         </div>
@@ -3314,7 +3298,7 @@ function TaskDetailsLoading({ task, onClose }: { task: TaskRecord; onClose: () =
   return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel" aria-busy="true"><header><div className="details-crumb"><span>{task.identifier}</span></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body task-details-loading"><h1 className="read-only-title">{task.title}</h1><p>Loading task details…</p></div></aside></div>;
 }
 
-function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task: TaskRecord; data: AppSnapshot; source: ExternalSourceRecord | null | undefined; onClose: () => void; onOpenTask: (id: string) => void }) {
+function ReadOnlyTaskDetails({ task, data, onClose, onOpenTask }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void }) {
   const status = data.statuses.find((item) => item.id === task.statusId);
   const project = task.projectId ? data.projects.find((item) => item.id === task.projectId) : undefined;
   const release = task.releaseId ? data.releases.find((item) => item.id === task.releaseId) : undefined;
@@ -3324,8 +3308,7 @@ function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
   const labels = labelsForTask(data, task.id);
-  const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <TaskDescriptionMarkdown task={task} body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project ? `${project.taskCode} · ${project.name}` : "Unavailable"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="label-chip-list">{labels.map((label) => <LabelChip key={label.id} label={label} />)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskRelations task={task} data={data} onOpenTask={onOpenTask} onRefresh={async () => task} canWrite={false} busy={false} /><TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} description={task.description} /><TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <TaskDescriptionMarkdown task={task} body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project ? `${project.taskCode} · ${project.name}` : "Unavailable"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="label-chip-list">{labels.map((label) => <LabelChip key={label.id} label={label} />)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskRelations task={task} data={data} onOpenTask={onOpenTask} onRefresh={async () => task} canWrite={false} busy={false} /><TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} description={task.description} /><TaskActivity task={task} currentUser={data.user} canWrite={false} /><div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
 }
 
 type RelativeRelationKind = "blocks" | "blocked_by" | "related" | "duplicate_of" | "duplicates";
@@ -3533,48 +3516,6 @@ function relativeRelationKind(item: TaskRelationPresentation): RelativeRelationK
     return item.direction === "outgoing" ? "duplicate_of" : "duplicates";
   }
   return item.direction === "outgoing" ? "blocks" : "blocked_by";
-}
-
-function useTaskExternalSource(task: TaskRecord) {
-  const [loaded, setLoaded] = useState<{
-    taskId: string;
-    source: ExternalSourceRecord | null;
-  } | null>(null);
-
-  useEffect(() => {
-    if (!task.hasExternalSource && !task.externalSourceInvalidationCursor) return;
-    // A sync invalidation makes only the mounted lazy consumer reload.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setLoaded(null);
-    const controller = new AbortController();
-    void fetch(`/api/tasks/${encodeURIComponent(task.id)}/external-source`, {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const value = (await response.json()) as
-          | ExternalSourceRecord
-          | null
-          | { error: string };
-        if (!response.ok || (value && "error" in value)) {
-          throw new Error(value && "error" in value ? value.error : "Request failed");
-        }
-        setLoaded({ taskId: task.id, source: value });
-      })
-      .catch((requestError: unknown) => {
-        if (requestError instanceof DOMException && requestError.name === "AbortError") {
-          return;
-        }
-        setLoaded({ taskId: task.id, source: null });
-      });
-    return () => controller.abort();
-  }, [
-    task.externalSourceInvalidationCursor,
-    task.hasExternalSource,
-    task.id,
-  ]);
-
-  if (!task.hasExternalSource && !task.externalSourceInvalidationCursor) return null;
-  return loaded?.taskId === task.id ? loaded.source : undefined;
 }
 
 function TaskActivity({ task, currentUser, canWrite }: {
@@ -3906,7 +3847,7 @@ function CommentEntry({ comment, rootId, busy, onReply, onEdit, onDelete, onReac
   const isRoot = comment.parentCommentId === null;
   const permalink = `comment-${comment.id}`;
   return <div className="comment-entry" id={permalink} tabIndex={-1}>
-    <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(comment.author.id ?? comment.historical?.sourceCommentId ?? comment.id) } as React.CSSProperties}>{initials(comment.author.displayName)}</span>
+    <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(comment.author.id ?? comment.id) } as React.CSSProperties}>{initials(comment.author.displayName)}</span>
     <div className="comment-content">
       <header><b>{comment.author.displayName}</b>{comment.author.kind === "historical" && <small className="historical-comment-badge">Imported history</small>}<time dateTime={comment.createdAt} title={longDateTime(comment.createdAt)}>{relativeTime(comment.createdAt)}</time>{comment.source === "native" && comment.updatedAt !== comment.createdAt && <small>edited</small>}
         <details className="comment-menu"><summary aria-label="Comment actions"><MoreHorizontal size={14} /></summary><div>
@@ -4177,24 +4118,6 @@ function avatarHue(value: string) {
   let hash = 0;
   for (const character of value) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
   return Math.abs(hash) % 360;
-}
-
-function ImportedSourceDetails({ source, hasExternalSource, full = false }: {
-  source: ExternalSourceRecord | null | undefined;
-  hasExternalSource: boolean;
-  full?: boolean;
-}) {
-  if (!hasExternalSource) return null;
-  if (source === undefined) {
-    return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><p className="inline-note">Loading import provenance…</p></DetailsSection>;
-  }
-  if (source === null) {
-    return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><p className="inline-note">Import provenance is unavailable.</p></DetailsSection>;
-  }
-  if (!full) {
-    return source.sourceUrl ? <DetailsSection title="Imported source" icon={<Link2 size={14} />}><a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record</a></DetailsSection> : null;
-  }
-  return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record {source.sourceId}</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentMigration.migrated} historical comments in Activity</span>{source.commentMigration.exceptions > 0 && <span className="source-reconciliation-warning"><AlertTriangle size={13} />{source.commentMigration.exceptions} source comment records require reconciliation</span>}<span><Boxes size={13} />{source.activityMigration.migrated} historical status events in Activity</span>{source.activityMigration.exceptions > 0 && <span className="source-reconciliation-warning"><AlertTriangle size={13} />{source.activityMigration.exceptions} source activity records require reconciliation</span>}{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>;
 }
 
 function PropertyValue({ label, value }: { label: string; value: string }) {

@@ -41,7 +41,7 @@ events, но для текущего масштаба не требует WebSoc
 5. Клиент применяет страницы по cursor, coalesces повторные изменения одной
    entity и сравнивает `version`/`updated_at`. Повторная доставка идемпотентна;
    загруженный Task body сохраняется поверх более нового summary. Изменения
-   labels, relations, comments и imported external context передают только
+   labels, relations и comments передают только
    task-scoped invalidation IDs: detail/comments/external payload в sync не
    вкладывается. Смонтированный чистый consumer перечитывает свой lazy endpoint,
    закрытый consumer лишь помечает cache stale, а несохранённый draft не

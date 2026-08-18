@@ -6,8 +6,12 @@
 
 ## Назначение и границы
 
-Runbook применяется к migration `0022_cheerful_sue_storm.sql`, будущему
-`POST /api/import/linear` и проверке unified Task Activity. Он покрывает
+> После runtime cutover 2026-08-18 deployed import route и external-context
+> tool отсутствуют. Этот runbook сохраняется для offline reconciliation,
+> rollback и проверки legacy backup, а не как текущий product API.
+
+Runbook применяется к migration `0022_cheerful_sue_storm.sql` и проверке
+unified Task Activity. Он покрывает
 inventory, reconciliation, backup/restore и recovery imported comments.
 
 Production deploy, production migration и destructive restore разрешены только
@@ -69,8 +73,8 @@ Migration `0022` в одной schema sequence:
 7. восстанавливает comments/reactions sync triggers и добавляет immutable-facts
    trigger.
 
-Future `/api/import/linear` выполняет тот же planning contract до D1 writes и
-возвращает `commentsMigrated`/`commentExceptions` в import report.
+Offline migration planner выполняет тот же planning contract до D1 writes и
+возвращает `commentsMigrated`/`commentExceptions` в локальный report.
 
 ## Reconciliation
 
@@ -145,10 +149,10 @@ cutover; intentional future snapshot changes документируются от
 4. Под Viewer подтвердить read и отказ всех mutations. Под Editor подтвердить
    native reply, reaction, resolve/reopen; edit/delete historical row должны
    получать отказ.
-5. Открыть provenance: видны migrated/exception counts и attachment/source
-   metadata, но отдельного legacy comment archive или raw body нет.
-6. Проверить Agent REST/MCP `list_task_comments`/`get_task_thread` и
-   `get_task_external_context` с теми же ACL и privacy projections.
+5. Проверить offline reconciliation report: migrated/exception counts сходятся,
+   raw bodies не входят в Task UI/API.
+6. Проверить Agent REST/MCP `list_task_comments`/`get_task_thread` с теми же ACL
+   и privacy projections; external-context tool отсутствует.
 7. Экспортировать и валидировать system и Project backup schema `10` (comment
    history введена в schema `9`), затем на disposable UAT data пройти restore и
    повторить counts/thread smoke.

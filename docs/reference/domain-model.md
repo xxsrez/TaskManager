@@ -574,8 +574,8 @@ Project и catalog owner могут различаться, но mutation тре
 
 ## ExternalRecord
 
-`ExternalRecord` хранит provenance миграции, а не создаёт ещё одну доменную
-модель задач.
+`ExternalRecord` — непубличное migration evidence, а не доменная модель и не
+источник runtime Task context.
 
 | Поле | Семантика |
 |---|---|
@@ -585,11 +585,15 @@ Project и catalog owner могут различаться, но mutation тре
 | `metadata_json` | Полный исходный metadata snapshot для обратимой сверки |
 | `imported_at` | Время последнего идемпотентного импорта |
 
-Для Linear snapshot сохраняются, среди прочего, branch name, история статусов,
-attachments metadata и исходный comments payload. Комментарии мигрируются в
-historical `Comment`, а reconciliation — в `CommentMigrationOutcome`; raw
-metadata остаётся приватным источником сверки, но Task/Agent provenance не
-возвращает comment bodies. Attachments остаются import provenance.
+В legacy snapshot могут сохраняться branch name, история статусов, attachments
+metadata и исходный comments payload. Полезные records мигрируются в native
+Attachment, historical `Comment` и `ActivityEvent`, а outcomes — в отдельные
+reconciliation tables. Ни Task UI, ни product API, ни Agent API не возвращают
+`ExternalRecord`, source URL или branch metadata; raw metadata сохраняется
+только для backup/reconciliation до отдельно разрешённого cleanup. В публичных
+Comment/Activity representations внутренний `source='linear'` нормализуется в
+provider-neutral `source='historical'`, а source record/comment/event IDs и
+source positions не выдаются.
 
 ## SavedView
 

@@ -176,7 +176,7 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
    upsert/remove. Изменение назначения Label добавляет bounded authoritative
    label context только затронутых Tasks: определения и `task_labels` заменяют
    локальное состояние этих Tasks без полного catalog snapshot. Relations,
-   comments, Activity и imported external context передают только task-scoped
+   comments и Activity передают только task-scoped
    invalidation IDs; их content перечитывает отдельный lazy endpoint лишь при
    активном details/Peek/activity consumer.
 6. Client применяет patches и invalidations идемпотентно к общему
@@ -205,7 +205,7 @@ version conflict остаётся write boundary и не заменяется po
 3. Collection use case строит фиксированный compact projection без description,
    comment bodies, attachment metadata/bodies, internal IDs и user emails.
 4. Detail use case по canonical `public_id` загружает одну сущность; Activity,
-   unified comment threads, native Attachment metadata и import provenance
+   unified comment threads и native Attachment metadata
    остаются отдельными lazy вызовами. Только detail добавляет
    bounded attachment count hint.
 5. REST возвращает versioned schema и request/as-of metadata. MCP публикует
@@ -395,7 +395,7 @@ authoritative upsert в workspace sync. Клиент удаляет архивн
 Workspace overview `/workspace` повторно использует этот ACL-scoped snapshot и
 его compact summary projections для навигационных итогов. Отдельного overview
 endpoint с cross-user counts нет: task bodies, labels, relations, native
-comments, imported external context и admin aggregates остаются вне overview и
+comments, migration metadata и admin aggregates остаются вне overview и
 загружаются только своими authorization-scoped путями по запросу.
 Task rows в этом snapshot являются summary projection: они содержат поля list,
 board, grouping и navigation, но вместо `description` передают явный `null`.
@@ -421,10 +421,10 @@ activity/display fields и возвращает User одним D1 `UPDATE … R
 выполняются одним D1 batch. SQL predicates и отдельные результаты сохраняются,
 но критический путь HTML и `/api/bootstrap` больше не платит за десять
 последовательных сетевых round trips к D1.
-`/api/bootstrap` не включает comment bodies и import provenance: при открытии
-details одной импортированной Task UI отдельно
-запрашивает `/api/tasks/{id}/external-source`, а server сначала повторно
-проверяет ACL этой Task. Content-free admin overview вычисляется только для
+`/api/bootstrap` не включает comment bodies или migration provenance.
+Provider-specific external-context route после cutover отсутствует;
+historical comments и Activity читаются только через native lazy endpoints.
+Content-free admin overview вычисляется только для
 прямого открытия `/admin`; обычный snapshot хранит лишь server-derived признак
 доступности admin surface.
 Native attachment metadata/body также не входят в bootstrap или compact Task
@@ -539,22 +539,13 @@ reactions уже используют task/user/self foreign keys.
 Owner consistency и project/release invariants в текущем срезе проверяются на
 server mutation boundary.
 
-Authenticated endpoint `/api/import/linear` принимает заранее
-инвентаризированный JSON snapshot, полностью валидирует ссылки до записи и
-выполняет deterministic upsert. Каждая imported Task обязана явно ссылаться на
-Project; canonical identifier строится из Project code и source sequence, а
-исходный identifier сохраняется как alias. Техническая страница
-`/import/linear` добавляет к workspace snapshot отдельно собранный comments
-snapshot. Planner до записи валидирует identity/body/time, авторов и parent
-topology, детерминированно создаёт historical comments и явный reconciliation
-outcome для каждой source row. Nested replies нормализуются к root с
-сохранением source parent ID. Импорт также сохраняет timestamps, archive state,
-hierarchy, labels, relations, saved-view query/display и полный provider
-metadata в `external_records`; публичная provenance projection не повторяет
-comment bodies. Тот же planner преобразует Linear `stateHistory` в
-historical `status_changed` events с source timestamps/status names и actor
-snapshot; invalid rows получают explicit outcome, а deterministic source
-position делает повторный import идемпотентным.
+После runtime cutover страницы `/import/linear`, route `/api/import/linear` и
+external-context projections отсутствуют в deployed bundle. Versioned planner
+сохранён только как offline migration/recovery code с tests: он валидирует
+identity/body/time, Project mapping, hierarchy и source topology, создаёт
+детерминированные historical Comments/Activity outcomes и не участвует в
+обычных HTTP/MCP requests. `external_records` остаётся приватным backup/
+reconciliation evidence; product UI, compact sync и Agent API его не читают.
 
 ### Системный backup и restore
 
@@ -647,7 +638,7 @@ position делает повторный import идемпотентным.
 - Workspace sync tests покрывают event ordering/coalescing, idempotent patch и
   invalidation, create/update/delete, ACL fan-out без outsider leak, revoke
   reset, cursor gap, 30-дневный retention, Task за пределами 2000-record window,
-  lazy labels/relations/comments/Activity/external context и bounded reconnect backoff.
+  lazy labels/relations/comments/Activity и bounded reconnect backoff.
 - Visual regression и accessibility checks следуют
   [спецификации интерфейса](specs/interface.md); сравнение с Linear проверяет
   composition и interaction parity, а не чужие assets.

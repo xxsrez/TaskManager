@@ -108,8 +108,8 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   backlog Tasks, последние Tasks, Projects и их progress, Releases с Project
   context, SavedViews и верхнеуровневые ресурсы `Shared with me`.
 - Overview строится из того же server-authorized ACL-scoped snapshot. Он не
-  загружает task descriptions, labels, relations, unified comments, import
-  provenance или admin aggregates и не вводит отдельный unscoped query.
+  загружает task descriptions, labels, relations, unified comments,
+  migration metadata или admin aggregates и не вводит отдельный unscoped query.
 - Create actions показываются только там, где User может создать ресурс: Task
   и Release требуют редактируемый Project, а новый Project доступен
   авторизованному User.
@@ -200,10 +200,10 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   history;
 - native attachments с проверенным type/size/checksum и processing state;
 - created, updated, started, completed, canceled и archived timestamps.
-- для импортированной задачи — source provenance, ссылки на исходные
-  attachments и reconciliation summary. Исходные комментарии мигрируются в
-  общую Activity как immutable historical comments, а не остаются отдельным
-  публичным archive.
+- Provider provenance, source URLs, legacy attachment links и branch metadata
+  не входят в Task product surface. Перенесённые комментарии и status history
+  доступны только через native Comments/Activity; raw migration evidence
+  остаётся в backup/reconciliation слое до отдельно разрешённого cleanup.
 
 Assignee обязан быть владельцем Task либо пользователем с доступом к Task или
 её Project. Выбор пользователя без доступа отклоняется.
@@ -297,9 +297,9 @@ commands задают желаемое состояние идемпотентн
   ставить reaction и resolve/reopen thread; edit/delete historical comment
   запрещены всем ролям. Nested source replies нормализуются к одному root, но
   исходный parent ID сохраняется.
-- Cutover и будущий Linear import дают каждому source row явный outcome
-  `migrated` или `exception`. Повторный импорт не дублирует Comment; counts,
-  backup/restore и lazy invalidation используют общий comment model.
+- Завершённый cutover даёт каждому source row явный outcome `migrated` или
+  `exception`. Offline migration planner не дублирует Comment; runtime import
+  route и provider-specific public contract отсутствуют.
 - Локальный draft изолирован ключом current User + Task + optional thread.
   Mentions, attachments именно к comment, notifications и subscriptions не
   входят в этот срез.
@@ -327,8 +327,9 @@ commands задают желаемое состояние идемпотентн
   существования Task.
 - Linear `stateHistory` создаёт historical `status_changed` events с исходными
   timestamp, status names и actor display snapshot без `User` identity.
-  Каждая source row получает `migrated`/`exception`; повторный import не
-  дублирует events. Raw evidence остаётся в reconciliation/backup до cutover.
+  Каждая source row получает `migrated`/`exception`; offline повторный прогон не
+  дублирует events. Raw evidence остаётся только в reconciliation/backup до
+  отдельно разрешённого durable-data cleanup.
 - Project/system backup schema `10` сохраняет events и reconciliation outcomes.
   Activity хранится до удаления Task; отдельного retention deletion нет.
   Logical export ограничен 5 000 rows на таблицу и общим размером package,
@@ -599,10 +600,10 @@ created/updated/started/completed/canceled dates и archived state.
   Releases, compact task lists, одной полной Task, task create/update,
   bounded read-only Task Activity, unified native/historical comment threads и
   native Attachment metadata/binary.
-- List response не содержит task description, release notes, imported comments,
-  native comment bodies, attachment metadata/bodies или полного provenance.
-  Activity, unified comments, native attachments и import provenance читаются
-  отдельными ACL-scoped запросами; provenance не дублирует event/comment bodies.
+- List response не содержит task description, release notes, historical или
+  native comment bodies и attachment metadata/bodies. Activity, unified
+  comments и native attachments читаются отдельными ACL-scoped запросами;
+  provider provenance не входит в Agent API.
 - Versioned HTTP API применяет те же server-side ownership/ACL rules и domain
   repository commands, что и product UI.
   `/api/bootstrap` остаётся внутренним UI snapshot и не является agent API.
@@ -640,8 +641,8 @@ created/updated/started/completed/canceled dates и archived state.
   workspace snapshot. Изменение label назначения передаёт authoritative
   task-scoped label context только для затронутой Task: доступные определения и
   полный набор её назначений заменяют локальное состояние этой Task, не
-  выгружая весь catalog. Relations, comments, Activity и imported external context
-  передают только task-scoped invalidation IDs без своих records; их endpoint
+  выгружая весь catalog. Relations, comments и Activity передают только
+  task-scoped invalidation IDs без своих records; их endpoint
   перечитывает только активный details/Peek/activity consumer. Закрытый cache
   остаётся загруженным, но помечается stale до следующего открытия.
 - ACL вычисляется сервером до ответа. Grant/revoke, invalid cursor, gap и
@@ -732,8 +733,8 @@ created/updated/started/completed/canceled dates и archived state.
 22. Через agent API получить active/planned releases и compact задачи
     выбранного release: ответы содержат identifiers, titles, statuses и
     небольшие metadata, но не descriptions, comment bodies или release notes.
-23. По canonical task reference загрузить одну Task с description, связями и
-    provenance summary; comment bodies появляются только через unified comment
+23. По canonical task reference загрузить одну Task с description и связями;
+    comment bodies появляются только через unified comment
     endpoint. Недоступная Task возвращает тот же `not found`, что неизвестная.
 24. Отозвать OAuth connection или API credential и Project grant: следующий API request
     немедленно теряет соответствующий доступ. Read-only credential не может
@@ -759,8 +760,8 @@ created/updated/started/completed/canceled dates и archived state.
     thread, но все mutations получают отказ. Импортированная история находится
     в той же Activity с historical badge: её source facts и body нельзя
     редактировать/удалить, но Editor+ отвечает, реагирует и resolve/reopen.
-    Malformed/ambiguous source row виден в reconciliation count без публикации
-    raw body через provenance. Те же операции доступны через Agent REST/MCP без
+    Malformed/ambiguous source row остаётся в offline reconciliation report без
+    публикации raw body в Task UI/API. Те же операции доступны через Agent REST/MCP без
     user email и без comment bodies в task collections.
 30. Открыть одну account/workspace в двух sessions: создать, изменить,
     заархивировать и удалить Task, Project, Release и SavedView и увидеть

@@ -164,6 +164,7 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/views/{ref}"), true);
   assert.equal(paths.includes("/tasks/{ref}/comments"), true);
   assert.equal(paths.includes("/tasks/{ref}/activity"), true);
+  assert.equal(paths.includes("/tasks/{ref}/external-context"), false);
   assert.equal(paths.includes("/tasks/{ref}/comments/{commentRef}"), true);
   assert.equal(paths.includes("/tasks/{ref}/attachments"), true);
   assert.equal(paths.includes("/tasks/{ref}/attachments/{attachmentRef}"), true);
@@ -178,6 +179,14 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/activity"].get.operationId,
     "listTaskActivity",
+  );
+  assert.deepEqual(
+    agentApiOpenApi.components.schemas.Comment.properties.source.enum,
+    ["native", "historical"],
+  );
+  assert.equal(
+    Object.hasOwn(agentApiOpenApi.components.schemas.TaskDetail.properties, "provenance"),
+    false,
   );
   assert.equal(
     agentApiOpenApi.paths["/views"].get.operationId,

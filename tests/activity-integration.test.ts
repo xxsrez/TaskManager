@@ -70,6 +70,29 @@ test("Task activity is atomic, paginated, ACL-scoped, immutable, and agent-reada
     (await listTaskActivity(owner, task.id)).events.map((event) => event.eventType),
     ["task_created"],
   );
+  await database.batch([
+    database.prepare(
+      `INSERT INTO external_records
+        (id, owner_user_id, target_type, target_id, source, source_id,
+         source_url, metadata_json, imported_at)
+       VALUES ('activity-legacy-record', ?, 'task', ?, 'linear',
+         'legacy-task', 'https://linear.example/legacy-task', '{}',
+         '2025-01-01T00:00:00.000Z')`,
+    ).bind(owner.id, task.id),
+    database.prepare(
+      `INSERT INTO activity_events
+        (id, task_id, schema_version, event_type, actor_kind, actor_user_id,
+         actor_name, payload_json, source, source_record_id, source_event_id,
+         source_index, created_at)
+       VALUES ('activity-legacy-event', ?, 1, 'task_updated', 'historical', NULL,
+         ?, '{"changes":[]}', 'linear', 'activity-legacy-record',
+         'legacy-state-event', 0, '2025-01-01T00:00:00.000Z')`,
+    ).bind(task.id, owner.displayName),
+  ]);
+  const historicalEvent = (await listTaskActivity(owner, task.id, { limit: 50 }))
+    .events.find((event) => event.id === "activity-legacy-event")!;
+  assert.equal(historicalEvent.source, "historical");
+  assert.equal(Object.hasOwn(historicalEvent, "historical"), false);
 
   let current = await updateTask(owner, task.id, {
     version: task.version,
@@ -170,6 +193,9 @@ test("Task activity is atomic, paginated, ACL-scoped, immutable, and agent-reada
   assert.equal(agentPage.data[0]?.actor.isCurrentUser, false);
   const agentAll = await listAgentTaskActivity(viewer, task.identifier, { limit: 50 });
   const agentJson = JSON.stringify(agentAll.data);
+  assert.equal(agentJson.includes("legacy-state-event"), false);
+  assert.equal(agentJson.includes("sourceEventId"), false);
+  assert.equal(agentJson.includes("sourceIndex"), false);
   for (const internalId of [task.id, parent.id, project.id, started.id, label.id, owner.id]) {
     assert.equal(agentJson.includes(internalId), false);
   }

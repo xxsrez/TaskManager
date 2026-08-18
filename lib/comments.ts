@@ -449,7 +449,7 @@ async function hydrateComments(
   const reactionMap = await loadReactionMap(rows.map((row) => String(row.id)), currentUser.id);
   const editable = canEditContent(task.accessRole);
   return rows.map((row): CommentRecord => {
-    const source = String(row.source) as CommentRecord["source"];
+    const source = String(row.source);
     if (source !== "native" && source !== "linear") {
       throw new Error("Comment source is unsupported");
     }
@@ -468,11 +468,8 @@ async function hydrateComments(
         ? { ...nativeAuthor!, kind: "user" as const }
         : { id: null, displayName: historicalAuthorName!, kind: "historical" as const },
       body: String(row.body),
-      source,
+      source: source === "native" ? "native" : "historical",
       historical: source === "native" ? null : {
-        sourceRecordId: String(row.source_record_id),
-        sourceCommentId: String(row.source_comment_id),
-        sourceParentCommentId: nullableString(row.source_parent_comment_id),
         originalCreatedAt: String(row.historical_created_at),
         originalUpdatedAt: String(row.historical_updated_at),
         quotedText: nullableString(row.historical_quoted_text),

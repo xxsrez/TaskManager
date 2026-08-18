@@ -8,7 +8,6 @@ const runtimeModules = [
   "lib/api-credentials.ts",
   "lib/project-backup.ts",
   "lib/system-backup.ts",
-  "lib/linear-import.ts",
   "lib/comments.ts",
   "lib/workspace-sync.ts",
 ];

@@ -525,28 +525,6 @@ export const agentApiOpenApi = {
         },
       },
     },
-    "/tasks/{ref}/external-context": {
-      get: {
-        operationId: "getTaskExternalContext",
-        summary: "Read import provenance, source attachment links, and reconciliation counts",
-        parameters: [
-          referenceParameter(),
-          {
-            name: "limit",
-            in: "query",
-            schema: { type: "integer", minimum: 1, maximum: 100, default: 50 },
-          },
-          { name: "cursor", in: "query", schema: { type: "string" } },
-        ],
-        responses: {
-          "200": pagedResponse("Imported task context", {
-            type: "object",
-            additionalProperties: true,
-          }),
-          ...errorResponses,
-        },
-      },
-    },
     "/tasks/{ref}/activity": {
       get: {
         operationId: "listTaskActivity",
@@ -782,7 +760,6 @@ export const agentApiOpenApi = {
             type: "array",
             items: { $ref: "#/components/schemas/TaskRelation" },
           },
-          provenance: { type: ["object", "null"] },
           availableStatuses: {
             type: "array",
             items: { $ref: "#/components/schemas/StatusSummary" },
@@ -1111,7 +1088,7 @@ export const agentApiOpenApi = {
           parentCommentRef: { type: ["string", "null"] },
           author: { type: "object" },
           body: { type: "string" },
-          source: { enum: ["native", "linear"] },
+          source: { enum: ["native", "historical"] },
           historical: { type: ["object", "null"] },
           createdAt: { type: "string", format: "date-time" },
           updatedAt: { type: "string", format: "date-time" },
