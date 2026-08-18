@@ -42,13 +42,12 @@ erDiagram
     USER ||--o{ EXTERNAL_RECORD : owns
     PROJECT ||--o{ SAVED_VIEW : scopes
     PROJECT ||--o{ ACCESS_GRANT : share_target
-    TASK ||--o{ ACCESS_GRANT : share_target
     SAVED_VIEW ||--o{ ACCESS_GRANT : share_target
     USER ||--o{ USER_IMPORT_SESSION : stages
 ```
 
 Связи `ACCESS_GRANT` с share targets полиморфны: одна запись grant указывает
-ровно на один `Project`, standalone `Task` или global `SavedView`.
+ровно на один `Project` или global `SavedView`.
 
 ## User
 
@@ -99,7 +98,7 @@ Identity linking — отдельная аутентифицированная �
 
 API credential не является `UserIdentity`, session, `AccessGrant` или admin
 role. Scope разрешает тип API operation, но resource access всё равно
-вычисляется по owner/project/direct grants. Logical backup credential не
+вычисляется по Project/global SavedView grants. Logical backup credential не
 переносит; full restore отзывает все tokens.
 
 ## OAuth connector grant и tokens
@@ -191,11 +190,11 @@ normalized staged plan.
 | Поле | Семантика |
 |---|---|
 | `id` | Внутренний ID grant |
-| `resource_type` | `project`, `task` или `saved_view` |
+| `resource_type` | `project` или `saved_view` |
 | `resource_id` | ID share target соответствующего типа |
 | `grantor_user_id` | User, создавший или изменивший grant |
 | `grantee_user_id` | User, получивший доступ |
-| `permission` | Project: `manager`, `editor`, `viewer`; standalone Task/global SavedView: `editor`, `viewer` |
+| `permission` | Project: `manager`, `editor`, `viewer`; global SavedView: `editor`, `viewer` |
 | `created_at`, `revoked_at` | Lifecycle grant |
 
 Один active grant уникален по `(resource_type, resource_id, grantee_user_id)`.
@@ -207,9 +206,8 @@ Project Owner имеет implicit highest access и не представлен 
 - Project grant распространяется на Project, его Tasks, Releases и SavedViews с
   явным `scope_project_id`.
 - Release не является самостоятельным share target.
-- Прямой Task grant разрешён только для standalone Task.
-- Standalone Task с active direct grant нельзя добавить в Project до revoke
-  этих grants.
+- Task не является самостоятельным share target и всегда наследует доступ от
+  своего Project.
 - Прямой SavedView grant разрешён только для global View без
   `scope_project_id`; query возвращает только records, отдельно доступные
   grantee.
@@ -253,14 +251,14 @@ journal rows старше 30 дней удаляются не чаще раза 
 | `id` | string/UUID | да | Внутренний immutable primary key; может сохранять import namespace |
 | `public_id` | UUID | да | Стабильная непрозрачная identity публичного URL |
 | `owner_user_id` | UUID | да | Владелец и tenant scope записи |
-| `identifier` | string | да | Immutable human ID, например `TM-123` |
+| `identifier` | string | да | Текущий human ID `<project.task_code>-<sequence_number>`, например `TM-123`; меняется только атомарным move |
 | `title` | string | да | Непустой заголовок |
 | `description` | Markdown/text | нет | Подробный контекст; native raster image использует versioned token `![alt](attachment:v1:<public-ref> "caption")` |
 | `status_id` | UUID | да | Ссылка на `WorkflowStatus` |
 | `priority` | enum | да | `none`, `low`, `medium`, `high`, `urgent` |
 | `assignee_id` | UUID | нет | User с доступом к Task |
 | `creator_id` | UUID | да | Фактический создатель, может быть collaborator |
-| `project_id` | UUID | нет | Не более одного проекта |
+| `project_id` | UUID | да | Ровно один проект |
 | `release_id` | UUID | нет | Не более одного совместимого релиза |
 | `parent_id` | UUID | нет | Родительская задача |
 | `estimate` | integer | нет | Абстрактные points; положительное значение |
@@ -276,10 +274,13 @@ journal rows старше 30 дней удаляются не чаще раза 
 | `version` | integer/token | да | Optimistic concurrency |
 
 Labels задаются связующей таблицей `task_labels(task_id, label_id)`. Relations
-и subtasks не кодируются labels. Identifier уникален в owner scope; URL и API
-identity опираются на `public_id`, поскольку у разных owners возможен
-одинаковый `TM-123`. `id` остаётся ключом внутренних связей и идемпотентного
-импорта; `public_id` не меняется при повторном импорте.
+и subtasks не кодируются labels. Пара `(project_id, sequence_number)` уникальна;
+identifier строится из code Project и этого sequence. Прежние identifiers
+хранятся в `task_identifier_aliases` и участвуют в exact lookup. Если один alias
+доступен для нескольких Tasks, API возвращает ambiguity и требует `public_id`.
+URL и API identity опираются на `public_id`; `id` остаётся ключом внутренних
+связей и идемпотентного импорта. Перенос выдаёт identifier целевого Project и
+сохраняет прежний как alias.
 
 ## Attachment
 
@@ -360,15 +361,15 @@ updated timestamp TaskRelation; validators schema `2`–`4` детерминир
 root, а создание reply атомарно переоткрывает resolved thread. `Task.comment_count`
 атомарно равен числу native rows этой Task с `deleted_at IS NULL`.
 
-### TaskSequence
+### Project task code и sequence
 
-`task_sequences(owner_user_id, last_value)` — служебный производный счётчик
-для атомарной выдачи следующего `Task.sequence_number`. Один
-`INSERT ... ON CONFLICT DO UPDATE ... RETURNING` одновременно сверяется с
-максимальным уже сохранённым sequence, поэтому параллельные create и импорт
-записей с большим номером не создают дубликаты. Счётчик не входит в logical
-backup: после restore он безопасно восстанавливается из `tasks` при следующем
-create.
+`Project.task_code` — 2–3 заглавные латинские буквы, уникальные среди active
+Projects current owner. `Project.task_sequence` — монотонный allocator.
+Атомарный `UPDATE ... RETURNING` сверяется с максимальным уже сохранённым
+`Task.sequence_number`, поэтому параллельные create и импорт не создают
+дубликаты. `code_locked_at` устанавливается при первой Task; после этого code
+нельзя изменить. Logical backup schema 6 переносит code, sequence, lock и
+identifier aliases.
 
 ## WorkflowStatus
 
@@ -401,6 +402,9 @@ status, на который ссылаются задачи или SavedViews, �
 | `slug` | Читаемый optional alias; не является identity |
 | `owner_user_id` | Владелец Project и его subtree |
 | `name` | Обязательное имя |
+| `task_code` | 2–3 заглавные латинские буквы; уникален среди active Projects current owner |
+| `task_sequence` | Монотонный последний выделенный номер Task |
+| `code_locked_at` | Момент первого выделения номера; после него code неизменяем |
 | `summary`, `description` | Краткий и подробный контекст |
 | `status` | `planned`, `active`, `paused`, `completed`, `canceled` |
 | `lead_id` | Один ответственный User с доступом, optional |
@@ -522,17 +526,21 @@ attachments также остаются import provenance.
 2. `owner_user_id` Task/Release/SavedView хранит исходный tenant/catalog и
    provenance scope. Для project child он не является access root: effective
    role вычисляется только через current Project owner/grant.
-3. Task/Release, созданные в Project collaborator, наследуют его исходный
-   catalog scope; creator остаётся фактическим. Ownership transfer Project не
-   меняет immutable task identifier или catalog references.
+3. Каждая Task принадлежит ровно одному Project. Task/Release, созданные в
+   Project collaborator, наследуют его исходный catalog scope; creator остаётся
+   фактическим. Ownership transfer не меняет task identifier или catalog
+   references; явный перенос выдаёт identifier целевого Project и сохраняет
+   старый как alias.
 4. Status, Label, Project, Release и parent обязаны принадлежать тому же catalog
    owner scope, что и Task. Cross-owner hierarchy запрещена. TaskRelation —
    явное исключение: обе стороны обязаны быть Project Tasks, могут относиться к
    разным Projects/owners и не наследуют доступ друг от друга.
 5. `task.release_id IS NULL` либо release существует и
    `release.project_id = task.project_id`.
-6. Назначение release задаче без project в одной транзакции назначает и project.
-7. Смена project с несовместимым release либо отклоняется, либо в одной
+6. Create, import и restore Task без Project отклоняются; для legacy payload
+   требуется явное Project mapping.
+7. Смена Project выполняется только явной атомарной операцией. Несовместимый
+   release либо отклоняется, либо в одной
    подтверждённой операции очищает release; промежуточное неверное состояние не
    сохраняется.
 8. Terminal timestamps выводятся из status category и обновляются в одной
@@ -545,14 +553,15 @@ attachments также остаются import provenance.
    сущность запрещено.
 11. Assignee и lead обязаны иметь owner либо granted access к соответствующему
     resource.
-12. `Task.sequence_number` и `Task.identifier` уникальны в owner scope;
-    следующий номер резервируется атомарно до вставки Task.
+12. `(Task.project_id, Task.sequence_number)` уникальна; identifier равен
+    `<Project.task_code>-<sequence_number>`. Следующий номер резервируется
+    атомарно до вставки Task, а code блокируется после первой Task.
 13. SavedView выполняется в permission scope читателя и не расширяет его доступ,
     включая counts, groups и search suggestions. Project-scoped View жёстко
     ограничен `scope_project_id` и наследует Project role; global View не имеет
     `scope_project_id`, даже если его filter содержит Project.
-14. Standalone Task с active direct grant нельзя добавить в Project; сначала
-    все direct grants должны быть revoked.
+14. Exact lookup учитывает canonical identifier и aliases. Несколько доступных
+    alias matches дают ambiguity, а не произвольный результат.
 15. Revoke grant немедленно исключает resource из следующего authorized query.
     Viewer не выполняет mutation; Editor меняет content; Manager управляет
     только Editor/Viewer; Project Owner управляет вплоть до Manager.

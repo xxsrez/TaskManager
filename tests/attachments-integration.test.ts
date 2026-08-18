@@ -89,6 +89,7 @@ let database: D1Database;
 let bucket: R2Bucket;
 let thumbnailTransforms = 0;
 let thumbnailTransformFails = false;
+let attachmentProjectCodeIndex = 0;
 
 before(async () => {
   const harness = await createD1TestHarness({
@@ -136,7 +137,9 @@ async function setupSharedTask(name: string) {
   const editor = await getOrCreateUser(editorActor);
   const viewer = await getOrCreateUser(viewerActor);
   const outsider = await getOrCreateUser(outsiderActor);
-  await createProject(owner, { name });
+  const taskCode = `A${String.fromCharCode(65 + attachmentProjectCodeIndex)}`;
+  attachmentProjectCodeIndex += 1;
+  await createProject(owner, { name, taskCode });
   const project = (await getSnapshot(owner)).projects.find((item) => item.name === name)!;
   await grantAccess(owner, {
     resourceType: "project",
@@ -838,7 +841,7 @@ test("attachment-aware logical backups include scoped metadata and verified orig
     project.id,
     "https://example.test",
   );
-  assert.equal(projectBackup.schemaVersion, 5);
+  assert.equal(projectBackup.schemaVersion, 6);
   assert.equal(projectBackup.tables.attachments.length, 1);
   assert.equal(projectBackup.objects.length, 1);
   assert.match(String(projectBackup.tables.attachments[0]?.object_key), /^sha256:/);
@@ -851,7 +854,7 @@ test("attachment-aware logical backups include scoped metadata and verified orig
   );
 
   const systemBackup = await exportSystemBackup(owner);
-  assert.equal(systemBackup.schemaVersion, 5);
+  assert.equal(systemBackup.schemaVersion, 6);
   assert.ok(systemBackup.tables.attachments.length >= 1);
   assert.ok(systemBackup.objects.length >= 1);
 });

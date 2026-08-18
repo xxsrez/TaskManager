@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { configureActorResolverForTests } from "../lib/auth";
-import { parseAgentTaskListQuery } from "../lib/agent-api-contract";
-import { listAgentTasks } from "../lib/agent-api-repository";
+import { AgentApiError, parseAgentTaskListQuery } from "../lib/agent-api-contract";
+import { getAgentTaskDetail, listAgentTasks } from "../lib/agent-api-repository";
 import { ConflictError, PermissionError, ValidationError } from "../lib/domain";
 import {
   bulkUpdateTasks,
@@ -17,6 +17,7 @@ import {
   revokeAccess,
   searchTaskIds,
   searchTaskSummaries,
+  transferProjectOwnership,
   updateAccessRole,
   updateTask,
 } from "../lib/repository";
@@ -57,11 +58,27 @@ after(async () => {
   await dispose?.();
 });
 
+async function ensureRepositoryTestProject(owner: Awaited<ReturnType<typeof getOrCreateUser>>) {
+  let project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Repository Test Tasks" && item.accessRole === "owner",
+  );
+  if (!project) {
+    await createProject(owner, {
+      name: "Repository Test Tasks",
+      taskCode: "RT",
+    });
+    project = (await getSnapshot(owner)).projects.find(
+      (item) => item.name === "Repository Test Tasks" && item.accessRole === "owner",
+    );
+  }
+  return project!;
+}
+
 test("project ACL is enforced by repository reads and writes", async () => {
   const owner = await getOrCreateUser(ownerActor);
   const collaborator = await getOrCreateUser(collaboratorActor);
   const outsider = await getOrCreateUser(outsiderActor);
-  await createProject(owner, { name: "Shared project" });
+  await createProject(owner, { name: "Shared project", taskCode: "SP" });
   const project = (await getSnapshot(owner)).projects[0]!;
   await createTask(owner, { title: "Private project task", projectId: project.id });
   const task = (await getSnapshot(owner)).tasks[0]!;
@@ -99,7 +116,7 @@ test("project ACL is enforced by repository reads and writes", async () => {
       version: editedTask.version,
       projectId: null,
     }),
-    /Only the task owner/,
+    /Project cannot be cleared/,
   );
 });
 
@@ -113,17 +130,19 @@ test("task route maps authentication and validation boundaries", async () => {
   assert.equal(unauthenticated.status, 401);
 
   configureActorResolverForTests(async () => ownerActor);
+  const owner = await getOrCreateUser(ownerActor);
+  const project = await ensureRepositoryTestProject(owner);
   const invalid = await createTaskRoute(new Request("https://example.test/api/tasks", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title: "Invalid date", dueDate: "2026-02-29" }),
+    body: JSON.stringify({ title: "Invalid date", dueDate: "2026-02-29", projectId: project.id }),
   }));
   assert.equal(invalid.status, 400);
 
   const created = await createTaskRoute(new Request("https://example.test/api/tasks", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title: "Created through route" }),
+    body: JSON.stringify({ title: "Created through route", projectId: project.id }),
   }));
   assert.equal(created.status, 200);
   const payload = await created.json() as {
@@ -136,10 +155,10 @@ test("task route maps authentication and validation boundaries", async () => {
   );
 });
 
-test("grouping moves preserve project and release invariants", async () => {
+test("generic Task patches cannot bypass the explicit Project move boundary", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  await createProject(owner, { name: "Grouping source" });
-  await createProject(owner, { name: "Grouping target" });
+  await createProject(owner, { name: "Grouping source", taskCode: "GS" });
+  await createProject(owner, { name: "Grouping target", taskCode: "GT" });
   const projects = (await getSnapshot(owner)).projects;
   const source = projects.find((project) => project.name === "Grouping source")!;
   const target = projects.find((project) => project.name === "Grouping target")!;
@@ -152,28 +171,32 @@ test("grouping moves preserve project and release invariants", async () => {
     (item) => item.title === "Move between groups",
   )!;
 
-  task = await updateTask(owner, task.id, {
-    version: task.version,
-    projectId: target.id,
-    releaseId: release.id,
-    rank: 2000,
-  });
-  assert.equal(task.projectId, target.id);
-  assert.equal(task.releaseId, release.id);
-
-  task = await updateTask(owner, task.id, {
-    version: task.version,
-    projectId: null,
-    rank: 3000,
-  });
-  assert.equal(task.projectId, null);
+  await assert.rejects(
+    updateTask(owner, task.id, {
+      version: task.version,
+      projectId: target.id,
+      releaseId: release.id,
+      rank: 2000,
+    }),
+    /explicit Task move command/,
+  );
+  await assert.rejects(
+    updateTask(owner, task.id, {
+      version: task.version,
+      projectId: null,
+      rank: 3000,
+    }),
+    /Project cannot be cleared/,
+  );
+  task = (await getSnapshot(owner)).tasks.find((item) => item.id === task.id)!;
+  assert.equal(task.projectId, source.id);
   assert.equal(task.releaseId, null);
 });
 
 test("status drag mutation preserves unrelated fields, lifecycle rules, ACL, and conflicts", async () => {
   const owner = await getOrCreateUser(ownerActor);
   const collaborator = await getOrCreateUser(collaboratorActor);
-  await createProject(owner, { name: "Status drag project" });
+  await createProject(owner, { name: "Status drag project", taskCode: "SD" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Status drag project",
   )!;
@@ -237,7 +260,7 @@ test("assignee grouping commands enforce task access", async () => {
   const owner = await getOrCreateUser(ownerActor);
   const collaborator = await getOrCreateUser(collaboratorActor);
   const outsider = await getOrCreateUser(outsiderActor);
-  await createProject(owner, { name: "Assignee project" });
+  await createProject(owner, { name: "Assignee project", taskCode: "AP" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Assignee project",
   )!;
@@ -289,8 +312,9 @@ test("assignee grouping commands enforce task access", async () => {
 
 test("bulk mutations return only updated task records", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  await createTask(owner, { title: "Bulk one" });
-  await createTask(owner, { title: "Bulk two" });
+  const project = await ensureRepositoryTestProject(owner);
+  await createTask(owner, { title: "Bulk one", projectId: project.id });
+  await createTask(owner, { title: "Bulk two", projectId: project.id });
   const selected = (await getSnapshot(owner)).tasks.filter(
     (task) => task.title === "Bulk one" || task.title === "Bulk two",
   );
@@ -308,9 +332,10 @@ test("bulk mutations return only updated task records", async () => {
 
 test("workspace snapshots expose an explicit bounded task window", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  await createTask(owner, { title: "Window one" });
-  await createTask(owner, { title: "Window two" });
-  await createTask(owner, { title: "Window three" });
+  const project = await ensureRepositoryTestProject(owner);
+  await createTask(owner, { title: "Window one", projectId: project.id });
+  await createTask(owner, { title: "Window two", projectId: project.id });
+  await createTask(owner, { title: "Window three", projectId: project.id });
 
   const bounded = await getSnapshot(owner, { taskLimit: 2 });
 
@@ -325,9 +350,11 @@ test("workspace snapshots expose an explicit bounded task window", async () => {
 
 test("workspace snapshots defer task descriptions until task details are requested", async () => {
   const owner = await getOrCreateUser(ownerActor);
+  const project = await ensureRepositoryTestProject(owner);
   await createTask(owner, {
     title: "Deferred task body",
     description: "Large detail content that the task list does not render",
+    projectId: project.id,
   });
 
   const snapshot = await getSnapshot(owner);
@@ -351,12 +378,14 @@ test("workspace snapshots defer task descriptions until task details are request
 
 test("task search returns compact matches outside the initial workspace window", async () => {
   const owner = await getOrCreateUser(ownerActor);
+  const project = await ensureRepositoryTestProject(owner);
   const hidden = await createTask(owner, {
     title: "Old searchable task",
     description: "unique deferred needle",
+    projectId: project.id,
   });
   for (let index = 0; index < 41; index += 1) {
-    await createTask(owner, { title: `Newer filler ${index}` });
+    await createTask(owner, { title: `Newer filler ${index}`, projectId: project.id });
   }
 
   const initial = await getSnapshot(owner, { taskLimit: 40 });
@@ -383,12 +412,14 @@ test("task search returns compact matches outside the initial workspace window",
 
 test("task detail loads ACL-scoped labels, hierarchy, and relations outside the snapshot window", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  const parent = await createTask(owner, { title: "Detail context parent" });
+  const project = await ensureRepositoryTestProject(owner);
+  const parent = await createTask(owner, { title: "Detail context parent", projectId: project.id });
   const focused = await createTask(owner, {
     title: "Detail context focused",
     description: "Full focused body",
+    projectId: project.id,
   });
-  const related = await createTask(owner, { title: "Detail context related" });
+  const related = await createTask(owner, { title: "Detail context related", projectId: project.id });
   await database.batch([
     database.prepare("UPDATE tasks SET parent_task_id = ? WHERE id = ?").bind(parent.id, focused.id),
     database.prepare("INSERT INTO labels (id, owner_user_id, name, color) VALUES (?, ?, ?, ?)").bind("label-detail-context", owner.id, "Detail label", "#123456"),
@@ -431,9 +462,10 @@ test("task detail loads ACL-scoped labels, hierarchy, and relations outside the 
 
 test("Agent task cursor remains stable when earlier rows are inserted", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  await createTask(owner, { title: "Cursor alpha" });
-  await createTask(owner, { title: "Cursor beta" });
-  await createTask(owner, { title: "Cursor gamma" });
+  const project = await ensureRepositoryTestProject(owner);
+  await createTask(owner, { title: "Cursor alpha", projectId: project.id });
+  await createTask(owner, { title: "Cursor beta", projectId: project.id });
+  await createTask(owner, { title: "Cursor gamma", projectId: project.id });
 
   const firstQuery = await parseAgentTaskListQuery(
     new URLSearchParams("limit=2&search=Cursor&order=title&direction=asc"),
@@ -442,7 +474,7 @@ test("Agent task cursor remains stable when earlier rows are inserted", async ()
   assert.deepEqual(first.data.map((task) => task.title), ["Cursor alpha", "Cursor beta"]);
   assert.ok(first.page.nextCursor);
 
-  await createTask(owner, { title: "Cursor aardvark" });
+  await createTask(owner, { title: "Cursor aardvark", projectId: project.id });
   const secondQuery = await parseAgentTaskListQuery(
     new URLSearchParams(`limit=2&search=Cursor&order=title&direction=asc&cursor=${first.page.nextCursor}`),
   );
@@ -456,16 +488,132 @@ test("Agent task cursor remains stable when earlier rows are inserted", async ()
   assert.equal(nonPrefix.data.some((task) => task.title.startsWith("Cursor")), false);
 });
 
+test("Project codes drive allocation and legacy aliases resolve safely", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "project-code-owner-account",
+    email: "project-code-owner@example.test",
+  });
+  await createProject(owner, { name: "Code project", taskCode: "pc" });
+  await assert.rejects(
+    createProject(owner, { name: "Duplicate code", taskCode: "PC" }),
+    /Project code is already in use/,
+  );
+  await assert.rejects(
+    createProject(owner, { name: "Invalid code", taskCode: "P1" }),
+    /2 or 3 Latin letters/,
+  );
+  await assert.rejects(
+    createTask(owner, { title: "Missing Project" }),
+    /Project is required/,
+  );
+
+  const firstProject = (await getSnapshot(owner)).projects.find(
+    (project) => project.name === "Code project",
+  )!;
+  await createTask(owner, { title: "First coded Task", projectId: firstProject.id });
+  const firstTask = (await getSnapshot(owner)).tasks.find(
+    (task) => task.title === "First coded Task",
+  )!;
+  assert.equal(firstTask.identifier, "PC-1");
+  const allocatedProject = (await getSnapshot(owner)).projects.find(
+    (project) => project.id === firstProject.id,
+  )!;
+  assert.equal(allocatedProject.taskSequence, 1);
+  assert.ok(allocatedProject.codeLockedAt);
+  await assert.rejects(
+    database.prepare("UPDATE projects SET task_code = 'PX' WHERE id = ?")
+      .bind(firstProject.id).run(),
+    /locked Project task code/,
+  );
+  await assert.rejects(
+    database.prepare("UPDATE projects SET task_sequence = 0 WHERE id = ?")
+      .bind(firstProject.id).run(),
+    /locked Project task code/,
+  );
+
+  await database.prepare(
+    `INSERT INTO task_identifier_aliases (id, task_id, identifier)
+     VALUES ('alias-code-first', ?, 'OLD-9')`,
+  ).bind(firstTask.id).run();
+  assert.equal((await getAgentTaskDetail(owner, "old-9")).ref, firstTask.publicId);
+
+  await createProject(owner, { name: "Second code project", taskCode: "PD" });
+  const secondProject = (await getSnapshot(owner)).projects.find(
+    (project) => project.name === "Second code project",
+  )!;
+  await createTask(owner, { title: "Second coded Task", projectId: secondProject.id });
+  const secondTask = (await getSnapshot(owner)).tasks.find(
+    (task) => task.title === "Second coded Task",
+  )!;
+  await database.prepare(
+    `INSERT INTO task_identifier_aliases (id, task_id, identifier)
+     VALUES ('alias-code-second', ?, 'OLD-9')`,
+  ).bind(secondTask.id).run();
+  const aliasSearch = await listAgentTasks(
+    owner,
+    await parseAgentTaskListQuery(
+      new URLSearchParams("search=OLD-9&order=title&direction=asc"),
+    ),
+  );
+  assert.deepEqual(
+    aliasSearch.data.map((task) => task.identifier),
+    ["PC-1", "PD-1"],
+  );
+  await assert.rejects(
+    getAgentTaskDetail(owner, "OLD-9"),
+    (error: unknown) =>
+      error instanceof AgentApiError &&
+      error.code === "ambiguous_reference" &&
+      Array.isArray((error.details as { candidates?: unknown[] }).candidates) &&
+      (error.details as { candidates: unknown[] }).candidates.length === 2,
+  );
+});
+
+test("ownership transfer rejects a Project code conflict before mutation", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "transfer-code-owner-account",
+    email: "transfer-code-owner@example.test",
+  });
+  const successor = await getOrCreateUser({
+    ...collaboratorActor,
+    providerAccountKey: "transfer-code-successor-account",
+    email: "transfer-code-successor@example.test",
+  });
+  await createProject(owner, { name: "Transfer source", taskCode: "CF" });
+  await createProject(successor, { name: "Conflicting target", taskCode: "CF" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Transfer source",
+  )!;
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: successor.email,
+    permission: "manager",
+  });
+
+  await assert.rejects(
+    transferProjectOwnership(owner, project.id, successor.id),
+    /already has a Project with this code/,
+  );
+  assert.equal(
+    (await getSnapshot(owner)).projects.find((item) => item.id === project.id)?.accessRole,
+    "owner",
+  );
+});
+
 test("concurrent task creation allocates unique identifiers atomically", async () => {
   const owner = await getOrCreateUser({
     ...ownerActor,
     providerAccountKey: "sequence-owner-account",
     email: "sequence-owner@example.test",
   });
+  const project = await ensureRepositoryTestProject(owner);
 
   await Promise.all(
     Array.from({ length: 20 }, (_, index) =>
-      createTask(owner, { title: `Concurrent ${index + 1}` }),
+      createTask(owner, { title: `Concurrent ${index + 1}`, projectId: project.id }),
     ),
   );
 

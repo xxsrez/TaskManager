@@ -222,6 +222,9 @@ export const projects = sqliteTable(
     ownerUserId: text("owner_user_id").notNull(),
     creatorUserId: text("creator_user_id").notNull(),
     name: text("name").notNull(),
+    taskCode: text("task_code").notNull().default("PR"),
+    taskSequence: integer("task_sequence").notNull().default(0),
+    codeLockedAt: text("code_locked_at"),
     summary: text("summary").notNull().default(""),
     description: text("description").notNull().default(""),
     status: text("status").notNull().default("planned"),
@@ -237,6 +240,9 @@ export const projects = sqliteTable(
   },
   (table) => [
     uniqueIndex("idx_projects_public_id").on(table.publicId),
+    uniqueIndex("idx_projects_owner_task_code_active")
+      .on(table.ownerUserId, table.taskCode)
+      .where(sql`${table.archivedAt} IS NULL`),
     index("idx_projects_owner_archived").on(
       table.ownerUserId,
       table.archivedAt,
@@ -338,7 +344,7 @@ export const tasks = sqliteTable(
     statusId: text("status_id").notNull(),
     priority: text("priority").notNull().default("none"),
     assigneeUserId: text("assignee_user_id"),
-    projectId: text("project_id"),
+    projectId: text("project_id").notNull(),
     releaseId: text("release_id"),
     estimate: integer("estimate"),
     dueDate: text("due_date"),
@@ -355,12 +361,8 @@ export const tasks = sqliteTable(
   },
   (table) => [
     uniqueIndex("idx_tasks_public_id").on(table.publicId),
-    uniqueIndex("idx_tasks_owner_identifier").on(
-      table.ownerUserId,
-      table.identifier,
-    ),
-    uniqueIndex("idx_tasks_owner_sequence").on(
-      table.ownerUserId,
+    uniqueIndex("idx_tasks_project_sequence").on(
+      table.projectId,
       table.sequenceNumber,
     ),
     index("idx_tasks_owner_status_archived").on(
@@ -380,6 +382,23 @@ export const tasks = sqliteTable(
     ),
     index("idx_tasks_title_search").on(sql`lower(${table.title})`),
     index("idx_tasks_identifier_search").on(sql`lower(${table.identifier})`),
+  ],
+);
+
+export const taskIdentifierAliases = sqliteTable(
+  "task_identifier_aliases",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+    identifier: text("identifier").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_task_identifier_aliases_task_identifier").on(
+      table.taskId,
+      table.identifier,
+    ),
+    index("idx_task_identifier_aliases_lookup").on(sql`lower(${table.identifier})`),
   ],
 );
 

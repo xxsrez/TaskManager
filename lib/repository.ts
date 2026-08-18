@@ -877,6 +877,11 @@ export async function searchTaskSummaries(
            END AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
          WHERE instr(lower(t.identifier), ?) > 0
+            OR EXISTS (
+              SELECT 1 FROM task_identifier_aliases alias
+              WHERE alias.task_id = t.id
+                AND instr(lower(alias.identifier), ?) > 0
+            )
             OR instr(lower(t.title), ?) > 0
             OR instr(lower(COALESCE(t.description, '')), ?) > 0
        )
@@ -888,6 +893,7 @@ export async function searchTaskSummaries(
       currentUser.id,
       currentUser.id,
       currentUser.id,
+      query,
       query,
       query,
       query,
@@ -991,11 +997,16 @@ export async function createTask(
   const title = requireTitle(input.title);
   const description = optionalText(input.description);
   await validateTaskDescriptionAttachments(null, description);
-  const project = input.projectId
-    ? await loadAccessibleProject(currentUser.id, String(input.projectId))
-    : null;
-  if (project) requireContentEdit(project.accessRole);
-  const ownerUserId = project?.ownerUserId ?? currentUser.id;
+  if (!input.projectId) throw new ValidationError("Project is required");
+  const project = await loadAccessibleProject(
+    currentUser.id,
+    String(input.projectId),
+  );
+  requireContentEdit(project.accessRole);
+  if (project.status === "canceled") {
+    throw new ValidationError("Tasks cannot be created in a canceled project");
+  }
+  const ownerUserId = project.ownerUserId;
   const status = await loadStatus(
     ownerUserId,
     input.statusId ? String(input.statusId) : null,
@@ -1004,33 +1015,38 @@ export async function createTask(
     ? await loadAccessibleRelease(currentUser.id, String(input.releaseId))
     : null;
   if (release) requireContentEdit(release.accessRole);
-  assertReleaseProject(project?.id ?? null, release?.projectId ?? null);
+  assertReleaseProject(project.id, release?.projectId ?? null);
   const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
     ? requestedAssigneeUserId(input.assigneeUserId)
     : currentUser.id;
   await assertTaskAssigneeAccess(
     assigneeUserId,
     ownerUserId,
-    project?.id ?? null,
+    project.id,
     null,
   );
 
   const sequenceRow = await db
     .prepare(
-      `INSERT INTO task_sequences (owner_user_id, last_value)
-       VALUES (?, (
-         SELECT COALESCE(MAX(sequence_number), 0) + 1
-         FROM tasks WHERE owner_user_id = ?
-       ))
-       ON CONFLICT(owner_user_id) DO UPDATE SET last_value = MAX(
-         task_sequences.last_value + 1,
-         (SELECT COALESCE(MAX(sequence_number), 0) + 1
-          FROM tasks WHERE owner_user_id = ?)
+      `UPDATE projects SET
+         task_sequence = MAX(
+           task_sequence + 1,
+           (SELECT COALESCE(MAX(sequence_number), 0) + 1
+            FROM tasks WHERE project_id = projects.id)
+         ),
+         code_locked_at = COALESCE(code_locked_at, ?)
+       WHERE id = ? AND archived_at IS NULL AND (
+         owner_user_id = ? OR EXISTS (
+           SELECT 1 FROM access_grants ag
+           WHERE ag.resource_type = 'project' AND ag.resource_id = projects.id
+             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             AND ag.permission IN ('editor', 'manager', 'full_access')
+         )
        )
-       RETURNING last_value`,
+       RETURNING task_sequence AS last_value, task_code`,
     )
-    .bind(ownerUserId, ownerUserId, ownerUserId)
-    .first<{ last_value: number }>();
+    .bind(new Date().toISOString(), project.id, currentUser.id, currentUser.id)
+    .first<{ last_value: number; task_code: string }>();
   const rankRow = await db
     .prepare(
       "SELECT COALESCE(MAX(rank), 0) + 1000 AS next FROM tasks WHERE owner_user_id = ? AND status_id = ?",
@@ -1062,14 +1078,14 @@ export async function createTask(
       publicId,
       ownerUserId,
       currentUser.id,
-      `TM-${sequence}`,
+      `${sequenceRow.task_code}-${sequence}`,
       sequence,
       title,
       description,
       status.id,
       input.priority ? priority(input.priority) : "none",
       assigneeUserId,
-      project?.id ?? null,
+      project.id,
       release?.id ?? null,
       optionalEstimate(input.estimate),
       optionalDate(input.dueDate),
@@ -1098,49 +1114,16 @@ export async function updateTask(
 
   let projectId = task.projectId;
   if (Object.hasOwn(input, "projectId")) {
-    const targetProject = input.projectId
-      ? await loadAccessibleProject(currentUser.id, String(input.projectId))
-      : null;
-    if (targetProject) requireContentEdit(targetProject.accessRole);
-    if (task.projectId && !targetProject && currentUser.id !== task.ownerUserId) {
-      throw new ValidationError(
-        "Only the task owner can move project work back to standalone",
-      );
+    if (!input.projectId) throw new ValidationError("Project cannot be cleared");
+    const targetProject = await loadAccessibleProject(
+      currentUser.id,
+      String(input.projectId),
+    );
+    requireContentEdit(targetProject.accessRole);
+    if (targetProject.id !== task.projectId) {
+      throw new ValidationError("Use the explicit Task move command to change Project");
     }
-    if (task.projectId && targetProject && targetProject.id !== task.projectId) {
-      const sourceProject = await loadAccessibleProject(
-        currentUser.id,
-        task.projectId,
-      );
-      requireContentEdit(sourceProject.accessRole);
-      if (
-        sourceProject.ownerUserId !== targetProject?.ownerUserId ||
-        task.ownerUserId !== sourceProject.ownerUserId
-      ) {
-        throw new ValidationError(
-          "Moving work across project ownership boundaries is not supported",
-        );
-      }
-    }
-    if (targetProject && targetProject.ownerUserId !== task.ownerUserId) {
-      throw new ValidationError("Moving work between owners is not supported");
-    }
-    if (targetProject && task.projectId == null) {
-      const grant = await getD1()
-        .prepare(
-          `SELECT id FROM access_grants
-           WHERE resource_type = 'task' AND resource_id = ? AND revoked_at IS NULL
-           LIMIT 1`,
-        )
-        .bind(task.id)
-        .first();
-      if (grant) {
-        throw new ValidationError(
-          "Revoke direct task access before adding it to a project",
-        );
-      }
-    }
-    projectId = targetProject?.id ?? null;
+    projectId = targetProject.id;
   }
 
   let releaseId = task.releaseId;
@@ -1151,8 +1134,6 @@ export async function updateTask(
     if (release) requireContentEdit(release.accessRole);
     assertReleaseProject(projectId, release?.projectId ?? null);
     releaseId = release?.id ?? null;
-  } else if (task.projectId !== projectId && task.releaseId) {
-    releaseId = null;
   }
 
   const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
@@ -1357,12 +1338,24 @@ export async function createProject(
   input: Record<string, unknown>,
 ) {
   const now = new Date().toISOString();
-  await getD1()
+  const code = projectTaskCode(input.taskCode);
+  const duplicate = await getD1()
+    .prepare(
+      `SELECT id FROM projects
+       WHERE owner_user_id = ? AND task_code = ? AND archived_at IS NULL
+       LIMIT 1`,
+    )
+    .bind(currentUser.id, code)
+    .first();
+  if (duplicate) throw new ValidationError("Project code is already in use");
+  try {
+    await getD1()
     .prepare(
       `INSERT INTO projects
-        (id, public_id, owner_user_id, creator_user_id, name, summary, description,
+        (id, public_id, owner_user_id, creator_user_id, name, task_code,
+         summary, description,
          target_date, lead_user_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       `project_${crypto.randomUUID()}`,
@@ -1370,6 +1363,7 @@ export async function createProject(
       currentUser.id,
       currentUser.id,
       requireTitle(input.name),
+      code,
       optionalText(input.summary, 500),
       optionalText(input.description),
       optionalDate(input.targetDate),
@@ -1378,6 +1372,12 @@ export async function createProject(
       now,
     )
     .run();
+  } catch (error) {
+    if (error instanceof Error && /task_code|unique/i.test(error.message)) {
+      throw new ValidationError("Project code is already in use");
+    }
+    throw error;
+  }
 }
 
 export async function createRelease(
@@ -1589,6 +1589,17 @@ export async function transferProjectOwnership(
     .first<{ id: string }>();
   if (!targetGrant) {
     throw new ValidationError("Ownership can only be transferred to a project member");
+  }
+  const codeConflict = await getD1()
+    .prepare(
+      `SELECT id FROM projects
+       WHERE owner_user_id = ? AND task_code = ? AND archived_at IS NULL
+         AND id <> ? LIMIT 1`,
+    )
+    .bind(targetUserId, project.taskCode, project.id)
+    .first();
+  if (codeConflict) {
+    throw new ValidationError("The new owner already has a Project with this code");
   }
 
   const now = new Date().toISOString();
@@ -2021,6 +2032,9 @@ function mapProject(row: DbRow): ProjectRecord {
     ownerUserId: String(row.owner_user_id),
     creatorUserId: String(row.creator_user_id),
     name: String(row.name),
+    taskCode: String(row.task_code),
+    taskSequence: Number(row.task_sequence),
+    codeLockedAt: nullableString(row.code_locked_at),
     summary: String(row.summary ?? ""),
     description: String(row.description ?? ""),
     status: String(row.status),
@@ -2068,7 +2082,7 @@ function mapTask(row: DbRow): TaskRecord {
     statusId: String(row.status_id),
     priority: String(row.priority) as Priority,
     assigneeUserId: nullableString(row.assignee_user_id),
-    projectId: nullableString(row.project_id),
+    projectId: String(row.project_id),
     releaseId: nullableString(row.release_id),
     estimate: row.estimate == null ? null : Number(row.estimate),
     dueDate: nullableString(row.due_date),
@@ -2249,6 +2263,17 @@ function effectiveRole(value: unknown): AccessRole {
     return value;
   }
   return "viewer";
+}
+
+function projectTaskCode(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new ValidationError("Project code is required");
+  }
+  const code = value.trim().toUpperCase();
+  if (!/^[A-Z]{2,3}$/.test(code)) {
+    throw new ValidationError("Project code must use 2 or 3 Latin letters");
+  }
+  return code;
 }
 
 function nullableString(value: unknown): string | null {

@@ -8,7 +8,11 @@ import {
 
 export async function createD1TestHarness(
   variables: Record<string, string> = {},
-  options: { r2?: boolean; images?: TaskManagerImagesBinding } = {},
+  options: {
+    r2?: boolean;
+    images?: TaskManagerImagesBinding;
+    migrationsBefore?: string;
+  } = {},
 ) {
   const miniflare = new Miniflare({
     compatibilityDate: "2026-05-22",
@@ -23,6 +27,7 @@ export async function createD1TestHarness(
     : undefined;
   const migrations = readdirSync(new URL("../../drizzle", import.meta.url))
     .filter((name) => name.endsWith(".sql"))
+    .filter((name) => !options.migrationsBefore || name < options.migrationsBefore)
     .sort();
   for (const migration of migrations) {
     const statements = readFileSync(

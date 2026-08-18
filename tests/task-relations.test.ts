@@ -111,7 +111,7 @@ test("relation migration preserves imported rows and adds stable write metadata"
 
 test("native relation commands preserve identity, direction, idempotency, and duplicate outcome", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  await createProject(owner, { name: "Relations project" });
+  await createProject(owner, { name: "Relations project", taskCode: "RP" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Relations project",
   )!;
@@ -218,19 +218,15 @@ test("relation commands require two editable project tasks and reject unsafe sha
   const owner = await getOrCreateUser(ownerActor);
   const collaborator = await getOrCreateUser(collaboratorActor);
   const viewer = await getOrCreateUser(viewerActor);
-  await createProject(owner, { name: "Relations ACL project" });
+  await createProject(owner, { name: "Relations ACL project", taskCode: "RA" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Relations ACL project",
   )!;
   await createTask(owner, { title: "ACL source", projectId: project.id });
   await createTask(owner, { title: "ACL target", projectId: project.id });
-  await createTask(owner, { title: "Standalone relation peer" });
   const tasks = (await getSnapshot(owner)).tasks;
   const source = tasks.find((item) => item.title === "ACL source")!;
   const target = tasks.find((item) => item.title === "ACL target")!;
-  const standalone = tasks.find(
-    (item) => item.title === "Standalone relation peer",
-  )!;
 
   await grantAccess(owner, {
     resourceType: "project",
@@ -271,15 +267,6 @@ test("relation commands require two editable project tasks and reject unsafe sha
   );
   await assert.rejects(
     createTaskRelation(owner, source.id, {
-      targetTaskId: standalone.id,
-      type: "related",
-      direction: "outgoing",
-      idempotencyKey: "relations-standalone-1",
-    }),
-    ValidationError,
-  );
-  await assert.rejects(
-    createTaskRelation(owner, source.id, {
       targetTaskId: target.id,
       type: "duplicate_of",
       direction: "incoming",
@@ -292,7 +279,7 @@ test("relation commands require two editable project tasks and reject unsafe sha
 
 test("Agent relation commands use public Task refs and stable relation refs", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  await createProject(owner, { name: "Agent relations project" });
+  await createProject(owner, { name: "Agent relations project", taskCode: "AR" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Agent relations project",
   )!;
@@ -338,7 +325,7 @@ test("Agent relation commands use public Task refs and stable relation refs", as
 
 test("browser relation routes expose create, update, and delete without a workspace snapshot", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  await createProject(owner, { name: "Route relations project" });
+  await createProject(owner, { name: "Route relations project", taskCode: "RR" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Route relations project",
   )!;

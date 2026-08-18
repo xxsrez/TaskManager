@@ -18,7 +18,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 5);
+  assert.equal(backup.schemaVersion, 6);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -26,6 +26,26 @@ test("a complete system snapshot validates and preserves application data", asyn
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.tables.tasks[0]?.title, "Ship backup support");
   assert.equal(validated.tables.access_grants[0]?.permission, "full_access");
+});
+
+test("system validation accepts a locked Project whose allocated Tasks are gone", async () => {
+  const tables = validTables();
+  tables.projects.push({
+    ...tables.projects[0]!,
+    id: "project-empty-history",
+    public_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    name: "Archived number history",
+    task_code: "AH",
+    task_sequence: 7,
+    lead_user_id: null,
+  });
+  const backup = await createSystemBackup(tables, now);
+  assert.equal(
+    (await validateSystemBackup(backup)).tables.projects.find(
+      (project) => project.id === "project-empty-history",
+    )?.task_sequence,
+    7,
+  );
 });
 
 test("the comment-aware system schema rejects an older backup explicitly", async () => {
@@ -39,12 +59,13 @@ test("the comment-aware system schema rejects an older backup explicitly", async
 test("schema 2 system backups without attachments remain importable", async () => {
   const current = await createSystemBackup(validTables(), now);
   const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => name !== "attachments"),
+    Object.entries(current.tables).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
   );
+  tables.projects = current.tables.projects.map(legacyProjectRow);
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => name !== "attachments"),
+    Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
   );
   const body = {
     format: current.format,
@@ -67,11 +88,15 @@ test("schema 3 system backups synthesize reserved workflow metadata before resto
     .filter((status) => status.system_role !== "duplicate")
     .map(legacyWorkflowRow);
   const tables = {
-    ...current.tables,
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    projects: current.tables.projects.map(legacyProjectRow),
     workflow_statuses: legacyStatuses,
     task_relations: current.tables.task_relations.map(legacyRelationRow),
   };
-  const counts = { ...current.counts, workflow_statuses: legacyStatuses.length };
+  const counts = {
+    ...Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
+    workflow_statuses: legacyStatuses.length,
+  };
   const body = {
     format: current.format,
     version: current.version,
@@ -94,12 +119,14 @@ test("schema 3 system backups synthesize reserved workflow metadata before resto
 test("schema 4 system backups upgrade legacy relation identity and concurrency metadata", async () => {
   const current = await createSystemBackup(validTables(), now);
   const tables = {
-    ...current.tables,
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    projects: current.tables.projects.map(legacyProjectRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
   };
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
     tables,
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
@@ -164,7 +191,7 @@ test("snapshot validation accepts transferred project ownership without rewritin
   assert.equal(validated.tables.access_grants[0]?.permission, "manager");
 });
 
-test("snapshot validation rejects manager on a standalone resource", async () => {
+test("snapshot validation rejects Tasks without an explicit Project mapping", async () => {
   const tables = validTables();
   tables.projects[0]!.lead_user_id = null;
   tables.tasks[0]!.project_id = null;
@@ -176,7 +203,7 @@ test("snapshot validation rejects manager on a standalone resource", async () =>
   tables.access_grants[0]!.permission = "manager";
   const backup = await createSystemBackup(tables, now);
 
-  await assert.rejects(validateSystemBackup(backup), /unsupported grant permission/i);
+  await assert.rejects(validateSystemBackup(backup), /project_id cannot be null|explicit Project mapping/i);
 });
 
 test("restore requires the current administrator identity in the snapshot", async () => {
@@ -334,6 +361,9 @@ function validTables(): BackupTables {
         owner_user_id: "user-admin",
         creator_user_id: "user-admin",
         name: "Task Manager",
+        task_code: "TM",
+        task_sequence: 2,
+        code_locked_at: now,
         summary: "",
         description: "",
         status: "active",
@@ -422,6 +452,7 @@ function validTables(): BackupTables {
         updated_at: now,
       },
     ],
+    task_identifier_aliases: [],
     attachments: [],
     comments: [
       {
@@ -528,6 +559,14 @@ function legacyWorkflowRow(row: Record<string, string | number | null>) {
   );
 }
 
+function legacyProjectRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) =>
+      !["task_code", "task_sequence", "code_locked_at"].includes(key),
+    ),
+  );
+}
+
 function legacyRelationRow(row: Record<string, string | number | null>) {
   return Object.fromEntries(
     Object.entries(row).filter(([key]) =>
@@ -557,6 +596,7 @@ function migratedDatabase() {
     "0015_attachments_sync.sql",
     "0016_abandoned_stellaris.sql",
     "0017_complex_epoch.sql",
+    "0018_tearful_black_panther.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

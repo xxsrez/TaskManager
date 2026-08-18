@@ -96,7 +96,12 @@ test("owner workflow catalog preserves defaults, ordering, optimistic versions, 
   assert.equal(ready.isDefault, true);
   assert.equal(statuses.filter((status) => status.isDefault).length, 1);
 
-  const taskIdentity = await createTask(owner, { title: "Uses the configured default" });
+  await createProject(owner, { name: "Workflow Tasks", taskCode: "WF" });
+  const project = (await getSnapshot(owner)).projects.find((item) => item.name === "Workflow Tasks")!;
+  const taskIdentity = await createTask(owner, {
+    title: "Uses the configured default",
+    projectId: project.id,
+  });
   await createSavedView(owner, {
     name: "Ready work",
     query: { statusIds: [ready.id] },
@@ -196,7 +201,7 @@ test("catalog management is owner-only and resets every current project audience
     displayName: "Workflow Outsider",
     email: "workflow-outsider@example.test",
   });
-  await createProject(owner, { name: "Shared workflow project" });
+  await createProject(owner, { name: "Shared workflow project", taskCode: "SW" });
   const project = (await getSnapshot(owner)).projects.find((item) => item.name === "Shared workflow project")!;
   await grantAccess(owner, {
     resourceType: "project",

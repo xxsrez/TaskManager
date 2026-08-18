@@ -195,10 +195,16 @@ export async function listAgentTasks(
   if (query.search) {
     predicates.push(
       `((lower(v.title) >= ? AND lower(v.title) < ?)
-        OR (lower(v.identifier) >= ? AND lower(v.identifier) < ?))`,
+        OR (lower(v.identifier) >= ? AND lower(v.identifier) < ?)
+        OR EXISTS (
+          SELECT 1 FROM task_identifier_aliases alias
+          WHERE alias.task_id = v.id
+            AND lower(alias.identifier) >= ?
+            AND lower(alias.identifier) < ?
+        ))`,
     );
     const [start, end] = prefixRange(query.search);
-    parameters.push(start, end, start, end);
+    parameters.push(start, end, start, end, start, end);
   }
 
   const direction = query.direction === "asc" ? "ASC" : "DESC";
@@ -587,30 +593,24 @@ export async function createAgentTask(
     "estimate",
     "dueDate",
   ]);
-  let project = input.projectRef
-    ? await loadAccessibleProjectRow(currentUser.id, String(input.projectRef))
-    : null;
+  if (!input.projectRef) throw new ValidationError("projectRef is required");
+  const project = await loadAccessibleProjectRow(
+    currentUser.id,
+    String(input.projectRef),
+  );
   const release = input.releaseRef
     ? await loadAccessibleReleaseRow(currentUser.id, String(input.releaseRef))
     : null;
-  if (release && !project) {
-    project = await loadAccessibleProjectRowById(
-      currentUser.id,
-      String(release.project_id),
-    );
-  }
-  if (project && release && String(project.id) !== String(release.project_id)) {
+  if (release && String(project.id) !== String(release.project_id)) {
     throw new ValidationError("Release does not belong to the selected project");
   }
-  const ownerUserId = project
-    ? String(project.owner_user_id)
-    : currentUser.id;
+  const ownerUserId = String(project.owner_user_id);
   const statusId = input.statusRef
     ? await resolveStatusReference(ownerUserId, String(input.statusRef))
     : undefined;
   const created = await createTask(currentUser, {
     ...input,
-    projectId: project?.id ?? null,
+    projectId: project.id,
     releaseId: release?.id ?? null,
     ...(statusId ? { statusId } : {}),
   });
@@ -648,14 +648,13 @@ export async function updateAgentTask(
     );
   }
   if (Object.hasOwn(input, "projectRef")) {
-    translated.projectId = input.projectRef
-      ? String(
-          (await loadAccessibleProjectRow(
-            currentUser.id,
-            String(input.projectRef),
-          )).id,
-        )
-      : null;
+    if (!input.projectRef) throw new ValidationError("projectRef cannot be cleared");
+    translated.projectId = String(
+      (await loadAccessibleProjectRow(
+        currentUser.id,
+        String(input.projectRef),
+      )).id,
+    );
   }
   if (Object.hasOwn(input, "releaseRef")) {
     translated.releaseId = input.releaseRef
@@ -982,9 +981,14 @@ async function loadAccessibleTaskRow(userId: string, reference: string) {
        SELECT ${taskProjection}
        FROM visible_tasks v
        WHERE v.public_id = ? OR upper(v.identifier) = upper(?)
+          OR EXISTS (
+            SELECT 1 FROM task_identifier_aliases alias
+            WHERE alias.task_id = v.id
+              AND upper(alias.identifier) = upper(?)
+          )
        ORDER BY v.public_id LIMIT 3`,
     )
-    .bind(...taskScopeParameters(userId), reference, reference)
+    .bind(...taskScopeParameters(userId), reference, reference, reference)
     .all<DbRow>();
   if (rows.results.length === 0) throw new NotFoundError("Task not found");
   if (rows.results.length > 1) {
@@ -1017,18 +1021,6 @@ async function loadAccessibleProjectRow(
        FROM visible_projects p WHERE p.public_id = ? LIMIT 1`,
     )
     .bind(userId, userId, reference)
-    .first<DbRow>();
-  if (!row) throw new NotFoundError("Project not found");
-  return row;
-}
-
-async function loadAccessibleProjectRowById(userId: string, id: string) {
-  const row = await getD1()
-    .prepare(
-      `${projectScopeCte}
-       SELECT p.* FROM visible_projects p WHERE p.id = ? LIMIT 1`,
-    )
-    .bind(userId, userId, id)
     .first<DbRow>();
   if (!row) throw new NotFoundError("Project not found");
   return row;
@@ -1328,6 +1320,9 @@ function mapProjectSummary(row: DbRow) {
   return {
     ref: String(row.public_id),
     name: String(row.name),
+    taskCode: String(row.task_code),
+    taskSequence: Number(row.task_sequence),
+    codeLocked: row.code_locked_at != null,
     summary: String(row.summary ?? ""),
     status: String(row.status),
     targetDate: nullableString(row.target_date),

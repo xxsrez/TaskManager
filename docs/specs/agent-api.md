@@ -130,8 +130,9 @@ restore атомарно отзывает все authentication capabilities, ч
 
 - Task, Project и Release используют immutable database `public_id` как
   `ref`.
-- Task также возвращает `identifier` (`TM-123`). Его можно использовать для
-  detail/update lookup. Несколько доступных совпадений дают
+- Task также возвращает текущий `identifier` (`TM-123`). Для detail/update
+  lookup принимаются canonical identifier и прежние aliases. Несколько
+  доступных совпадений дают
   `ambiguous_reference` с безопасным списком кандидатов.
 - WorkflowStatus и Label не раскрывают internal IDs. Их `sts_...` и
   `lbl_...` refs детерминированно выводятся через SHA-256.
@@ -291,13 +292,14 @@ release notes. Project/Release detail возвращают `workflowStatuses`, �
 ## 7. Task commands
 
 `POST /tasks` принимает `title`, `description`, `statusRef`, `priority`,
-`projectRef`, `releaseRef`, `estimate`, `dueDate`. Обязателен только
-`title`. При release без project сервер выводит project из release.
+`projectRef`, `releaseRef`, `estimate`, `dueDate`. Обязательны `title` и
+canonical `projectRef`; release не заменяет явный Project.
 Несовместимые project/release и status другого owner scope отклоняются до записи.
 
 `PATCH /tasks/{ref}` требует актуальный `version` и принимает `title`,
 `description`, `statusRef`, `priority`, `projectRef`, `releaseRef`,
-`estimate`, `dueDate`, `rank`, `archived`.
+`estimate`, `dueDate`, `rank`, `archived`. Generic patch не очищает и не меняет
+Project; отдельный атомарный move contract меняет Project и identifier вместе.
 
 `description` может содержать native raster reference только в формате
 `![alt](attachment:v1:<public-ref> "optional caption")`. Сначала image должен
@@ -402,8 +404,8 @@ Authorization invariants:
 
 1. OAuth grant или personal credential сопоставляется внутреннему User до data query.
 2. ACL применяется до filters, pagination, counts, ambiguity и relations.
-3. Project roles распространяются на Tasks/Releases как в UI; standalone Task
-   использует owner/direct grant.
+3. Project roles распространяются на все Tasks/Releases как в UI; прямого Task
+   grant нет.
 4. `api:write` разрешает только task commands и не отменяет resource role.
 5. API не вызывает admin, backup/restore, sharing, ownership transfer или
    credential management.

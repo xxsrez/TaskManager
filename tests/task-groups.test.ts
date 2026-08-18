@@ -40,6 +40,9 @@ const projects: ProjectRecord[] = [
     ownerUserId: "user-1",
     creatorUserId: "user-1",
     name: "Alpha",
+    taskCode: "AL",
+    taskSequence: 1,
+    codeLockedAt: now,
     summary: "",
     description: "",
     status: "active",
@@ -219,28 +222,28 @@ test("dragging exposes empty status targets without changing saved empty-group p
   assert.equal(shouldShowEmptyTaskGroups("priority", true, false), true);
 });
 
-test("project and release grouping include explicit unassigned groups", () => {
-  const unassigned = {
+test("project grouping is always assigned while release grouping can be unassigned", () => {
+  const withoutRelease = {
     ...baseTask,
     id: "task-2",
     publicId: "44444444-4444-4444-8444-444444444444",
     identifier: "TM-2",
-    projectId: null,
+    projectId: "project-1",
     releaseId: null,
   };
 
   const projectGroups = buildTaskGroups({
-    tasks: [baseTask, unassigned],
+    tasks: [baseTask, withoutRelease],
     statuses,
     projects,
     releases,
     groupBy: "project",
     showEmptyGroups: false,
   });
-  assert.deepEqual(projectGroups.map((group) => group.label), ["Alpha", "No project"]);
+  assert.deepEqual(projectGroups.map((group) => group.label), ["Alpha"]);
 
   const releaseGroups = buildTaskGroups({
-    tasks: [baseTask, unassigned],
+    tasks: [baseTask, withoutRelease],
     statuses,
     projects,
     releases,

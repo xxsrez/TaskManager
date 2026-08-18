@@ -30,7 +30,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4 | 5;
+  schemaVersion: 2 | 3 | 4 | 5 | 6;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -42,7 +42,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 5 as const;
+export const systemBackupSchemaVersion = 6 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 1000;
 const maxStagedRowBytes = 1_500_000;
@@ -60,6 +60,7 @@ const timestampColumns = new Set([
   "imported_at",
   "revoked_at",
   "upload_expires_at",
+  "code_locked_at",
 ]);
 
 export const backupTableNames = [
@@ -69,6 +70,7 @@ export const backupTableNames = [
   "projects",
   "releases",
   "tasks",
+  "task_identifier_aliases",
   "attachments",
   "comments",
   "comment_reactions",
@@ -90,15 +92,16 @@ export const tableDefinitions = [
     archived_at: { nullable: true },
     version: { number: true, integer: true },
   }),
-  definition("projects", ["id", "public_id", "owner_user_id", "creator_user_id", "name", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"], "id", {
-    lead_user_id: { nullable: true }, start_date: { nullable: true }, target_date: { nullable: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
+  definition("projects", ["id", "public_id", "owner_user_id", "creator_user_id", "name", "task_code", "task_sequence", "code_locked_at", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"], "id", {
+    task_sequence: { number: true, integer: true }, code_locked_at: { nullable: true }, lead_user_id: { nullable: true }, start_date: { nullable: true }, target_date: { nullable: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
   }),
   definition("releases", ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "version", "created_at", "updated_at"], "id", {
     target_date: { nullable: true }, released_at: { nullable: true }, version: { number: true, integer: true },
   }),
   definition("tasks", ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"], "id", {
-    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, project_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, comment_count: { number: true, integer: true }, version: { number: true, integer: true },
   }),
+  definition("task_identifier_aliases", ["id", "task_id", "identifier", "created_at"], "task_id, identifier"),
   definition("attachments", ["id", "public_id", "task_id", "uploader_user_id", "original_filename", "display_name", "media_type", "byte_size", "checksum_sha256", "object_key", "kind", "state", "image_width", "image_height", "variant_metadata_json", "idempotency_key", "upload_expires_at", "failure_code", "version", "created_at", "updated_at", "deleted_at"], "task_id, created_at, id", {
     byte_size: { number: true, integer: true }, image_width: { nullable: true, number: true, integer: true }, image_height: { nullable: true, number: true, integer: true }, upload_expires_at: { nullable: true }, failure_code: { nullable: true }, version: { number: true, integer: true }, deleted_at: { nullable: true },
   }),
@@ -138,6 +141,31 @@ const legacyTaskRelationDefinition = definition(
   "source_task_id, target_task_id, type",
 );
 
+const legacyProjectDefinition = definition(
+  "projects",
+  ["id", "public_id", "owner_user_id", "creator_user_id", "name", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"],
+  "id",
+  {
+    lead_user_id: { nullable: true }, start_date: { nullable: true },
+    target_date: { nullable: true }, archived_at: { nullable: true },
+    version: { number: true, integer: true },
+  },
+);
+
+const legacyTaskDefinition = definition(
+  "tasks",
+  ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"],
+  "id",
+  {
+    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true },
+    project_id: { nullable: true }, release_id: { nullable: true },
+    estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true },
+    parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
+    completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
+    comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+  },
+);
+
 export const liveTableDeleteOrder: BackupTableName[] = [
   "comment_reactions",
   "comments",
@@ -146,6 +174,7 @@ export const liveTableDeleteOrder: BackupTableName[] = [
   "access_grants",
   "external_records",
   "attachments",
+  "task_identifier_aliases",
   "tasks",
   "releases",
   "saved_views",
@@ -210,7 +239,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const withoutAttachments = schemaVersion === 2;
   const legacyWorkflow = schemaVersion === 2 || schemaVersion === 3;
   const legacyRelations = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4;
-  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === systemBackupSchemaVersion;
+  const legacyIdentifiers = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5;
+  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
     withoutAttachments
@@ -223,20 +253,26 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   }
   const exportedAt = timestamp(payload.exportedAt, "exportedAt");
   const sourceTables = object(payload.tables, "tables");
-  const sourceTableNames = withoutAttachments
-    ? backupTableNames.filter((name) => name !== "attachments")
-    : backupTableNames;
+  const sourceTableNames = backupTableNames.filter((name) =>
+    !(withoutAttachments && name === "attachments") &&
+    !(legacyIdentifiers && name === "task_identifier_aliases"),
+  );
   assertOnlyKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as BackupTables;
   let totalRows = 0;
   for (const table of tableDefinitions) {
     const sourceRows =
-      withoutAttachments && table.name === "attachments"
+      (withoutAttachments && table.name === "attachments") ||
+      (legacyIdentifiers && table.name === "task_identifier_aliases")
         ? []
         : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
     if (totalRows > maxSystemBackupRows) throw new ValidationError(`Backup contains more than ${maxSystemBackupRows} rows`);
-    const sourceDefinition = legacyWorkflow && table.name === "workflow_statuses"
+    const sourceDefinition = legacyIdentifiers && table.name === "projects"
+      ? legacyProjectDefinition
+      : legacyIdentifiers && table.name === "tasks"
+        ? legacyTaskDefinition
+      : legacyWorkflow && table.name === "workflow_statuses"
       ? legacyWorkflowStatusDefinition
       : legacyRelations && table.name === "task_relations"
         ? legacyTaskRelationDefinition
@@ -255,6 +291,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
     ? upgradeLegacySystemWorkflow(sourceNormalizedTables)
     : sourceNormalizedTables;
   if (legacyRelations) tables = upgradeLegacySystemRelations(tables);
+  if (legacyIdentifiers) tables = upgradeLegacySystemIdentifiers(tables);
   const counts = countTables(tables);
   validateRelationships(tables);
   const objects = withoutAttachments
@@ -263,7 +300,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6,
     ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
@@ -275,10 +312,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         }
       : {}),
     exportedAt,
-    counts: withoutAttachments
+    counts: withoutAttachments || legacyIdentifiers
       ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
       : sourceCounts,
-    tables: withoutAttachments
+    tables: withoutAttachments || legacyIdentifiers
       ? Object.fromEntries(
           sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
         )
@@ -290,7 +327,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6,
     siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
@@ -389,11 +426,22 @@ function validateRelationships(tables: BackupTables) {
 
   const projects = uniqueIndex(tables.projects, ["id"], "projects");
   uniqueIndex(tables.projects, ["public_id"], "project public IDs");
+  uniqueIndex(
+    tables.projects.filter((project) => project.archived_at === null),
+    ["owner_user_id", "task_code"],
+    "active project owner/task code",
+  );
   for (const project of tables.projects) {
     requireReference(users, project.owner_user_id, "Project owner");
     requireReference(users, project.creator_user_id, "Project creator");
     publicId(project.public_id, "Project public ID");
     boundedTitle(project.name, "Project name");
+    if (!/^[A-Z]{2,3}$/.test(String(project.task_code))) {
+      throw new ValidationError("Project task code must contain 2-3 uppercase Latin letters");
+    }
+    if (!Number.isSafeInteger(project.task_sequence) || Number(project.task_sequence) < 0) {
+      throw new ValidationError("Project task sequence must be a non-negative integer");
+    }
     if (project.lead_user_id !== null) {
       requireReference(users, project.lead_user_id, "Project lead");
       if (!hasAccess(activeGrants, project.lead_user_id, project.owner_user_id, "project", project.id)) {
@@ -418,8 +466,8 @@ function validateRelationships(tables: BackupTables) {
 
   const tasks = uniqueIndex(tables.tasks, ["id"], "tasks");
   uniqueIndex(tables.tasks, ["public_id"], "task public IDs");
-  uniqueIndex(tables.tasks, ["owner_user_id", "identifier"], "task owner/identifier");
-  uniqueIndex(tables.tasks, ["owner_user_id", "sequence_number"], "task owner/sequence");
+  uniqueIndex(tables.tasks, ["project_id", "sequence_number"], "task project/sequence");
+  const projectMaxSequence = new Map<string, number>();
   for (const task of tables.tasks) {
     requireReference(users, task.owner_user_id, "Task owner");
     requireReference(users, task.creator_user_id, "Task creator");
@@ -430,17 +478,24 @@ function validateRelationships(tables: BackupTables) {
     if (typeof task.estimate === "number" && (task.estimate < 0 || task.estimate > 100)) throw new ValidationError("Task estimate must be between 0 and 100");
     const status = requireReference(statuses, task.status_id, "Task status");
     if (status.owner_user_id !== task.owner_user_id) throw new ValidationError("Task status must belong to the task owner");
-    const project = task.project_id === null ? null : requireReference(projects, task.project_id, "Task project");
+    if (task.project_id === null) {
+      throw new ValidationError("Legacy backup Tasks without Project require an explicit Project mapping");
+    }
+    const project = requireReference(projects, task.project_id, "Task project");
+    if (task.identifier !== `${String(project.task_code)}-${String(task.sequence_number)}`) {
+      throw new ValidationError("Task identifier must use its Project code and sequence");
+    }
+    projectMaxSequence.set(
+      String(project.id),
+      Math.max(projectMaxSequence.get(String(project.id)) ?? 0, Number(task.sequence_number)),
+    );
     if (task.release_id !== null) {
       const release = requireReference(releases, task.release_id, "Task release");
       if (release.project_id !== task.project_id) throw new ValidationError("Task release must belong to its project");
     }
     if (task.assignee_user_id !== null) {
       requireReference(users, task.assignee_user_id, "Task assignee");
-      const accessType = project ? "project" : "task";
-      const accessId = project ? project.id : task.id;
-      const accessOwnerId = project ? project.owner_user_id : task.owner_user_id;
-      if (!hasAccess(activeGrants, task.assignee_user_id, accessOwnerId, accessType, accessId)) {
+      if (!hasAccess(activeGrants, task.assignee_user_id, project.owner_user_id, "project", project.id)) {
         throw new ValidationError("Task assignee must have access to the task");
       }
     }
@@ -452,7 +507,27 @@ function validateRelationships(tables: BackupTables) {
     validateTerminalState(task, status.category);
     positiveVersion(task.version, "Task version");
   }
+  for (const project of tables.projects) {
+    const maximum = projectMaxSequence.get(String(project.id)) ?? 0;
+    if (Number(project.task_sequence) < maximum) {
+      throw new ValidationError("Project task sequence is behind its Tasks");
+    }
+    if ((Number(project.task_sequence) > 0) !== (project.code_locked_at !== null)) {
+      throw new ValidationError("Project code lock must match whether Tasks exist");
+    }
+  }
   validateParentCycles(tables.tasks, tasks);
+
+  uniqueIndex(tables.task_identifier_aliases, ["id"], "task identifier alias IDs");
+  uniqueIndex(
+    tables.task_identifier_aliases,
+    ["task_id", "identifier"],
+    "task identifier aliases",
+  );
+  for (const alias of tables.task_identifier_aliases) {
+    requireReference(tasks, alias.task_id, "Task identifier alias Task");
+    nonEmpty(alias.identifier, "Task identifier alias");
+  }
 
   const attachments = uniqueIndex(tables.attachments, ["id"], "attachments");
   uniqueIndex(tables.attachments, ["public_id"], "attachment public IDs");
@@ -739,6 +814,69 @@ function upgradeLegacySystemRelations(source: BackupTables): BackupTables {
 
 function legacyRelationId(relation: BackupRow) {
   return `relation_legacy:${relation.source_task_id}:${relation.target_task_id}:${relation.type}`;
+}
+
+function upgradeLegacySystemIdentifiers(source: BackupTables): BackupTables {
+  const usedByOwner = new Map<string, Set<string>>();
+  const projects = [...source.projects]
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)))
+    .map((project): BackupRow => {
+      const ownerId = String(project.owner_user_id);
+      const used = usedByOwner.get(ownerId) ?? new Set<string>();
+      usedByOwner.set(ownerId, used);
+      const taskCode = allocateLegacyProjectCode(String(project.name), used);
+      used.add(taskCode);
+      const projectTasks = source.tasks.filter((task) => task.project_id === project.id);
+      const taskSequence = projectTasks.reduce(
+        (maximum, task) => Math.max(maximum, Number(task.sequence_number)),
+        0,
+      );
+      const codeLockedAt = projectTasks
+        .map((task) => String(task.created_at))
+        .sort()[0] ?? null;
+      return { ...project, task_code: taskCode, task_sequence: taskSequence, code_locked_at: codeLockedAt };
+    });
+  const projectsById = new Map(projects.map((project) => [String(project.id), project]));
+  const aliases: BackupRow[] = [];
+  const tasks = source.tasks.map((task): BackupRow => {
+    if (task.project_id === null) {
+      throw new ValidationError(
+        "Legacy backup Tasks without Project require an explicit Project mapping",
+      );
+    }
+    const project = projectsById.get(String(task.project_id));
+    if (!project) throw new ValidationError("Task references a missing Project");
+    aliases.push({
+      id: `task_alias_legacy_${String(task.id)}`,
+      task_id: task.id,
+      identifier: task.identifier,
+      created_at: task.created_at,
+    });
+    return {
+      ...task,
+      identifier: `${String(project.task_code)}-${String(task.sequence_number)}`,
+    };
+  });
+  return { ...source, projects, tasks, task_identifier_aliases: aliases };
+}
+
+function allocateLegacyProjectCode(name: string, used: Set<string>) {
+  const known: Record<string, string> = {
+    "task manager": "TM",
+    "mind diary": "MD",
+    "scorched earth": "SE",
+    homeostat: "HO",
+  };
+  const knownCode = known[name.trim().toLowerCase()];
+  if (knownCode && !used.has(knownCode)) return knownCode;
+  const letters = name.toUpperCase().replace(/[^A-Z]/g, "");
+  const suggested = (letters.slice(0, 3) || "PR").padEnd(2, "X");
+  if (!used.has(suggested)) return suggested;
+  for (let index = 0; index < 26 * 26; index += 1) {
+    const candidate = `Z${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + index % 26)}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new ValidationError("Could not allocate a unique legacy Project code");
 }
 
 function normalizeBackupRow(table: TableDefinition, value: unknown, index: number): BackupRow {

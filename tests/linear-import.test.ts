@@ -3,10 +3,13 @@ import test from "node:test";
 import {
   buildLinearImportPlan,
   decodeLinearImportPayload,
+  importLinearWorkspace,
   maxLinearImportBytes,
   type LinearImportPlan,
 } from "../lib/linear-import";
 import { ValidationError } from "../lib/domain";
+import { getOrCreateUser } from "../lib/repository";
+import { createD1TestHarness } from "./helpers/d1";
 
 const exportedAt = "2026-08-14T07:30:00.000Z";
 
@@ -148,10 +151,15 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   assert.equal(plan.relations.length, 2);
   assert.equal(plan.views.length, 1);
 
-  const child = plan.tasks.find((task) => task.identifier === "AND-2");
-  const parent = plan.tasks.find((task) => task.identifier === "AND-1");
+  const child = plan.tasks.find((task) => task.sourceId === "AND-2");
+  const parent = plan.tasks.find((task) => task.sourceId === "AND-1");
   assert.ok(child);
   assert.ok(parent);
+  assert.equal(child.identifier, "PRO-2");
+  assert.equal(parent.identifier, "PRO-1");
+  assert.equal(plan.projects[0].taskCode, "PRO");
+  assert.equal(plan.projects[0].taskSequence, 2);
+  assert.equal(plan.projects[0].codeLockedAt, "2026-08-01T00:00:00.000Z");
   assert.equal(child.parentTaskId, parent.id);
   assert.equal(child.priority, "urgent");
   assert.equal(child.releaseId, plan.releases[0].id);
@@ -172,6 +180,47 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   assert.match(childSource.metadataJson, /"Imported discussion"/);
 });
 
+test("Linear import writes Project identifiers and aliases idempotently", async () => {
+  const harness = await createD1TestHarness();
+  try {
+    const owner = await getOrCreateUser({
+      provider: "chatgpt",
+      providerAccountKey: "linear-import-owner",
+      displayName: "Linear Import Owner",
+      email: "linear-import-owner@example.test",
+    });
+    const first = await importLinearWorkspace(owner, fixture());
+    const second = await importLinearWorkspace(owner, fixture());
+    assert.equal(first.tasks, 2);
+    assert.deepEqual(second, first);
+
+    const project = await harness.database.prepare(
+      `SELECT task_code, task_sequence, code_locked_at
+       FROM projects WHERE owner_user_id = ?`,
+    ).bind(owner.id).first<{
+      task_code: string;
+      task_sequence: number;
+      code_locked_at: string | null;
+    }>();
+    assert.deepEqual(project, {
+      task_code: "PRO",
+      task_sequence: 2,
+      code_locked_at: "2026-08-01T00:00:00.000Z",
+    });
+    const tasks = await harness.database.prepare(
+      `SELECT t.identifier, alias.identifier AS alias_identifier
+       FROM tasks t JOIN task_identifier_aliases alias ON alias.task_id = t.id
+       WHERE t.owner_user_id = ? ORDER BY t.identifier`,
+    ).bind(owner.id).all<{ identifier: string; alias_identifier: string }>();
+    assert.deepEqual(
+      tasks.results.map((row) => [row.identifier, row.alias_identifier]),
+      [["PRO-1", "AND-1"], ["PRO-2", "AND-2"]],
+    );
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("Linear import rejects missing hierarchy targets before writing", () => {
   const value = fixture();
   const issues = value.issues as Array<Record<string, unknown>>;
@@ -179,6 +228,16 @@ test("Linear import rejects missing hierarchy targets before writing", () => {
   assert.throws(
     () => buildLinearImportPlan("usr_test", value),
     ValidationError,
+  );
+});
+
+test("Linear import rejects an issue without an explicit Project mapping", () => {
+  const value = fixture();
+  const issues = value.issues as Array<Record<string, unknown>>;
+  issues[0].projectId = null;
+  assert.throws(
+    () => buildLinearImportPlan("usr_test", value),
+    /explicit Project mapping/,
   );
 });
 

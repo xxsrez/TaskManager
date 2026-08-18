@@ -199,8 +199,8 @@ export function projectTaskGroupMove(
       next.assigneeUserId = group.value;
       break;
     case "project":
-      if (next.projectId !== group.value) next.releaseId = null;
-      next.projectId = group.value;
+      if (group.value && next.projectId !== group.value) next.releaseId = null;
+      if (group.value) next.projectId = group.value;
       break;
     case "release":
       next.releaseId = group.release?.id ?? null;

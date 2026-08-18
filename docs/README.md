@@ -40,15 +40,17 @@
     — отдельные Sites/D1, production approval boundary и UAT по умолчанию.
 16. [ADR-0011: нативные Attachment и приватный R2](decisions/0011-native-attachments-and-r2.md)
     — metadata lifecycle, content security, ACL и cleanup.
-17. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
+17. [ADR-0012: обязательный Project и identifiers Tasks](decisions/0012-project-required-task-identifiers.md)
+    — Project code/sequence, aliases, migration и запрет standalone Tasks.
+18. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
-18. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
+19. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
     cleanup и recovery.
-19. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+20. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-20. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+21. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-21. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+22. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
 
 ## Статусы документов
@@ -101,6 +103,9 @@ invalidation. Agent REST/MCP добавляют paginated metadata, private bina
 delivery, OpenAI native file input, versioned attachment delete и native
 relation commands. Attachment-aware system/Project backup и relation schema
 `5` реализованы с legacy compatibility.
+ADR-0012 заменяет optional/standalone Task semantics: каждая Task требует
+Project, получает identifier из Project code/sequence, а прежние identifiers
+сохраняются как ACL-scoped aliases.
 
 ## Категории
 

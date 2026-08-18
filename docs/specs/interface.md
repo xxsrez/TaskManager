@@ -166,8 +166,8 @@ Desktop-first shell повторяет композицию Linear:
 - Summary rows содержат только название/identifier, status, counts, progress и
   project qualification. Description, labels, relations, comment bodies и
   imported archive остаются lazy и не загружаются ради overview.
-- Shared counts учитывают только top-level shared Projects, standalone Tasks и
-  global SavedViews, не дублируя унаследованные project children.
+- Shared counts учитывают только top-level shared Projects и global SavedViews,
+  не дублируя унаследованные project children.
 - На mobile metrics и sections складываются в одну колонку, строки переносят
   текст, а overview не создаёт horizontal overflow. Empty sections и общий
   empty state имеют явные headings и доступные create/navigation actions.
@@ -295,7 +295,7 @@ List повторяет плотную grouped-list модель Linear.
 
 1. hover-revealed checkbox/selection state;
 2. priority indicator;
-3. immutable task identifier;
+3. current task identifier;
 4. status icon, если status не выражен group;
 5. title, занимающий оставшуюся ширину;
 6. выбранные display properties как компактные icons/chips;
@@ -469,6 +469,8 @@ List повторяет плотную grouped-list модель Linear.
   visuals, где они применимы.
 - Строка или compact card показывает icon/color, name, summary, status,
   progress, lead и dates.
+- Create dialog требует code из 2–3 заглавных латинских букв и объясняет, что
+  он блокируется после первой Task.
 - Progress имеет доступное числовое значение и tooltip с формулой подсчёта.
 
 ### 9.2 Project details
@@ -483,6 +485,8 @@ List повторяет плотную grouped-list модель Linear.
 - Overview: summary, description, dates, lead и progress; без documents,
   resources, activity и predictive graph.
 - `Tasks` использует общий list/board contract с project scope.
+- Глобальный Task composer требует Project; состояния `No project` и
+  сохранения Task без Project нет.
 - Details sidebar повторяет compact property panel Linear и открывается
   button/`Cmd/Ctrl+I`, если shortcut не конфликтует с host.
 
@@ -569,13 +573,13 @@ Linear, но они обязаны использовать тот же visual l
 
 ### 12.2 Share dialog
 
-- Trigger `Share` находится в header Project, standalone Task и global
-  SavedView. Для project Task, Release и project-scoped SavedView он открывает
+- Trigger `Share` находится в header Project и global SavedView. Для Task,
+  Release и project-scoped SavedView он открывает
   access surface родительского Project либо не дублируется.
 - Compact dialog `Members & access` содержит verified-email input, role picker,
   Owner отдельной первой строкой и список active grants с inline role picker.
-- Для Project доступны `Manager`, `Editor`, `Viewer`; для standalone Task и
-  global SavedView — `Editor`, `Viewer`. Copy рядом с email явно говорит, что
+- Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView —
+  `Editor`, `Viewer`. Copy рядом с email явно говорит, что
   User должен уже войти и письмо не отправляется.
 - Manager видит и изменяет только Editor/Viewer. Owner может назначать Manager,
   Editor, Viewer и получает action `Transfer ownership` только для уже
@@ -592,7 +596,7 @@ Linear, но они обязаны использовать тот же visual l
 
 ### 12.3 Shared with me и profile
 
-- `Shared with me` — grouped list Projects, standalone Tasks и SavedViews с
+- `Shared with me` — grouped list Projects и SavedViews с
   owner avatar/name и обычными entity controls.
 - Profile/settings использует left settings navigation и compact form rows.
 - Доступны display name, verified email, timezone, linked providers, theme,

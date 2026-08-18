@@ -96,6 +96,11 @@ export async function exportProjectBackup(
       JOIN projects p ON p.id = t.project_id
       WHERE t.project_id = ? AND p.owner_user_id = ?
       ORDER BY a.task_id, a.created_at, a.id`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("task_identifier_aliases").columns.map((column) => `alias.${column}`).join(", ")}
+      FROM task_identifier_aliases alias JOIN tasks t ON t.id = alias.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY alias.task_id, alias.identifier`).bind(projectId, currentUser.id),
     db.prepare(`SELECT ag.grantee_user_id, u.email, u.display_name, ag.permission
       FROM access_grants ag JOIN users u ON u.id = ag.grantee_user_id
       WHERE ag.resource_type = 'project' AND ag.resource_id = ? AND ag.revoked_at IS NULL
@@ -127,6 +132,7 @@ export async function exportProjectBackup(
     saved_views: 9,
     external_records: 10,
     attachments: 11,
+    task_identifier_aliases: 12,
   };
   projectBackupTableNames.forEach((name) => {
     const table = definition(name);
@@ -136,7 +142,7 @@ export async function exportProjectBackup(
     tables.attachments,
   );
   tables.attachments = attachmentData.rows;
-  const sharing = results[12].results.map((value) => {
+  const sharing = results[13].results.map((value) => {
     const row = value as DbRow;
     const permission = String(row.permission);
     if (permission !== "manager" && permission !== "editor" && permission !== "viewer") {
@@ -154,7 +160,7 @@ export async function exportProjectBackup(
     tables,
     objects: attachmentData.objects,
     sharing,
-    externalRelationsOmitted: Number((results[13].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted: Number((results[14].results[0] as DbRow | undefined)?.count ?? 0),
   });
 }
 
@@ -406,8 +412,8 @@ async function validateLiveDependenciesAndCollisions(
     db.prepare("SELECT id, owner_user_id, name, category FROM workflow_statuses"),
     db.prepare("SELECT id, owner_user_id, name FROM labels"),
     db.prepare("SELECT id FROM users"),
-    db.prepare("SELECT id, public_id FROM projects WHERE id <> ?").bind(backup.projectId),
-    db.prepare("SELECT id, public_id, owner_user_id, identifier, sequence_number FROM tasks WHERE project_id IS NULL OR project_id <> ?").bind(backup.projectId),
+    db.prepare("SELECT id, public_id, owner_user_id, task_code, archived_at FROM projects WHERE id <> ?").bind(backup.projectId),
+    db.prepare("SELECT id, public_id, project_id, identifier, sequence_number FROM tasks WHERE project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT id, public_id FROM releases WHERE project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT id, public_id FROM saved_views WHERE scope_project_id IS NULL OR scope_project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT owner_user_id, source, source_id, target_id FROM external_records"),
@@ -416,6 +422,9 @@ async function validateLiveDependenciesAndCollisions(
     db.prepare(`SELECT a.id, a.public_id FROM attachments a
       JOIN tasks t ON t.id = a.task_id
       WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
+    db.prepare(`SELECT alias.id FROM task_identifier_aliases alias
+      JOIN tasks t ON t.id = alias.task_id
+      WHERE t.project_id <> ?`).bind(backup.projectId),
   ]);
   const statusRows = results[0].results as DbRow[];
   const labelRows = results[1].results as DbRow[];
@@ -467,6 +476,14 @@ async function validateLiveDependenciesAndCollisions(
       }
     }
   }
+  const liveAliasIds = new Set(
+    (results[10].results as DbRow[]).map((row) => String(row.id)),
+  );
+  for (const alias of backup.tables.task_identifier_aliases) {
+    if (liveAliasIds.has(String(alias.id))) {
+      throw new ValidationError("Project restore collides on a Task identifier alias identity");
+    }
+  }
   return warnings;
 }
 
@@ -481,11 +498,13 @@ function assertNoEntityCollisions(
     }
   };
   collision(results[0].results, backup.tables.projects, ["id", "public_id"]);
-  collision(results[1].results, backup.tables.tasks, ["id", "public_id"]);
-  for (const row of results[1].results as DbRow[]) for (const task of backup.tables.tasks) {
-    if (row.owner_user_id === task.owner_user_id && row.identifier === task.identifier) throw new ValidationError(`Task identifier ${String(task.identifier)} already exists outside the project`);
-    if (row.owner_user_id === task.owner_user_id && Number(row.sequence_number) === Number(task.sequence_number)) throw new ValidationError(`Task sequence ${String(task.sequence_number)} already exists outside the project`);
+  for (const row of results[0].results as DbRow[]) for (const project of backup.tables.projects) {
+    if (
+      row.archived_at === null && project.archived_at === null &&
+      row.owner_user_id === project.owner_user_id && row.task_code === project.task_code
+    ) throw new ValidationError(`Project code ${String(project.task_code)} is already in use`);
   }
+  collision(results[1].results, backup.tables.tasks, ["id", "public_id"]);
   collision(results[2].results, backup.tables.releases, ["id", "public_id"]);
   collision(results[3].results, backup.tables.saved_views, ["id", "public_id"]);
   collision(commentRows.results, backup.tables.comments, ["id"]);
@@ -540,6 +559,9 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     db.prepare(`SELECT COUNT(*) AS count FROM attachments WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(projectId),
+    db.prepare(`SELECT COUNT(*) AS count FROM task_identifier_aliases WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM access_grants WHERE resource_type = 'project' AND resource_id = ? AND revoked_at IS NULL").bind(projectId),
   ]);
   const counts = results.map((result) => Number((result.results[0] as DbRow | undefined)?.count ?? 0));
@@ -547,7 +569,7 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     projects: counts[0], releases: counts[1], tasks: counts[2], comments: counts[3],
     comment_reactions: counts[4], saved_views: counts[5], task_labels: counts[6],
     task_relations: counts[7], external_records: counts[8], attachments: counts[9],
-    sharing: counts[10],
+    task_identifier_aliases: counts[10], sharing: counts[11],
     workflow_statuses: 0, labels: 0,
   };
 }

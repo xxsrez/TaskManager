@@ -52,6 +52,7 @@ npm run dev
 - [Решение о стеке и authentication delivery](docs/decisions/0003-implementation-stack-and-auth-delivery.md)
 - [Решение о production/UAT Sites](docs/decisions/0010-production-and-uat-sites.md)
 - [Решение о нативных Attachment и R2](docs/decisions/0011-native-attachments-and-r2.md)
+- [Решение об обязательном Project и identifiers Tasks](docs/decisions/0012-project-required-task-identifiers.md)
 - [Runbook релизов Sites](docs/operations/sites-release.md)
 - [Runbook вложений](docs/operations/attachments.md)
 - [Исследование Linear](docs/reports/2026-08-13-linear-product-study.md)

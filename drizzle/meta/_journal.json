@@ -127,6 +127,13 @@
       "when": 1787014704623,
       "tag": "0017_complex_epoch",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1787018271780,
+      "tag": "0018_tearful_black_panther",
+      "breakpoints": true
     }
   ]
 }

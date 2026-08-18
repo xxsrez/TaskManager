@@ -26,13 +26,33 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 5);
+  assert.equal(backup.schemaVersion, 6);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.counts.sharing, 1);
   assert.equal(validated.warnings.externalRelationsOmitted, 1);
   assert.equal("users" in validated.tables, false);
+});
+
+test("a Project keeps its locked sequence after every current Task is gone", async () => {
+  const tables = validProjectTables();
+  tables.tasks = [];
+  tables.task_identifier_aliases = [];
+  tables.attachments = [];
+  tables.comments = [];
+  tables.comment_reactions = [];
+  tables.task_labels = [];
+  tables.task_relations = [];
+  tables.external_records = [];
+  const backup = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables,
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  assert.equal((await validateProjectBackup(backup)).tables.projects[0]?.task_sequence, 2);
 });
 
 test("the comment-aware project schema rejects an older bundle explicitly", async () => {
@@ -58,12 +78,13 @@ test("schema 2 project bundles without attachments remain importable", async () 
     exportedAt: now,
   });
   const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => name !== "attachments"),
+    Object.entries(current.tables).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
   );
+  tables.projects = current.tables.projects.map(legacyProjectRow);
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => name !== "attachments"),
+    Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
   );
   const body = {
     format: current.format,
@@ -96,11 +117,17 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
     exportedAt: now,
   });
   const tables = {
-    ...current.tables,
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    projects: current.tables.projects.map(legacyProjectRow),
     workflow_statuses: current.tables.workflow_statuses.map(legacyWorkflowRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
   };
-  const body = { ...current, schemaVersion: 3, tables };
+  const body = {
+    ...current,
+    schemaVersion: 3,
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
+    tables,
+  };
   const unsigned = Object.fromEntries(
     Object.entries(body).filter(([key]) => key !== "sha256"),
   );
@@ -121,12 +148,14 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
     exportedAt: now,
   });
   const tables = {
-    ...current.tables,
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    projects: current.tables.projects.map(legacyProjectRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
   };
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
     tables,
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
@@ -206,6 +235,7 @@ function validProjectTables(): ProjectBackupTables {
     projects: [{
       id: "project-1", public_id: "11111111-1111-4111-8111-111111111111",
       owner_user_id: "user-owner", creator_user_id: "user-owner", name: "Project",
+      task_code: "TM", task_sequence: 2, code_locked_at: now,
       summary: "", description: "", status: "active", lead_user_id: null,
       start_date: null, target_date: null, icon: "cube", color: "#8b7cf6",
       archived_at: null, version: 1, created_at: now, updated_at: now,
@@ -236,6 +266,7 @@ function validProjectTables(): ProjectBackupTables {
         archived_at: null, comment_count: 0, version: 1, created_at: now, updated_at: now,
       },
     ],
+    task_identifier_aliases: [],
     attachments: [],
     comments: [{
       id: "comment-1", task_id: "task-1", author_user_id: "user-owner",
@@ -283,6 +314,14 @@ function legacyWorkflowRow(row: Record<string, string | number | null>) {
   );
 }
 
+function legacyProjectRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) =>
+      !["task_code", "task_sequence", "code_locked_at"].includes(key),
+    ),
+  );
+}
+
 function legacyRelationRow(row: Record<string, string | number | null>) {
   return Object.fromEntries(
     Object.entries(row).filter(([key]) =>
@@ -301,6 +340,7 @@ function migratedDatabase() {
     "0010_crazy_puma.sql", "0011_conscious_paibok.sql", "0012_empty_saracen.sql",
     "0013_rapid_gravity.sql", "0014_puzzling_tana_nile.sql", "0015_attachments_sync.sql",
     "0016_abandoned_stellaris.sql", "0017_complex_epoch.sql",
+    "0018_tearful_black_panther.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

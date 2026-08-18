@@ -15,7 +15,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 5 as const;
+export const projectBackupSchemaVersion = 6 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -25,6 +25,7 @@ export const projectBackupTableNames = [
   "projects",
   "releases",
   "tasks",
+  "task_identifier_aliases",
   "attachments",
   "comments",
   "comment_reactions",
@@ -49,7 +50,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | 4 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | 5 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -83,6 +84,31 @@ const legacyTaskRelationDefinition: TableDefinition = {
   name: "task_relations",
   columns: ["source_task_id", "target_task_id", "type", "creator_user_id", "created_at"],
   orderBy: "source_task_id, target_task_id, type",
+};
+
+const legacyProjectDefinition: TableDefinition = {
+  name: "projects",
+  columns: ["id", "public_id", "owner_user_id", "creator_user_id", "name", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: {
+    lead_user_id: { nullable: true }, start_date: { nullable: true },
+    target_date: { nullable: true }, archived_at: { nullable: true },
+    version: { number: true, integer: true },
+  },
+};
+
+const legacyTaskDefinition: TableDefinition = {
+  name: "tasks",
+  columns: ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: {
+    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true },
+    project_id: { nullable: true }, release_id: { nullable: true },
+    estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true },
+    parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
+    completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
+    comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+  },
 };
 
 export function projectRestoreInsertSql(table: TableDefinition, ignoreExistingId = false): string {
@@ -137,7 +163,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const withoutAttachments = payload.schemaVersion === 2;
   const legacyWorkflow = payload.schemaVersion === 2 || payload.schemaVersion === 3;
   const legacyRelations = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4;
-  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === projectBackupSchemaVersion;
+  const legacyIdentifiers = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5;
+  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
@@ -155,21 +182,27 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     throw new ValidationError("Unsupported Task Manager project backup format or version");
   }
   const sourceTables = object(payload.tables, "tables");
-  const sourceTableNames = withoutAttachments
-    ? projectBackupTableNames.filter((name) => name !== "attachments")
-    : projectBackupTableNames;
+  const sourceTableNames = projectBackupTableNames.filter((name) =>
+    !(withoutAttachments && name === "attachments") &&
+    !(legacyIdentifiers && name === "task_identifier_aliases"),
+  );
   exactKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as ProjectBackupTables;
   let totalRows = 0;
   for (const table of projectBackupTableDefinitions) {
-    const values = withoutAttachments && table.name === "attachments"
+    const values = (withoutAttachments && table.name === "attachments") ||
+      (legacyIdentifiers && table.name === "task_identifier_aliases")
       ? []
       : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += values.length;
     if (totalRows > maxProjectBackupRows) {
       throw new ValidationError(`Project backup contains more than ${maxProjectBackupRows} rows`);
     }
-    const sourceDefinition = legacyWorkflow && table.name === "workflow_statuses"
+    const sourceDefinition = legacyIdentifiers && table.name === "projects"
+      ? legacyProjectDefinition
+      : legacyIdentifiers && table.name === "tasks"
+        ? legacyTaskDefinition
+      : legacyWorkflow && table.name === "workflow_statuses"
       ? legacyWorkflowStatusDefinition
       : legacyRelations && table.name === "task_relations"
         ? legacyTaskRelationDefinition
@@ -189,6 +222,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     ? upgradeLegacyProjectWorkflow(sourceNormalizedTables)
     : sourceNormalizedTables;
   if (legacyRelations) tables = upgradeLegacyProjectRelations(tables);
+  if (legacyIdentifiers) tables = upgradeLegacyProjectIdentifiers(tables);
   const body = {
     format: projectBackupFormat,
     version: projectBackupVersion,
@@ -208,6 +242,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   exactKeys(claimedCounts, [...sourceTableNames, "sharing"], "counts");
   for (const [name, count] of Object.entries(body.counts)) {
     if (withoutAttachments && name === "attachments") continue;
+    if (legacyIdentifiers && name === "task_identifier_aliases") continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
   validateProjectRelationships(tables, sharing, body);
@@ -217,22 +252,28 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
     projectPublicId: body.projectPublicId,
     projectName: body.projectName,
     ownerUserId: body.ownerUserId,
-    counts: withoutAttachments
+    counts: withoutAttachments || legacyIdentifiers
       ? Object.fromEntries(
-          Object.entries(body.counts).filter(([name]) => name !== "attachments"),
+          Object.entries(body.counts).filter(([name]) =>
+            !(withoutAttachments && name === "attachments") &&
+            !(legacyIdentifiers && name === "task_identifier_aliases"),
+          ),
         )
       : body.counts,
     warnings: body.warnings,
-    tables: withoutAttachments
+    tables: withoutAttachments || legacyIdentifiers
       ? Object.fromEntries(
-          Object.entries(sourceNormalizedTables).filter(([name]) => name !== "attachments"),
+          Object.entries(sourceNormalizedTables).filter(([name]) =>
+            !(withoutAttachments && name === "attachments") &&
+            !(legacyIdentifiers && name === "task_identifier_aliases"),
+          ),
         )
       : sourceNormalizedTables,
   };
@@ -245,7 +286,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -262,6 +303,12 @@ function validateProjectRelationships(
     project.id !== identity.projectId || project.public_id !== identity.projectPublicId ||
     project.name !== identity.projectName || project.owner_user_id !== identity.ownerUserId
   ) throw new ValidationError("Project backup identity does not match its project row");
+  if (!/^[A-Z]{2,3}$/.test(String(project.task_code))) {
+    throw new ValidationError("Project task code must contain 2-3 uppercase Latin letters");
+  }
+  if (!Number.isSafeInteger(project.task_sequence) || Number(project.task_sequence) < 0) {
+    throw new ValidationError("Project task sequence must be a non-negative integer");
+  }
 
   const tasks = unique(tables.tasks, "id", "task");
   const comments = unique(tables.comments, "id", "comment");
@@ -291,10 +338,37 @@ function validateProjectRelationships(
   }
   for (const task of tables.tasks) {
     if (task.project_id !== identity.projectId) throw new ValidationError("Task is outside the backed-up project");
+    if (task.identifier !== `${String(project.task_code)}-${String(task.sequence_number)}`) {
+      throw new ValidationError("Task identifier must use its Project code and sequence");
+    }
     if (!statuses.has(String(task.status_id))) throw new ValidationError("Task references a missing workflow status dependency");
     if (task.release_id !== null && !releases.has(String(task.release_id))) throw new ValidationError("Task references a missing release");
     if (task.parent_task_id !== null && !tasks.has(String(task.parent_task_id))) throw new ValidationError("Task parent is outside the project bundle");
   }
+  const maximumTaskSequence = tables.tasks.reduce(
+    (maximum, task) => Math.max(maximum, Number(task.sequence_number)),
+    0,
+  );
+  if (Number(project.task_sequence) < maximumTaskSequence) {
+    throw new ValidationError("Project task sequence is behind its Tasks");
+  }
+  if ((Number(project.task_sequence) > 0) !== (project.code_locked_at !== null)) {
+    throw new ValidationError("Project code lock must match whether Tasks exist");
+  }
+  const aliases = unique(tables.task_identifier_aliases, "id", "task identifier alias");
+  const aliasPairs = new Set<string>();
+  for (const alias of tables.task_identifier_aliases) {
+    if (!tasks.has(String(alias.task_id))) {
+      throw new ValidationError("Task identifier alias is outside the project bundle");
+    }
+    if (!String(alias.identifier).trim()) {
+      throw new ValidationError("Task identifier alias is required");
+    }
+    const pair = `${String(alias.task_id)}\u0000${String(alias.identifier)}`;
+    if (aliasPairs.has(pair)) throw new ValidationError("Duplicate Task identifier alias");
+    aliasPairs.add(pair);
+  }
+  void aliases;
   assertNoParentCycle(tables.tasks, tasks);
   const attachments = unique(tables.attachments, "id", "attachment");
   const attachmentPublicIds = unique(
@@ -534,6 +608,52 @@ function upgradeLegacyProjectRelations(source: ProjectBackupTables): ProjectBack
       version: 1,
       created_at: relation.created_at,
       updated_at: relation.created_at,
+    })),
+  };
+}
+
+function upgradeLegacyProjectIdentifiers(source: ProjectBackupTables): ProjectBackupTables {
+  const project = source.projects[0];
+  if (!project) return source;
+  const known: Record<string, string> = {
+    "task manager": "TM",
+    "mind diary": "MD",
+    "scorched earth": "SE",
+    homeostat: "HO",
+  };
+  const letters = String(project.name).toUpperCase().replace(/[^A-Z]/g, "");
+  const taskCode = known[String(project.name).trim().toLowerCase()]
+    ?? (letters.slice(0, 3) || "PR").padEnd(2, "X");
+  const taskSequence = source.tasks.reduce(
+    (maximum, task) => Math.max(maximum, Number(task.sequence_number)),
+    0,
+  );
+  const codeLockedAt = source.tasks.map((task) => String(task.created_at)).sort()[0] ?? null;
+  const tasks = source.tasks.map((task): BackupRow => {
+    if (task.project_id === null) {
+      throw new ValidationError(
+        "Legacy backup Tasks without Project require an explicit Project mapping",
+      );
+    }
+    return {
+      ...task,
+      identifier: `${taskCode}-${String(task.sequence_number)}`,
+    };
+  });
+  return {
+    ...source,
+    projects: [{
+      ...project,
+      task_code: taskCode,
+      task_sequence: taskSequence,
+      code_locked_at: codeLockedAt,
+    }],
+    tasks,
+    task_identifier_aliases: source.tasks.map((task): BackupRow => ({
+      id: `task_alias_legacy_${String(task.id)}`,
+      task_id: task.id,
+      identifier: task.identifier,
+      created_at: task.created_at,
     })),
   };
 }

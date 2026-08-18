@@ -35,6 +35,9 @@ export type ProjectRecord = {
   ownerUserId: string;
   creatorUserId: string;
   name: string;
+  taskCode: string;
+  taskSequence: number;
+  codeLockedAt: string | null;
   summary: string;
   description: string;
   status: string;
@@ -78,7 +81,7 @@ export type TaskRecord = {
   statusId: string;
   priority: Priority;
   assigneeUserId: string | null;
-  projectId: string | null;
+  projectId: string;
   releaseId: string | null;
   estimate: number | null;
   dueDate: string | null;
@@ -315,6 +318,7 @@ export type SystemBackupCounts = Record<
   | "projects"
   | "releases"
   | "tasks"
+  | "task_identifier_aliases"
   | "attachments"
   | "comments"
   | "comment_reactions"

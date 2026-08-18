@@ -57,7 +57,27 @@ const snapshot: AppSnapshot = {
       version: 1,
     },
   ],
-  projects: [],
+  projects: [{
+    id: "project-1",
+    publicId: "11111111-1111-4111-8111-111111111111",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Task Manager",
+    taskCode: "TM",
+    taskSequence: 1,
+    codeLockedAt: now,
+    summary: "",
+    description: "",
+    status: "active",
+    leadUserId: null,
+    startDate: null,
+    targetDate: null,
+    color: "#7766dd",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner",
+  }],
   releases: [],
   tasks: [
     {
@@ -72,7 +92,7 @@ const snapshot: AppSnapshot = {
       statusId: "todo",
       priority: "none",
       assigneeUserId: null,
-      projectId: null,
+      projectId: "project-1",
       releaseId: null,
       estimate: 3,
       dueDate: null,
@@ -192,6 +212,9 @@ test("workspace overview counts only accessible top-level shared resources", () 
     ownerUserId: "user-2",
     creatorUserId: "user-2",
     name: "Shared project",
+    taskCode: "SP",
+    taskSequence: 1,
+    codeLockedAt: now,
     summary: "",
     description: "",
     status: "active",
@@ -230,6 +253,7 @@ test("workspace overview counts only accessible top-level shared resources", () 
         tasks: snapshot.tasks.map((task) => ({
           ...task,
           ownerUserId: "user-2",
+          projectId: sharedProject.id,
           accessRole: "viewer" as const,
         })),
         views: [sharedView],
@@ -239,21 +263,19 @@ test("workspace overview counts only accessible top-level shared resources", () 
     }),
   );
 
-  assert.match(
-    markup,
-    /<a class="workspace-metric" href="\/shared"[^>]*>[\s\S]*?<b>3<\/b><small>Shared with me<\/small>/,
-  );
+  assert.match(markup, /<a class="workspace-metric" href="\/shared"/);
+  assert.match(markup, /<b>2<\/b><small>Shared with me<\/small>/);
   assert.match(markup, /Shared project/);
   assert.match(markup, /Shared view/);
   assert.match(markup, /<b>1<\/b><small>Projects<\/small>/);
-  assert.match(markup, /<b>1<\/b><small>Tasks<\/small>/);
+  assert.match(markup, /<b>0<\/b><small>Tasks<\/small>/);
   assert.match(markup, /<b>1<\/b><small>Views<\/small>/);
 });
 
 test("workspace overview has explicit empty states without admin data", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
-      initialData: { ...snapshot, tasks: [] },
+      initialData: { ...snapshot, projects: [], tasks: [] },
       initialNavigation: {
         surface: "workspace",
         layout: "list",
@@ -470,7 +492,7 @@ test("a full deferred snapshot drops revoked tasks but retains tasks created aft
       taskLabels: [{ taskId: revokedTask.id, labelId: "label-revoked" }],
       relations: [{ id: "relation-revoked", sourceTaskId: revokedTask.id, targetTaskId: localTask.id, type: "related", version: 1, createdAt: now, updatedAt: now }],
     },
-    { ...snapshot, tasks: [] },
+    { ...snapshot, projects: [], tasks: [] },
     { taskIdsAtRequest: new Set([revokedTask.id]) },
   );
 
@@ -487,6 +509,9 @@ test("a full deferred snapshot also drops removed projects, releases, and views 
     ownerUserId: "user-1",
     creatorUserId: "user-1",
     name: "Stale project",
+    taskCode: "ST",
+    taskSequence: 0,
+    codeLockedAt: null,
     summary: "",
     description: "",
     status: "planned" as const,
@@ -541,7 +566,7 @@ test("a full deferred snapshot also drops removed projects, releases, and views 
 
   const merged = mergeDeferredSnapshot(
     { ...snapshot, projects: [project], releases: [release], views: [view] },
-    { ...snapshot, tasks: [] },
+    { ...snapshot, projects: [], tasks: [] },
     {
       projectIdsAtRequest: new Set([project.id]),
       releaseIdsAtRequest: new Set([release.id]),
@@ -1137,6 +1162,11 @@ test("viewer task details are read-only and expose no mutation controls", () => 
           ...task,
           accessRole: "viewer" as const,
         })),
+        projects: snapshot.projects.map((project) => ({
+          ...project,
+          ownerUserId: "user-2",
+          accessRole: "viewer" as const,
+        })),
       },
       initialNavigation: {
         surface: "shared",
@@ -1380,6 +1410,9 @@ test("sidebar release and view labels expose the full name while truncating visu
     ownerUserId: "user-1",
     creatorUserId: "user-1",
     name: "Task Manager",
+    taskCode: "TM",
+    taskSequence: 1,
+    codeLockedAt: now,
     summary: "",
     description: "",
     status: "active",
@@ -1456,6 +1489,9 @@ test("release pages use the project-qualified release name without losing header
     ownerUserId: "user-1",
     creatorUserId: "user-1",
     name: "Homeostat",
+    taskCode: "HO",
+    taskSequence: 1,
+    codeLockedAt: now,
     summary: "",
     description: "",
     status: "active",
@@ -1583,6 +1619,9 @@ test("release breadcrumbs expose every ancestor and leave the current level stat
     ownerUserId: "user-1",
     creatorUserId: "user-1",
     name: "Project Alpha",
+    taskCode: "PA",
+    taskSequence: 1,
+    codeLockedAt: now,
     summary: "",
     description: "",
     status: "active",

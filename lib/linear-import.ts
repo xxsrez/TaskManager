@@ -49,6 +49,9 @@ type PlannedProject = {
   id: string;
   sourceId: string;
   name: string;
+  taskCode: string;
+  taskSequence: number;
+  codeLockedAt: string | null;
   summary: string;
   description: string;
   status: string;
@@ -84,7 +87,7 @@ type PlannedTask = {
   statusId: string;
   priority: "urgent" | "high" | "medium" | "low" | "none";
   assigneeUserId: string | null;
-  projectId: string | null;
+  projectId: string;
   releaseId: string | null;
   estimate: number | null;
   dueDate: string | null;
@@ -238,16 +241,27 @@ export function buildLinearImportPlan(
   const labelByName = new Map(labels.map((label) => [label.name, label]));
 
   const projectBySourceId = new Map<string, PlannedProject>();
+  const usedProjectCodes = new Set<string>();
   const releases: PlannedRelease[] = [];
   const releaseBySourceId = new Map<string, PlannedRelease>();
   const projects = sourceProjects.map((entry, index) => {
     const row = object(entry, `projects[${index}]`);
     const sourceId = requiredString(row.id, `projects[${index}].id`);
     const status = object(row.status, `projects[${index}].status`);
+    const name = requiredString(row.name, `projects[${index}].name`);
+    const taskCode = allocateImportProjectCode(
+      optionalString(row.taskCode),
+      name,
+      usedProjectCodes,
+    );
+    usedProjectCodes.add(taskCode);
     const project: PlannedProject = {
       id: targetId(ownerUserId, "project", sourceId),
       sourceId,
-      name: requiredString(row.name, `projects[${index}].name`),
+      name,
+      taskCode,
+      taskSequence: 0,
+      codeLockedAt: null,
       summary: optionalString(row.summary) ?? "",
       description: optionalString(row.description) ?? "",
       status: projectStatus(status.type),
@@ -328,10 +342,15 @@ export function buildLinearImportPlan(
       );
     }
     const sourceProjectId = optionalString(row.projectId);
-    const projectId = sourceProjectId
-      ? projectBySourceId.get(sourceProjectId)?.id
+    const project = sourceProjectId
+      ? projectBySourceId.get(sourceProjectId)
       : null;
-    if (sourceProjectId && !projectId) {
+    if (!sourceProjectId) {
+      throw new ValidationError(
+        `Linear issue ${sourceId} requires an explicit Project mapping`,
+      );
+    }
+    if (!project) {
       throw new ValidationError(
         `Linear issue ${sourceId} references missing project ${sourceProjectId}`,
       );
@@ -350,7 +369,7 @@ export function buildLinearImportPlan(
     }
     if (
       releaseId &&
-      releaseBySourceId.get(sourceReleaseId ?? "")?.projectId !== projectId
+      releaseBySourceId.get(sourceReleaseId ?? "")?.projectId !== project.id
     ) {
       throw new ValidationError(
         `Linear issue ${sourceId} has an incompatible project milestone`,
@@ -359,14 +378,14 @@ export function buildLinearImportPlan(
     const task: PlannedTask = {
       id: targetId(ownerUserId, "task", sourceId),
       sourceId,
-      identifier: sourceId,
+      identifier: `${project.taskCode}-${sequenceNumber}`,
       sequenceNumber,
       title: requiredString(row.title, `issues[${index}].title`),
       description: optionalString(row.description) ?? "",
       statusId: status.id,
       priority: linearPriority(row.priority),
       assigneeUserId: row.assigneeId ? ownerUserId : null,
-      projectId: projectId ?? null,
+      projectId: project.id,
       releaseId: releaseId ?? null,
       estimate: optionalInteger(row.estimate),
       dueDate: optionalDate(row.dueDate),
@@ -405,6 +424,15 @@ export function buildLinearImportPlan(
     }
     return task;
   });
+
+  for (const project of projects) {
+    const projectTasks = tasks.filter((task) => task.projectId === project.id);
+    project.taskSequence = projectTasks.reduce(
+      (maximum, task) => Math.max(maximum, task.sequenceNumber),
+      0,
+    );
+    project.codeLockedAt = projectTasks.map((task) => task.createdAt).sort()[0] ?? null;
+  }
 
   for (const [index, entry] of sourceIssues.entries()) {
     const row = object(entry, `issues[${index}]`);
@@ -566,12 +594,15 @@ export async function importLinearWorkspace(
       db
         .prepare(
           `INSERT INTO projects
-            (id, public_id, owner_user_id, creator_user_id, name, summary, description,
+            (id, public_id, owner_user_id, creator_user_id, name, task_code,
+             task_sequence, code_locked_at, summary, description,
              status, lead_user_id, start_date, target_date, icon, color,
              archived_at, version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
+             task_sequence = MAX(projects.task_sequence, excluded.task_sequence),
+             code_locked_at = COALESCE(projects.code_locked_at, excluded.code_locked_at),
              summary = excluded.summary,
              description = excluded.description,
              status = excluded.status,
@@ -589,6 +620,9 @@ export async function importLinearWorkspace(
           currentUser.id,
           currentUser.id,
           project.name,
+          project.taskCode,
+          project.taskSequence,
+          project.codeLockedAt,
           project.summary,
           project.description,
           project.status,
@@ -693,6 +727,21 @@ export async function importLinearWorkspace(
           task.createdAt,
           task.updatedAt,
         ),
+    ),
+  );
+
+  await runBatches(
+    plan.tasks.map((task) =>
+      db.prepare(
+        `INSERT INTO task_identifier_aliases (id, task_id, identifier, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(task_id, identifier) DO NOTHING`,
+      ).bind(
+        `task_alias_linear:${task.id}`,
+        task.id,
+        task.sourceId,
+        task.createdAt,
+      ),
     ),
   );
 
@@ -1023,6 +1072,34 @@ function linearSequence(identifier: string) {
     );
   }
   return value;
+}
+
+function allocateImportProjectCode(
+  explicit: string | null,
+  name: string,
+  used: Set<string>,
+) {
+  if (explicit) {
+    const normalized = explicit.trim().toUpperCase();
+    if (!/^[A-Z]{2,3}$/.test(normalized)) {
+      throw new ValidationError("Imported Project task code must contain 2-3 uppercase Latin letters");
+    }
+    if (used.has(normalized)) throw new ValidationError(`Duplicate imported Project code ${normalized}`);
+    return normalized;
+  }
+  const known: Record<string, string> = {
+    "task manager": "TM", "mind diary": "MD", "scorched earth": "SE", homeostat: "HO",
+  };
+  const knownCode = known[name.trim().toLowerCase()];
+  if (knownCode && !used.has(knownCode)) return knownCode;
+  const letters = name.toUpperCase().replace(/[^A-Z]/g, "");
+  const suggested = (letters.slice(0, 3) || "PR").padEnd(2, "X");
+  if (!used.has(suggested)) return suggested;
+  for (let index = 0; index < 26 * 26; index += 1) {
+    const candidate = `Z${String.fromCharCode(65 + Math.floor(index / 26))}${String.fromCharCode(65 + index % 26)}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new ValidationError("Could not allocate a unique imported Project code");
 }
 
 function object(value: unknown, label: string): JsonObject {

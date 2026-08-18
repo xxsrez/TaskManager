@@ -121,9 +121,9 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 ### Авторизованный доступ к данным
 
 1. Identity middleware устанавливает current User из server-verified session.
-2. Access вычисляет effective role: для Project и его subtree — через current
-   Project owner/active Project grant; для standalone Task/global SavedView —
-   через собственный owner/active direct grant.
+2. Access вычисляет effective role: для Project и его subtree, включая каждую
+   Task, — через current Project owner/active Project grant; для global
+   SavedView — через собственный owner/active direct grant.
 3. Repository применяет predicate внутри SQL/query до pagination, aggregation,
    grouping или full-text search.
 4. Mutation дополнительно требует minimum role (`editor` для content,
@@ -387,14 +387,21 @@ Native comment bodies также не входят в bootstrap или Task deta
 
 В migration baseline уже входят:
 
+[ADR-0012](decisions/0012-project-required-task-identifiers.md) заменяет
+optional/standalone Task semantics из ранних решений: каждая Task имеет Project,
+а human identifier строится из Project code и sequence.
+
 - D1 migrations для User, UserIdentity, AccessGrant и доменных таблиц;
 - schema создаётся и меняется только versioned migrations; request runtime не
   выполняет `CREATE TABLE`, `ALTER TABLE` или compatibility backfill;
 - unique index `(provider, provider_account_key)` для identities;
 - unique active-grant constraint для resource/grantee;
 - owner-prefixed indexes для каждого user-owned query path;
-- owner-scoped unique indexes и атомарный `task_sequences` allocator для
+- unique `(owner_user_id, task_code)` среди active Projects, unique
+  `(project_id, sequence_number)` для Tasks и атомарный Project allocator для
   `Task.identifier`;
+- `task_identifier_aliases` с нормализованным lookup index для прежних
+  identifiers;
 - индексы по owner/status/archive, project/release и updated time;
 - expression indexes по нормализованным task title/identifier, project
   name/summary и release name для prefix search;
@@ -426,10 +433,13 @@ server mutation boundary.
 
 Authenticated endpoint `/api/import/linear` принимает заранее
 инвентаризированный JSON snapshot, полностью валидирует ссылки до записи и
-выполняет deterministic upsert. Техническая страница `/import/linear` добавляет
-к workspace snapshot отдельно собранный archive комментариев. Импорт сохраняет
-исходные identifiers, timestamps, archive state, hierarchy, labels, relations,
-saved-view query/display и полный provider metadata в `external_records`.
+выполняет deterministic upsert. Каждая imported Task обязана явно ссылаться на
+Project; canonical identifier строится из Project code и source sequence, а
+исходный identifier сохраняется как alias. Техническая страница
+`/import/linear` добавляет к workspace snapshot отдельно собранный archive
+комментариев. Импорт сохраняет timestamps, archive state, hierarchy, labels,
+relations, saved-view query/display и полный provider metadata в
+`external_records`.
 
 ### Системный backup и restore
 

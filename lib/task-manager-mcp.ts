@@ -62,7 +62,7 @@ const taskFields = {
   description: z.string().max(100_000).optional(),
   statusRef: z.string().min(1).max(200).optional(),
   priority: z.enum(["none", "low", "medium", "high", "urgent"]).optional(),
-  projectRef: z.string().min(1).max(200).nullable().optional(),
+  projectRef: z.string().min(1).max(200).optional(),
   releaseRef: z.string().min(1).max(200).nullable().optional(),
   estimate: z.number().finite().nonnegative().nullable().optional(),
   dueDate: z.string().nullable().optional().describe("ISO 8601 calendar date or null."),
@@ -254,6 +254,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
       inputSchema: z.object({
         ...taskFields,
         title: z.string().min(1).max(500),
+        projectRef: reference("Canonical Project ref; every Task requires one."),
       }),
       annotations: writeAnnotations,
       _meta: toolSecurity("api:write"),
@@ -266,7 +267,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Update task",
       description:
-        "Updates a task when the user explicitly asks. First call get_task and pass its current version for optimistic concurrency. Null projectRef/releaseRef/dueDate clears that field; archived is reversible.",
+        "Updates a task when the user explicitly asks. First call get_task and pass its current version for optimistic concurrency. Project cannot be cleared or changed by this generic patch; releaseRef/dueDate may be null and archived is reversible.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         version: z.number().int().positive(),

@@ -110,9 +110,9 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Overview строится из того же server-authorized ACL-scoped snapshot. Он не
   загружает task descriptions, labels, relations, native comments, imported
   external context или admin aggregates и не вводит отдельный unscoped query.
-- Create actions показываются только там, где User может создать ресурс:
-  standalone Task и Project доступны авторизованному User, а Release — только
-  при наличии редактируемого Project.
+- Create actions показываются только там, где User может создать ресурс: Task
+  и Release требуют редактируемый Project, а новый Project доступен
+  авторизованному User.
 - Product mark/name и первый сегмент breadcrumb ведут на `/workspace`;
   Back/Forward, direct link и mobile navigation сохраняют canonical route.
 - Empty state отдельно объясняет отсутствие доступных records и предлагает
@@ -142,10 +142,10 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   явным `scope_project_id`. Release и project child отдельно не шарятся.
 - Для project child effective access определяется текущим Project owner/grant,
   а не историческим `owner_user_id`. Передача ownership не меняет immutable
-  task identifiers и provenance/catalog scope дочерних records.
-- Standalone Task и global SavedView можно расшарить напрямую с ролью `Editor`
-  или `Viewer`. Пока standalone Task имеет direct grants, её нельзя переместить
-  в Project; сначала grants должны быть отозваны.
+  task identifiers и provenance/catalog scope дочерних records. Явный перенос
+  Task меняет identifier только по отдельному атомарному move contract.
+- Global SavedView можно расшарить напрямую с ролью `Editor` или `Viewer`.
+  Каждая Task наследует доступ только от своего Project.
 - Global SavedView не расширяет доступ к попавшим в query Tasks. Получатель
   видит пересечение view с уже доступными ему данными.
 - Resources, которыми поделились с User, доступны в `Shared with me`. Revoke
@@ -159,14 +159,16 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 
 - Пользователь может создать задачу из глобального списка, проекта, релиза или
   конкретной колонки Kanban.
-- Пользователь вводит только заголовок; система атомарно назначает уникальный
-  в пределах owner scope идентификатор вида `TM-123`, начальный статус и
-  позицию.
-- Идентификатор не переиспользуется после архивирования или удаления.
+- Пользователь вводит заголовок и выбирает Project; система атомарно назначает
+  уникальный в пределах Project identifier вида `<project_code>-123`,
+  начальный статус и позицию.
+- Project sequence монотонна, поэтому identifier не переиспользуется после
+  архивирования, удаления или переноса Task. При переносе Task получает новый
+  identifier целевого Project, а прежний сохраняется как alias.
 - Контекст создания предварительно заполняет metadata: проект, релиз, статус
   либо значение текущей группы.
-- Standalone Task получает owner текущего User. Task, созданная в Project,
-  наследует owner Project даже при создании collaborator.
+- Каждая Task требует Project и наследует его owner даже при создании
+  collaborator. Глобальный composer требует явного выбора Project.
 
 ### 5.2 Metadata
 
@@ -323,11 +325,14 @@ Assignee обязан быть владельцем Task либо пользов
 
 ## 7. Проекты
 
-- Для проекта обязателен только name.
+- Для Project обязательны `name` и уникальный для active Projects текущего
+  owner code из 2–3 заглавных латинских букв.
 - Новый Project принадлежит создавшему его User.
 - Проект поддерживает summary, Markdown description, status, lead, start date,
   target date, icon/color и timestamps.
-- Задача принадлежит максимум одному проекту.
+- Каждая Task принадлежит ровно одному Project. Code и allocator Project
+  блокируются после первой Task; перенос выдаёт следующий identifier целевого
+  Project и сохраняет прежний identifier как alias.
 - Экран проекта содержит overview, прогресс и views его задач.
 - Базовый прогресс — доля неархивных задач проекта в категории `completed`;
   canceled-задачи не входят в знаменатель. Взвешивание по estimate отложено.
@@ -362,7 +367,9 @@ Assignee обязан быть владельцем Task либо пользов
   System limit — 10 MB, Project — 25 MB. Schema `2` без Attachments остаётся
   импортируемой.
 - Schema `5` включает writable-relation identity/idempotency/version metadata;
-  legacy schema `2`–`4` импортируются через deterministic relation upgrade.
+  schema `6` добавляет Project task code/sequence и aliases прежних Task
+  identifiers. Legacy schema `2`–`5` импортируются детерминированно, но Task без
+  Project требует явного mapping.
 - Restore materializes новые environment-scoped R2 keys до атомарного D1
   cutover, удаляет старые objects только после success и компенсирует новые при
   failure. Cross-Site Project restore по-прежнему запрещён.
@@ -399,7 +406,7 @@ Assignee обязан быть владельцем Task либо пользов
 - Project-scoped View имеет обязательный `scope_project_id`, жёстко ограничен
   этим Project и наследует его role. Он не получает отдельный `AccessGrant`.
 - View без `scope_project_id` является global, может пересекать все доступные
-  Projects и standalone Tasks и может получить прямой `Editor`/`Viewer` grant.
+  Projects и их Tasks и может получить прямой `Editor`/`Viewer` grant.
   Обычный filter по `project_id` внутри global View не меняет его access scope.
 - Исполнение view всегда пересекает filter с authorization scope читателя;
   shared view не раскрывает недоступные records и их aggregate counts.
@@ -464,8 +471,9 @@ completed dates и archived state.
 
 ## 11. Поиск
 
-- Поиск находит точный task identifier и полнотекстовые совпадения в title и
-  description.
+- Поиск находит canonical и прежний alias task identifier, а также совпадения
+  в title и description. Несколько доступных exact alias matches возвращают
+  ambiguity, а не произвольную Task.
 - Результат поиска можно дополнительно фильтровать и открыть в list/board.
 - Search применяет authorization scope до формирования matches, counts и
   подсказок и не подтверждает существование чужого identifier.

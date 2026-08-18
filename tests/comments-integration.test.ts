@@ -73,7 +73,7 @@ test("native task threads enforce identity, ACL, idempotency, versions, and reac
   const owner = await getOrCreateUser(ownerActor);
   const editor = await getOrCreateUser(editorActor);
   const viewer = await getOrCreateUser(viewerActor);
-  await createProject(owner, { name: "Comment project" });
+  await createProject(owner, { name: "Comment project", taskCode: "CM" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Comment project",
   )!;
@@ -190,7 +190,8 @@ test("native task threads enforce identity, ACL, idempotency, versions, and reac
 
 test("root comment pagination uses a stable keyset while new rows are inserted", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  const task = await createTask(owner, { title: "Paginated comments" });
+  const project = (await getSnapshot(owner)).projects.find((item) => item.accessRole === "owner")!;
+  const task = await createTask(owner, { title: "Paginated comments", projectId: project.id });
   for (const [index, body] of ["Alpha", "Beta", "Gamma"].entries()) {
     await createComment(owner, task.id, {
       body,
@@ -210,7 +211,8 @@ test("root comment pagination uses a stable keyset while new rows are inserted",
 
 test("comment writes advance task recency monotonically after a concurrent task update", async () => {
   const owner = await getOrCreateUser(ownerActor);
-  const task = await createTask(owner, { title: "Monotonic comment activity" });
+  const project = (await getSnapshot(owner)).projects.find((item) => item.accessRole === "owner")!;
+  const task = await createTask(owner, { title: "Monotonic comment activity", projectId: project.id });
   const root = await createComment(owner, task.id, {
     body: "Comment before concurrent task activity",
     idempotencyKey: "monotonic-root",
@@ -231,7 +233,7 @@ test("comment writes advance task recency monotonically after a concurrent task 
 test("app and agent boundaries preserve ACL and expose privacy-minimized authors", async () => {
   const owner = await getOrCreateUser(ownerActor);
   const viewer = await getOrCreateUser(viewerActor);
-  await createProject(owner, { name: "Comment API project" });
+  await createProject(owner, { name: "Comment API project", taskCode: "CA" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Comment API project",
   )!;

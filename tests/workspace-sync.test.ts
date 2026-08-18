@@ -58,11 +58,25 @@ after(async () => {
   await dispose?.();
 });
 
+async function ensureSyncProject(owner: Awaited<ReturnType<typeof getOrCreateUser>>) {
+  let project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Synchronization Tasks" && item.accessRole === "owner",
+  );
+  if (!project) {
+    await createProject(owner, { name: "Synchronization Tasks", taskCode: "SY" });
+    project = (await getSnapshot(owner)).projects.find(
+      (item) => item.name === "Synchronization Tasks" && item.accessRole === "owner",
+    );
+  }
+  return project!;
+}
+
 test("the authenticated sync route returns the principal-scoped contract", async () => {
   configureActorResolverForTests(async () => ownerActor);
   const owner = await getOrCreateUser(ownerActor);
+  const project = await ensureSyncProject(owner);
   const initial = await getSnapshot(owner);
-  await createTask(owner, { title: "Created through another request" });
+  await createTask(owner, { title: "Created through another request", projectId: project.id });
 
   const response = await syncRoute(new Request(
     `https://task-manager.test/api/sync?cursor=${encodeURIComponent(initial.syncCursor!)}`,
@@ -82,10 +96,11 @@ test("the authenticated sync route returns the principal-scoped contract", async
 
 test("incremental sync coalesces ordered task changes and applies them idempotently", async () => {
   const owner = await getOrCreateUser(ownerActor);
+  const project = await ensureSyncProject(owner);
   const initial = await getSnapshot(owner);
   assert.ok(initial.syncCursor);
 
-  await createTask(owner, { title: "Created elsewhere" });
+  await createTask(owner, { title: "Created elsewhere", projectId: project.id });
   let task = (await getSnapshot(owner)).tasks.find(
     (item) => item.title === "Created elsewhere",
   )!;
@@ -116,7 +131,8 @@ test("incremental sync removes deleted records and dependent client context", as
     providerAccountKey: "sync-delete-owner",
     email: "sync-delete-owner@example.test",
   });
-  await createTask(owner, { title: "Delete elsewhere" });
+  const project = await ensureSyncProject(owner);
+  await createTask(owner, { title: "Delete elsewhere", projectId: project.id });
   const initial = await getSnapshot(owner);
   const task = initial.tasks.find((item) => item.title === "Delete elsewhere")!;
 
@@ -147,7 +163,7 @@ test("projects, releases, and saved views share the same create and delete feed"
     email: "sync-collections-owner@example.test",
   });
   const initial = await getSnapshot(owner);
-  await createProject(owner, { name: "Synchronized project" });
+  await createProject(owner, { name: "Synchronized project", taskCode: "SP" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Synchronized project",
   )!;
@@ -198,8 +214,9 @@ test("task label and relation updates emit only lazy detail invalidations", asyn
     providerAccountKey: "sync-join-owner",
     email: "sync-join-owner@example.test",
   });
-  await createTask(owner, { title: "Join source" });
-  await createTask(owner, { title: "Join target" });
+  const project = await ensureSyncProject(owner);
+  await createTask(owner, { title: "Join source", projectId: project.id });
+  await createTask(owner, { title: "Join target", projectId: project.id });
   const seeded = await getSnapshot(owner);
   const source = seeded.tasks.find((item) => item.title === "Join source")!;
   const target = seeded.tasks.find((item) => item.title === "Join target")!;
@@ -286,7 +303,7 @@ test("label definitions invalidate only affected lazy task details", async () =>
   assert.equal(unattachedCreate.resetRequired, false);
   assert.equal(unattachedCreate.cursor, beforeCreate.syncCursor);
 
-  await createProject(owner, { name: "Label reset project" });
+  await createProject(owner, { name: "Label reset project", taskCode: "LR" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Label reset project",
   )!;
@@ -345,7 +362,7 @@ test("sync fan-out follows current project ACL without exposing unrelated change
   });
   const collaborator = await getOrCreateUser(collaboratorActor);
   const outsider = await getOrCreateUser(outsiderActor);
-  await createProject(owner, { name: "Sync shared project" });
+  await createProject(owner, { name: "Sync shared project", taskCode: "SS" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Sync shared project",
   )!;
@@ -403,7 +420,7 @@ test("moving a scoped view removes it from the previous project audience", async
     providerAccountKey: "sync-view-move-collaborator",
     email: "sync-view-move-collaborator@example.test",
   });
-  await createProject(owner, { name: "View move project" });
+  await createProject(owner, { name: "View move project", taskCode: "VM" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "View move project",
   )!;
@@ -454,7 +471,7 @@ test("release events follow the current project owner after ownership transfer",
     providerAccountKey: "sync-transfer-successor",
     email: "sync-transfer-successor@example.test",
   });
-  await createProject(owner, { name: "Transferred release project" });
+  await createProject(owner, { name: "Transferred release project", taskCode: "TR" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Transferred release project",
   )!;
@@ -496,9 +513,10 @@ test("invalid or pruned cursors request a safe full reset", async () => {
     providerAccountKey: "sync-gap-owner",
     email: "sync-gap-owner@example.test",
   });
+  const project = await ensureSyncProject(owner);
   const initial = await getSnapshot(owner);
-  await createTask(owner, { title: "Gap one" });
-  await createTask(owner, { title: "Gap two" });
+  await createTask(owner, { title: "Gap one", projectId: project.id });
+  await createTask(owner, { title: "Gap two", projectId: project.id });
   await database
     .prepare(
       `DELETE FROM workspace_change_events
@@ -531,10 +549,11 @@ test("an internal cursor gap cannot be skipped by a later event", async () => {
     providerAccountKey: "sync-internal-gap-owner",
     email: "sync-internal-gap-owner@example.test",
   });
+  const project = await ensureSyncProject(owner);
   const initial = await getSnapshot(owner);
-  await createTask(owner, { title: "Internal gap one" });
-  await createTask(owner, { title: "Internal gap two" });
-  await createTask(owner, { title: "Internal gap three" });
+  await createTask(owner, { title: "Internal gap one", projectId: project.id });
+  await createTask(owner, { title: "Internal gap two", projectId: project.id });
+  await createTask(owner, { title: "Internal gap three", projectId: project.id });
   await database
     .prepare(
       `DELETE FROM workspace_change_events
@@ -557,7 +576,8 @@ test("native comments and reactions emit lazy comment invalidations", async () =
     providerAccountKey: "sync-comments-owner",
     email: "sync-comments-owner@example.test",
   });
-  await createTask(owner, { title: "Comment invalidation task" });
+  const project = await ensureSyncProject(owner);
+  await createTask(owner, { title: "Comment invalidation task", projectId: project.id });
   const initial = await getSnapshot(owner);
   const task = initial.tasks.find((item) => item.title === "Comment invalidation task")!;
   const comment = await createComment(owner, task.id, {
@@ -587,7 +607,8 @@ test("external task context emits an ID-only lazy invalidation", async () => {
     providerAccountKey: "sync-external-owner",
     email: "sync-external-owner@example.test",
   });
-  await createTask(owner, { title: "External invalidation task" });
+  const project = await ensureSyncProject(owner);
+  await createTask(owner, { title: "External invalidation task", projectId: project.id });
   const initial = await getSnapshot(owner);
   const task = initial.tasks.find((item) => item.title === "External invalidation task")!;
 
@@ -612,6 +633,7 @@ test("an exact-ID task projection never removes an accessible task outside 2000 
     providerAccountKey: "sync-large-owner",
     email: "sync-large-owner@example.test",
   });
+  const project = await ensureSyncProject(owner);
   const status = (await getSnapshot(owner)).statuses[0]!;
   await database.prepare(
     `WITH RECURSIVE numbers(value) AS (
@@ -619,14 +641,14 @@ test("an exact-ID task projection never removes an accessible task outside 2000 
      )
      INSERT INTO tasks
        (id, public_id, owner_user_id, creator_user_id, identifier,
-        sequence_number, title, status_id, rank, created_at, updated_at)
+        sequence_number, title, status_id, project_id, rank, created_at, updated_at)
      SELECT 'bulk-task-' || printf('%04d', value),
             'bulk-public-' || printf('%04d', value), ?, ?,
             'BULK-' || printf('%04d', value), 10000 + value,
-            'Bulk task ' || printf('%04d', value), ?, value,
+            'Bulk task ' || printf('%04d', value), ?, ?, value,
             '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z'
      FROM numbers`,
-  ).bind(owner.id, owner.id, status.id).run();
+  ).bind(owner.id, owner.id, status.id, project.id).run();
   const initial = await getSnapshot(owner);
   const touchedTaskId = "bulk-task-0000";
   assert.equal(initial.tasks.some((task) => task.id === touchedTaskId), false);
@@ -652,8 +674,9 @@ test("expired journal rows are pruned and force safe cursor recovery", async () 
     providerAccountKey: "sync-retention-owner",
     email: "sync-retention-owner@example.test",
   });
+  const project = await ensureSyncProject(owner);
   const initial = await getSnapshot(owner);
-  await createTask(owner, { title: "Expired sync event" });
+  await createTask(owner, { title: "Expired sync event", projectId: project.id });
   await database.prepare(
     `UPDATE workspace_change_events
      SET created_at = datetime('now', '-31 days')
@@ -797,7 +820,7 @@ function baseSnapshot(): AppSnapshot {
       statusId: "todo",
       priority: "none",
       assigneeUserId: null,
-      projectId: null,
+      projectId: "project-1",
       releaseId: null,
       estimate: null,
       dueDate: null,
