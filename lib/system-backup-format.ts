@@ -1045,8 +1045,8 @@ function validateRelationships(tables: BackupTables) {
     requireReference(users, grant.granted_by_user_id, "Grant author");
     const effectiveOwnerId = target.owner_user_id;
     if (effectiveOwnerId !== grant.owner_user_id || grant.grantee_user_id === effectiveOwnerId) throw new ValidationError("Grant owner/recipient is invalid");
-    if (grant.resource_type === "task" && target.project_id !== null) throw new ValidationError("Only standalone tasks can have direct grants");
-    if (grant.resource_type === "saved_view" && target.scope_project_id !== null) throw new ValidationError("Project-scoped views inherit project access");
+    if (grant.revoked_at === null && grant.resource_type === "task" && target.project_id !== null) throw new ValidationError("Only standalone tasks can have direct grants");
+    if (grant.revoked_at === null && grant.resource_type === "saved_view" && target.scope_project_id !== null) throw new ValidationError("Project-scoped views inherit project access");
     const allowedPermissions =
       grant.resource_type === "project"
         ? ["manager", "editor", "viewer", "full_access"]

@@ -299,6 +299,39 @@ test("snapshot validation accepts transferred project ownership without rewritin
   assert.equal(validated.tables.access_grants[0]?.permission, "manager");
 });
 
+test("snapshot validation preserves revoked direct grants after a SavedView becomes project-scoped", async () => {
+  const tables = validTables();
+  tables.access_grants.push({
+    ...tables.access_grants[0]!,
+    id: "grant-revoked-view",
+    resource_type: "saved_view",
+    resource_id: "view-1",
+    permission: "editor",
+    revoked_at: now,
+  });
+  const backup = await createSystemBackup(tables, now);
+
+  const validated = await validateSystemBackup(backup);
+  assert.equal(validated.tables.access_grants[1]?.revoked_at, now);
+});
+
+test("snapshot validation rejects active direct grants on project-scoped SavedViews", async () => {
+  const tables = validTables();
+  tables.access_grants.push({
+    ...tables.access_grants[0]!,
+    id: "grant-active-view",
+    resource_type: "saved_view",
+    resource_id: "view-1",
+    permission: "editor",
+  });
+  const backup = await createSystemBackup(tables, now);
+
+  await assert.rejects(
+    validateSystemBackup(backup),
+    /Project-scoped views inherit project access/i,
+  );
+});
+
 test("snapshot validation rejects Tasks without an explicit Project mapping", async () => {
   const tables = validTables();
   tables.projects[0]!.lead_user_id = null;
