@@ -258,7 +258,10 @@ export type SavedViewRecord = {
   scopeProjectId: string | null;
   query: ViewQuery;
   display: ViewDisplay;
+  archivedAt?: string | null;
   version: number;
+  createdAt?: string;
+  updatedAt?: string;
   accessRole: AccessRole;
 };
 

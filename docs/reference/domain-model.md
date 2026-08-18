@@ -537,6 +537,7 @@ attachments также остаются import provenance.
 | `visible_fields` | Упорядоченный набор metadata на item/card |
 | `show_empty_groups` | Показывать ли пустые колонки/группы |
 | `hidden_groups` | Явно скрытые значения группировки |
+| `archived_at` | Nullable timestamp обратимого исключения из navigation/direct route |
 | `created_at`, `updated_at`, `version` | Технические metadata |
 
 Пример формы фильтра; MVP UI создаёт только `all`, но версия формата позволяет
@@ -553,6 +554,12 @@ attachments также остаются import provenance.
   ]
 }
 ```
+
+Create/rename/query/display/scope/archive/restore проходят через один
+ACL-scoped SavedView repository contract. Update атомарно проверяет effective
+Editor-or-higher role и optimistic `version`; смена access scope дополнительно
+требует Owner и write access к целевому Project. Project-scoped query не может
+ссылаться на другой Project или его Release.
 
 ## Инварианты и атомарные операции
 

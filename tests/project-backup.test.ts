@@ -26,7 +26,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 7);
+  assert.equal(backup.schemaVersion, 8);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -316,7 +316,7 @@ function validProjectTables(): ProjectBackupTables {
     saved_views: [{
       id: "view-1", public_id: "55555555-5555-4555-8555-555555555555",
       owner_user_id: "user-owner", name: "Project view", scope_project_id: "project-1",
-      query_json: "{}", display_json: "{}", version: 1, created_at: now, updated_at: now,
+      query_json: "{}", display_json: "{}", archived_at: null, version: 1, created_at: now, updated_at: now,
     }],
     external_records: [{
       id: "external-1", owner_user_id: "user-owner", target_type: "task",
@@ -378,7 +378,7 @@ function migratedDatabase() {
     "0010_crazy_puma.sql", "0011_conscious_paibok.sql", "0012_empty_saracen.sql",
     "0013_rapid_gravity.sql", "0014_puzzling_tana_nile.sql", "0015_attachments_sync.sql",
     "0016_abandoned_stellaris.sql", "0017_complex_epoch.sql",
-    "0018_tearful_black_panther.sql", "0019_silky_drax.sql",
+    "0018_tearful_black_panther.sql", "0019_silky_drax.sql", "0020_giant_boom_boom.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

@@ -71,6 +71,15 @@ export type AgentReleaseListQuery = {
   fingerprint: string;
 };
 
+export type AgentSavedViewListQuery = {
+  limit: number;
+  after: AgentKeysetPosition | null;
+  projectRef: string | null;
+  search: string | null;
+  archived: boolean;
+  fingerprint: string;
+};
+
 export type AgentExternalContextQuery = {
   limit: number;
   offset: number;
@@ -263,6 +272,37 @@ export async function parseAgentReleaseListQuery(
     projectRef,
     statuses,
     search,
+    fingerprint,
+  };
+}
+
+export async function parseAgentSavedViewListQuery(
+  searchParams: URLSearchParams,
+): Promise<AgentSavedViewListQuery> {
+  rejectUnknownParameters(
+    searchParams,
+    new Set(["limit", "cursor", "project_ref", "search", "archived"]),
+  );
+  const limit = integerParameter(
+    searchParams.get("limit"),
+    DEFAULT_AGENT_API_LIMIT,
+    1,
+    MAX_AGENT_API_LIMIT,
+    "limit",
+  );
+  const projectRef = optionalBounded(searchParams.get("project_ref"), 200);
+  const search = optionalBounded(searchParams.get("search"), 200);
+  const archived = booleanParameter(searchParams.get("archived"), false);
+  const fingerprint = await digestReference(
+    "query",
+    JSON.stringify({ limit, projectRef, search, archived, resource: "saved-views" }),
+  );
+  return {
+    limit,
+    after: decodeKeysetCursor(searchParams.get("cursor"), fingerprint),
+    projectRef,
+    search,
+    archived,
     fingerprint,
   };
 }

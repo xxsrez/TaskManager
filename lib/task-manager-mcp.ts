@@ -12,6 +12,7 @@ import {
   parseAgentExternalContextQuery,
   parseAgentProjectListQuery,
   parseAgentReleaseListQuery,
+  parseAgentSavedViewListQuery,
   parseAgentTaskListQuery,
 } from "./agent-api-contract";
 import {
@@ -27,6 +28,7 @@ import {
   createAgentTask,
   getAgentProjectDetail,
   getAgentReleaseDetail,
+  getAgentSavedViewDetail,
   getAgentTaskDetail,
   getAgentTaskAttachment,
   getAgentTaskExternalContext,
@@ -34,6 +36,7 @@ import {
   getAgentWorkspace,
   listAgentProjects,
   listAgentReleases,
+  listAgentSavedViews,
   listAgentLabels,
   listAgentTasks,
   listAgentTaskAttachments,
@@ -188,6 +191,44 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ releaseRef }) =>
       toolCall(() => getAgentReleaseDetail(context.user, releaseRef)),
+  );
+
+  server.registerTool(
+    "list_views",
+    {
+      title: "List saved views",
+      description:
+        "Lists native Saved Views with their current query, Display contract, scope, access, and version. Archived views are excluded by default.",
+      inputSchema: z.object({
+        ...paginationSchema,
+        projectRef: reference("Canonical project ref from list_projects.").optional(),
+        search: z.string().min(1).max(200).optional(),
+        archived: z.boolean().optional().describe("Default false."),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async (input) =>
+      toolCall(async () => {
+        const query = await parseAgentSavedViewListQuery(
+          queryParameters(input, { projectRef: "project_ref" }),
+        );
+        return listAgentSavedViews(context.user, query);
+      }),
+  );
+
+  server.registerTool(
+    "get_view",
+    {
+      title: "Get saved view",
+      description:
+        "Returns one Saved View with its canonical scope, current query, complete Display contract, access, archive state, and optimistic version.",
+      inputSchema: z.object({ viewRef: reference("Canonical Saved View ref from list_views.") }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ viewRef }) =>
+      toolCall(() => getAgentSavedViewDetail(context.user, viewRef)),
   );
 
   server.registerTool(

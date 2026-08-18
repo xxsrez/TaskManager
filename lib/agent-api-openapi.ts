@@ -129,6 +129,37 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/views": {
+      get: {
+        operationId: "listSavedViews",
+        summary: "List accessible native Saved Views with query and Display state",
+        parameters: [
+          ...listParameters,
+          { name: "project_ref", in: "query", schema: { type: "string" } },
+          { name: "search", in: "query", schema: { type: "string", maxLength: 200 } },
+          { name: "archived", in: "query", schema: { type: "boolean", default: false } },
+        ],
+        responses: {
+          "200": listResponse("Saved View records", {
+            $ref: "#/components/schemas/SavedView",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/views/{ref}": {
+      get: {
+        operationId: "getSavedView",
+        summary: "Get one Saved View with its complete persisted contract",
+        parameters: [referenceParameter()],
+        responses: {
+          "200": envelopeResponse("Saved View detail", {
+            $ref: "#/components/schemas/SavedView",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
     "/labels": {
       get: {
         operationId: "listLabels",
@@ -606,7 +637,7 @@ export const agentApiOpenApi = {
             tokenUrl: "/oauth/token",
             refreshUrl: "/oauth/token",
             scopes: {
-              "api:read": "Read accessible tasks, projects, releases, and catalogs",
+              "api:read": "Read accessible tasks, projects, releases, saved views, and catalogs",
               "api:write": "Create and update accessible tasks",
             },
           },
@@ -816,6 +847,47 @@ export const agentApiOpenApi = {
           },
         },
         additionalProperties: true,
+      },
+      SavedView: {
+        type: "object",
+        required: ["ref", "name", "scope", "query", "display", "archivedAt", "access", "createdAt", "updatedAt", "version"],
+        properties: {
+          ref: { type: "string" },
+          name: { type: "string" },
+          scope: {
+            type: "object",
+            required: ["type", "project"],
+            properties: {
+              type: { enum: ["global", "project"] },
+              project: { type: ["object", "null"] },
+            },
+            additionalProperties: false,
+          },
+          query: { type: "object", additionalProperties: true },
+          display: {
+            type: "object",
+            required: ["layout", "groupBy", "orderBy", "direction", "showEmptyGroups", "visibleFields"],
+            properties: {
+              layout: { enum: ["list", "board"] },
+              groupBy: { enum: ["status", "priority", "assignee", "project", "release", "none"] },
+              orderBy: { enum: ["manual", "priority", "created", "updated", "due", "title"] },
+              direction: { enum: ["asc", "desc"] },
+              showEmptyGroups: { type: "boolean" },
+              visibleFields: {
+                type: "array",
+                uniqueItems: true,
+                items: { enum: ["priority", "project", "release", "dueDate", "assignee"] },
+              },
+            },
+            additionalProperties: false,
+          },
+          archivedAt: { type: ["string", "null"], format: "date-time" },
+          access: { type: "object" },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+          version: { type: "integer", minimum: 1 },
+        },
+        additionalProperties: false,
       },
       TaskCreate: {
         type: "object",

@@ -449,8 +449,10 @@ commands задают желаемое состояние идемпотентн
 - View не хранит снимок задач; при открытии он выполняет сохранённый запрос к
   текущим данным.
 - Встроенные views: `All tasks`, `Active`, `Backlog`, `My tasks` и `Archived`.
-- Пользователь может сохранить изменённый view под новым именем, обновить его
-  или удалить.
+- Пользователь может сохранить изменённый view под новым именем (`Save as`),
+  атомарно обновить имя/query/display (`Save`), отменить временные изменения
+  (`Cancel`) и обратимо архивировать/восстановить Saved View. Архивный View
+  исчезает из sidebar и direct route, но остаётся в `All views` для restore.
 - View может иметь global scope либо явный scope одного Project.
 - Project-scoped View имеет обязательный `scope_project_id`, жёстко ограничен
   этим Project и наследует его role. Он не получает отдельный `AccessGrant`.
@@ -492,6 +494,9 @@ completed dates и archived state.
   показывают общий empty state без пустых контейнеров.
 - Sub-grouping/swimlanes и независимые настройки одного view для разных
   пользователей отложены.
+- `Save` использует текущую optimistic `version` и сохраняет query + весь
+  Display одним repository command; конфликт второй сессии не даёт partial
+  write. `Save as` создаёт новую identity и не меняет source View.
 
 ## 10. List и Kanban
 

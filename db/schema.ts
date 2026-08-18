@@ -568,6 +568,7 @@ export const savedViews = sqliteTable(
     scopeProjectId: text("scope_project_id"),
     queryJson: text("query_json").notNull().default("{}"),
     displayJson: text("display_json").notNull().default("{}"),
+    archivedAt: text("archived_at"),
     version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -575,6 +576,7 @@ export const savedViews = sqliteTable(
   (table) => [
     uniqueIndex("idx_saved_views_public_id").on(table.publicId),
     index("idx_saved_views_scope_project").on(table.scopeProjectId),
+    index("idx_saved_views_archive_updated").on(table.archivedAt, table.updatedAt),
   ],
 );
 

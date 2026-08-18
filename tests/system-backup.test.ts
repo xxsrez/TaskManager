@@ -18,7 +18,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 7);
+  assert.equal(backup.schemaVersion, 8);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -535,6 +535,7 @@ function validTables(): BackupTables {
         scope_project_id: "project-1",
         query_json: "{}",
         display_json: "{}",
+        archived_at: null,
         version: 1,
         created_at: now,
         updated_at: now,
@@ -634,6 +635,7 @@ function migratedDatabase() {
     "0017_complex_epoch.sql",
     "0018_tearful_black_panther.sql",
     "0019_silky_drax.sql",
+    "0020_giant_boom_boom.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

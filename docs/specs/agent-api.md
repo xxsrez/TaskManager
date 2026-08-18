@@ -128,7 +128,7 @@ restore атомарно отзывает все authentication capabilities, ч
 
 ## 4. References
 
-- Task, Project и Release используют immutable database `public_id` как
+- Task, Project, Release и SavedView используют immutable database `public_id` как
   `ref`.
 - Task также возвращает текущий `identifier` (`TM-123`). Для detail/update
   lookup принимаются canonical identifier и прежние aliases. Несколько
@@ -154,6 +154,8 @@ restore атомарно отзывает все authentication capabilities, ч
 | `GET /projects/{ref}` | `api:read` | `ProjectDetail` и compact releases |
 | `GET /releases` | `api:read` | Paginated `ReleaseSummary[]` |
 | `GET /releases/{ref}` | `api:read` | `ReleaseDetail` с release notes |
+| `GET /views` | `api:read` | Paginated SavedViews с query/display/scope/version |
+| `GET /views/{ref}` | `api:read` | Один SavedView с полным persisted contract |
 | `GET /labels` | `api:read` | Bounded native Labels доступных owner catalogs |
 | `GET /tasks` | `api:read` | Paginated `TaskSummary[]` |
 | `POST /tasks` | `api:write` | Создать Task и вернуть `TaskDetail` |
@@ -180,11 +182,12 @@ restore атомарно отзывает все authentication capabilities, ч
 | `PUT /tasks/{ref}/comments/{commentRef}/reactions` | `api:write` | Задать desired reaction state |
 | `PUT /tasks/{ref}/comments/{commentRef}/resolution` | `api:write` | Resolve/reopen root с version |
 
-Project/Release endpoints read-only: они нужны для ориентации и task scope.
+Project/Release/SavedView endpoints read-only: они нужны для ориентации, task
+scope и чтения актуальной query/display конфигурации.
 Нативное UI изменение Project не расширяет `api:write`; remote Project
-mutation появится только вместе с отдельно документированным OAuth scope.
-SavedViews не входят в v1; task query принимает явные filters и не зависит от
-UI display configuration.
+или SavedView mutation появится только вместе с отдельно документированным
+OAuth scope. Task query принимает явные filters и не зависит от UI display
+configuration.
 
 ### 5.1 Remote MCP connector
 
@@ -196,6 +199,7 @@ protocol revisions).
 | `get_workspace` | `api:read` | User, capabilities, counts и status catalog |
 | `list_projects`, `get_project` | `api:read` | Найти Project, releases и допустимые statuses |
 | `list_releases`, `get_release` | `api:read` | Найти Release и его task scope |
+| `list_views`, `get_view` | `api:read` | Прочитать SavedView query, Display, scope и version |
 | `list_labels` | `api:read` | Найти active либо archived Label и canonical ref |
 | `list_tasks` | `api:read` | Все доступные Tasks или filters Project/Release/status/priority/assignee/search |
 | `get_task` | `api:read` | Полный контекст выбранной Task и актуальная version |

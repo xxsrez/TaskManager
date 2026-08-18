@@ -46,6 +46,7 @@ import type {
   TaskRelationRecord,
   TaskRecord,
   UserRecord,
+  ViewQuery,
   WorkflowStatusRecord,
 } from "./types";
 import {
@@ -2662,6 +2663,8 @@ export async function createSavedView(
     ? await loadAccessibleProject(currentUser.id, String(input.scopeProjectId))
     : null;
   if (project) requireContentEdit(project.accessRole);
+  await validateSavedViewReferences(currentUser, query, project);
+  const id = `view_${crypto.randomUUID()}`;
   await getD1()
     .prepare(
       `INSERT INTO saved_views
@@ -2669,7 +2672,7 @@ export async function createSavedView(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
-      `view_${crypto.randomUUID()}`,
+      id,
       crypto.randomUUID(),
       project?.ownerUserId ?? currentUser.id,
       requireTitle(input.name),
@@ -2678,6 +2681,133 @@ export async function createSavedView(
       JSON.stringify(display),
     )
     .run();
+  return loadAccessibleView(currentUser.id, id);
+}
+
+export async function updateSavedView(
+  currentUser: UserRecord,
+  viewId: string,
+  input: Record<string, unknown>,
+) {
+  const view = await loadAccessibleView(currentUser.id, viewId);
+  requireContentEdit(view.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== view.version) {
+    throw new ConflictError("Saved View version changed before the update");
+  }
+
+  const scopeChanged = Object.hasOwn(input, "scopeProjectId") &&
+    (input.scopeProjectId ? String(input.scopeProjectId) : null) !== view.scopeProjectId;
+  if (scopeChanged && view.accessRole !== "owner") {
+    throw new PermissionError("Only the owner can move a Saved View between scopes");
+  }
+  const nextScopeProject = Object.hasOwn(input, "scopeProjectId")
+    ? input.scopeProjectId
+      ? await loadAccessibleProject(currentUser.id, String(input.scopeProjectId))
+      : null
+    : view.scopeProjectId
+      ? await loadAccessibleProject(currentUser.id, view.scopeProjectId)
+      : null;
+  if (nextScopeProject) requireContentEdit(nextScopeProject.accessRole);
+
+  const name = Object.hasOwn(input, "name") ? requireTitle(input.name) : view.name;
+  const query = Object.hasOwn(input, "query")
+    ? validateViewQuery(input.query)
+    : view.query;
+  const display = Object.hasOwn(input, "display")
+    ? validateViewDisplay(input.display)
+    : view.display;
+  await validateSavedViewReferences(currentUser, query, nextScopeProject);
+  const archivedAt = Object.hasOwn(input, "archived")
+    ? input.archived === true
+      ? view.archivedAt ?? new Date().toISOString()
+      : input.archived === false
+        ? null
+        : (() => { throw new ValidationError("Saved View archived must be boolean"); })()
+    : view.archivedAt;
+  const ownerUserId = nextScopeProject?.ownerUserId ??
+    (scopeChanged && !nextScopeProject ? currentUser.id : view.ownerUserId);
+  const now = new Date().toISOString();
+  const result = await getD1().prepare(
+    `UPDATE saved_views SET
+       owner_user_id = ?, name = ?, scope_project_id = ?, query_json = ?,
+       display_json = ?, archived_at = ?, version = version + 1, updated_at = ?
+     WHERE id = ? AND version = ? AND (
+       (scope_project_id IS NOT NULL AND EXISTS (
+         SELECT 1 FROM projects p WHERE p.id = saved_views.scope_project_id AND (
+           p.owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               AND ag.permission IN ('editor', 'manager', 'full_access')
+           )
+         )
+       )) OR (scope_project_id IS NULL AND (
+         owner_user_id = ? OR EXISTS (
+           SELECT 1 FROM access_grants ag
+           WHERE ag.resource_type = 'saved_view' AND ag.resource_id = saved_views.id
+             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             AND ag.permission IN ('editor', 'full_access')
+         )
+       ))
+     )`,
+  ).bind(
+    ownerUserId,
+    name,
+    nextScopeProject?.id ?? null,
+    JSON.stringify(query),
+    JSON.stringify(display),
+    archivedAt,
+    now,
+    view.id,
+    expectedVersion,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+  ).run();
+  if ((result.meta.changes ?? 0) < 1) {
+    throw new ConflictError("Saved View access, scope, or version changed before the update committed");
+  }
+  return loadAccessibleView(currentUser.id, view.id);
+}
+
+async function validateSavedViewReferences(
+  currentUser: UserRecord,
+  query: ViewQuery,
+  scopeProject: ProjectRecord | null,
+) {
+  const snapshot = await getSnapshot(currentUser);
+  if (scopeProject && query.projectId !== undefined && query.projectId !== scopeProject.id) {
+    throw new ValidationError("A project-scoped Saved View cannot filter outside its Project");
+  }
+  if (
+    query.projectId &&
+    !snapshot.projects.some((project) => project.id === query.projectId)
+  ) {
+    throw new ValidationError("Saved View project filter is inaccessible");
+  }
+  const release = query.releaseId
+    ? snapshot.releases.find((item) => item.id === query.releaseId)
+    : null;
+  if (query.releaseId && !release) {
+    throw new ValidationError("Saved View release filter is inaccessible");
+  }
+  if (scopeProject && release && release.projectId !== scopeProject.id) {
+    throw new ValidationError("Saved View release must belong to its scoped Project");
+  }
+  if (
+    query.projectId &&
+    release &&
+    release.projectId !== query.projectId
+  ) {
+    throw new ValidationError("Saved View release does not belong to its Project filter");
+  }
+  if (query.statusIds?.some(
+    (statusId) => !snapshot.statuses.some((status) => status.id === statusId),
+  )) {
+    throw new ValidationError("Saved View status filter is inaccessible");
+  }
 }
 
 export async function grantAccess(
@@ -3498,7 +3628,10 @@ function mapView(row: DbRow): SavedViewRecord {
     scopeProjectId: nullableString(row.scope_project_id),
     query: parseStoredViewQuery(row.query_json),
     display: parseStoredViewDisplay(row.display_json),
+    archivedAt: nullableString(row.archived_at),
     version: Number(row.version),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
     accessRole: effectiveRole(row.access_role),
   };
 }

@@ -166,6 +166,26 @@ test("a direct saved-view board path restores its query surface and layout", () 
   });
 });
 
+test("an archived Saved View is removed from direct navigation until restored", () => {
+  const archived = {
+    ...snapshot,
+    views: snapshot.views.map((view) => ({
+      ...view,
+      archivedAt: "2026-08-18T05:00:00.000Z",
+    })),
+  } as AppSnapshot;
+  const target = parseNavigationPath(`/views/${viewPublicId}`);
+  assert.ok(target);
+  assert.equal(resolveNavigationTarget(target, archived), null);
+  assert.equal(
+    navigationPath(
+      { surface: "view:linear:view:homeostat", layout: "list", taskId: null },
+      archived,
+    ),
+    "/views",
+  );
+});
+
 test("project release collection and release detail keep project scope", () => {
   const collection = parseNavigationPath(
     `/projects/${projectPublicId}/releases`,

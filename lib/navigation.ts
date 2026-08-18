@@ -115,7 +115,10 @@ export function resolveNavigationTarget(
     return { surface: "releases", layout: "list", taskId: null };
   }
   if (target.kind === "view") {
-    const view = findAddressable(data.views, target.id);
+    const view = findAddressable(
+      data.views.filter((item) => !item.archivedAt),
+      target.id,
+    );
     return view
       ? {
           surface: `view:${view.id}`,
@@ -195,7 +198,9 @@ export function navigationPath(
   }
   if (surface === "shared") return "/shared";
   if (surface.startsWith("view:")) {
-    const view = data.views.find((item) => item.id === surface.slice(5));
+    const view = data.views.find(
+      (item) => item.id === surface.slice(5) && !item.archivedAt,
+    );
     if (!view) return "/views";
     const base = `/views/${encodeURIComponent(view.publicId)}`;
     return layout === view.display.layout ? base : `${base}/${layout}`;

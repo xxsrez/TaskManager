@@ -387,6 +387,11 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
 `taskWindow.truncated=true`, а UI показывает границу вместо молчаливой иллюзии
 полного workspace. Команды создания/изменения Task, Project, Release, SavedView
 и AccessGrant остаются отдельными route handlers.
+SavedView создаётся через `POST /api/views`, а rename/query/display/scope и
+reversible archive/restore — через versioned `PATCH /api/views/{id}`. Одна
+команда сохраняет query и полный Display JSON; D1 update trigger публикует
+authoritative upsert в workspace sync. Клиент удаляет архивный View из sidebar
+и активного route сразу после mutation либо sync из второй сессии.
 Workspace overview `/workspace` повторно использует этот ACL-scoped snapshot и
 его compact summary projections для навигационных итогов. Отдельного overview
 endpoint с cross-user counts нет: task bodies, labels, relations, native

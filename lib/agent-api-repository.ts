@@ -9,6 +9,7 @@ import {
   type AgentKeysetPosition,
   type AgentProjectListQuery,
   type AgentReleaseListQuery,
+  type AgentSavedViewListQuery,
   type AgentTaskListQuery,
 } from "./agent-api-contract";
 import {
@@ -46,6 +47,7 @@ import {
 } from "./comments";
 import type { AgentAuthorizationContext } from "./agent-api-context";
 import type { AccessRole, AttachmentRecord, UserRecord } from "./types";
+import { parseStoredViewDisplay, parseStoredViewQuery } from "./view-contract";
 
 type DbRow = Record<string, unknown>;
 
@@ -155,6 +157,38 @@ const releaseScopeCte = `WITH scoped_releases AS (
   FROM releases r JOIN projects p ON p.id = r.project_id
 ), visible_releases AS (
   SELECT * FROM scoped_releases WHERE access_role IS NOT NULL
+)`;
+
+const savedViewScopeCte = `WITH scoped_views AS (
+  SELECT v.*, p.public_id AS project_public_id, p.name AS project_name,
+    CASE
+      WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+      WHEN v.scope_project_id IS NOT NULL THEN (
+        SELECT CASE ag.permission
+          WHEN 'full_access' THEN 'manager'
+          WHEN 'manager' THEN 'manager'
+          WHEN 'editor' THEN 'editor'
+          WHEN 'viewer' THEN 'viewer'
+        END
+        FROM access_grants ag
+        WHERE ag.resource_type = 'project' AND ag.resource_id = v.scope_project_id
+          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+      )
+      WHEN v.owner_user_id = ? THEN 'owner'
+      ELSE (
+        SELECT CASE ag.permission
+          WHEN 'full_access' THEN 'editor'
+          WHEN 'editor' THEN 'editor'
+          WHEN 'viewer' THEN 'viewer'
+        END
+        FROM access_grants ag
+        WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+      )
+    END AS access_role
+  FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
+), visible_views AS (
+  SELECT * FROM scoped_views WHERE access_role IS NOT NULL
 )`;
 
 export async function listAgentTasks(
@@ -514,11 +548,66 @@ export async function getAgentReleaseDetail(
   };
 }
 
+export async function listAgentSavedViews(
+  currentUser: UserRecord,
+  query: AgentSavedViewListQuery,
+) {
+  const project = query.projectRef
+    ? await loadAccessibleProjectRow(currentUser.id, query.projectRef)
+    : null;
+  const predicates = [
+    query.archived ? "v.archived_at IS NOT NULL" : "v.archived_at IS NULL",
+  ];
+  const parameters: unknown[] = [
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+  ];
+  if (project) {
+    predicates.push("v.scope_project_id = ?");
+    parameters.push(project.id);
+  }
+  if (query.search) {
+    predicates.push("lower(v.name) >= ? AND lower(v.name) < ?");
+    parameters.push(...prefixRange(query.search));
+  }
+  const order = "lower(v.name)";
+  appendKeysetPredicate(predicates, parameters, order, "ASC", query.after, "v.public_id");
+  parameters.push(query.limit + 1);
+  const rows = await getD1().prepare(
+    `${savedViewScopeCte}
+     SELECT v.*, ${order} AS cursor_value
+     FROM visible_views v
+     WHERE ${predicates.join(" AND ")}
+     ORDER BY ${order} ASC, v.public_id ASC
+     LIMIT ?`,
+  ).bind(...parameters).all<DbRow>();
+  const hasMore = rows.results.length > query.limit;
+  const visible = rows.results.slice(0, query.limit);
+  return {
+    data: visible.map(mapSavedView),
+    page: {
+      hasMore,
+      nextCursor: hasMore
+        ? keysetCursor(visible.at(-1)!, query.fingerprint)
+        : null,
+    },
+  };
+}
+
+export async function getAgentSavedViewDetail(
+  currentUser: UserRecord,
+  reference: string,
+) {
+  return mapSavedView(await loadAccessibleSavedViewRow(currentUser.id, reference));
+}
+
 export async function getAgentWorkspace(
   context: AgentAuthorizationContext,
 ) {
   const user = context.user;
-  const [taskCounts, projectCount, releaseCount, statuses] = await Promise.all([
+  const [taskCounts, projectCount, releaseCount, savedViewCount, statuses] = await Promise.all([
     getD1()
       .prepare(
         `${taskScopeCte(false)}
@@ -540,6 +629,10 @@ export async function getAgentWorkspace(
     getD1()
       .prepare(`${releaseScopeCte} SELECT COUNT(*) AS count FROM visible_releases`)
       .bind(user.id, user.id)
+      .first<{ count: number }>(),
+    getD1()
+      .prepare(`${savedViewScopeCte} SELECT COUNT(*) AS count FROM visible_views WHERE archived_at IS NULL`)
+      .bind(user.id, user.id, user.id, user.id)
       .first<{ count: number }>(),
     getD1()
       .prepare(
@@ -581,6 +674,7 @@ export async function getAgentWorkspace(
     counts: {
       projects: Number(projectCount?.count ?? 0),
       releases: Number(releaseCount?.count ?? 0),
+      savedViews: Number(savedViewCount?.count ?? 0),
       tasks: {
         total: Number(taskCounts?.total ?? 0),
         active: Number(taskCounts?.active ?? 0),
@@ -1248,6 +1342,15 @@ async function loadAccessibleReleaseRow(
   return row;
 }
 
+async function loadAccessibleSavedViewRow(userId: string, reference: string) {
+  const row = await getD1().prepare(
+    `${savedViewScopeCte}
+     SELECT v.* FROM visible_views v WHERE v.public_id = ? LIMIT 1`,
+  ).bind(userId, userId, userId, userId, reference).first<DbRow>();
+  if (!row) throw new NotFoundError("Saved View not found");
+  return row;
+}
+
 async function loadParentTask(currentUser: UserRecord, id: string | null) {
   if (!id) return null;
   const row = await getD1()
@@ -1574,6 +1677,33 @@ function mapReleaseSummary(row: DbRow) {
     releasedAt: nullableString(row.released_at),
     taskCounts: counts,
     progress: denominator > 0 ? counts.completed / denominator : 0,
+    updatedAt: String(row.updated_at),
+    version: Number(row.version),
+  };
+}
+
+function mapSavedView(row: DbRow) {
+  const accessRole = String(row.access_role) as AccessRole;
+  return {
+    ref: String(row.public_id),
+    name: String(row.name),
+    scope: row.scope_project_id
+      ? {
+          type: "project" as const,
+          project: {
+            ref: String(row.project_public_id),
+            name: String(row.project_name),
+          },
+        }
+      : { type: "global" as const, project: null },
+    query: parseStoredViewQuery(row.query_json),
+    display: parseStoredViewDisplay(row.display_json),
+    archivedAt: nullableString(row.archived_at),
+    access: {
+      role: accessRole,
+      canEdit: canEditContent(accessRole),
+    },
+    createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     version: Number(row.version),
   };

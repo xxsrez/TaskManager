@@ -10,6 +10,7 @@ import {
   AgentApiError,
   encodeKeysetCursor,
   parseAgentAttachmentListQuery,
+  parseAgentSavedViewListQuery,
   parseAgentTaskListQuery,
 } from "../lib/agent-api-contract";
 import { agentApiOpenApi } from "../lib/agent-api-openapi";
@@ -111,6 +112,41 @@ test("attachment collection parser uses a resource-bound keyset cursor", async (
   );
 });
 
+test("Saved View collection parser binds pagination to scope and archive filters", async () => {
+  const first = await parseAgentSavedViewListQuery(
+    new URLSearchParams(
+      "limit=12&project_ref=project-ref&search=Launch&archived=true",
+    ),
+  );
+  assert.equal(first.limit, 12);
+  assert.equal(first.projectRef, "project-ref");
+  assert.equal(first.search, "Launch");
+  assert.equal(first.archived, true);
+
+  const cursor = encodeKeysetCursor(
+    { values: ["launch"], id: "view-ref" },
+    first.fingerprint,
+  );
+  const resumed = await parseAgentSavedViewListQuery(
+    new URLSearchParams(
+      `limit=12&project_ref=project-ref&search=Launch&archived=true&cursor=${cursor}`,
+    ),
+  );
+  assert.deepEqual(resumed.after, {
+    values: ["launch"],
+    id: "view-ref",
+  });
+  await assert.rejects(
+    parseAgentSavedViewListQuery(
+      new URLSearchParams(
+        `limit=12&project_ref=project-ref&search=Launch&archived=false&cursor=${cursor}`,
+      ),
+    ),
+    (error: unknown) =>
+      error instanceof AgentApiError && error.code === "invalid_argument",
+  );
+});
+
 test("OpenAPI exposes task work but no administration or sharing operations", () => {
   const paths = Object.keys(agentApiOpenApi.paths);
   assert.equal(paths.includes("/tasks"), true);
@@ -124,6 +160,8 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks/{ref}/labels/{labelRef}"), true);
   assert.equal(paths.includes("/projects"), true);
   assert.equal(paths.includes("/releases"), true);
+  assert.equal(paths.includes("/views"), true);
+  assert.equal(paths.includes("/views/{ref}"), true);
   assert.equal(paths.includes("/tasks/{ref}/comments"), true);
   assert.equal(paths.includes("/tasks/{ref}/comments/{commentRef}"), true);
   assert.equal(paths.includes("/tasks/{ref}/attachments"), true);
@@ -135,6 +173,18 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/comments"].post.operationId,
     "createTaskComment",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/views"].get.operationId,
+    "listSavedViews",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/views/{ref}"].get.operationId,
+    "getSavedView",
+  );
+  assert.equal(
+    Object.hasOwn(agentApiOpenApi.paths["/views"], "post"),
+    false,
   );
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/relations"].post.operationId,

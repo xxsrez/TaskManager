@@ -1579,6 +1579,10 @@ test("mobile shell exposes complete navigation and view controls", () => {
   assert.match(markup, />Display</);
   assert.match(markup, />List</);
   assert.match(markup, />Board</);
+  assert.match(markup, />Order</);
+  assert.match(markup, />Direction</);
+  assert.match(markup, />Properties</);
+  assert.match(markup, />Show empty groups</);
   assert.match(markup, />New task</);
 });
 

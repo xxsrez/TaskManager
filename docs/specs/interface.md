@@ -602,6 +602,13 @@ List повторяет плотную grouped-list модель Linear.
 Изменение применяется сразу; persisted state меняется только по правилам
 current/saved view.
 
+Для Saved View toolbar показывает явный dirty state: `Save` сохраняет текущие
+query и Display, `Save as` создаёт независимую копию, `Cancel` возвращает
+последнюю подтверждённую конфигурацию. `Edit view` меняет имя/scope и предлагает
+обратимый archive. Архивный View не открывается по direct URL и не остаётся в
+sidebar; restore доступен в `All views`. Viewer видит сохранённую конфигурацию,
+но не получает write controls.
+
 ## 11. Search и contextual command actions
 
 - `/` или search icon открывает global search overlay по доступным tasks,
