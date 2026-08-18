@@ -1511,6 +1511,42 @@ test("editable task details render the full Markdown description before editing"
   assert.doesNotMatch(markup, />Save description</);
 });
 
+test("task detail timestamps render in the authenticated user timezone", () => {
+  const originalTimeZone = process.env.TZ;
+  process.env.TZ = "UTC";
+
+  try {
+    const markup = renderToStaticMarkup(
+      createElement(TaskTracker, {
+        initialData: {
+          ...snapshot,
+          user: {
+            ...snapshot.user,
+            timezone: "Atlantic/Madeira",
+          },
+          tasks: snapshot.tasks.map((task) => ({
+            ...task,
+            createdAt: "2026-08-17T22:30:00.000Z",
+            updatedAt: "2026-08-17T23:30:00.000Z",
+          })),
+        },
+        initialNavigation: {
+          surface: "all",
+          layout: "list",
+          taskId: "task-1",
+        },
+        signOutPath: "/sign-out",
+      }),
+    );
+
+    assert.match(markup, /Created Aug 17, 2026/);
+    assert.match(markup, /Updated Aug 18, 2026/);
+  } finally {
+    if (originalTimeZone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimeZone;
+  }
+});
+
 test("viewer task details are read-only and expose no mutation controls", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
