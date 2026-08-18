@@ -235,6 +235,18 @@ export function navigationPath(
   return issueCollectionPath(surface as IssueFilter, layout);
 }
 
+export function navigationPathWithTemporaryFilter(
+  path: string,
+  currentHref: string,
+): string {
+  const current = new URL(currentHref);
+  const temporaryFilter = current.searchParams.get("filter");
+  if (!temporaryFilter) return path;
+  const next = new URL(path, current.origin);
+  next.searchParams.set("filter", temporaryFilter);
+  return `${next.pathname}${next.search}${next.hash}`;
+}
+
 export function taskPath(publicId: string): string {
   return `/issues/${encodeURIComponent(publicId)}`;
 }

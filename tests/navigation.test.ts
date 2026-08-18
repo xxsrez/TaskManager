@@ -4,6 +4,7 @@ import {
   legacyRedirectPath,
   navigationHistoryState,
   navigationPath,
+  navigationPathWithTemporaryFilter,
   parseNavigationPath,
   pathFromRouteSegments,
   resolveNavigationHistoryState,
@@ -293,6 +294,31 @@ test("navigation state formats back to concise public paths", () => {
       snapshot,
     ),
     `/issues/${taskPublicId}`,
+  );
+});
+
+test("layout and task navigation preserve a shareable temporary filter", () => {
+  const encoded = "eyJ2ZXJzaW9uIjoxLCJvcCI6ImFsbCJ9";
+  assert.equal(
+    navigationPathWithTemporaryFilter(
+      `/views/${viewPublicId}/board`,
+      `https://task-manager.example/views/${viewPublicId}?filter=${encoded}`,
+    ),
+    `/views/${viewPublicId}/board?filter=${encoded}`,
+  );
+  assert.equal(
+    navigationPathWithTemporaryFilter(
+      `/issues/${taskPublicId}`,
+      `https://task-manager.example/views/${viewPublicId}?filter=${encoded}&ignored=1`,
+    ),
+    `/issues/${taskPublicId}?filter=${encoded}`,
+  );
+  assert.equal(
+    navigationPathWithTemporaryFilter(
+      `/views/${viewPublicId}/board`,
+      `https://task-manager.example/views/${viewPublicId}`,
+    ),
+    `/views/${viewPublicId}/board`,
   );
 });
 

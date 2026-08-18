@@ -73,6 +73,7 @@ import {
 import {
   navigationHistoryState,
   navigationPath,
+  navigationPathWithTemporaryFilter,
   parseNavigationPath,
   projectReleasesPath,
   resolveNavigationHistoryState,
@@ -1752,22 +1753,29 @@ export function TaskTracker({
   function applyNavigation(
     next: ResolvedNavigation,
     historyMode: "push" | "replace" | "none" = "push",
+    preserveTemporaryFilter = false,
   ) {
+    const nextPath = preserveTemporaryFilter
+      ? navigationPathWithTemporaryFilter(
+          navigationPath(next, data),
+          window.location.href,
+        )
+      : navigationPath(next, data);
     setSurface(next.surface);
     setLayout(next.layout);
     setActiveTaskId(next.taskId);
-    if (!next.taskId) taskReturnPath.current = navigationPath(next, data);
+    if (!next.taskId) taskReturnPath.current = nextPath;
     if (historyMode === "push") {
       window.history.pushState(
         navigationHistoryState(next),
         "",
-        navigationPath(next, data),
+        nextPath,
       );
     } else if (historyMode === "replace") {
       window.history.replaceState(
         navigationHistoryState(next),
         "",
-        navigationPath(next, data),
+        nextPath,
       );
     }
   }
@@ -1793,7 +1801,11 @@ export function TaskTracker({
 
   function changeLayout(nextLayout: Layout) {
     setMobileActionsOpen(false);
-    applyNavigation({ surface, layout: nextLayout, taskId: null });
+    applyNavigation(
+      { surface, layout: nextLayout, taskId: null },
+      "push",
+      true,
+    );
   }
 
   function changeGroupBy(nextGroupBy: ViewDisplay["groupBy"]) {
@@ -1850,12 +1862,12 @@ export function TaskTracker({
 
   function openTask(taskId: string) {
     if (!activeTaskId) {
-      taskReturnPath.current = navigationPath(
-        { surface, layout, taskId: null },
-        data,
+      taskReturnPath.current = navigationPathWithTemporaryFilter(
+        navigationPath({ surface, layout, taskId: null }, data),
+        window.location.href,
       );
     }
-    applyNavigation({ surface, layout, taskId });
+    applyNavigation({ surface, layout, taskId }, "push", true);
   }
 
   function closeTask() {
