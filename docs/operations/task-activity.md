@@ -158,7 +158,8 @@ operator session. Его не копируют в Task comment, migration report
 7. Проверить Agent REST `GET /api/agent/v1/tasks/{ref}/activity` и MCP
    `list_task_activity`: maximum 50, stable cursor, actor без ID/email, тот же
    ACL. Task collection/detail не содержит event bodies.
-8. Экспортировать и валидировать system и Project backup schema `10`; на
+8. Экспортировать и валидировать current system и Project backup schema `11`
+   (Activity введена в schema `10`); на
    disposable UAT data пройти restore и повторить event/outcome counts.
 9. Проверить sync: другая session получает `taskActivities: [taskId]`, но не
    `payload_json`; открытая Activity перечитывается, закрытая остаётся lazy.

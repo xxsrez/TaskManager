@@ -16,7 +16,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 10 as const;
+export const projectBackupSchemaVersion = 11 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -28,6 +28,7 @@ export const projectBackupTableNames = [
   "tasks",
   "task_identifier_aliases",
   "attachments",
+  "attachment_migration_outcomes",
   "comments",
   "comment_migration_outcomes",
   "activity_events",
@@ -54,7 +55,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -203,8 +204,9 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const legacyLabels = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6;
   const legacySavedViews = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7;
   const legacyHistoricalComments = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8;
-  const legacyActivity = payload.schemaVersion !== projectBackupSchemaVersion;
-  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === 9 || payload.schemaVersion === projectBackupSchemaVersion;
+  const legacyActivity = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 9;
+  const legacyAttachmentMigration = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 10;
+  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === 9 || payload.schemaVersion === 10 || payload.schemaVersion === projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
@@ -226,7 +228,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     !(withoutAttachments && name === "attachments") &&
     !(legacyIdentifiers && name === "task_identifier_aliases") &&
     !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
-    !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")),
+    !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
+    !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
   );
   exactKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as ProjectBackupTables;
@@ -235,7 +238,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     const values = (withoutAttachments && table.name === "attachments") ||
       (legacyIdentifiers && table.name === "task_identifier_aliases") ||
       (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
-      (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes"))
+      (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes")) ||
+      (legacyAttachmentMigration && table.name === "attachment_migration_outcomes")
       ? []
       : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += values.length;
@@ -299,6 +303,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     if (legacyIdentifiers && name === "task_identifier_aliases") continue;
     if (legacyHistoricalComments && name === "comment_migration_outcomes") continue;
     if (legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) continue;
+    if (legacyAttachmentMigration && name === "attachment_migration_outcomes") continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
   validateProjectRelationships(tables, sharing, body);
@@ -308,31 +313,33 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
     projectPublicId: body.projectPublicId,
     projectName: body.projectName,
     ownerUserId: body.ownerUserId,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
       ? Object.fromEntries(
           Object.entries(body.counts).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
             !(legacyIdentifiers && name === "task_identifier_aliases") &&
             !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
-            !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")),
+            !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
+            !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
           ),
         )
       : body.counts,
     warnings: body.warnings,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
       ? Object.fromEntries(
           Object.entries(sourceNormalizedTables).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
             !(legacyIdentifiers && name === "task_identifier_aliases") &&
             !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
-            !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")),
+            !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
+            !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
           ),
         )
       : sourceNormalizedTables,
@@ -346,7 +353,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -672,6 +679,66 @@ function validateProjectRelationships(
     const target = targets.get(String(record.target_type));
     if (!target?.has(String(record.target_id))) throw new ValidationError("External provenance references a missing bundle record");
     parseJsonObject(record.metadata_json, "External metadata");
+  }
+  const attachmentMigrationIds = new Set<string>();
+  const attachmentMigrationRows = new Set<string>();
+  for (const outcome of tables.attachment_migration_outcomes) {
+    if (!String(outcome.id).trim() || attachmentMigrationIds.has(String(outcome.id))) {
+      throw new ValidationError("Duplicate attachment migration outcome ID");
+    }
+    attachmentMigrationIds.add(String(outcome.id));
+    const rowKey = `${outcome.source_record_id}\u0000${outcome.source_index}`;
+    if (attachmentMigrationRows.has(rowKey)) {
+      throw new ValidationError("Duplicate attachment migration source row");
+    }
+    attachmentMigrationRows.add(rowKey);
+    if (!Number.isSafeInteger(outcome.source_index) || Number(outcome.source_index) < -1) {
+      throw new ValidationError("Attachment migration source index is invalid");
+    }
+    if (
+      !tasks.has(String(outcome.task_id)) ||
+      outcome.source !== "linear" ||
+      !["migrated", "non_binary_mapped", "skipped", "blocked"].includes(String(outcome.outcome))
+    ) {
+      throw new ValidationError("Attachment migration outcome is invalid");
+    }
+    const sourceRecord = externalRecords.get(String(outcome.source_record_id));
+    if (
+      !sourceRecord || sourceRecord.source !== outcome.source ||
+      sourceRecord.target_type !== "task" || sourceRecord.target_id !== outcome.task_id
+    ) {
+      throw new ValidationError(
+        "Attachment migration outcome references an incompatible source record",
+      );
+    }
+    parseJsonValue(outcome.raw_json, "Attachment migration raw source");
+    if (outcome.outcome === "migrated") {
+      const attachment = attachments.get(String(outcome.attachment_id));
+      if (
+        !attachment || attachment.task_id !== outcome.task_id ||
+        attachment.state !== "ready" || outcome.mapped_title !== null ||
+        outcome.mapped_url !== null
+      ) {
+        throw new ValidationError(
+          "Attachment migration outcome does not match its native Attachment",
+        );
+      }
+    } else if (outcome.outcome === "non_binary_mapped") {
+      if (
+        outcome.attachment_id !== null ||
+        !String(outcome.mapped_title ?? "").trim() ||
+        !isSafeHttpsUrl(outcome.mapped_url)
+      ) {
+        throw new ValidationError("Non-binary attachment mapping is invalid");
+      }
+    } else if (
+      outcome.attachment_id !== null || outcome.mapped_title !== null ||
+      outcome.mapped_url !== null
+    ) {
+      throw new ValidationError(
+        "Skipped or blocked attachment migration cannot reference a target",
+      );
+    }
   }
   for (const comment of tables.comments) {
     if (comment.source !== "linear") continue;
@@ -1033,6 +1100,16 @@ function exactKeys(value: Record<string, unknown>, allowed: readonly string[], l
 function requiredString(value: unknown, label: string) {
   if (typeof value !== "string" || !value.trim()) throw new ValidationError(`${label} is required`);
   return value;
+}
+
+function isSafeHttpsUrl(value: string | number | null) {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 function instant(value: unknown, label: string) {

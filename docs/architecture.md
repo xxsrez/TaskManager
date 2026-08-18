@@ -61,7 +61,7 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 |---|---|
 | Tasks | Task lifecycle, workflow, labels, subtasks, relations, rank |
 | Comments | ACL-scoped native threads, idempotency, reactions и resolution |
-| Attachments | D1 metadata, private R2 objects, sniffing, range delivery и cleanup |
+| Attachments | D1 metadata, private R2 objects, sniffing, range delivery, legacy reconciliation и cleanup |
 | Projects | Versioned Project metadata/lifecycle, lead/access guards, archive/restore и вычисляемый progress |
 | Releases | Release lifecycle, состав и project consistency |
 | Views | Filter AST, query compilation, grouping, ordering, display config |
@@ -546,6 +546,14 @@ identity/body/time, Project mapping, hierarchy и source topology, создаё�
 детерминированные historical Comments/Activity outcomes и не участвует в
 обычных HTTP/MCP requests. `external_records` остаётся приватным backup/
 reconciliation evidence; product UI, compact sync и Agent API его не читают.
+Отдельный admin-only `/api/admin/attachments/migrate` не возвращает public
+provider context: `inventory` строит bounded source-position plan, а `apply`
+загружает только allowlisted HTTPS candidates без credentials, вручную
+проверяет redirects/size, создаёт native Attachment через общий ACL/domain
+boundary и фиксирует outcome лишь после D1/R2 read-back. HTML остаётся явной
+non-binary mapping, а blocked row запрещает cutover. Source URL никогда не
+попадает в operational result/error; raw row сохраняется только в outcome и
+logical backup schema `11`.
 
 ### Системный backup и restore
 
@@ -583,6 +591,9 @@ reconciliation evidence; product UI, compact sync и Agent API его не чи�
 10. Schema `10` переносит append-only `activity_events` и
     `activity_migration_outcomes`. Validators schema `2`–`9` после исходного
     checksum добавляют пустые activity tables без synthetic backfill.
+11. Schema `11` переносит `attachment_migration_outcomes`. Validators schema
+    `2`–`10` после исходного checksum добавляют пустую таблицу, поэтому legacy
+    backup не может ошибочно подтвердить attachment cutover.
 
 ### Project backup и restore
 
@@ -600,8 +611,8 @@ reconciliation evidence; product UI, compact sync и Agent API его не чи�
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
-6. Current schema `10` сохраняет historical comments, Activity и оба набора
-   reconciliation outcomes;
+6. Current schema `11` сохраняет historical comments, Activity и
+   comment/activity/attachment reconciliation outcomes;
    schema `2`–`8` получает deterministic legacy upgrades после проверки
    исходного checksum и до записи staging rows.
 

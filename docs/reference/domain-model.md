@@ -349,6 +349,23 @@ comments как native и добавляют пустой reconciliation set.
 Schema `10` добавляет `activity_events` и `activity_migration_outcomes`;
 validators schema `2`–`9` нормализуют их как пустые, не синтезируя историю из
 текущего состояния Task.
+Schema `11` добавляет `attachment_migration_outcomes`; schema `2`–`10` после
+проверки исходного checksum получает пустой набор, не объявляя legacy links
+перенесёнными.
+
+### AttachmentMigrationOutcome
+
+Каждая позиция `metadata_json.attachments` task-scoped `ExternalRecord`
+получает стабильный outcome по `(source_record_id, source_index)`. `migrated`
+ссылается на готовый native Attachment той же Task; `non_binary_mapped`
+сохраняет явно признанную HTTPS-ссылку, но не выдаёт её за binary;
+`skipped` фиксирует объяснимый duplicate, а `blocked` оставляет cutover gate
+закрытым. `raw_json` и mapped URL остаются только в migration/backup слое;
+публичные Task/UI/Agent contracts их не возвращают.
+
+Повторный прогон проверяет native row, R2 size и SHA-256 перед результатом
+`already_migrated`. Исходный `ExternalRecord` не удаляется автоматически:
+cleanup требует отдельного backup и явной authority для durable data.
 
 ## Comment и CommentReaction
 
@@ -439,7 +456,8 @@ Project-code backfill events не создаёт.
 Activity читается по `(created_at, id)` отдельной descending keyset pagination,
 maximum 50. Task ACL применяется до count/page; sync передаёт только
 `task_activity` invalidation. Retention совпадает с lifetime Task. System и
-Project logical backup schema `10` сохраняют обе таблицы; row/package limits
+Project logical backup schema `10` впервые сохраняет обе таблицы; current schema
+`11` сохраняет их вместе с attachment outcomes. Row/package limits
 отклоняют слишком большой export целиком без silent truncation.
 
 ### Project task code и sequence

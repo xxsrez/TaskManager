@@ -11,6 +11,11 @@ MCP без расширения принятой storage/ACL boundary.
 originals согласованно, а read-only reconciliation сравнивает D1/R2 и
 description refs. Restore никогда не повторно использует source object key.
 
+Дополнение 2026-08-18: schema `11` сохраняет per-source
+`attachment_migration_outcomes`. Legacy binary port выполняется только
+admin-only bounded reconciler через явный HTTPS host allowlist; public Linear
+import/external-context contract не возвращается.
+
 ## Контекст
 
 D1 хранит структурированные данные, но binary body не должен попадать в D1,

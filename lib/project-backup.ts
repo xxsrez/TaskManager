@@ -112,6 +112,13 @@ export async function exportProjectBackup(
       JOIN projects p ON p.id = t.project_id
       WHERE t.project_id = ? AND p.owner_user_id = ?
       ORDER BY a.task_id, a.created_at, a.id`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("attachment_migration_outcomes").columns.map((column) => `outcome.${column}`).join(", ")}
+      FROM attachment_migration_outcomes outcome
+      JOIN tasks t ON t.id = outcome.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY outcome.task_id, outcome.source_record_id, outcome.source_index`)
+      .bind(projectId, currentUser.id),
     db.prepare(`SELECT ${definition("task_identifier_aliases").columns.map((column) => `alias.${column}`).join(", ")}
       FROM task_identifier_aliases alias JOIN tasks t ON t.id = alias.task_id
       JOIN projects p ON p.id = t.project_id
@@ -151,7 +158,8 @@ export async function exportProjectBackup(
     saved_views: 12,
     external_records: 13,
     attachments: 14,
-    task_identifier_aliases: 15,
+    attachment_migration_outcomes: 15,
+    task_identifier_aliases: 16,
   };
   projectBackupTableNames.forEach((name) => {
     const table = definition(name);
@@ -161,7 +169,7 @@ export async function exportProjectBackup(
     tables.attachments,
   );
   tables.attachments = attachmentData.rows;
-  const sharing = results[16].results.map((value) => {
+  const sharing = results[17].results.map((value) => {
     const row = value as DbRow;
     const permission = String(row.permission);
     if (permission !== "manager" && permission !== "editor" && permission !== "viewer") {
@@ -179,7 +187,7 @@ export async function exportProjectBackup(
     tables,
     objects: attachmentData.objects,
     sharing,
-    externalRelationsOmitted: Number((results[17].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted: Number((results[18].results[0] as DbRow | undefined)?.count ?? 0),
   });
 }
 
@@ -346,6 +354,9 @@ export async function applyProjectBackup(
   }
 
   const statements: D1PreparedStatement[] = [
+    db.prepare(`DELETE FROM attachment_migration_outcomes WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(session.project_id),
     db.prepare(`DELETE FROM activity_migration_outcomes WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(session.project_id),
@@ -462,6 +473,9 @@ async function validateLiveDependenciesAndCollisions(
     db.prepare(`SELECT outcome.id FROM activity_migration_outcomes outcome
       JOIN tasks t ON t.id = outcome.task_id
       WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
+    db.prepare(`SELECT outcome.id FROM attachment_migration_outcomes outcome
+      JOIN tasks t ON t.id = outcome.task_id
+      WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
   ]);
   const statusRows = results[0].results as DbRow[];
   const labelRows = results[1].results as DbRow[];
@@ -546,6 +560,16 @@ async function validateLiveDependenciesAndCollisions(
       throw new ValidationError("Project restore collides on an activity migration outcome identity");
     }
   }
+  const liveAttachmentOutcomeIds = new Set(
+    (results[14].results as DbRow[]).map((row) => String(row.id)),
+  );
+  for (const outcome of backup.tables.attachment_migration_outcomes) {
+    if (liveAttachmentOutcomeIds.has(String(outcome.id))) {
+      throw new ValidationError(
+        "Project restore collides on an attachment migration outcome identity",
+      );
+    }
+  }
   return warnings;
 }
 
@@ -624,6 +648,9 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     db.prepare(`SELECT COUNT(*) AS count FROM attachments WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(projectId),
+    db.prepare(`SELECT COUNT(*) AS count FROM attachment_migration_outcomes
+      WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)`)
+      .bind(projectId),
     db.prepare(`SELECT COUNT(*) AS count FROM task_identifier_aliases WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(projectId),
@@ -636,7 +663,8 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     activity_migration_outcomes: counts[6], comment_reactions: counts[7],
     saved_views: counts[8], task_labels: counts[9], task_relations: counts[10],
     external_records: counts[11], attachments: counts[12],
-    task_identifier_aliases: counts[13], sharing: counts[14],
+    attachment_migration_outcomes: counts[13],
+    task_identifier_aliases: counts[14], sharing: counts[15],
     workflow_statuses: 0, labels: 0,
   };
 }

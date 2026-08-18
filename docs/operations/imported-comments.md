@@ -153,7 +153,7 @@ cutover; intentional future snapshot changes документируются от
    raw bodies не входят в Task UI/API.
 6. Проверить Agent REST/MCP `list_task_comments`/`get_task_thread` с теми же ACL
    и privacy projections; external-context tool отсутствует.
-7. Экспортировать и валидировать system и Project backup schema `10` (comment
+7. Экспортировать и валидировать system и Project backup schema `11` (comment
    history введена в schema `9`), затем на disposable UAT data пройти restore и
    повторить counts/thread smoke.
 

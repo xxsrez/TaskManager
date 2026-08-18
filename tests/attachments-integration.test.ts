@@ -841,7 +841,7 @@ test("attachment-aware logical backups include scoped metadata and verified orig
     project.id,
     "https://example.test",
   );
-  assert.equal(projectBackup.schemaVersion, 10);
+  assert.equal(projectBackup.schemaVersion, 11);
   assert.equal(projectBackup.tables.attachments.length, 1);
   assert.equal(projectBackup.objects.length, 1);
   assert.match(String(projectBackup.tables.attachments[0]?.object_key), /^sha256:/);
@@ -854,7 +854,7 @@ test("attachment-aware logical backups include scoped metadata and verified orig
   );
 
   const systemBackup = await exportSystemBackup(owner);
-  assert.equal(systemBackup.schemaVersion, 10);
+  assert.equal(systemBackup.schemaVersion, 11);
   assert.ok(systemBackup.tables.attachments.length >= 1);
   assert.ok(systemBackup.objects.length >= 1);
 });

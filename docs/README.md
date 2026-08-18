@@ -48,18 +48,20 @@
     cleanup и recovery.
 20. [Runbook импортированной истории комментариев](operations/imported-comments.md)
     — reconciliation, backup, rollback и UAT smoke для cutover/import.
-21. [Runbook Task Activity](operations/task-activity.md) — atomic events,
+21. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
+    bounded inventory/apply, allowlist, outcomes, cutover и rollback.
+22. [Runbook Task Activity](operations/task-activity.md) — atomic events,
     Linear status-history reconciliation, retention, backup и UAT smoke.
-22. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+23. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-23. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+24. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-24. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+25. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
-25. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+26. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
-26. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
+27. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
     — environment inventory, удалённые public surfaces, сохранённое migration
     evidence и отдельная production authority boundary.
 
@@ -76,11 +78,12 @@ details, полный текущий filter contract, selection, атомарн�
 основные keyboard actions. Реализованы каталоги и назначения labels,
 parent/subtask hierarchy, assignee controls, настройка workflow, manual
 reordering с точным neighbor-bound placement и native create/edit/remove Task
-relations, а также идемпотентный Linear snapshot import с provenance, unified
-historical comments и explicit reconciliation outcomes.
+relations. Runtime Linear import/provenance surfaces удалены; offline planner и
+admin-only reconciliation сохраняют historical comments/activity/attachments
+как native records с explicit outcomes.
 Task Activity добавляет append-only native mutations и lossless Linear status
 history через отдельные lazy UI/REST/MCP pages; system/Project backup schema
-`10` сохраняет events и reconciliation outcomes.
+`11` сохраняет events и attachment/comment/activity reconciliation outcomes.
 Administration
 поддерживает полный системный export и атомарный replace-import через
 версионированный logical snapshot. Google sign-in и исчерпывающая acceptance
@@ -95,8 +98,8 @@ authentication через ChatGPT или Google, project roles и ownership tran
 `Proposed` в [спецификации интерфейса](specs/interface.md).
 Agent-facing data plane реализован отдельно от UI: OAuth-first remote MCP,
 переходные personal bearer credentials,
-workspace/project/release reads, compact task search, task detail/external
-context и scoped task create/update описаны в
+workspace/project/release reads, compact task search, task detail и scoped task
+create/update описаны в
 [спецификации agent API](specs/agent-api.md) и
 [ADR-0006](decisions/0006-standalone-agent-api.md), а connector/auth delivery —
 в [ADR-0008](decisions/0008-oauth-mcp-connector.md). Hosted smoke, rate limits и
@@ -117,7 +120,8 @@ server-generated thumbnails, description images и lazy multi-session
 invalidation. Agent REST/MCP добавляют paginated metadata, private binary
 delivery, OpenAI native file input, versioned attachment delete и native
 relation commands. Attachment-aware system/Project backup и Task Activity
-schema `10` реализованы с legacy compatibility.
+schema `11` реализованы с legacy compatibility и resumable legacy attachment
+reconciliation.
 ADR-0012 заменяет optional/standalone Task semantics: каждая Task требует
 Project, получает identifier из Project code/sequence, а прежние identifiers
 сохраняются как ACL-scoped aliases.

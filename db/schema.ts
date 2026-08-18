@@ -594,6 +594,45 @@ export const attachments = sqliteTable(
   ],
 );
 
+export const attachmentMigrationOutcomes = sqliteTable(
+  "attachment_migration_outcomes",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    sourceRecordId: text("source_record_id")
+      .notNull()
+      .references(() => externalRecords.id, { onDelete: "cascade" }),
+    sourceAttachmentId: text("source_attachment_id"),
+    sourceIndex: integer("source_index").notNull(),
+    outcome: text("outcome").notNull(),
+    reason: text("reason"),
+    attachmentId: text("attachment_id").references(() => attachments.id, {
+      onDelete: "set null",
+    }),
+    mappedTitle: text("mapped_title"),
+    mappedUrl: text("mapped_url"),
+    rawJson: text("raw_json").notNull(),
+    reconciledAt: text("reconciled_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_attachment_migration_source_position").on(
+      table.sourceRecordId,
+      table.sourceIndex,
+    ),
+    index("idx_attachment_migration_task_outcome").on(
+      table.taskId,
+      table.outcome,
+    ),
+    check(
+      "check_attachment_migration_outcome",
+      sql`${table.outcome} IN ('migrated', 'non_binary_mapped', 'skipped', 'blocked')`,
+    ),
+  ],
+);
+
 export const taskSequences = sqliteTable("task_sequences", {
   ownerUserId: text("owner_user_id").primaryKey(),
   lastValue: integer("last_value").notNull(),

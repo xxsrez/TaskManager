@@ -27,7 +27,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 10);
+  assert.equal(backup.schemaVersion, 11);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -71,6 +71,13 @@ test("project bundles preserve historical comments, activity, and reconciliation
     activity_event_id: "activity-history-1", raw_json: '{"id":"linear-state-1"}',
     reconciled_at: now,
   });
+  tables.attachment_migration_outcomes.push({
+    id: "attachment-outcome-1", task_id: "task-1", source: "linear",
+    source_record_id: "external-1", source_attachment_id: "linear-attachment-1",
+    source_index: 0, outcome: "blocked", reason: "source_unavailable:404",
+    attachment_id: null, mapped_title: null, mapped_url: null,
+    raw_json: '{"id":"linear-attachment-1"}', reconciled_at: now,
+  });
   const backup = await createProjectBackup({
     siteOrigin: "https://task-manager.example", tables, sharing: [],
     externalRelationsOmitted: 0, exportedAt: now,
@@ -81,6 +88,7 @@ test("project bundles preserve historical comments, activity, and reconciliation
   assert.equal(validated.tables.comment_migration_outcomes[0]?.outcome, "migrated");
   assert.equal(validated.tables.activity_events[0]?.actor_kind, "historical");
   assert.equal(validated.tables.activity_migration_outcomes[0]?.outcome, "migrated");
+  assert.equal(validated.tables.attachment_migration_outcomes[0]?.outcome, "blocked");
 });
 
 test("a Project keeps its locked sequence after every current Task is gone", async () => {
@@ -88,6 +96,7 @@ test("a Project keeps its locked sequence after every current Task is gone", asy
   tables.tasks = [];
   tables.task_identifier_aliases = [];
   tables.attachments = [];
+  tables.attachment_migration_outcomes = [];
   tables.comments = [];
   tables.comment_migration_outcomes = [];
   tables.comment_reactions = [];
@@ -127,7 +136,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
     exportedAt: now,
   });
   const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => !["attachments", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
+    Object.entries(current.tables).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
   );
   tables.comments = current.tables.comments.map(legacyCommentRow);
   tables.projects = current.tables.projects.map(legacyProjectRow);
@@ -135,7 +144,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   tables.labels = current.tables.labels.map(legacyLabelRow);
   const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
+    Object.entries(current.counts).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
   );
   const body = {
     format: current.format,
@@ -168,7 +177,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
     exportedAt: now,
   });
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     workflow_statuses: current.tables.workflow_statuses.map(legacyWorkflowRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
@@ -178,7 +187,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
   const body = {
     ...current,
     schemaVersion: 3,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
   };
   const unsigned = Object.fromEntries(
@@ -201,7 +210,7 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
     exportedAt: now,
   });
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
     labels: current.tables.labels.map(legacyLabelRow),
@@ -210,7 +219,7 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
@@ -234,11 +243,11 @@ test("schema 6 project bundles upgrade Label catalog metadata and keep assignmen
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 6,
     tables: {
-      ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+      ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
       labels: current.tables.labels.map(legacyLabelRow),
       comments: current.tables.comments.map(legacyCommentRow),
     },
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
@@ -249,6 +258,43 @@ test("schema 6 project bundles upgrade Label catalog metadata and keep assignmen
   assert.equal(validated.tables.labels[0]?.version, 1);
   assert.equal(validated.tables.labels[0]?.updated_at, now);
   assert.deepEqual(validated.tables.task_labels, current.tables.task_labels);
+});
+
+test("schema 10 project bundles remain importable with empty attachment migration outcomes", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const tables = Object.fromEntries(
+    Object.entries(current.tables).filter(([name]) => name !== "attachment_migration_outcomes"),
+  );
+  const counts = Object.fromEntries(
+    Object.entries(current.counts).filter(([name]) => name !== "attachment_migration_outcomes"),
+  );
+  const body = {
+    format: current.format,
+    version: current.version,
+    schemaVersion: 10,
+    siteOrigin: current.siteOrigin,
+    exportedAt: current.exportedAt,
+    projectId: current.projectId,
+    projectPublicId: current.projectPublicId,
+    projectName: current.projectName,
+    ownerUserId: current.ownerUserId,
+    counts,
+    warnings: current.warnings,
+    tables,
+    objects: current.objects,
+    sharing: current.sharing,
+  };
+  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
+  const validated = await validateProjectBackup(legacy);
+  assert.equal(validated.schemaVersion, 10);
+  assert.deepEqual(validated.tables.attachment_migration_outcomes, []);
+  assert.deepEqual(validated.tables.activity_events, current.tables.activity_events);
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -310,6 +356,7 @@ test("staged project restore inserts provenance before historical activity outco
 
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM activity_events").get()!.count, 1);
   assert.equal(database.prepare("SELECT COUNT(*) AS count FROM activity_migration_outcomes").get()!.count, 1);
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM attachment_migration_outcomes").get()!.count, 1);
   database.close();
 });
 
@@ -372,6 +419,7 @@ function validProjectTables(): ProjectBackupTables {
     ],
     task_identifier_aliases: [],
     attachments: [],
+    attachment_migration_outcomes: [],
     comments: [{
       id: "comment-1", task_id: "task-1", author_user_id: "user-owner",
       body: "Native project comment", source: "native", source_record_id: null,
@@ -419,6 +467,13 @@ function addHistoricalActivity(tables: ProjectBackupTables) {
     source_record_id: "external-1", source_event_id: "linear-state-restore", source_index: 0,
     outcome: "migrated", reason: null, activity_event_id: "activity-history-restore",
     raw_json: '{"id":"linear-state-restore"}', reconciled_at: now,
+  });
+  tables.attachment_migration_outcomes.push({
+    id: "attachment-outcome-restore", task_id: "task-1", source: "linear",
+    source_record_id: "external-1", source_attachment_id: "linear-attachment-restore",
+    source_index: 0, outcome: "blocked", reason: "source_unavailable:404",
+    attachment_id: null, mapped_title: null, mapped_url: null,
+    raw_json: '{"id":"linear-attachment-restore"}', reconciled_at: now,
   });
 }
 
@@ -487,6 +542,7 @@ function migratedDatabase() {
     "0018_tearful_black_panther.sql", "0019_silky_drax.sql", "0020_giant_boom_boom.sql",
     "0021_freezing_preak.sql", "0022_cheerful_sue_storm.sql",
     "0023_tan_millenium_guard.sql",
+    "0024_workable_zeigeist.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

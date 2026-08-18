@@ -25,6 +25,7 @@ export type TaskManagerRuntimeEnvironment = {
   TASK_MANAGER_ATTACHMENT_UPLOAD_TIMEOUT_SECONDS?: string;
   TASK_MANAGER_ATTACHMENT_DELETE_GRACE_SECONDS?: string;
   TASK_MANAGER_ATTACHMENT_FAILED_RETENTION_SECONDS?: string;
+  TASK_MANAGER_ATTACHMENT_MIGRATION_HOSTS?: string;
 };
 
 let runtimeEnvironment: TaskManagerRuntimeEnvironment | null = null;

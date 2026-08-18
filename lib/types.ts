@@ -414,6 +414,7 @@ export type SystemBackupCounts = Record<
   | "tasks"
   | "task_identifier_aliases"
   | "attachments"
+  | "attachment_migration_outcomes"
   | "comments"
   | "comment_migration_outcomes"
   | "activity_events"

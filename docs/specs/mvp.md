@@ -330,7 +330,8 @@ commands задают желаемое состояние идемпотентн
   Каждая source row получает `migrated`/`exception`; offline повторный прогон не
   дублирует events. Raw evidence остаётся только в reconciliation/backup до
   отдельно разрешённого durable-data cleanup.
-- Project/system backup schema `10` сохраняет events и reconciliation outcomes.
+- Project/system backup schema `11` сохраняет events, attachment migration
+  outcomes и reconciliation evidence.
   Activity хранится до удаления Task; отдельного retention deletion нет.
   Logical export ограничен 5 000 rows на таблицу и общим размером package,
   поэтому превышение останавливает export явно, а не обрезает историю.
@@ -377,6 +378,15 @@ commands задают желаемое состояние идемпотентн
 - Attachment insert/update/delete создают ID-only `task_attachments`
   invalidation. Открытый lazy consumer перечитывает только metadata; локальный
   progress и обычный workspace snapshot не заменяются.
+- Legacy `metadata_json.attachments` переносится отдельной admin-only bounded
+  операцией, а не public import route. Inventory не загружает bytes и считает
+  каждую source position; apply допускает только HTTPS hosts из явного
+  allowlist, повторно проверяет каждый redirect, не пересылает credentials,
+  ограничивает streamed body и после native create сверяет D1/R2 size и
+  SHA-256. HTML фиксируется как `non_binary_mapped`, duplicate — как
+  `skipped`, unavailable/malformed — как `blocked`; source URL не входит в
+  report/error. Cutover допустим только при полном непрерывном inventory без
+  pending/blocked rows и после backup/read-back.
 
 ## 6. Workflow
 
@@ -857,3 +867,6 @@ created/updated/started/completed/canceled dates и archived state.
     backup/import compatibility.
 20. Append-only Task Activity: атомарные native events, Linear status-history
     migration, lazy UI/Agent/MCP reads, ACL/revoke и backup/restore schema `10`.
+21. Legacy attachment reconciliation: resumable admin inventory/apply,
+    allowlisted bounded download, native D1/R2 verification, explicit
+    non-binary/skipped/blocked outcomes и backup/restore schema `11`.

@@ -30,7 +30,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -42,7 +42,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 10 as const;
+export const systemBackupSchemaVersion = 11 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 5000;
 const maxStagedRowBytes = 1_500_000;
@@ -75,6 +75,7 @@ export const backupTableNames = [
   "tasks",
   "task_identifier_aliases",
   "attachments",
+  "attachment_migration_outcomes",
   "comments",
   "comment_migration_outcomes",
   "activity_events",
@@ -110,6 +111,11 @@ export const tableDefinitions = [
   definition("task_identifier_aliases", ["id", "task_id", "identifier", "created_at"], "task_id, identifier"),
   definition("attachments", ["id", "public_id", "task_id", "uploader_user_id", "original_filename", "display_name", "media_type", "byte_size", "checksum_sha256", "object_key", "kind", "state", "image_width", "image_height", "variant_metadata_json", "idempotency_key", "upload_expires_at", "failure_code", "version", "created_at", "updated_at", "deleted_at"], "task_id, created_at, id", {
     byte_size: { number: true, integer: true }, image_width: { nullable: true, number: true, integer: true }, image_height: { nullable: true, number: true, integer: true }, upload_expires_at: { nullable: true }, failure_code: { nullable: true }, version: { number: true, integer: true }, deleted_at: { nullable: true },
+  }),
+  definition("attachment_migration_outcomes", ["id", "task_id", "source", "source_record_id", "source_attachment_id", "source_index", "outcome", "reason", "attachment_id", "mapped_title", "mapped_url", "raw_json", "reconciled_at"], "task_id, source_record_id, source_index", {
+    source_attachment_id: { nullable: true }, source_index: { number: true, integer: true },
+    reason: { nullable: true }, attachment_id: { nullable: true },
+    mapped_title: { nullable: true }, mapped_url: { nullable: true },
   }),
   definition("comments", ["id", "task_id", "author_user_id", "body", "source", "source_record_id", "source_comment_id", "source_parent_comment_id", "historical_author_name", "historical_created_at", "historical_updated_at", "historical_quoted_text", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"], "task_id, created_at, id", {
     author_user_id: { nullable: true }, source_record_id: { nullable: true }, source_comment_id: { nullable: true }, source_parent_comment_id: { nullable: true }, historical_author_name: { nullable: true }, historical_created_at: { nullable: true }, historical_updated_at: { nullable: true }, historical_quoted_text: { nullable: true }, parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
@@ -154,6 +160,7 @@ const restoreTableOrder = [
   "labels",
   "saved_views",
   "external_records",
+  "attachment_migration_outcomes",
   "comments",
   "comment_migration_outcomes",
   "activity_events",
@@ -230,6 +237,7 @@ const legacyCommentDefinition = definition(
 );
 
 export const liveTableDeleteOrder: BackupTableName[] = [
+  "attachment_migration_outcomes",
   "activity_migration_outcomes",
   "activity_events",
   "comment_migration_outcomes",
@@ -309,8 +317,9 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const legacyLabels = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6;
   const legacySavedViews = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7;
   const legacyHistoricalComments = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8;
-  const legacyActivity = schemaVersion !== systemBackupSchemaVersion;
-  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8 || schemaVersion === 9 || schemaVersion === systemBackupSchemaVersion;
+  const legacyActivity = typeof schemaVersion === "number" && schemaVersion <= 9;
+  const legacyAttachmentMigration = typeof schemaVersion === "number" && schemaVersion <= 10;
+  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8 || schemaVersion === 9 || schemaVersion === 10 || schemaVersion === systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
     withoutAttachments
@@ -327,7 +336,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
     !(withoutAttachments && name === "attachments") &&
     !(legacyIdentifiers && name === "task_identifier_aliases") &&
     !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
-    !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")),
+    !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
+    !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
   );
   assertOnlyKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as BackupTables;
@@ -337,7 +347,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
       (withoutAttachments && table.name === "attachments") ||
       (legacyIdentifiers && table.name === "task_identifier_aliases") ||
       (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
-      (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes"))
+      (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes")) ||
+      (legacyAttachmentMigration && table.name === "attachment_migration_outcomes")
         ? []
         : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
@@ -384,7 +395,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
     ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
@@ -396,10 +407,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         }
       : {}),
     exportedAt,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
       ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
       : sourceCounts,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
       ? Object.fromEntries(
           sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
         )
@@ -411,7 +422,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
     siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
@@ -839,6 +850,76 @@ function validateRelationships(tables: BackupTables) {
     const target = requireReference(targetMap, record.target_id, "External record target");
     if (target.owner_user_id !== record.owner_user_id) throw new ValidationError("External record owner must match target owner");
     jsonObject(record.metadata_json, "External metadata");
+  }
+  uniqueIndex(
+    tables.attachment_migration_outcomes,
+    ["id"],
+    "attachment migration outcome IDs",
+  );
+  uniqueIndex(
+    tables.attachment_migration_outcomes,
+    ["source_record_id", "source_index"],
+    "attachment migration source rows",
+  );
+  for (const outcome of tables.attachment_migration_outcomes) {
+    requireReference(tasks, outcome.task_id, "Attachment migration Task");
+    const sourceRecord = requireReference(
+      externalRecords,
+      outcome.source_record_id,
+      "Attachment migration source record",
+    );
+    if (!Number.isSafeInteger(outcome.source_index) || Number(outcome.source_index) < -1) {
+      throw new ValidationError("Attachment migration source index is invalid");
+    }
+    oneOf(outcome.source, ["linear"], "Attachment migration source");
+    oneOf(
+      outcome.outcome,
+      ["migrated", "non_binary_mapped", "skipped", "blocked"],
+      "Attachment migration outcome",
+    );
+    if (
+      sourceRecord.source !== outcome.source ||
+      sourceRecord.target_type !== "task" ||
+      sourceRecord.target_id !== outcome.task_id
+    ) {
+      throw new ValidationError(
+        "Attachment migration outcome references an incompatible source record",
+      );
+    }
+    jsonValue(outcome.raw_json, "Attachment migration raw source");
+    if (outcome.outcome === "migrated") {
+      const attachment = requireReference(
+        attachments,
+        outcome.attachment_id,
+        "Migrated attachment",
+      );
+      if (
+        attachment.task_id !== outcome.task_id ||
+        attachment.state !== "ready" ||
+        outcome.mapped_title !== null ||
+        outcome.mapped_url !== null
+      ) {
+        throw new ValidationError(
+          "Attachment migration outcome does not match its native Attachment",
+        );
+      }
+    } else if (outcome.outcome === "non_binary_mapped") {
+      if (
+        outcome.attachment_id !== null ||
+        !String(outcome.mapped_title ?? "").trim() ||
+        !isSafeHttpsUrl(outcome.mapped_url)
+      ) {
+        throw new ValidationError("Non-binary attachment mapping is invalid");
+      }
+    } else if (
+      outcome.attachment_id !== null ||
+      outcome.mapped_title !== null ||
+      outcome.mapped_url !== null
+    ) {
+      throw new ValidationError(
+        "Skipped or blocked attachment migration cannot reference a target",
+      );
+    }
   }
   for (const comment of tables.comments) {
     if (comment.source !== "linear") continue;
@@ -1271,6 +1352,16 @@ function hasAccess(
 
 function oneOf(value: BackupScalar, allowed: string[], label: string) {
   if (typeof value !== "string" || !allowed.includes(value)) throw new ValidationError(`${label} is invalid`);
+}
+
+function isSafeHttpsUrl(value: BackupScalar) {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 function jsonObject(value: BackupScalar, label: string) {

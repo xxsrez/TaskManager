@@ -169,6 +169,13 @@
       "when": 1787037665989,
       "tag": "0023_tan_millenium_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1787047720017,
+      "tag": "0024_workable_zeigeist",
+      "breakpoints": true
     }
   ]
 }

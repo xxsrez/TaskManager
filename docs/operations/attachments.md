@@ -68,9 +68,9 @@ UAT-проверка не переключает production plugin на `task-ma
 - System backup schema `3` использует общий 10 MB bounded JSON container,
   Project schema `3` — 25 MB. Каждый original представлен один раз по
   `sha256:<digest>` внутри package; row не раскрывает live object key. Schema
-  `2` импортируется только как legacy no-attachment state. Current schema `5`
-  дополнительно переносит writable-relation metadata; это не меняет R2 object
-  contract.
+  `2` импортируется только как legacy no-attachment state. Current schema `11`
+  дополнительно переносит writable-relation, comments/activity и attachment
+  migration outcomes; это не меняет R2 object contract.
 - Validate проверяет package checksum, object size/SHA-256, Attachment↔Task и
   description refs до staging. Restore пишет `backup-staging`, копирует в новые
   environment-scoped keys, выполняет D1 cutover и затем удаляет прежние/staged

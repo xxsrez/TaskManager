@@ -23,13 +23,21 @@ bootstrap/sync не передаёт provider marker или external-context inv
 ## Сохранённое evidence и rollback
 
 - `external_records`, comment/activity outcomes и raw JSON не удаляются.
-- Project/system backup schema `10` сохраняет migration evidence и native
-  records; irreversible cleanup требует отдельной production authority.
+- Project/system backup schema `11` сохраняет attachment/comment/activity
+  migration outcomes и native records; irreversible cleanup требует отдельной
+  production authority.
 - Versioned import planner остаётся offline migration/recovery code с
   deterministic tests, но не импортируется ни одним deployed route.
 - UAT rollback до cutover — повторный deploy Sites v24, commit
   `9ef28211e6b99c11c819cabdbc3937dff8e5eb62`.
 - Production binding и данные этой поставкой не меняются.
+
+После первоначальной инвентаризации добавлен обязательный TM-227 gate:
+`attachment_migration_outcomes`, admin-only bounded inventory/apply,
+allowlisted HTTPS download с D1/R2 checksum read-back и явные
+`migrated`/`non_binary_mapped`/`skipped`/`blocked` outcomes. Наличие кода и UAT
+fixture не разрешает production migration: сначала нужен production backup,
+полный inventory и отдельная прямая production authority.
 
 ## Environment inventory перед cutover
 
@@ -84,6 +92,8 @@ backup/restore и ACL gates не считаются пройденными: их
 - OpenAPI не содержит `/tasks/{ref}/external-context` и `TaskDetail.provenance`;
 - sync принимает legacy journal marker, но не публикует provider invalidation;
 - raw evidence остаётся backup-only, а native history сохраняет ACL;
+- attachment inventory завершён без pending/blocked rows, каждый migrated
+  binary проходит Task ACL, D1/R2 size/checksum и idempotent rerun;
 - обязательны полный local gate, exact-SHA Sites release, authenticated browser,
   REST/MCP 404/absence smoke и повторная проверка access policy.
 
