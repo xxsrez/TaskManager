@@ -129,6 +129,27 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/labels": {
+      get: {
+        operationId: "listLabels",
+        summary: "List native Label catalogs visible through accessible Projects",
+        parameters: [
+          { name: "archived", in: "query", schema: { type: "boolean", default: false } },
+        ],
+        responses: {
+          "200": envelopeResponse("Visible Labels", {
+            type: "object",
+            required: ["items", "page"],
+            properties: {
+              items: { type: "array", items: { $ref: "#/components/schemas/Label" } },
+              page: pageSchema,
+            },
+            additionalProperties: false,
+          }),
+          ...errorResponses,
+        },
+      },
+    },
     "/tasks": {
       get: {
         operationId: "listTasks",
@@ -224,6 +245,33 @@ export const agentApiOpenApi = {
           "200": envelopeResponse("Moved task with its authoritative identifier", {
             $ref: "#/components/schemas/TaskDetail",
           }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/labels/{labelRef}": {
+      parameters: [referenceParameter(), {
+        name: "labelRef",
+        in: "path",
+        required: true,
+        schema: { type: "string" },
+        description: "Canonical Label ref from listLabels",
+      }],
+      put: {
+        operationId: "addTaskLabel",
+        summary: "Idempotently add an active Label to a Task",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        responses: {
+          "200": envelopeResponse("Updated task", { $ref: "#/components/schemas/TaskDetail" }),
+          ...errorResponses,
+        },
+      },
+      delete: {
+        operationId: "removeTaskLabel",
+        summary: "Idempotently remove a Label from a Task",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        responses: {
+          "200": envelopeResponse("Updated task", { $ref: "#/components/schemas/TaskDetail" }),
           ...errorResponses,
         },
       },
@@ -535,6 +583,25 @@ export const agentApiOpenApi = {
       },
     },
     schemas: {
+      Label: {
+        type: "object",
+        required: ["ref", "name", "color", "description", "archivedAt", "version", "owner"],
+        properties: {
+          ref: { type: "string" },
+          name: { type: "string" },
+          color: { type: "string", pattern: "^#[0-9a-fA-F]{6}$" },
+          description: { type: "string" },
+          archivedAt: { type: ["string", "null"], format: "date-time" },
+          version: { type: "integer", minimum: 1 },
+          owner: {
+            type: "object",
+            required: ["isCurrentUser"],
+            properties: { isCurrentUser: { type: "boolean" } },
+            additionalProperties: false,
+          },
+        },
+        additionalProperties: false,
+      },
       Meta: metaSchema,
       Page: pageSchema,
       ErrorEnvelope: {

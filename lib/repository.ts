@@ -569,6 +569,9 @@ export type WorkspaceSyncProjection = {
   projects: ProjectRecord[];
   releases: ReleaseRecord[];
   views: SavedViewRecord[];
+  labels: LabelRecord[];
+  taskLabels: TaskLabelAssignment[];
+  labelContextTaskIds: string[];
   accessibleTaskIds: string[];
 };
 
@@ -719,11 +722,31 @@ export async function getWorkspaceSyncProjection(
 
   const taskRecords = tasks.results.map(mapTask);
   const requestedTasks = new Set(input.taskIds);
+  const invalidatedTasks = new Set(input.invalidatedTaskIds);
+  const accessibleInvalidatedTaskIds = taskRecords
+    .filter((task) => invalidatedTasks.has(task.id))
+    .map((task) => task.id);
+  const labelContext = accessibleInvalidatedTaskIds.length
+    ? await db.prepare(
+      `SELECT tl.task_id, tl.label_id,
+         l.owner_user_id, l.name, l.color, l.description, l.archived_at,
+         l.version, l.created_at, l.updated_at
+       FROM task_labels tl JOIN labels l ON l.id = tl.label_id
+       WHERE tl.task_id IN (${sqlPlaceholders(accessibleInvalidatedTaskIds)})
+       ORDER BY tl.task_id, lower(l.name), l.id`,
+    ).bind(...accessibleInvalidatedTaskIds).all<DbRow>()
+    : { results: [] as DbRow[] };
   return {
     tasks: taskRecords.filter((task) => requestedTasks.has(task.id)),
     projects: projects.results.map(mapProject),
     releases: releases.results.map(mapRelease),
     views: views.results.map(mapView),
+    labels: [...new Map(labelContext.results.map((row) => [
+      String(row.label_id),
+      mapLabel({ ...row, id: row.label_id }),
+    ])).values()],
+    taskLabels: labelContext.results.map(mapTaskLabel),
+    labelContextTaskIds: accessibleInvalidatedTaskIds,
     accessibleTaskIds: taskRecords.map((task) => task.id),
   };
 }
@@ -1025,6 +1048,7 @@ export async function createTask(
     project.id,
     null,
   );
+  const labelIds = await validateActiveLabelIds(ownerUserId, input.labelIds);
 
   const sequenceRow = await db
     .prepare(
@@ -1064,8 +1088,8 @@ export async function createTask(
   const taskId = `task_${crypto.randomUUID()}`;
   const publicId = crypto.randomUUID();
 
-  await db
-    .prepare(
+  await db.batch([
+    db.prepare(
       `INSERT INTO tasks (
         id, public_id, owner_user_id, creator_user_id, identifier, sequence_number,
         title, description, status_id, priority, assignee_user_id,
@@ -1095,8 +1119,11 @@ export async function createTask(
       timestamps.canceledAt,
       now,
       now,
-    )
-    .run();
+    ),
+    ...labelIds.map((labelId) => db.prepare(
+      `INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)`,
+    ).bind(taskId, labelId)),
+  ]);
   return { id: taskId, publicId };
 }
 
@@ -1573,6 +1600,389 @@ export async function bulkUpdateTasks(
     throw new ConflictError("One or more tasks changed in another session");
   }
   return loadAccessibleTasks(currentUser.id, ids);
+}
+
+export type LabelSettingsRecord = LabelRecord & { taskCount: number };
+
+export async function listOwnedLabels(
+  currentUser: UserRecord,
+): Promise<LabelSettingsRecord[]> {
+  const rows = await getD1().prepare(
+    `SELECT l.*, COUNT(tl.task_id) AS task_count
+     FROM labels l
+     LEFT JOIN task_labels tl ON tl.label_id = l.id
+     WHERE l.owner_user_id = ?
+     GROUP BY l.id
+     ORDER BY l.archived_at IS NOT NULL, lower(l.name), l.id`,
+  ).bind(currentUser.id).all<DbRow>();
+  return rows.results.map((row) => ({
+    ...mapLabel(row),
+    taskCount: Number(row.task_count ?? 0),
+  }));
+}
+
+export async function createLabel(
+  currentUser: UserRecord,
+  input: Record<string, unknown>,
+) {
+  const name = labelName(input.name);
+  const color = labelColor(input.color);
+  const description = optionalText(input.description, 2_000);
+  await assertUniqueActiveLabelName(currentUser.id, name);
+  const now = new Date().toISOString();
+  try {
+    await getD1().prepare(
+      `INSERT INTO labels
+        (id, owner_user_id, name, color, description, archived_at,
+         version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?)`,
+    ).bind(
+      `label:${currentUser.id}:${crypto.randomUUID()}`,
+      currentUser.id,
+      name,
+      color,
+      description,
+      now,
+      now,
+    ).run();
+  } catch (error) {
+    translateLabelNameCollision(error);
+  }
+  return listOwnedLabels(currentUser);
+}
+
+export async function updateLabel(
+  currentUser: UserRecord,
+  labelId: string,
+  input: Record<string, unknown>,
+) {
+  const current = await loadOwnedLabel(currentUser.id, labelId);
+  const version = expectedLabelVersion(input.version);
+  if (current.version !== version) throw staleLabel();
+  const action = input.action ?? "update";
+  const now = new Date().toISOString();
+  let result: D1Result<unknown>;
+  if (action === "archive") {
+    if (current.archivedAt) throw new ConflictError("Label is already archived");
+    result = await getD1().prepare(
+      `UPDATE labels SET archived_at = ?, version = version + 1, updated_at = ?
+       WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL`,
+    ).bind(now, now, labelId, currentUser.id, version).run();
+  } else if (action === "restore") {
+    if (!current.archivedAt) throw new ConflictError("Label is not archived");
+    await assertUniqueActiveLabelName(currentUser.id, current.name, current.id);
+    try {
+      result = await getD1().prepare(
+        `UPDATE labels SET archived_at = NULL, version = version + 1, updated_at = ?
+         WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NOT NULL`,
+      ).bind(now, labelId, currentUser.id, version).run();
+    } catch (error) {
+      translateLabelNameCollision(error);
+    }
+  } else if (action === "update") {
+    if (current.archivedAt) {
+      throw new ValidationError("Restore an archived Label before editing it");
+    }
+    const name = Object.hasOwn(input, "name") ? labelName(input.name) : current.name;
+    const color = Object.hasOwn(input, "color") ? labelColor(input.color) : current.color;
+    const description = Object.hasOwn(input, "description")
+      ? optionalText(input.description, 2_000)
+      : current.description;
+    if (name.toLocaleLowerCase() !== current.name.toLocaleLowerCase()) {
+      await assertUniqueActiveLabelName(currentUser.id, name, current.id);
+    }
+    try {
+      result = await getD1().prepare(
+        `UPDATE labels SET name = ?, color = ?, description = ?,
+           version = version + 1, updated_at = ?
+         WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL`,
+      ).bind(name, color, description, now, labelId, currentUser.id, version).run();
+    } catch (error) {
+      translateLabelNameCollision(error);
+    }
+  } else {
+    throw new ValidationError("Unsupported Label action");
+  }
+  if ((result!.meta.changes ?? 0) < 1) throw staleLabel();
+  return listOwnedLabels(currentUser);
+}
+
+export async function getTaskLabelState(
+  currentUser: UserRecord,
+  taskId: string,
+) {
+  const task = await loadAccessibleTask(currentUser.id, taskId);
+  const db = getD1();
+  const [labels, assignments] = await db.batch<DbRow>([
+    db.prepare(
+      `SELECT l.* FROM labels l
+       WHERE l.owner_user_id = ? AND (
+         l.archived_at IS NULL OR EXISTS (
+           SELECT 1 FROM task_labels tl
+           WHERE tl.task_id = ? AND tl.label_id = l.id
+         )
+       )
+       ORDER BY l.archived_at IS NOT NULL, lower(l.name), l.id`,
+    ).bind(task.ownerUserId, task.id),
+    db.prepare(
+      `SELECT task_id, label_id FROM task_labels WHERE task_id = ? ORDER BY label_id`,
+    ).bind(task.id),
+  ]);
+  return {
+    labels: labels.results.map(mapLabel),
+    taskLabels: assignments.results.map(mapTaskLabel),
+    taskIds: [task.id],
+    canWrite: canEditContent(task.accessRole),
+  };
+}
+
+export async function getProjectLabelCatalog(
+  currentUser: UserRecord,
+  projectId: string,
+  includeArchived = false,
+) {
+  const project = await loadAccessibleProject(currentUser.id, projectId);
+  requireContentEdit(project.accessRole);
+  const rows = await getD1().prepare(
+    `SELECT * FROM labels
+     WHERE owner_user_id = ? AND (? = 1 OR archived_at IS NULL)
+     ORDER BY lower(name), id`,
+  ).bind(project.ownerUserId, includeArchived ? 1 : 0).all<DbRow>();
+  return { labels: rows.results.map(mapLabel) };
+}
+
+export async function setTaskLabel(
+  currentUser: UserRecord,
+  taskId: string,
+  input: Record<string, unknown>,
+) {
+  const task = await loadAccessibleTask(currentUser.id, taskId);
+  requireContentEdit(task.accessRole);
+  const labelId = requiredLabelId(input.labelId);
+  const active = input.active;
+  if (typeof active !== "boolean") {
+    throw new ValidationError("Label assignment active must be boolean");
+  }
+  const label = await loadTaskOwnerLabel(task.ownerUserId, labelId, !active);
+  const db = getD1();
+  if (active) {
+    await db.prepare(
+      `INSERT OR IGNORE INTO task_labels (task_id, label_id)
+       SELECT tasks.id, labels.id FROM tasks, labels
+       WHERE tasks.id = ? AND labels.id = ?
+         AND labels.owner_user_id = tasks.owner_user_id
+         AND labels.archived_at IS NULL
+         AND ${editableTaskWhere}`,
+    ).bind(
+      task.id,
+      label.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+    ).run();
+  } else {
+    await db.prepare(
+      `DELETE FROM task_labels
+       WHERE task_id = ? AND label_id = ? AND EXISTS (
+         SELECT 1 FROM tasks
+         WHERE tasks.id = task_labels.task_id AND ${editableTaskWhere}
+       )`,
+    ).bind(
+      task.id,
+      label.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+    ).run();
+  }
+  const state = await getTaskLabelState(currentUser, task.id);
+  const applied = state.taskLabels.some((item) => item.labelId === label.id);
+  if (applied !== active) {
+    throw new ConflictError("Task access or Label state changed before the assignment committed");
+  }
+  return state;
+}
+
+export async function bulkSetTaskLabel(
+  currentUser: UserRecord,
+  input: Record<string, unknown>,
+) {
+  const taskIds = Array.isArray(input.ids)
+    ? [...new Set(input.ids.map(String))]
+    : [];
+  if (taskIds.length === 0 || taskIds.length > 100) {
+    throw new ValidationError("Select between 1 and 100 tasks");
+  }
+  const active = input.active;
+  if (typeof active !== "boolean") {
+    throw new ValidationError("Label assignment active must be boolean");
+  }
+  const tasks = await loadAccessibleTasks(currentUser.id, taskIds);
+  tasks.forEach((task) => requireContentEdit(task.accessRole));
+  const ownerIds = new Set(tasks.map((task) => task.ownerUserId));
+  if (ownerIds.size !== 1) {
+    throw new ValidationError("Bulk Label changes require Tasks from one owner catalog");
+  }
+  const label = await loadTaskOwnerLabel(
+    tasks[0]!.ownerUserId,
+    requiredLabelId(input.labelId),
+    !active,
+  );
+  const db = getD1();
+  const placeholders = sqlPlaceholders(taskIds);
+  const eligibleTasks = `eligible_tasks AS (
+    SELECT tasks.id FROM tasks
+    WHERE tasks.id IN (${placeholders}) AND tasks.owner_user_id = ?
+      AND ${editableTaskWhere}
+  )`;
+  if (active) {
+    await db.prepare(
+      `WITH ${eligibleTasks}, eligible_label AS (
+         SELECT id FROM labels
+         WHERE id = ? AND owner_user_id = ? AND archived_at IS NULL
+       )
+       INSERT OR IGNORE INTO task_labels (task_id, label_id)
+       SELECT eligible_tasks.id, eligible_label.id
+       FROM eligible_tasks CROSS JOIN eligible_label
+       WHERE (SELECT COUNT(*) FROM eligible_tasks) = ?`,
+    ).bind(
+      ...taskIds,
+      tasks[0]!.ownerUserId,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      label.id,
+      tasks[0]!.ownerUserId,
+      taskIds.length,
+    ).run();
+  } else {
+    await db.prepare(
+      `WITH ${eligibleTasks}
+       DELETE FROM task_labels
+       WHERE label_id = ? AND task_id IN (SELECT id FROM eligible_tasks)
+         AND (SELECT COUNT(*) FROM eligible_tasks) = ?`,
+    ).bind(
+      ...taskIds,
+      tasks[0]!.ownerUserId,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      label.id,
+      taskIds.length,
+    ).run();
+  }
+  const rows = await db.prepare(
+    `SELECT task_id, label_id FROM task_labels
+     WHERE task_id IN (${placeholders}) ORDER BY task_id, label_id`,
+  ).bind(...taskIds).all<DbRow>();
+  const assignments = rows.results.map(mapTaskLabel);
+  for (const task of tasks) {
+    const applied = assignments.some((item) =>
+      item.taskId === task.id && item.labelId === label.id);
+    if (applied !== active) {
+      throw new ConflictError("Task access or Label state changed during the bulk action");
+    }
+  }
+  return { labels: [label], taskLabels: assignments, taskIds };
+}
+
+async function validateActiveLabelIds(ownerUserId: string, value: unknown) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new ValidationError("Label IDs must be an array");
+  const ids = [...new Set(value.map(requiredLabelId))];
+  if (ids.length > 50) throw new ValidationError("A Task can have at most 50 Labels");
+  if (!ids.length) return ids;
+  const rows = await getD1().prepare(
+    `SELECT id FROM labels
+     WHERE owner_user_id = ? AND archived_at IS NULL
+       AND id IN (${sqlPlaceholders(ids)})`,
+  ).bind(ownerUserId, ...ids).all<{ id: string }>();
+  if (rows.results.length !== ids.length) {
+    throw new ValidationError("Every Label must be active in the Task owner catalog");
+  }
+  return ids;
+}
+
+async function loadOwnedLabel(ownerUserId: string, labelId: string) {
+  const row = await getD1().prepare(
+    "SELECT * FROM labels WHERE id = ? AND owner_user_id = ?",
+  ).bind(labelId, ownerUserId).first<DbRow>();
+  if (!row) throw new NotFoundError("Label not found");
+  return mapLabel(row);
+}
+
+async function loadTaskOwnerLabel(
+  ownerUserId: string,
+  labelId: string,
+  allowArchived: boolean,
+) {
+  const label = await loadOwnedLabel(ownerUserId, labelId);
+  if (!allowArchived && label.archivedAt) {
+    throw new ValidationError("Archived Labels cannot be assigned");
+  }
+  return label;
+}
+
+async function assertUniqueActiveLabelName(
+  ownerUserId: string,
+  name: string,
+  exceptId?: string,
+) {
+  const row = await getD1().prepare(
+    `SELECT id FROM labels
+     WHERE owner_user_id = ? AND archived_at IS NULL AND lower(name) = lower(?)
+       AND (? IS NULL OR id <> ?)
+     LIMIT 1`,
+  ).bind(ownerUserId, name, exceptId ?? null, exceptId ?? null).first();
+  if (row) throw new ValidationError("An active Label with this name already exists");
+}
+
+function labelName(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new ValidationError("Label name is required");
+  }
+  const name = value.trim();
+  if (name.length > 80) throw new ValidationError("Label name is too long");
+  return name;
+}
+
+function labelColor(value: unknown) {
+  const color = value === undefined ? "#6b7280" : String(value).trim();
+  if (!/^#[0-9a-f]{6}$/i.test(color)) {
+    throw new ValidationError("Label color must be a six-digit hex color");
+  }
+  return color.toLowerCase();
+}
+
+function requiredLabelId(value: unknown) {
+  if (typeof value !== "string" || !value.trim() || value.length > 200) {
+    throw new ValidationError("Label ID is required");
+  }
+  return value.trim();
+}
+
+function expectedLabelVersion(value: unknown) {
+  const version = Number(value);
+  if (!Number.isInteger(version) || version < 1) {
+    throw new ValidationError("Current Label version is required");
+  }
+  return version;
+}
+
+function staleLabel() {
+  return new ConflictError("Label was changed in another session");
+}
+
+function translateLabelNameCollision(error: unknown): never {
+  if (error instanceof ValidationError) throw error;
+  if (error instanceof Error && /idx_labels_owner_name|unique/i.test(error.message)) {
+    throw new ValidationError("An active Label with this name already exists");
+  }
+  throw error;
 }
 
 export async function createProject(
@@ -2350,6 +2760,11 @@ function mapLabel(row: DbRow): LabelRecord {
     ownerUserId: String(row.owner_user_id),
     name: String(row.name),
     color: String(row.color),
+    description: String(row.description ?? ""),
+    archivedAt: nullableString(row.archived_at),
+    version: Number(row.version ?? 1),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at ?? row.created_at),
   };
 }
 

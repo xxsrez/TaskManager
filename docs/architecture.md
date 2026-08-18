@@ -173,9 +173,12 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
    старая Task за пределами окна не теряется, а чужой content не попадает в
    response.
 5. Core Task/Project/Release/SavedView изменения приходят как compact
-   upsert/remove. Labels, relations, comments и imported external context
-   передают только task-scoped invalidation IDs; их content перечитывает
-   отдельный lazy endpoint лишь при активном details/Peek/activity consumer.
+   upsert/remove. Изменение назначения Label добавляет bounded authoritative
+   label context только затронутых Tasks: определения и `task_labels` заменяют
+   локальное состояние этих Tasks без полного catalog snapshot. Relations,
+   comments и imported external context передают только task-scoped
+   invalidation IDs; их content перечитывает отдельный lazy endpoint лишь при
+   активном details/Peek/activity consumer.
 6. Client применяет patches и invalidations идемпотентно к общему
    `AppSnapshot`, сохраняя загруженный Task detail поверх нового summary.
    Details, list, board, navigation, filters и selection используют уже
@@ -423,7 +426,8 @@ optional/standalone Task semantics из ранних решений: кажда�
 - индексы по owner/status/archive, project/release и updated time;
 - expression indexes по нормализованным task title/identifier, project
   name/summary и release name для prefix search;
-- join table для labels;
+- versioned owner catalog `labels` с partial uniqueness active name и
+  composite-key join table `task_labels` для идемпотентных назначений;
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of` с
   immutable ID, create-idempotency, optimistic version, semantic indexes и
   partial uniqueness одного `duplicate_of` target на source;
@@ -437,8 +441,8 @@ optional/standalone Task semantics из ранних решений: кажда�
 - `workspace_sync_sequences` и `workspace_change_events` для per-principal
   cursor, упорядоченного ACL-safe journal и gap recovery;
 - `workspace_sync_invalidations` как транзакционная trigger queue для fan-out
-  ID-only invalidations lazy task context и `workspace_sync_maintenance` для
-  throttled retention;
+  bounded label context и ID-only invalidations остального lazy task context,
+  а `workspace_sync_maintenance` — для throttled retention;
 - constraint или transactional validation project/release consistency;
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.

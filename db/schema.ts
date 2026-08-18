@@ -506,10 +506,16 @@ export const labels = sqliteTable(
     ownerUserId: text("owner_user_id").notNull(),
     name: text("name").notNull(),
     color: text("color").notNull().default("#6b7280"),
+    description: text("description").notNull().default(""),
+    archivedAt: text("archived_at"),
+    version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default("1970-01-01T00:00:00.000Z"),
   },
   (table) => [
-    uniqueIndex("idx_labels_owner_name").on(table.ownerUserId, table.name),
+    uniqueIndex("idx_labels_owner_name_active")
+      .on(table.ownerUserId, sql`lower(${table.name})`)
+      .where(sql`${table.archivedAt} IS NULL`),
   ],
 );
 

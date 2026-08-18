@@ -208,10 +208,11 @@ function buildChanges(
         accessibleTaskIds.has(id)
       ),
     },
-    // Kept as empty compatibility fields for already-open clients from the
-    // previous protocol. Lazy collections are no longer shipped incrementally.
-    labels: [],
-    taskLabels: [],
+    // Only labels assigned to invalidated Tasks are projected. The owner
+    // catalog remains detail-on-demand and never expands compact sync pages.
+    labels: projection.labels,
+    taskLabels: projection.taskLabels,
+    labelContextTaskIds: projection.labelContextTaskIds,
     relations: [],
   };
 }

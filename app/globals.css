@@ -523,6 +523,32 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .details-labels { display: flex; flex-wrap: wrap; gap: 6px; }
 .details-labels span { --label-color: #6b7280; display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid color-mix(in srgb, var(--label-color) 34%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--label-color) 11%, transparent); color: var(--text-secondary); font-size: 11px; }
 .details-labels span::before { width: 6px; height: 6px; content: ""; border-radius: 50%; background: var(--label-color); }
+.label-chip-list, .card-labels { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.label-chip { --label-color: #6b7280; max-width: 150px; display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--label-color) 34%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--label-color) 11%, transparent); color: var(--text-secondary); font-size: 10px; line-height: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.label-chip::before { width: 6px; height: 6px; flex: 0 0 auto; content: ""; border-radius: 50%; background: var(--label-color); }
+.label-chip.archived { opacity: .62; }
+.label-overflow { color: var(--muted); font-size: 10px; }
+.label-picker { position: relative; display: grid; gap: 7px; }
+.label-picker details { position: relative; width: max-content; max-width: 100%; }
+.label-picker summary { min-height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); color: var(--text-secondary); cursor: pointer; font-size: 11px; list-style: none; }
+.label-picker summary::-webkit-details-marker { display: none; }
+.label-picker-menu { z-index: 20; width: min(300px, calc(100vw - 40px)); max-height: 240px; position: absolute; top: calc(100% + 5px); left: 0; display: grid; gap: 2px; padding: 6px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-lg); }
+.label-picker-menu label { min-height: 32px; display: grid; grid-template-columns: 16px 8px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 4px 6px; border-radius: 5px; color: var(--text-secondary); font-size: 11px; cursor: pointer; }
+.label-picker-menu label:hover { background: var(--hover); }
+.label-picker-menu .label-picker-search { position: sticky; z-index: 1; top: -6px; grid-template-columns: 16px minmax(0, 1fr); min-height: 36px; padding-block: 5px; background: var(--surface); cursor: text; }
+.label-picker-search input { min-width: 0; height: 28px; border: 0; outline: 0; background: transparent; color: var(--text); }
+.label-picker-menu small, .label-picker-menu p { color: var(--muted); font-size: 10px; }
+.label-color-dot { width: 7px; height: 7px; border-radius: 50%; }
+.card-labels { margin: 7px 0 2px; }
+.label-settings-list { max-height: min(54vh, 520px); display: grid; gap: 7px; overflow: auto; }
+.label-settings-row { display: grid; gap: 6px; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
+.label-settings-row > form { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: start; gap: 8px; }
+.label-settings-main { min-width: 0; display: grid; gap: 5px; }
+.label-settings-main input { width: 100%; }
+.label-settings-main small { color: var(--muted); font-size: 10px; }
+.label-settings-actions { display: flex; justify-content: flex-end; }
+.label-settings-row.archived { opacity: .75; }
+.label-settings-create { display: grid; grid-template-columns: 30px minmax(110px, .8fr) minmax(160px, 1.2fr) auto; align-items: center; gap: 8px; margin-top: 12px; }
 .details-links { display: grid; gap: 3px; }
 .details-links a { min-width: 0; min-height: 32px; display: grid; grid-template-columns: 82px 58px minmax(0, 1fr); align-items: center; gap: 8px; padding: 4px 7px; border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; }
 .details-links a:hover { background: var(--hover); }
@@ -971,6 +997,12 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .workflow-status-actions { justify-content: flex-start; padding-left: 38px; }
   .workflow-status-create { grid-template-columns: minmax(0, 1fr) 110px 34px; }
   .workflow-status-create .button { grid-column: 1 / -1; }
+  .label-settings-row > form { grid-template-columns: 30px minmax(0, 1fr); }
+  .label-settings-row > form .button { grid-column: 2; min-height: 40px; }
+  .label-settings-actions { justify-content: flex-start; padding-left: 38px; }
+  .label-settings-actions .button { min-height: 40px; }
+  .label-settings-create { grid-template-columns: 34px minmax(0, 1fr); }
+  .label-settings-create input[name="description"], .label-settings-create .button { grid-column: 1 / -1; min-height: 40px; }
   .main-surface { min-height: 100dvh; }
   .modal-backdrop:has(.composer-modal) { padding: 0; }
   .modal.composer-modal { width: 100vw; max-width: 100vw; min-height: 100dvh; border: 0; border-radius: 0; overflow-y: auto; }

@@ -129,7 +129,7 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   administrator из раздела 3.1 не является project role.
 - `Viewer` читает Project и его subtree, но не меняет их. `Editor` дополнительно
   создаёт и изменяет Tasks, Releases и project-scoped SavedViews, двигает Tasks
-  по workflow, архивирует и восстанавливает records.
+  по workflow, назначает доступные labels, архивирует и восстанавливает records.
 - `Manager` дополнительно приглашает Users и назначает/изменяет только роли
   `Editor` и `Viewer`. `Owner` может назначать вплоть до `Manager`, отзывать
   grants и передать ownership уже добавленному участнику.
@@ -203,6 +203,15 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 
 Assignee обязан быть владельцем Task либо пользователем с доступом к Task или
 её Project. Выбор пользователя без доступа отклоняется.
+
+Label принадлежит owner catalog Task. Только владелец каталога создаёт,
+редактирует, архивирует и восстанавливает labels; имя активно и уникально в
+этом catalog без учёта регистра. `Editor` может назначать Task несколько
+активных labels её owner catalog, `Viewer` только читает назначения. Архивный
+label остаётся видимым на уже размеченных Tasks и доступен для снятия, но не для
+нового назначения. Composer принимает несколько labels, одиночные add/remove
+commands задают желаемое состояние идемпотентно, а bulk add/remove применяется
+атомарно к выбранному совместимому набору Tasks.
 
 Точные поля и допустимые значения определены в
 [доменной модели](../reference/domain-model.md).
@@ -539,7 +548,10 @@ completed dates и archived state.
   surfaces. Удалённая или ставшая недоступной entity исчезает также из details,
   selection, breadcrumbs и связанных context records.
 - Incremental core patch строится только по touched IDs, а не через полный
-  workspace snapshot. Labels, relations, comments и imported external context
+  workspace snapshot. Изменение label назначения передаёт authoritative
+  task-scoped label context только для затронутой Task: доступные определения и
+  полный набор её назначений заменяют локальное состояние этой Task, не
+  выгружая весь catalog. Relations, comments и imported external context
   передают только task-scoped invalidation IDs без своих records; их endpoint
   перечитывает только активный details/Peek/activity consumer. Закрытый cache
   остаётся загруженным, но помечается stale до следующего открытия.
@@ -692,6 +704,16 @@ completed dates и archived state.
     relation/task version и lazy sync invalidation обеих Tasks. Повторить
     create/update/delete через Agent REST и MCP canonical refs; retry create с
     тем же idempotency key не создаёт вторую row.
+36. Owner создаёт, переименовывает, архивирует и восстанавливает Label; active
+    имя уникально в owner catalog без учёта регистра и stale catalog version
+    отклоняется. Editor назначает несколько labels через composer/details и
+    атомарный bulk add/remove, Viewer видит те же chips без mutation controls.
+    Archived Label остаётся на прежних Tasks, снимается, но не назначается
+    заново. List, board, Peek и details согласуются через bounded task-scoped
+    sync. Те же desired-state add/remove повторяются через Agent REST и MCP по
+    canonical refs без дублей; project/system backup schema `7` восстанавливает
+    catalog и `task_labels`, а legacy schema `2`–`6` получает совместимые
+    defaults.
 
 ## 14. Рекомендуемые вертикальные срезы
 

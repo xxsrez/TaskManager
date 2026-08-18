@@ -574,16 +574,19 @@ export async function importLinearWorkspace(
     plan.labels.map((label) =>
       db
         .prepare(
-          `INSERT INTO labels (id, owner_user_id, name, color, created_at)
-           VALUES (?, ?, ?, ?, ?)
+          `INSERT INTO labels
+            (id, owner_user_id, name, color, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
-             name = excluded.name, color = excluded.color`,
+             name = excluded.name, color = excluded.color,
+             updated_at = excluded.updated_at`,
         )
         .bind(
           label.id,
           currentUser.id,
           label.name,
           label.color,
+          plan.exportedAt,
           plan.exportedAt,
         ),
     ),

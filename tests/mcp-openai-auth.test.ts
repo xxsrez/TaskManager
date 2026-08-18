@@ -246,6 +246,9 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     "update_task_relation",
     "delete_task_relation",
     "move_task",
+    "list_labels",
+    "add_task_label",
+    "remove_task_label",
   ]) {
     assert.ok(listBody.result.tools.some((tool) => tool.name === name), name);
   }

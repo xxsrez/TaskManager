@@ -577,7 +577,7 @@ test("a full deferred snapshot drops revoked tasks but retains tasks created aft
     {
       ...snapshot,
       tasks: [revokedTask, localTask],
-      labels: [{ id: "label-revoked", ownerUserId: "user-1", name: "Old", color: "#777777" }],
+      labels: [{ id: "label-revoked", ownerUserId: "user-1", name: "Old", color: "#777777", description: "", archivedAt: null, version: 1, createdAt: now, updatedAt: now }],
       taskLabels: [{ taskId: revokedTask.id, labelId: "label-revoked" }],
       relations: [{ id: "relation-revoked", sourceTaskId: revokedTask.id, targetTaskId: localTask.id, type: "related", version: 1, createdAt: now, updatedAt: now }],
     },
@@ -695,14 +695,14 @@ test("task detail reconciliation replaces synced labels and relations without ke
     {
       task: focusedTask,
       relatedTasks: [staleRelated],
-      labels: [{ id: "label-stale", ownerUserId: "user-1", name: "Stale", color: "#111111" }],
+      labels: [{ id: "label-stale", ownerUserId: "user-1", name: "Stale", color: "#111111", description: "", archivedAt: null, version: 1, createdAt: now, updatedAt: now }],
       taskLabels: [{ taskId: focusedTask.id, labelId: "label-stale" }],
       relations: [{ id: "relation-stale", sourceTaskId: focusedTask.id, targetTaskId: staleRelated.id, type: "related", version: 1, createdAt: now, updatedAt: now }],
     },
     nextTask,
     {
       tasks: [nextTask, childTask],
-      labels: [{ id: "label-fresh", ownerUserId: "user-1", name: "Fresh", color: "#22aa22" }],
+      labels: [{ id: "label-fresh", ownerUserId: "user-1", name: "Fresh", color: "#22aa22", description: "", archivedAt: null, version: 1, createdAt: now, updatedAt: now }],
       taskLabels: [{ taskId: focusedTask.id, labelId: "label-fresh" }],
       relations: [],
     },
@@ -1001,6 +1001,36 @@ test("an unassigned task row does not invent a current-user assignee", () => {
   assert.doesNotMatch(markup, /title="Assignee"/);
 });
 
+test("native Label chips render consistently in task list and board", () => {
+  const labelled: AppSnapshot = {
+    ...snapshot,
+    labels: [{
+      id: "label-native",
+      ownerUserId: "user-1",
+      name: "Backend",
+      color: "#336699",
+      description: "Server-side work",
+      archivedAt: null,
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    }],
+    taskLabels: [{ taskId: "task-1", labelId: "label-native" }],
+  };
+
+  for (const layout of ["list", "board"] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(TaskTracker, {
+        initialData: labelled,
+        initialNavigation: { surface: "all", layout, taskId: null },
+        signOutPath: "/sign-out",
+      }),
+    );
+    assert.match(markup, /class="label-chip "/);
+    assert.match(markup, /title="Server-side work">Backend<\/span>/);
+  }
+});
+
 test("priority icons distinguish medium and high by active bar count", () => {
   const medium = renderToStaticMarkup(createElement(PriorityIcon, { priority: "medium" }));
   const high = renderToStaticMarkup(createElement(PriorityIcon, { priority: "high" }));
@@ -1256,6 +1286,18 @@ test("viewer task details are read-only and expose no mutation controls", () => 
           ownerUserId: "user-2",
           accessRole: "viewer" as const,
         })),
+        labels: [{
+          id: "label-viewer",
+          ownerUserId: "user-1",
+          name: "Visible label",
+          color: "#336699",
+          description: "Read-only classification",
+          archivedAt: null,
+          version: 1,
+          createdAt: now,
+          updatedAt: now,
+        }],
+        taskLabels: [{ taskId: "task-1", labelId: "label-viewer" }],
       },
       initialNavigation: {
         surface: "shared",
@@ -1273,8 +1315,10 @@ test("viewer task details are read-only and expose no mutation controls", () => 
   assert.doesNotMatch(markup, /Members &amp; access/);
   assert.match(markup, />Activity</);
   assert.match(markup, />Attachments</);
+  assert.match(markup, /Visible label/);
   assert.doesNotMatch(markup, />Add files</);
   assert.doesNotMatch(markup, /Leave a comment/);
+  assert.doesNotMatch(markup, /aria-label="Edit Task labels"/);
 });
 
 test("comment drafts are isolated by authenticated user and task", () => {

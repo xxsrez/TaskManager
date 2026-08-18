@@ -15,7 +15,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 6 as const;
+export const projectBackupSchemaVersion = 7 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -50,7 +50,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | 4 | 5 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -111,6 +111,12 @@ const legacyTaskDefinition: TableDefinition = {
   },
 };
 
+const legacyLabelDefinition: TableDefinition = {
+  name: "labels",
+  columns: ["id", "owner_user_id", "name", "color", "created_at"],
+  orderBy: "id",
+};
+
 export function projectRestoreInsertSql(table: TableDefinition, ignoreExistingId = false): string {
   const extracts = table.columns
     .map((column) => `json_extract(row_json, '$.${column}')`)
@@ -164,7 +170,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const legacyWorkflow = payload.schemaVersion === 2 || payload.schemaVersion === 3;
   const legacyRelations = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4;
   const legacyIdentifiers = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5;
-  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === projectBackupSchemaVersion;
+  const legacyLabels = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6;
+  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
@@ -206,6 +213,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
       ? legacyWorkflowStatusDefinition
       : legacyRelations && table.name === "task_relations"
         ? legacyTaskRelationDefinition
+      : legacyLabels && table.name === "labels"
+        ? legacyLabelDefinition
         : table;
     sourceNormalizedTables[table.name] = values.map((row, index) =>
       normalizeRow(sourceDefinition, row, index),
@@ -223,6 +232,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     : sourceNormalizedTables;
   if (legacyRelations) tables = upgradeLegacyProjectRelations(tables);
   if (legacyIdentifiers) tables = upgradeLegacyProjectIdentifiers(tables);
+  if (legacyLabels) tables = upgradeLegacyProjectLabels(tables);
   const body = {
     format: projectBackupFormat,
     version: projectBackupVersion,
@@ -252,7 +262,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
@@ -286,7 +296,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -315,6 +325,21 @@ function validateProjectRelationships(
   const releases = unique(tables.releases, "id", "release");
   const statuses = unique(tables.workflow_statuses, "id", "workflow status");
   const labels = unique(tables.labels, "id", "label");
+  const activeLabelNames = new Set<string>();
+  for (const label of tables.labels) {
+    if (label.owner_user_id !== identity.ownerUserId) {
+      throw new ValidationError("Label is outside the Project owner catalog");
+    }
+    if (!String(label.name).trim()) throw new ValidationError("Label name is required");
+    if (!Number.isSafeInteger(label.version) || Number(label.version) < 1) {
+      throw new ValidationError("Label version is invalid");
+    }
+    if (label.archived_at === null) {
+      const key = String(label.name).toLocaleLowerCase();
+      if (activeLabelNames.has(key)) throw new ValidationError("Duplicate active Label name");
+      activeLabelNames.add(key);
+    }
+  }
   const views = unique(tables.saved_views, "id", "saved view");
   for (const status of tables.workflow_statuses) {
     if (!categories.includes(String(status.category))) {
@@ -608,6 +633,19 @@ function upgradeLegacyProjectRelations(source: ProjectBackupTables): ProjectBack
       version: 1,
       created_at: relation.created_at,
       updated_at: relation.created_at,
+    })),
+  };
+}
+
+function upgradeLegacyProjectLabels(source: ProjectBackupTables): ProjectBackupTables {
+  return {
+    ...source,
+    labels: source.labels.map((label): BackupRow => ({
+      ...label,
+      description: "",
+      archived_at: null,
+      version: 1,
+      updated_at: label.created_at,
     })),
   };
 }

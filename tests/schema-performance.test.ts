@@ -450,3 +450,64 @@ test("the selective sync migration tolerates missing legacy reset triggers", () 
   assert.equal(triggers.has("workspace_sync_labels_update"), true);
   assert.equal(triggers.has("workspace_sync_labels_delete"), true);
 });
+
+test("native Label catalog migration preserves versioned archive metadata and active uniqueness", () => {
+  const database = migratedDatabase();
+  const columns = new Set(
+    database.prepare("PRAGMA table_info(labels)").all().map((row) => row.name),
+  );
+  for (const column of ["description", "archived_at", "version", "updated_at"]) {
+    assert.equal(columns.has(column), true, column);
+  }
+  const index = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_labels_owner_name_active'",
+  ).get() as { sql: string };
+  assert.match(index.sql, /owner_user_id[^)]*,\s*lower\("name"\)/i);
+  assert.match(index.sql, /WHERE\s+"labels"\."archived_at" IS NULL/i);
+  database.prepare(
+    "INSERT INTO labels (id, owner_user_id, name) VALUES ('label-active', 'owner-label', 'Reusable')",
+  ).run();
+  database.prepare(
+    "UPDATE labels SET archived_at = CURRENT_TIMESTAMP WHERE id = 'label-active'",
+  ).run();
+  assert.doesNotThrow(() => database.prepare(
+    "INSERT INTO labels (id, owner_user_id, name) VALUES ('label-reused', 'owner-label', 'Reusable')",
+  ).run());
+});
+
+test("Label catalog migration keeps imported IDs and assignments", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readdirSync(new URL("../drizzle", import.meta.url))
+    .filter((name) => name.endsWith(".sql") && name < "0019_silky_drax.sql")
+    .sort();
+  for (const migration of migrations) database.exec(migrationSql(migration));
+  database.prepare(
+    `INSERT INTO labels (id, owner_user_id, name, color, created_at)
+     VALUES ('label-imported', 'owner-imported', 'Imported', '#123456',
+       '2026-08-18 03:00:00')`,
+  ).run();
+  database.prepare(
+    "INSERT INTO task_labels (task_id, label_id) VALUES ('task-imported', 'label-imported')",
+  ).run();
+  database.exec(migrationSql("0019_silky_drax.sql"));
+  const label = database.prepare(
+    `SELECT id, name, color, description, archived_at, version,
+      created_at, updated_at FROM labels WHERE id = 'label-imported'`,
+  ).get() as Record<string, unknown>;
+  assert.deepEqual({ ...label }, {
+    id: "label-imported",
+    name: "Imported",
+    color: "#123456",
+    description: "",
+    archived_at: null,
+    version: 1,
+    created_at: "2026-08-18 03:00:00",
+    updated_at: "2026-08-18 03:00:00",
+  });
+  assert.equal(
+    (database.prepare(
+      "SELECT COUNT(*) AS count FROM task_labels WHERE task_id = 'task-imported' AND label_id = 'label-imported'",
+    ).get() as { count: number }).count,
+    1,
+  );
+});

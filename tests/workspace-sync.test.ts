@@ -209,7 +209,7 @@ test("projects, releases, and saved views share the same create and delete feed"
   assert.deepEqual(removed.changes.projects.remove, [project.id]);
 });
 
-test("task label and relation updates emit only lazy detail invalidations", async () => {
+test("task label and relation updates emit bounded Label context with lazy detail invalidations", async () => {
   const owner = await getOrCreateUser({
     ...ownerActor,
     providerAccountKey: "sync-join-owner",
@@ -249,8 +249,12 @@ test("task label and relation updates emit only lazy detail invalidations", asyn
     [...response.changes.invalidations.taskDetails].sort(),
     [source.id, target.id].sort(),
   );
-  assert.deepEqual(response.changes.taskLabels, []);
-  assert.deepEqual(response.changes.labels, []);
+  assert.deepEqual(response.changes.taskLabels, [{ taskId: source.id, labelId: "label-sync" }]);
+  assert.deepEqual(response.changes.labels.map((label) => label.name), ["Sync label"]);
+  assert.deepEqual(
+    [...(response.changes.labelContextTaskIds ?? [])].sort(),
+    [source.id, target.id].sort(),
+  );
   assert.deepEqual(response.changes.relations, []);
   const detail = await getTaskDetail(owner, source.id);
   assert.equal(
@@ -342,7 +346,8 @@ test("label definitions invalidate only affected lazy task details", async () =>
   assert.deepEqual(ownerRename.changes.invalidations.taskDetails, [task.id]);
   assert.deepEqual(collaboratorRename.changes.invalidations.taskDetails, [task.id]);
   assert.deepEqual(collaboratorRename.changes.tasks.upsert, []);
-  assert.deepEqual(collaboratorRename.changes.labels, []);
+  assert.deepEqual(collaboratorRename.changes.labels.map((label) => label.name), ["Renamed label"]);
+  assert.deepEqual(collaboratorRename.changes.taskLabels, [{ taskId: task.id, labelId: "label-reset" }]);
 
   const beforeDelete = await getSnapshot(owner);
   await database
@@ -353,6 +358,8 @@ test("label definitions invalidate only affected lazy task details", async () =>
   const removed = await getWorkspaceSync(owner, beforeDelete.syncCursor!);
   assert.equal(removed.resetRequired, false);
   assert.deepEqual(removed.changes.invalidations.taskDetails, [task.id]);
+  assert.deepEqual(removed.changes.labelContextTaskIds, [task.id]);
+  assert.deepEqual(removed.changes.taskLabels, []);
 });
 
 test("sync fan-out follows current project ACL without exposing unrelated changes", async () => {
@@ -801,7 +808,7 @@ test("lazy invalidations preserve cached bodies and apply idempotently by cursor
   const current: AppSnapshot = {
     ...baseSnapshot(),
     tasks: [{ ...task, description: "Loaded body", detailVersion: 1 }],
-    labels: [{ id: "label-1", ownerUserId: task.ownerUserId, name: "Cached", color: "#fff" }],
+    labels: [{ id: "label-1", ownerUserId: task.ownerUserId, name: "Cached", color: "#ffffff", description: "", archivedAt: null, version: 1, createdAt: task.createdAt, updatedAt: task.updatedAt }],
     taskLabels: [{ taskId: task.id, labelId: "label-1" }],
   };
   const response = emptySyncResponse({

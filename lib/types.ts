@@ -114,6 +114,11 @@ export type LabelRecord = {
   ownerUserId: string;
   name: string;
   color: string;
+  description: string;
+  archivedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type TaskLabelAssignment = {
@@ -412,6 +417,8 @@ export type WorkspaceSyncChanges = {
   labels: LabelRecord[];
   /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   taskLabels: TaskLabelAssignment[];
+  /** Tasks whose Label assignments are authoritatively replaced by taskLabels. */
+  labelContextTaskIds?: string[];
   /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   relations: TaskRelationRecord[];
 };

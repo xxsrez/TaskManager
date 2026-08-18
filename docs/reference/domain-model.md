@@ -441,13 +441,19 @@ Project progress вычисляется запросом по задачам, а
 
 | Поле | Семантика |
 |---|---|
-| `id`, `name` | Identity и уникальное в active scope имя |
+| `id`, `name` | Identity и уникальное без учёта регистра active имя в owner catalog |
 | `owner_user_id` | Владелец каталога labels |
 | `color`, `description` | Представление и правило применения |
 | `archived_at` | Запрет нового использования с сохранением истории |
+| `version` | Optimistic concurrency catalog mutation |
+| `created_at`, `updated_at` | Серверное создание и последнее semantic изменение |
 
 Label — гибкая классификация, но не подмена status, priority, project, release
-или assignee.
+или assignee. `task_labels` имеет составной ключ `(task_id, label_id)`, поэтому
+desired-state add/remove идемпотентны. Назначать можно только active Label того
+же owner catalog, что у Task; архивирование сохраняет существующие связи и
+разрешает их удалить. Bulk mutation предварительно валидирует весь набор и
+применяет одно желаемое состояние атомарно.
 
 ## TaskRelation
 
@@ -536,6 +542,8 @@ attachments также остаются import provenance.
    owner scope, что и Task. Cross-owner hierarchy запрещена. TaskRelation —
    явное исключение: обе стороны обязаны быть Project Tasks, могут относиться к
    разным Projects/owners и не наследуют доступ друг от друга.
+   Active Label name уникально в owner catalog без учёта регистра. Только owner
+   управляет каталогом, а Task Editor+ назначает active labels; Viewer читает.
 5. `task.release_id IS NULL` либо release существует и
    `release.project_id = task.project_id`.
 6. Create, import и restore Task без Project отклоняются; для legacy payload

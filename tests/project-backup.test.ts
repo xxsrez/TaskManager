@@ -26,7 +26,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 6);
+  assert.equal(backup.schemaVersion, 7);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -83,6 +83,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
   tables.projects = current.tables.projects.map(legacyProjectRow);
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
+  tables.labels = current.tables.labels.map(legacyLabelRow);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
   );
@@ -121,6 +122,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
     projects: current.tables.projects.map(legacyProjectRow),
     workflow_statuses: current.tables.workflow_statuses.map(legacyWorkflowRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
+    labels: current.tables.labels.map(legacyLabelRow),
   };
   const body = {
     ...current,
@@ -151,6 +153,7 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
     ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
     projects: current.tables.projects.map(legacyProjectRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
+    labels: current.tables.labels.map(legacyLabelRow),
   };
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
@@ -165,6 +168,33 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
   assert.equal(validated.tables.task_relations[0]?.id, "relation_legacy:task-1:task-2:blocks");
   assert.equal(validated.tables.task_relations[0]?.version, 1);
   assert.equal(validated.tables.task_relations[0]?.updated_at, now);
+});
+
+test("schema 6 project bundles upgrade Label catalog metadata and keep assignments", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const unsigned = {
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    schemaVersion: 6,
+    tables: {
+      ...current.tables,
+      labels: current.tables.labels.map(legacyLabelRow),
+    },
+  };
+  const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
+
+  const validated = await validateProjectBackup(legacy);
+  assert.equal(validated.schemaVersion, 6);
+  assert.equal(validated.tables.labels[0]?.description, "");
+  assert.equal(validated.tables.labels[0]?.archived_at, null);
+  assert.equal(validated.tables.labels[0]?.version, 1);
+  assert.equal(validated.tables.labels[0]?.updated_at, now);
+  assert.deepEqual(validated.tables.task_labels, current.tables.task_labels);
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -276,7 +306,7 @@ function validProjectTables(): ProjectBackupTables {
       resolution_comment_id: null, version: 1,
     }],
     comment_reactions: [{ comment_id: "comment-1", user_id: "user-owner", emoji: "👍", created_at: now }],
-    labels: [{ id: "label-1", owner_user_id: "user-owner", name: "Backup", color: "#6b7280", created_at: now }],
+    labels: [{ id: "label-1", owner_user_id: "user-owner", name: "Backup", color: "#6b7280", description: "Keep for restore", archived_at: null, version: 1, created_at: now, updated_at: now }],
     task_labels: [{ task_id: "task-2", label_id: "label-1" }],
     task_relations: [{
       id: "relation-1", source_task_id: "task-1", target_task_id: "task-2",
@@ -330,6 +360,14 @@ function legacyRelationRow(row: Record<string, string | number | null>) {
   );
 }
 
+function legacyLabelRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) =>
+      !["description", "archived_at", "version", "updated_at"].includes(key),
+    ),
+  );
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -340,7 +378,7 @@ function migratedDatabase() {
     "0010_crazy_puma.sql", "0011_conscious_paibok.sql", "0012_empty_saracen.sql",
     "0013_rapid_gravity.sql", "0014_puzzling_tana_nile.sql", "0015_attachments_sync.sql",
     "0016_abandoned_stellaris.sql", "0017_complex_epoch.sql",
-    "0018_tearful_black_panther.sql",
+    "0018_tearful_black_panther.sql", "0019_silky_drax.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

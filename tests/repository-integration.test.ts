@@ -4,17 +4,23 @@ import { configureActorResolverForTests } from "../lib/auth";
 import { AgentApiError, parseAgentTaskListQuery } from "../lib/agent-api-contract";
 import {
   getAgentTaskDetail,
+  listAgentLabels,
   listAgentTasks,
   moveAgentTask,
+  setAgentTaskLabel,
 } from "../lib/agent-api-repository";
 import { ConflictError, PermissionError, ValidationError } from "../lib/domain";
 import {
   bulkUpdateTasks,
+  bulkSetTaskLabel,
+  createLabel,
   createProject,
   createRelease,
   createTask,
   getOrCreateUser,
+  getProjectLabelCatalog,
   getSnapshot,
+  getTaskLabelState,
   getTask,
   getTaskDetail,
   grantAccess,
@@ -22,9 +28,11 @@ import {
   revokeAccess,
   searchTaskIds,
   searchTaskSummaries,
+  setTaskLabel,
   transferProjectOwnership,
   updateAccessRole,
   updateTask,
+  updateLabel,
 } from "../lib/repository";
 import { GET as searchTasksRoute, POST as createTaskRoute } from "../app/api/tasks/route";
 import { GET as getTaskRoute, PATCH as updateTaskRoute } from "../app/api/tasks/[id]/route";
@@ -123,6 +131,148 @@ test("project ACL is enforced by repository reads and writes", async () => {
       projectId: null,
     }),
     /Project cannot be cleared/,
+  );
+});
+
+test("native Labels enforce owner catalogs, ACL, idempotency, archive, bulk, and Agent parity", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "label-owner-account",
+    email: "label-owner@example.test",
+  });
+  const editor = await getOrCreateUser({
+    ...collaboratorActor,
+    providerAccountKey: "label-editor-account",
+    email: "label-editor@example.test",
+  });
+  await createProject(owner, { name: "Native Label Project", taskCode: "NL" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Native Label Project",
+  )!;
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: editor.email,
+    permission: "viewer",
+  });
+
+  let catalog = await createLabel(owner, {
+    name: "Backend",
+    color: "#336699",
+    description: "Server work",
+  });
+  const backend = catalog.find((label) => label.name === "Backend")!;
+  await assert.rejects(createLabel(owner, { name: "backend" }), /already exists/i);
+  await assert.rejects(updateLabel(editor, backend.id, {
+    version: backend.version,
+    name: "Denied",
+  }), /not found/i);
+
+  const created = await createTask(owner, {
+    title: "Labelled at creation",
+    projectId: project.id,
+    labelIds: [backend.id, backend.id],
+  });
+  const first = await getTask(owner, created.id);
+  assert.deepEqual(
+    (await getTaskLabelState(owner, first.id)).taskLabels,
+    [{ taskId: first.id, labelId: backend.id }],
+  );
+  await assert.rejects(
+    setTaskLabel(editor, first.id, { labelId: backend.id, active: false }),
+    PermissionError,
+  );
+
+  const grant = (await getSnapshot(owner)).collaborators.find(
+    (item) => item.resourceId === project.id && item.userId === editor.id,
+  )!;
+  await updateAccessRole(owner, grant.grantId, { permission: "editor" });
+  await setTaskLabel(editor, first.id, { labelId: backend.id, active: true });
+  await setTaskLabel(editor, first.id, { labelId: backend.id, active: true });
+  assert.equal(
+    Number((await database.prepare(
+      "SELECT COUNT(*) AS count FROM task_labels WHERE task_id = ? AND label_id = ?",
+    ).bind(first.id, backend.id).first<{ count: number }>())!.count),
+    1,
+  );
+
+  catalog = await createLabel(owner, { name: "Frontend", color: "#aa5500" });
+  const frontend = catalog.find((label) => label.name === "Frontend")!;
+  await Promise.all([
+    setTaskLabel(editor, first.id, { labelId: backend.id, active: true }),
+    setTaskLabel(editor, first.id, { labelId: frontend.id, active: true }),
+  ]);
+  assert.deepEqual(
+    (await getTaskLabelState(editor, first.id)).taskLabels.map((item) => item.labelId).sort(),
+    [backend.id, frontend.id].sort(),
+  );
+
+  await createTask(owner, { title: "Label bulk peer", projectId: project.id });
+  const second = (await getSnapshot(owner)).tasks.find(
+    (task) => task.title === "Label bulk peer",
+  )!;
+  await bulkSetTaskLabel(editor, {
+    ids: [first.id, second.id],
+    labelId: frontend.id,
+    active: true,
+  });
+  await bulkSetTaskLabel(editor, {
+    ids: [first.id, second.id],
+    labelId: frontend.id,
+    active: true,
+  });
+  assert.equal(
+    Number((await database.prepare(
+      "SELECT COUNT(*) AS count FROM task_labels WHERE label_id = ? AND task_id IN (?, ?)",
+    ).bind(frontend.id, first.id, second.id).first<{ count: number }>())!.count),
+    2,
+  );
+
+  catalog = await updateLabel(owner, backend.id, {
+    action: "archive",
+    version: backend.version,
+  });
+  const archived = catalog.find((label) => label.id === backend.id)!;
+  assert.equal(
+    (await getProjectLabelCatalog(editor, project.id)).labels.some((label) => label.id === backend.id),
+    false,
+  );
+  assert.equal(
+    (await getProjectLabelCatalog(editor, project.id, true)).labels.some((label) => label.id === backend.id),
+    true,
+  );
+  await assert.rejects(
+    setTaskLabel(editor, second.id, { labelId: backend.id, active: true }),
+    /Archived Labels cannot be assigned/,
+  );
+  await setTaskLabel(editor, first.id, { labelId: backend.id, active: false });
+  await setTaskLabel(editor, first.id, { labelId: backend.id, active: false });
+  await assert.rejects(updateLabel(owner, backend.id, {
+    action: "restore",
+    version: archived.version - 1,
+  }), ConflictError);
+
+  const agentCatalog = await listAgentLabels(editor, true);
+  const frontendRef = agentCatalog.items.find((label) => label.name === "Frontend")!.ref;
+  await setAgentTaskLabel(editor, first.publicId, frontendRef, true);
+  await setAgentTaskLabel(editor, first.publicId, frontendRef, true);
+  assert.equal(
+    (await getAgentTaskDetail(editor, first.publicId)).labels.some(
+      (label) => label.ref === frontendRef,
+    ),
+    true,
+  );
+  const editorCatalog = await createLabel(editor, { name: "Backend", color: "#112233" });
+  const foreignLabel = editorCatalog.find((label) => label.name === "Backend")!;
+  await assert.rejects(
+    setTaskLabel(editor, first.id, { labelId: foreignLabel.id, active: true }),
+    /Label not found/,
+  );
+
+  await revokeAccess(owner, grant.grantId);
+  await assert.rejects(
+    setTaskLabel(editor, second.id, { labelId: frontend.id, active: false }),
+    /not found/i,
   );
 });
 

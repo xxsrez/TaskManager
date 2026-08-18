@@ -139,11 +139,14 @@ Desktop-first shell повторяет композицию Linear:
   polling indicators и не расходятся по моменту обновления.
 - Remote create/update/archive/delete обновляет запись на месте без full-page
   reload, потери текущего layout, scroll или несвязанной selection.
-- Lazy labels/relations, native comments и imported external context не
-  пересылаются в background patch. Invalidation активной чистой
-  details/Peek/activity поверхности запускает точечный refetch; закрытая
-  поверхность только сохраняет stale marker до открытия. Dirty description или
-  estimate draft не затирается и остаётся в manual conflict flow.
+- Изменение label назначения пересылает authoritative task-scoped label context
+  только затронутой Task и сразу согласует chips в list, board, Peek и details;
+  полный owner catalog ради этого не загружается. Lazy relations, native
+  comments и imported external context не пересылаются в background patch.
+  Invalidation активной чистой details/Peek/activity поверхности запускает
+  точечный refetch; закрытая поверхность только сохраняет stale marker до
+  открытия. Dirty description или estimate draft не затирается и остаётся в
+  manual conflict flow.
 - Если открытая Task или текущая Project/Release/SavedView удалена либо стала
   недоступна, details/Peek закрываются, stale selection очищается, а navigation
   атомарно возвращается в доступный `Workspace` вместо пустого чужого context.
@@ -378,6 +381,9 @@ List повторяет плотную grouped-list модель Linear.
 - `Cmd/Ctrl+Enter` создаёт, `Esc` закрывает с защитой dirty draft.
 - Создание из project, release, group или board column предварительно заполняет
   соответствующие properties и показывает их пользователю.
+- Label control загружает active labels owner catalog выбранного Project,
+  поддерживает multi-select и отправляет все назначения вместе с созданием
+  Task. При смене Project несовместимые selected labels очищаются явно.
 - Composer принимает несколько файлов через picker или dropzone. Устойчивый
   контракт — сначала server создаёт Task, затем UI последовательно загружает
   выбранные файлы с неизменяемыми idempotency keys. При частичном результате
@@ -408,6 +414,10 @@ List повторяет плотную grouped-list модель Linear.
   недоступный reference имеют локальный placeholder без публичного URL.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
+- Labels используют тот же chip и searchable multi-select в composer, details,
+  list, board и Peek. Editor+ идемпотентно добавляет и снимает active labels,
+  Viewer видит chips без picker. Архивный label сохраняет chip на прежней Task
+  и доступен для снятия, но отсутствует среди вариантов нового назначения.
 - Изменение Project открывает confirmation, а не отправляет generic patch.
   Диалог показывает исходные Project/identifier, target Project и ожидаемый
   `<target-code>-<next-sequence>`, явно отмечая preview как нерезервирующий.
@@ -459,6 +469,20 @@ List повторяет плотную grouped-list модель Linear.
   version conflict handling. Focus, scroll, selection и открытие editor не
   создают dirty draft; dirty начинается только после фактического изменения
   значения и сбрасывается после успешного save или cancel.
+
+### 8.2.1 Управление каталогом labels
+
+- Account menu `Labels` открывает owner-only dialog с name, color, description,
+  archive и restore. Active имя уникально в owner catalog без учёта регистра;
+  edit использует current label version и показывает conflict без
+  last-write-wins.
+- Архивирование не снимает существующие назначения и не скрывает их chips.
+  Restore возвращает label в pickers только после server confirmation.
+- Bulk bar загружает совместимый catalog выбранных Tasks по требованию и даёт
+  отдельные `Add label`/`Remove label`. Одна command либо применяет желаемое
+  состояние ко всему набору, либо не меняет ни одну Task.
+- Dialog и picker складываются в одну колонку на mobile, сохраняют все actions
+  в portrait и landscape и не создают horizontal overflow.
 
 ### 8.3 Peek
 

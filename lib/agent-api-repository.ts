@@ -22,7 +22,7 @@ import {
   type CreateAttachmentInput,
 } from "./attachments";
 import { NotFoundError, PermissionError, ValidationError } from "./domain";
-import { createTask, moveTask, updateTask } from "./repository";
+import { createTask, moveTask, setTaskLabel, updateTask } from "./repository";
 import {
   createTaskRelation,
   deleteTaskRelation,
@@ -726,6 +726,65 @@ export async function moveAgentTask(
   return getAgentTaskDetail(currentUser, String(task.public_id));
 }
 
+export async function listAgentLabels(
+  currentUser: UserRecord,
+  includeArchived = false,
+) {
+  const rows = await getD1().prepare(
+    `SELECT DISTINCT l.* FROM labels l
+     WHERE (? = 1 OR l.archived_at IS NULL) AND (
+       l.owner_user_id = ? OR EXISTS (
+         SELECT 1 FROM projects p
+         WHERE p.owner_user_id = l.owner_user_id AND (
+           p.owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+           )
+         )
+       )
+     )
+     ORDER BY l.owner_user_id = ? DESC, l.archived_at IS NOT NULL,
+       lower(l.name), l.id
+     LIMIT 201`,
+  ).bind(
+    includeArchived ? 1 : 0,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+  ).all<DbRow>();
+  const visible = rows.results.slice(0, 200);
+  return {
+    items: await Promise.all(visible.map(async (row) => ({
+      ref: await catalogReference("label", String(row.id)),
+      name: String(row.name),
+      color: String(row.color),
+      description: String(row.description ?? ""),
+      archivedAt: nullableString(row.archived_at),
+      version: Number(row.version ?? 1),
+      owner: { isCurrentUser: String(row.owner_user_id) === currentUser.id },
+    }))),
+    page: { nextCursor: null, hasMore: rows.results.length > 200 },
+  };
+}
+
+export async function setAgentTaskLabel(
+  currentUser: UserRecord,
+  taskReference: string,
+  labelReference: string,
+  active: boolean,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const labelId = await resolveLabelReference(
+    String(task.owner_user_id),
+    labelReference,
+    !active,
+  );
+  await setTaskLabel(currentUser, String(task.id), { labelId, active });
+  return getAgentTaskDetail(currentUser, String(task.public_id));
+}
+
 export async function createAgentTaskRelation(
   currentUser: UserRecord,
   taskReference: string,
@@ -1252,6 +1311,22 @@ async function resolveStatusReference(ownerUserId: string, reference: string) {
     if ((await catalogReference("status", row.id)) === reference) return row.id;
   }
   throw new ValidationError("Status is not available for this task");
+}
+
+async function resolveLabelReference(
+  ownerUserId: string,
+  reference: string,
+  allowArchived: boolean,
+) {
+  const rows = await getD1().prepare(
+    `SELECT id FROM labels
+     WHERE owner_user_id = ?${allowArchived ? "" : " AND archived_at IS NULL"}
+     ORDER BY id`,
+  ).bind(ownerUserId).all<{ id: string }>();
+  for (const row of rows.results) {
+    if ((await catalogReference("label", row.id)) === reference) return row.id;
+  }
+  throw new ValidationError("Label is not available for this Task");
 }
 
 async function mapTaskSummary(row: DbRow, currentUser: UserRecord) {

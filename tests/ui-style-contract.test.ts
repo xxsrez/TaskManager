@@ -153,6 +153,21 @@ test("mobile task rows use a two-line title and wrapping metadata without horizo
   assert.match(taskTracker, /aria-label="Open task details"[\s\S]*?onClick=\{\(event\) => \{ event\.stopPropagation\(\); onOpen\(\); \}\}/);
 });
 
+test("Label controls remain searchable and stack without mobile overflow", () => {
+  assert.match(
+    taskTracker,
+    /type="search" value=\{query\}[\s\S]{0,300}placeholder="Search labels…"/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.label-settings-create\s*\{[^}]*grid-template-columns:\s*34px\s+minmax\(0,\s*1fr\)\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.label-settings-create input\[name="description"\][^{]*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/,
+  );
+});
+
 test("pull-to-refresh indicator is mobile-only and respects reduced motion", () => {
   assert.match(declarations(".pull-refresh-indicator"), /display:\s*none\s*;/);
   assert.match(

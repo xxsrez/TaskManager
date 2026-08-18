@@ -27,6 +27,7 @@ export function applyWorkspaceSync(
   if (response.resetRequired) return current;
 
   const removedTaskIds = new Set(response.changes.tasks.remove);
+  const replacedLabelTaskIds = new Set(response.changes.labelContextTaskIds ?? []);
   const reconciledTasks = reconcileCollection(
     current.tasks,
     response.changes.tasks,
@@ -64,9 +65,13 @@ export function applyWorkspaceSync(
     releases,
     views,
     labels: mergeById(current.labels, response.changes.labels),
-    taskLabels: current.taskLabels.filter(
-      (assignment) => !removedTaskIds.has(assignment.taskId),
-    ),
+    taskLabels: [
+      ...current.taskLabels.filter(
+        (assignment) => !removedTaskIds.has(assignment.taskId) &&
+          !replacedLabelTaskIds.has(assignment.taskId),
+      ),
+      ...response.changes.taskLabels,
+    ],
     relations: current.relations.filter(
       (relation) =>
         !removedTaskIds.has(relation.sourceTaskId) &&

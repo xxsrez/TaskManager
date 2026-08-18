@@ -118,6 +118,8 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks/{ref}/move"), true);
   assert.equal(paths.includes("/tasks/{ref}/relations"), true);
   assert.equal(paths.includes("/tasks/{ref}/relations/{relationRef}"), true);
+  assert.equal(paths.includes("/labels"), true);
+  assert.equal(paths.includes("/tasks/{ref}/labels/{labelRef}"), true);
   assert.equal(paths.includes("/projects"), true);
   assert.equal(paths.includes("/releases"), true);
   assert.equal(paths.includes("/tasks/{ref}/comments"), true);
@@ -139,6 +141,14 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.deepEqual(
     agentApiOpenApi.paths["/tasks/{ref}/relations"].post.security,
     [{ oauth2: ["api:write"] }, { personalToken: [] }],
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/labels/{labelRef}"].put.operationId,
+    "addTaskLabel",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/labels/{labelRef}"].delete.operationId,
+    "removeTaskLabel",
   );
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/move"].post.operationId,

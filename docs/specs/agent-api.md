@@ -154,11 +154,14 @@ restore атомарно отзывает все authentication capabilities, ч
 | `GET /projects/{ref}` | `api:read` | `ProjectDetail` и compact releases |
 | `GET /releases` | `api:read` | Paginated `ReleaseSummary[]` |
 | `GET /releases/{ref}` | `api:read` | `ReleaseDetail` с release notes |
+| `GET /labels` | `api:read` | Bounded native Labels доступных owner catalogs |
 | `GET /tasks` | `api:read` | Paginated `TaskSummary[]` |
 | `POST /tasks` | `api:write` | Создать Task и вернуть `TaskDetail` |
 | `GET /tasks/{ref}` | `api:read` | Один `TaskDetail` |
 | `PATCH /tasks/{ref}` | `api:write` | Изменить Task с optimistic version |
 | `POST /tasks/{ref}/move` | `api:write` | Атомарно перенести Task и вернуть authoritative identifier |
+| `PUT /tasks/{ref}/labels/{labelRef}` | `api:write` | Идемпотентно назначить active Label |
+| `DELETE /tasks/{ref}/labels/{labelRef}` | `api:write` | Идемпотентно снять Label, включая archived |
 | `POST /tasks/{ref}/relations` | `api:write` | Создать relation идемпотентно |
 | `PATCH /tasks/{ref}/relations/{relationRef}` | `api:write` | Изменить type/direction с relation version |
 | `DELETE /tasks/{ref}/relations/{relationRef}` | `api:write` | Удалить relation с relation version |
@@ -191,11 +194,13 @@ protocol revisions).
 | `get_workspace` | `api:read` | User, capabilities, counts и status catalog |
 | `list_projects`, `get_project` | `api:read` | Найти Project, releases и допустимые statuses |
 | `list_releases`, `get_release` | `api:read` | Найти Release и его task scope |
+| `list_labels` | `api:read` | Найти active либо archived Label и canonical ref |
 | `list_tasks` | `api:read` | Все доступные Tasks или filters Project/Release/status/priority/assignee/search |
 | `get_task` | `api:read` | Полный контекст выбранной Task и актуальная version |
 | `get_task_external_context` | `api:read` | Отдельный paginated imported archive |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
+| `add_task_label`, `remove_task_label` | `api:write` | Задать желаемое состояние одного native Label идемпотентно |
 | `create_task_relation` | `api:write` | Создать native relation с idempotency key |
 | `update_task_relation`, `delete_task_relation` | `api:write` | Изменить или удалить relation по current version |
 | `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |
@@ -274,6 +279,12 @@ name. Неизвестные parameters отклоняются.
 compact project/release/assignee/labels, dueDate, updatedAt, version и
 `contextHints`. Summary сообщает о наличии detail context, но не передаёт body.
 
+`Label` содержит canonical `lbl_...` ref, name, color, description,
+`archivedAt`, version и только флаг `owner.isCurrentUser`; internal ID и owner
+identity не раскрываются. `GET /labels` по умолчанию возвращает active labels
+owner catalogs, доступных через owned/shared Projects; `archived=true` добавляет
+архивные labels для исторического чтения и снятия.
+
 `TaskDetail` добавляет description, estimate, rank, lifecycle timestamps,
 access role/canEdit, расширенный project/release context, parent, subtasks,
 relations и provenance counts. Native `commentCount` и `attachmentCount`
@@ -334,8 +345,11 @@ Repository атомарно обновляет `startedAt`, `completedAt` и `ca
 `409 version_conflict`; Viewer — `403 forbidden`. Response содержит новый
 `TaskDetail`, а не workspace snapshot.
 
-Hierarchy, labels, assignee другого User и bulk mutation пока read-only через
-API. Relations имеют отдельные create/update/delete commands: обе Tasks должны
+Hierarchy, assignee другого User и bulk mutation пока read-only через API.
+Labels имеют отдельные desired-state `PUT`/`DELETE` и MCP add/remove commands:
+Editor+ может назначить active Label только owner catalog Task, Viewer получает
+отказ, retry не создаёт дубликат и archived Label можно снять, но нельзя
+назначить заново. Relations имеют отдельные create/update/delete commands: обе Tasks должны
 принадлежать Project, caller должен иметь Editor+ на обеих, `related`
 канонизируется, `blocks` хранит direction, а outgoing `duplicate_of` требует
 актуальную Task version и атомарно назначает системный `Duplicate`. Remove или

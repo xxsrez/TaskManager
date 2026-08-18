@@ -33,10 +33,12 @@ import {
   getAgentWorkspace,
   listAgentProjects,
   listAgentReleases,
+  listAgentLabels,
   listAgentTasks,
   listAgentTaskAttachments,
   listAgentTaskComments,
   moveAgentTask,
+  setAgentTaskLabel,
   resolveAgentTaskThread,
   setAgentCommentReaction,
   updateAgentTask,
@@ -111,6 +113,21 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
         const query = await parseAgentProjectListQuery(queryParameters(input));
         return listAgentProjects(context.user, query);
       }),
+  );
+
+  server.registerTool(
+    "list_labels",
+    {
+      title: "List labels",
+      description:
+        "Lists native Label catalogs visible through owned or shared Projects. Use a returned canonical label ref with add_task_label or remove_task_label.",
+      inputSchema: z.object({
+        archived: z.boolean().optional().describe("Include archived Labels; default false."),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ archived }) => toolCall(() => listAgentLabels(context.user, archived)),
   );
 
   server.registerTool(
@@ -328,6 +345,40 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, ...input }) => writeToolCall(context, () =>
       createAgentTaskRelation(context.user, taskRef, defined(input))),
+  );
+
+  server.registerTool(
+    "add_task_label",
+    {
+      title: "Add task label",
+      description:
+        "Idempotently adds one active native Label to a Task. Resolve both canonical refs first; retries preserve the same desired state without duplicating the assignment.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical Task ref."),
+        labelRef: reference("Canonical active Label ref from list_labels."),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, labelRef }) => writeToolCall(context, () =>
+      setAgentTaskLabel(context.user, taskRef, labelRef, true)),
+  );
+
+  server.registerTool(
+    "remove_task_label",
+    {
+      title: "Remove task label",
+      description:
+        "Idempotently removes one native Label from a Task. Archived Labels may still be removed by their canonical ref.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical Task ref."),
+        labelRef: reference("Canonical Label ref."),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, labelRef }) => writeToolCall(context, () =>
+      setAgentTaskLabel(context.user, taskRef, labelRef, false)),
   );
 
   server.registerTool(

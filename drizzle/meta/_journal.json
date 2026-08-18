@@ -134,6 +134,13 @@
       "when": 1787018271780,
       "tag": "0018_tearful_black_panther",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1787024963260,
+      "tag": "0019_silky_drax",
+      "breakpoints": true
     }
   ]
 }

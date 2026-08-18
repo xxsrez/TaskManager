@@ -30,7 +30,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4 | 5 | 6;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -42,7 +42,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 6 as const;
+export const systemBackupSchemaVersion = 7 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 1000;
 const maxStagedRowBytes = 1_500_000;
@@ -109,7 +109,9 @@ export const tableDefinitions = [
     parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
   }),
   definition("comment_reactions", ["comment_id", "user_id", "emoji", "created_at"], "comment_id, emoji, user_id"),
-  definition("labels", ["id", "owner_user_id", "name", "color", "created_at"], "id"),
+  definition("labels", ["id", "owner_user_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"], "id", {
+    archived_at: { nullable: true }, version: { number: true, integer: true },
+  }),
   definition("task_labels", ["task_id", "label_id"], "task_id, label_id"),
   definition("task_relations", ["id", "source_task_id", "target_task_id", "type", "creator_user_id", "idempotency_key", "version", "created_at", "updated_at"], "id", {
     version: { number: true, integer: true },
@@ -164,6 +166,12 @@ const legacyTaskDefinition = definition(
     completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
     comment_count: { number: true, integer: true }, version: { number: true, integer: true },
   },
+);
+
+const legacyLabelDefinition = definition(
+  "labels",
+  ["id", "owner_user_id", "name", "color", "created_at"],
+  "id",
 );
 
 export const liveTableDeleteOrder: BackupTableName[] = [
@@ -240,7 +248,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const legacyWorkflow = schemaVersion === 2 || schemaVersion === 3;
   const legacyRelations = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4;
   const legacyIdentifiers = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5;
-  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === systemBackupSchemaVersion;
+  const legacyLabels = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6;
+  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
     withoutAttachments
@@ -276,6 +285,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
       ? legacyWorkflowStatusDefinition
       : legacyRelations && table.name === "task_relations"
         ? legacyTaskRelationDefinition
+      : legacyLabels && table.name === "labels"
+        ? legacyLabelDefinition
         : table;
     sourceNormalizedTables[table.name] = sourceRows.map((row, index) =>
       normalizeBackupRow(sourceDefinition, row, index),
@@ -292,6 +303,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
     : sourceNormalizedTables;
   if (legacyRelations) tables = upgradeLegacySystemRelations(tables);
   if (legacyIdentifiers) tables = upgradeLegacySystemIdentifiers(tables);
+  if (legacyLabels) tables = upgradeLegacySystemLabels(tables);
   const counts = countTables(tables);
   validateRelationships(tables);
   const objects = withoutAttachments
@@ -300,7 +312,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7,
     ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
@@ -327,7 +339,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7,
     siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
@@ -655,10 +667,15 @@ function validateRelationships(tables: BackupTables) {
   }
 
   const labels = uniqueIndex(tables.labels, ["id"], "labels");
-  uniqueIndex(tables.labels, ["owner_user_id", "name"], "label owner/name");
+  uniqueIndex(
+    tables.labels.filter((label) => label.archived_at === null),
+    ["owner_user_id", "name"],
+    "active label owner/name",
+  );
   for (const label of tables.labels) {
     requireReference(users, label.owner_user_id, "Label owner");
     boundedTitle(label.name, "Label name");
+    positiveVersion(label.version, "Label version");
   }
   uniqueIndex(tables.task_labels, ["task_id", "label_id"], "task labels");
   for (const assignment of tables.task_labels) {
@@ -808,6 +825,19 @@ function upgradeLegacySystemRelations(source: BackupTables): BackupTables {
       version: 1,
       created_at: relation.created_at,
       updated_at: relation.created_at,
+    })),
+  };
+}
+
+function upgradeLegacySystemLabels(source: BackupTables): BackupTables {
+  return {
+    ...source,
+    labels: source.labels.map((label): BackupRow => ({
+      ...label,
+      description: "",
+      archived_at: null,
+      version: 1,
+      updated_at: label.created_at,
     })),
   };
 }
