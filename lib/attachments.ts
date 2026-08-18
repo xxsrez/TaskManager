@@ -624,7 +624,7 @@ async function loadTaskAttachment(
   return mapAttachment(row);
 }
 
-async function findIdempotentAttachment(
+export async function findIdempotentAttachment(
   taskId: string,
   uploaderUserId: string,
   idempotencyKey: string,

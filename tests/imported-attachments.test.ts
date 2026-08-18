@@ -4,7 +4,7 @@ import {
   planImportedAttachments,
   reconcileImportedAttachments,
 } from "../lib/imported-attachments";
-import { listTaskAttachments } from "../lib/attachments";
+import { createAttachment, listTaskAttachments } from "../lib/attachments";
 import {
   createProject,
   createTask,
@@ -294,4 +294,42 @@ test("an admin can map one independently verified non-binary URL without a bulk 
   });
   assert.equal(inventory.nonBinaryMappedCount, 1);
   assert.equal(inventory.cutoverReady, true);
+});
+
+test("migration adopts an idempotent native upload when the protected source cannot be fetched", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const project = (await getSnapshot(owner)).projects.find((item) => item.name === "Attachment migration")!;
+  const task = await createTask(owner, { title: "Protected attachment source", projectId: project.id });
+  const sourceRecordId = "external:protected-attachment";
+  await database.prepare(`INSERT INTO external_records (
+      id, owner_user_id, target_type, target_id, source, source_id,
+      source_url, metadata_json, imported_at
+    ) VALUES (?, ?, 'task', ?, 'linear', 'AM-4', NULL, ?, CURRENT_TIMESTAMP)`)
+    .bind(sourceRecordId, owner.id, task.id, JSON.stringify({
+      attachments: [{ id: "protected-file", title: "Evidence", url: "https://files.example.test/protected.pdf" }],
+    })).run();
+
+  const body = new TextEncoder().encode("%PDF-1.7\nprotected migration\n%%EOF");
+  const uploaded = await createAttachment(owner, task.id, {
+    body,
+    filename: "evidence.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: `linear-attachment:${sourceRecordId}:0`,
+  });
+  let requested = false;
+  const report = await reconcileImportedAttachments(owner, {
+    mode: "apply",
+    sourceRecordId,
+    sourceIndex: 0,
+    fetcher: (async () => {
+      requested = true;
+      return new Response("unauthorized", { status: 401 });
+    }) as typeof fetch,
+  });
+
+  assert.equal(requested, false);
+  assert.equal(report.items[0]?.action, "migrated");
+  assert.equal(report.items[0]?.attachmentRef, uploaded.publicId);
+  assert.equal(report.migratedCount, 1);
+  assert.equal(report.cutoverReady, true);
 });

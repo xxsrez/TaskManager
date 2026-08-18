@@ -3,6 +3,7 @@ import { assertAdmin } from "./admin";
 import {
   attachmentLimits,
   createAttachment,
+  findIdempotentAttachment,
   getTaskAttachment,
 } from "./attachments";
 import { canEditContent } from "./access";
@@ -242,6 +243,27 @@ async function applyPlannedAttachment(
   if (item.disposition === "skipped") {
     await storeOutcome(item, "skipped", item.reason, null, null, null);
     return result(item, "skipped", item.reason, null);
+  }
+  const existing = await findIdempotentAttachment(
+    item.taskId,
+    currentUser.id,
+    migrationIdempotencyKey(item),
+  );
+  if (existing) {
+    const verified = await verifyNativeAttachment(currentUser, item.taskId, existing);
+    if (!verified) {
+      await storeOutcome(
+        item,
+        "blocked",
+        "native_attachment_verification_failed",
+        null,
+        null,
+        null,
+      );
+      return result(item, "blocked", "native_attachment_verification_failed", null);
+    }
+    await storeOutcome(item, "migrated", null, existing.id, null, null);
+    return result(item, "migrated", null, existing.publicId);
   }
   if (verifiedNonBinary) {
     if (!item.url) throw new ValidationError("Attachment URL is unavailable");
