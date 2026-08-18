@@ -208,6 +208,53 @@ test("scoped SavedView grant migration revokes only active direct grants that no
   assert.equal(rows.find((row) => row.id === "grant-global-active")?.revoked_at, null);
 });
 
+test("legacy users with only a reserved Duplicate status receive a complete default workflow catalog", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readdirSync(new URL("../drizzle", import.meta.url))
+    .filter((name) => name.endsWith(".sql") && name < "0026_repair_legacy_workflow_catalogs.sql")
+    .sort();
+  for (const migration of migrations) database.exec(migrationSql(migration));
+  database.exec(`
+    INSERT INTO users (id, display_name, email)
+      VALUES
+      ('legacy-user', 'Legacy User', 'legacy@example.test'),
+      ('valid-user', 'Valid User', 'valid@example.test');
+    INSERT INTO workflow_statuses
+      (id, owner_user_id, name, category, color, position, is_default,
+       system_role, archived_at, version)
+      VALUES
+      ('legacy-duplicate', 'legacy-user', 'Duplicate', 'canceled', '#9ca3af', 0,
+       0, 'duplicate', NULL, 1),
+      ('valid-todo', 'valid-user', 'Todo', 'unstarted', '#94a3b8', 0,
+       1, NULL, NULL, 1),
+      ('valid-duplicate', 'valid-user', 'Duplicate', 'canceled', '#9ca3af', 1,
+       0, 'duplicate', NULL, 1);
+  `);
+
+  const migration = migrationSql("0026_repair_legacy_workflow_catalogs.sql");
+  database.exec(migration);
+  database.exec(migration);
+
+  const legacyRows = database.prepare(`
+    SELECT name, category, is_default, system_role
+    FROM workflow_statuses
+    WHERE owner_user_id = 'legacy-user'
+    ORDER BY position, name
+  `).all();
+  assert.deepEqual(legacyRows.map((row) => [row.name, row.category, row.is_default, row.system_role]), [
+    ["Backlog", "backlog", 0, null],
+    ["Duplicate", "canceled", 0, "duplicate"],
+    ["Todo", "unstarted", 1, null],
+    ["In Progress", "started", 0, null],
+    ["Done", "completed", 0, null],
+    ["Canceled", "canceled", 0, null],
+  ]);
+  assert.equal(
+    database.prepare("SELECT COUNT(*) AS count FROM workflow_statuses WHERE owner_user_id = 'valid-user'").get()?.count,
+    2,
+  );
+});
+
 test("project-scoped identifier migration preserves dependent rows in an atomic D1 batch", async () => {
   const harness = await createD1TestHarness({}, {
     migrationsBefore: "0018_tearful_black_panther.sql",

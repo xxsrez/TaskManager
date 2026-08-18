@@ -183,6 +183,13 @@
       "when": 1787050846876,
       "tag": "0025_revoke_scoped_view_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1787051975016,
+      "tag": "0026_repair_legacy_workflow_catalogs",
+      "breakpoints": true
     }
   ]
 }
