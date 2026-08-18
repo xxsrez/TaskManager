@@ -51,6 +51,32 @@ cutover в production запрещён и не выполнялся. Пагин�
 обрезает большие `metadata_json`, поэтому source comments/attachments/history
 counts по нему не объявляются проверенными.
 
+## Follow-up inventory: AND-1…AND-4
+
+Read-only production inventory для TM-247 подтвердил четыре созданные
+провайдером onboarding Task:
+
+| Task | Назначение | External context |
+| --- | --- | --- |
+| `AND-1` | знакомство с Linear | 0 comments, 0 attachment records, 1 state-history record |
+| `AND-2` | подключение Linear integrations | 0 comments, 0 attachment records, 1 state-history record |
+| `AND-3` | импорт данных в Linear | 0 comments, 0 attachment records, 1 state-history record |
+| `AND-4` | настройка Linear teams | 0 comments, 0 attachment records, 1 state-history record |
+
+Descriptions содержат provider links и media embeds, а legacy context — source
+URL и branch metadata. Это не product records и не подходит ни одному
+продуктовому Project. Явное reconciled решение для всех четырёх: после
+production Project migration оставить их в `Migration Inbox`, архивировать как
+provider-only content и затем архивировать сам Project. Purge, перенос в
+продуктовый Project, редактирование historical body и удаление source evidence
+не выполняются.
+
+На момент inventory production всё ещё возвращает `project=null` для всех
+четырёх records, а `Migration Inbox` ещё не создан. Поэтому archive/navigation,
+backup/restore и ACL gates не считаются пройденными: их mutation требует
+отдельной прямой production authority. UAT не содержит этих production records,
+и они не копируются туда.
+
 ## Проверяемые gates UAT candidate
 
 - source scan не находит runtime import/external-context route, MCP tool,
