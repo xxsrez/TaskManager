@@ -458,8 +458,13 @@ List повторяет плотную grouped-list модель Linear.
 - Gallery отмечает image, используемый в description, статусом
   `Used in description`; remove для такого image блокируется и предлагает
   сначала удалить token из description. Удаление token не удаляет Attachment.
-- После секции вложений располагается единая `Activity` с native discussions и
-  импортированной историей. Root composer и reply composer сохраняют local draft по
+- После секции вложений располагается единая `Activity`: append-only native и
+  imported status events образуют компактную временную шкалу рядом с native/
+  historical discussions. Event показывает actor snapshot, действие,
+  before/after summary и время; historical status имеет badge
+  `Imported history`. Activity events и comment roots загружаются отдельными
+  lazy keyset pages и не блокируют друг друга при retry.
+- Root composer и reply composer сохраняют local draft по
   current User + Task, поддерживают `Cmd/Ctrl+Enter`, явный submit, retry без
   дублей и кнопки базового Markdown-like форматирования.
 - Root thread показывает author/avatar, timestamps, body, reactions,
@@ -473,6 +478,9 @@ List повторяет плотную grouped-list модель Linear.
 - Loading, error/retry, pending и empty states являются частью Activity. Viewer
   видит threads без composer и mutation controls. На mobile controls имеют
   touch target не меньше 44px и не создают горизонтальный overflow.
+- Sync invalidation сбрасывает только загруженную event page открытой Task;
+  закрытая Activity не получает event bodies. Load older добавляет прежние
+  events без повторов и сохраняет стабильный порядок при новых mutations.
 - Для импортированной задачи provenance section не повторяет comment bodies:
   она показывает source link, attachment links и migrated/exception counts.
   Exception count визуально предупреждает о необходимости operator
@@ -817,7 +825,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
-| Issue composer/details | Modal composer, details, native attachments и Activity | Берём | Без task templates, comment attachments и mentions; Task-file upload после create с честным partial result |
+| Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates, comment attachments и mentions; Task-file upload после create с честным partial result |
 | Issue relations | Grouped blocking/related/duplicate links и explicit add/edit/remove | Берём ядро | Без auto-related из description/comments в первом writable slice |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |

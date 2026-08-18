@@ -547,6 +547,21 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/tasks/{ref}/activity": {
+      get: {
+        operationId: "listTaskActivity",
+        summary: "List bounded native and migrated Task activity",
+        parameters: [
+          referenceParameter(),
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 50, default: 25 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: {
+          "200": pagedResponse("Task activity events", { type: "object", additionalProperties: true }),
+          ...errorResponses,
+        },
+      },
+    },
     "/tasks/{ref}/comments": {
       get: {
         operationId: "listTaskComments",

@@ -14,6 +14,8 @@ Task Manager предоставляет самостоятельный versioned
 - получить задачи проекта или релиза в компактной форме;
 - загрузить полный контекст одной выбранной задачи;
 - создать задачу и изменить status, project, release, priority, срок и archive;
+- читать bounded native/historical Task Activity без загрузки event bodies в
+  Task collections/detail;
 - читать unified native/historical comment threads, добавлять/reply/edit/delete
   native comments, менять reaction и resolve/reopen state;
 - отдельно перечислять, загружать, скачивать и удалять private native Task
@@ -54,7 +56,7 @@ flowchart LR
 - `ProjectSummary` не содержит description; `ReleaseSummary` не содержит ни
   description, ни release notes.
 - Полный `TaskDetail` читается только отдельным запросом.
-- Unified comments, native attachment metadata и import provenance
+- Task Activity, unified comments, native attachment metadata и import provenance
   читаются разными отдельными endpoints; binary body возвращает
   только отдельный bearer-protected content endpoint.
 - `fields=*` и `include=description` не поддерживаются и отклоняются.
@@ -160,6 +162,7 @@ restore атомарно отзывает все authentication capabilities, ч
 | `GET /tasks` | `api:read` | Paginated `TaskSummary[]` |
 | `POST /tasks` | `api:write` | Создать Task и вернуть `TaskDetail` |
 | `GET /tasks/{ref}` | `api:read` | Один `TaskDetail` |
+| `GET /tasks/{ref}/activity` | `api:read` | Paginated native/historical Activity events |
 | `PATCH /tasks/{ref}` | `api:write` | Изменить Task с optimistic version |
 | `POST /tasks/{ref}/move` | `api:write` | Атомарно перенести Task и вернуть authoritative identifier |
 | `PUT /tasks/{ref}/labels/{labelRef}` | `api:write` | Идемпотентно назначить active Label |
@@ -204,6 +207,7 @@ protocol revisions).
 | `list_tasks` | `api:read` | Все доступные Tasks или filters Project/Release/status/priority/assignee/search |
 | `get_task` | `api:read` | Полный контекст выбранной Task и актуальная version |
 | `get_task_external_context` | `api:read` | Import provenance, attachment links и reconciliation counts без comment bodies |
+| `list_task_activity` | `api:read` | Читать bounded native/historical Activity отдельно от Task detail |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
 | `add_task_label`, `remove_task_label` | `api:write` | Задать желаемое состояние одного native Label идемпотентно |
@@ -241,7 +245,7 @@ scope check и owner/ACL scope до обращения к repository.
 ### 5.2 Pagination и envelope
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
-Native attachments имеют maximum `100`; unified comment roots — maximum `50`
+Native attachments имеют maximum `100`; Activity events и unified comment roots — maximum `50`
 и до 100 replies на root. Cursor связан с Task, filters,
 sort и limit;
 cursor другого query отклоняется. Collections используют keyset position из
@@ -301,7 +305,10 @@ owner catalogs, доступных через owned/shared Projects; `archived=t
 access role/canEdit, расширенный project/release context, parent, subtasks,
 relations и provenance counts. Native `commentCount` и `attachmentCount`
 присутствуют только как context hints; bodies/metadata читаются через
-`/comments` и `/attachments`. Historical bodies находятся в том же `/comments`,
+`/activity`, `/comments` и `/attachments`. Activity event содержит `ref`,
+`eventType`, privacy-minimized actor display snapshot/kind, structured payload,
+source/historical provenance, timestamp и schema version; User ID/email не
+выдаётся. Historical comment bodies находятся в том же `/comments`,
 а `/external-context` возвращает source/attachment metadata и migrated/exception
 counts без дублирования bodies. Detail также возвращает `availableStatuses`,
 валидные для изменения именно этой Task.
@@ -511,6 +518,10 @@ Authorization invariants:
     stale update/delete конфликтует, Viewer не пишет, ACL проверяется на обеих
     Tasks, а outgoing duplicate atomically меняет source status. `get_task`
     показывает resolved blocker как `related` и не раскрывает internal Task IDs.
+13. `GET /tasks/{ref}/activity` и MCP `list_task_activity` возвращают одинаковую
+    bounded page native/historical events. Viewer читает, outsider/post-revoke
+    получает `not_found`; actor projection не содержит ID/email, cursor другой
+    Task отклоняется, а Task list/detail не получает event bodies.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются
 проверенными локальной реализацией.

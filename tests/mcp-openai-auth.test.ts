@@ -230,6 +230,7 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
   };
   assert.ok(listBody.result.tools.some((tool) => tool.name === "list_tasks"));
   for (const name of [
+    "list_task_activity",
     "list_task_comments",
     "get_task_thread",
     "add_task_comment",

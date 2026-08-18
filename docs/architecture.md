@@ -176,7 +176,7 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
    upsert/remove. Изменение назначения Label добавляет bounded authoritative
    label context только затронутых Tasks: определения и `task_labels` заменяют
    локальное состояние этих Tasks без полного catalog snapshot. Relations,
-   comments и imported external context передают только task-scoped
+   comments, Activity и imported external context передают только task-scoped
    invalidation IDs; их content перечитывает отдельный lazy endpoint лишь при
    активном details/Peek/activity consumer.
 6. Client применяет patches и invalidations идемпотентно к общему
@@ -204,8 +204,8 @@ version conflict остаётся write boundary и не заменяется po
    counts, ambiguity resolution и cursor pagination.
 3. Collection use case строит фиксированный compact projection без description,
    comment bodies, attachment metadata/bodies, internal IDs и user emails.
-4. Detail use case по canonical `public_id` загружает одну сущность; unified
-   comment threads, native Attachment metadata и import provenance
+4. Detail use case по canonical `public_id` загружает одну сущность; Activity,
+   unified comment threads, native Attachment metadata и import provenance
    остаются отдельными lazy вызовами. Только detail добавляет
    bounded attachment count hint.
 5. REST возвращает versioned schema и request/as-of metadata. MCP публикует
@@ -457,12 +457,22 @@ redirect validation и allowlist OpenAI HTTPS hosts; временный URL не
 D1 или logs. После fetch общий Attachment repository снова проверяет magic,
 claim, pixels, checksum, idempotency и effective Editor role.
 
-Native и historical comment bodies не входят в bootstrap или Task detail. Activity
+Native и historical comment bodies не входят в bootstrap или Task detail. UI
 отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,
 а comment mutations обновляют Task timestamp и производный `comment_count` в
 одной D1 batch transaction. Historical source facts защищены D1 trigger от
 edit/delete/reparent; reply/reaction/resolve используют тот же ACL и thread
 contract, что native discussions.
+
+Append-only change history запрашивается независимо через
+`/api/tasks/{id}/activity`. Repository сначала разрешает текущую Task ACL, затем
+читает descending keyset page `(created_at, id)` и отдельный count. Native
+command добавляет ровно один `ActivityEvent` в ту же guarded D1 batch, что
+изменение Task/label/hierarchy/relation/comment; assertion row заставляет всю
+batch откатиться, если primary write не состоялся. Event UPDATE запрещён
+trigger. No-op desired state и idempotent retry возвращаются до insert.
+`task_activity` sync event несёт только Task ID и обновляет client-only lazy
+cursor открытой Task; event payload не попадает в journal/bootstrap.
 
 Частая команда изменения одной Task возвращает только подтверждённый
 `TaskRecord`, и client атомарно заменяет эту запись в текущем snapshot. Это не
@@ -504,6 +514,10 @@ optional/standalone Task semantics из ранних решений: кажда�
   keyset indexes;
 - `comment_migration_outcomes` с одной explicit migrated/exception row на
   source position и raw operator evidence;
+- `activity_events` с Task/time keyset index, immutable native/historical actor
+  snapshot и unique Linear source position;
+- `activity_migration_outcomes` с explicit result/raw evidence каждой
+  `stateHistory` row;
 - `comment_reactions` с composite primary key и cascade от comment;
 - `external_records` для owner-scoped provenance идемпотентного импорта;
 - `user_import_sessions` и `user_import_rows` для owner-scoped Project restore
@@ -537,7 +551,10 @@ outcome для каждой source row. Nested replies нормализуютс�
 сохранением source parent ID. Импорт также сохраняет timestamps, archive state,
 hierarchy, labels, relations, saved-view query/display и полный provider
 metadata в `external_records`; публичная provenance projection не повторяет
-comment bodies.
+comment bodies. Тот же planner преобразует Linear `stateHistory` в
+historical `status_changed` events с source timestamps/status names и actor
+snapshot; invalid rows получают explicit outcome, а deterministic source
+position делает повторный import идемпотентным.
 
 ### Системный backup и restore
 
@@ -572,6 +589,9 @@ comment bodies.
    `comment_migration_outcomes`. Validators schema `2`–`8` после проверки
    исходного checksum нормализуют прежние comments как native и добавляют
    пустой outcome set.
+10. Schema `10` переносит append-only `activity_events` и
+    `activity_migration_outcomes`. Validators schema `2`–`9` после исходного
+    checksum добавляют пустые activity tables без synthetic backfill.
 
 ### Project backup и restore
 
@@ -589,7 +609,8 @@ comment bodies.
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
-6. Current schema `9` сохраняет historical comments и reconciliation outcomes;
+6. Current schema `10` сохраняет historical comments, Activity и оба набора
+   reconciliation outcomes;
    schema `2`–`8` получает deterministic legacy upgrades после проверки
    исходного checksum и до записи staging rows.
 
@@ -620,10 +641,13 @@ comment bodies.
   idempotent create/reaction, stale versions, one-level replies, tombstones,
   stable pagination, historical no-impersonation/immutability, cutover
   reconciliation, Agent privacy projection и backup invariants.
+- Activity tests покрывают one-event atomicity, no-op/retry/conflict/rollback,
+  stable pagination, ACL/revoke, immutable actor facts, Linear cutover/import,
+  Agent/MCP projection и system/Project backup/restore.
 - Workspace sync tests покрывают event ordering/coalescing, idempotent patch и
   invalidation, create/update/delete, ACL fan-out без outsider leak, revoke
   reset, cursor gap, 30-дневный retention, Task за пределами 2000-record window,
-  lazy labels/relations/comments/external context и bounded reconnect backoff.
+  lazy labels/relations/comments/Activity/external context и bounded reconnect backoff.
 - Visual regression и accessibility checks следуют
   [спецификации интерфейса](specs/interface.md); сравнение с Linear проверяет
   composition и interaction parity, а не чужие assets.

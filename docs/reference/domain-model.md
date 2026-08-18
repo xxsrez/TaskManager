@@ -228,7 +228,7 @@ Project Owner имеет implicit highest access и не представлен 
 | `audience_user_id` | Authenticated principal, для которого рассчитан event |
 | `last_sequence` | Последний монотонный checkpoint этого principal |
 | `sequence` | Порядок event внутри principal scope |
-| `entity_type`, `entity_id` | Touched Task, Project, Release, SavedView, `task_detail`, `task_comments`, `task_external_source` либо workspace reset marker |
+| `entity_type`, `entity_id` | Touched Task, Project, Release, SavedView, `task_detail`, `task_comments`, `task_activity`, `task_external_source` либо workspace reset marker |
 | `operation` | `upsert`, `remove`, `invalidate` или `reset` |
 | `created_at` | Время записи journal event |
 
@@ -346,6 +346,9 @@ updated timestamp TaskRelation; validators schema `2`–`4` детерминир
 Logical backup schema `9` переносит unified historical comments и
 `comment_migration_outcomes`; validators schema `2`–`8` трактуют прежние
 comments как native и добавляют пустой reconciliation set.
+Schema `10` добавляет `activity_events` и `activity_migration_outcomes`;
+validators schema `2`–`9` нормализуют их как пустые, не синтезируя историю из
+текущего состояния Task.
 
 ## Comment и CommentReaction
 
@@ -397,6 +400,47 @@ delete state неизменяемы, но Editor+ может reply/react/resolve
 Outcome не публикует raw body в Task/Agent provenance projection. UI и Agent
 получают только migrated/exception counts; raw row доступна через защищённый
 backup или operator D1 procedure.
+
+## ActivityEvent и ActivityMigrationOutcome
+
+`ActivityEvent` — append-only пользовательская история одной Task. Она не
+заменяет operational sync journal и не даёт actor дополнительных permissions.
+
+| Поле | Семантика |
+|---|---|
+| `id`, `task_id` | Immutable event identity и Task, определяющая ACL и cascade lifecycle |
+| `schema_version` | Версия structured payload; текущая — `1` |
+| `event_type` | Stable domain type: create/update/status/move/label/hierarchy/relation/archive/comment и совместимые расширения |
+| `actor_kind` | `user`, `historical` либо `system` |
+| `actor_user_id`, `actor_name` | Server-verified User + display snapshot для native; historical/system не получают User identity |
+| `payload_json` | Bounded structured before/after facts без raw migration archive |
+| `source` | `native` либо `linear` |
+| `source_record_id`, `source_event_id`, `source_index` | Deterministic historical provenance; для native всегда `NULL` |
+| `created_at` | Server timestamp native mutation либо исходный Linear timestamp |
+
+Native event вставляется в одной D1 batch/transaction с guarded mutation.
+No-op, stale version, idempotent retry и rollback не оставляют event. UPDATE
+запрещён trigger; DELETE допустим только как cascade Task lifecycle или exact
+restore. `(source_record_id, source_index)` уникален для historical events.
+Project move создаёт один event с old/new Project и identifier; массовый
+Project-code backfill events не создаёт.
+
+`ActivityMigrationOutcome` хранит одну reconciliation row на позицию Linear
+`stateHistory`:
+
+| Поле | Семантика |
+|---|---|
+| `task_id`, `source_record_id`, `source_index` | Task, provenance и source position; `-1` обозначает invalid collection |
+| `source_event_id` | Optional Linear event identity |
+| `outcome`, `reason` | `migrated`/`exception` и machine-readable warning/error |
+| `activity_event_id` | Event для migrated; `NULL` для exception |
+| `raw_json`, `reconciled_at` | Точная evidence row и время reconciliation |
+
+Activity читается по `(created_at, id)` отдельной descending keyset pagination,
+maximum 50. Task ACL применяется до count/page; sync передаёт только
+`task_activity` invalidation. Retention совпадает с lifetime Task. System и
+Project logical backup schema `10` сохраняют обе таблицы; row/package limits
+отклоняют слишком большой export целиком без silent truncation.
 
 ### Project task code и sequence
 
@@ -667,6 +711,9 @@ Editor-or-higher role и optimistic `version`; смена access scope допо�
 23. Attachment всегда принадлежит Task и повторяет её текущий ACL перед metadata
     или object read. Idempotency уникальна для Task/uploader; object key не
     раскрывает filename, delete восстанавливаем до cleanup cutoff.
+24. ActivityEvent принадлежит ровно одной Task, immutable после insert и
+    создаётся атомарно с successful mutation. Historical actor snapshot не
+    является User; retry, conflict и rollback не создают event.
 
 ## Намеренно не моделируется
 

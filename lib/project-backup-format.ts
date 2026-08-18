@@ -1,5 +1,6 @@
 import { ValidationError } from "./domain";
 import {
+  restoreTableDefinitions,
   tableDefinitions,
   type BackupRow,
   type TableDefinition,
@@ -15,7 +16,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 9 as const;
+export const projectBackupSchemaVersion = 10 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -29,6 +30,8 @@ export const projectBackupTableNames = [
   "attachments",
   "comments",
   "comment_migration_outcomes",
+  "activity_events",
+  "activity_migration_outcomes",
   "comment_reactions",
   "labels",
   "task_labels",
@@ -51,7 +54,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -67,6 +70,11 @@ export type ProjectBackup = {
 };
 
 export const projectBackupTableDefinitions = tableDefinitions.filter(
+  (table): table is TableDefinition & { name: ProjectBackupTableName } =>
+    projectBackupTableNames.includes(table.name as ProjectBackupTableName),
+);
+
+export const projectBackupRestoreTableDefinitions = restoreTableDefinitions.filter(
   (table): table is TableDefinition & { name: ProjectBackupTableName } =>
     projectBackupTableNames.includes(table.name as ProjectBackupTableName),
 );
@@ -194,8 +202,9 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const legacyIdentifiers = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5;
   const legacyLabels = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6;
   const legacySavedViews = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7;
-  const legacyHistoricalComments = payload.schemaVersion !== projectBackupSchemaVersion;
-  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === projectBackupSchemaVersion;
+  const legacyHistoricalComments = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8;
+  const legacyActivity = payload.schemaVersion !== projectBackupSchemaVersion;
+  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === 9 || payload.schemaVersion === projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
@@ -216,7 +225,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const sourceTableNames = projectBackupTableNames.filter((name) =>
     !(withoutAttachments && name === "attachments") &&
     !(legacyIdentifiers && name === "task_identifier_aliases") &&
-    !(legacyHistoricalComments && name === "comment_migration_outcomes"),
+    !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
+    !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")),
   );
   exactKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as ProjectBackupTables;
@@ -224,7 +234,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   for (const table of projectBackupTableDefinitions) {
     const values = (withoutAttachments && table.name === "attachments") ||
       (legacyIdentifiers && table.name === "task_identifier_aliases") ||
-      (legacyHistoricalComments && table.name === "comment_migration_outcomes")
+      (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
+      (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes"))
       ? []
       : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += values.length;
@@ -287,6 +298,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     if (withoutAttachments && name === "attachments") continue;
     if (legacyIdentifiers && name === "task_identifier_aliases") continue;
     if (legacyHistoricalComments && name === "comment_migration_outcomes") continue;
+    if (legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
   validateProjectRelationships(tables, sharing, body);
@@ -296,29 +308,31 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
     projectPublicId: body.projectPublicId,
     projectName: body.projectName,
     ownerUserId: body.ownerUserId,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity
       ? Object.fromEntries(
           Object.entries(body.counts).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
             !(legacyIdentifiers && name === "task_identifier_aliases") &&
-            !(legacyHistoricalComments && name === "comment_migration_outcomes"),
+            !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
+            !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")),
           ),
         )
       : body.counts,
     warnings: body.warnings,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity
       ? Object.fromEntries(
           Object.entries(sourceNormalizedTables).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
             !(legacyIdentifiers && name === "task_identifier_aliases") &&
-            !(legacyHistoricalComments && name === "comment_migration_outcomes"),
+            !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
+            !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")),
           ),
         )
       : sourceNormalizedTables,
@@ -332,7 +346,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -707,6 +721,72 @@ function validateProjectRelationships(
       }
     } else if (outcome.comment_id !== null) {
       throw new ValidationError("Comment migration exception cannot reference a migrated comment");
+    }
+  }
+  const activityEvents = unique(tables.activity_events, "id", "activity event");
+  const activitySourceRows = new Set<string>();
+  for (const event of tables.activity_events) {
+    if (!tasks.has(String(event.task_id))) throw new ValidationError("Activity event is outside the project bundle");
+    if (event.schema_version !== 1 || (event.actor_kind !== "user" && event.actor_kind !== "historical" && event.actor_kind !== "system")) {
+      throw new ValidationError("Activity event contract is invalid");
+    }
+    if (event.actor_kind === "user") {
+      if (!String(event.actor_user_id ?? "").trim()) throw new ValidationError("Native activity actor is required");
+    } else if (event.actor_user_id !== null) {
+      throw new ValidationError("Historical activity cannot impersonate a User");
+    }
+    parseJsonObject(event.payload_json, "Activity payload");
+    if (event.source === "linear") {
+      const sourceRecord = externalRecords.get(String(event.source_record_id));
+      if (
+        event.actor_kind !== "historical" || event.actor_user_id !== null ||
+        !sourceRecord || sourceRecord.source !== "linear" ||
+        sourceRecord.target_type !== "task" || sourceRecord.target_id !== event.task_id
+      ) {
+        throw new ValidationError("Historical activity references an incompatible source record");
+      }
+      if (!Number.isSafeInteger(event.source_index) || Number(event.source_index) < 0) {
+        throw new ValidationError("Historical activity source index is invalid");
+      }
+      const key = `${event.source_record_id}\u0000${event.source_index}`;
+      if (activitySourceRows.has(key)) throw new ValidationError("Duplicate activity source row");
+      activitySourceRows.add(key);
+    } else if (event.source !== "native") {
+      throw new ValidationError("Activity source is invalid");
+    } else if (
+      !["user", "system"].includes(String(event.actor_kind)) ||
+      event.source_record_id !== null || event.source_event_id !== null ||
+      event.source_index !== null
+    ) {
+      throw new ValidationError("Native activity cannot carry migration provenance");
+    }
+  }
+  const activityOutcomeRows = new Set<string>();
+  for (const outcome of tables.activity_migration_outcomes) {
+    const key = `${outcome.source_record_id}\u0000${outcome.source_index}`;
+    if (activityOutcomeRows.has(key)) throw new ValidationError("Duplicate activity migration source row");
+    activityOutcomeRows.add(key);
+    if (!Number.isSafeInteger(outcome.source_index) || Number(outcome.source_index) < -1) {
+      throw new ValidationError("Activity migration source index is invalid");
+    }
+    if (!tasks.has(String(outcome.task_id)) || outcome.source !== "linear" || (outcome.outcome !== "migrated" && outcome.outcome !== "exception")) {
+      throw new ValidationError("Activity migration outcome is invalid");
+    }
+    const sourceRecord = externalRecords.get(String(outcome.source_record_id));
+    if (
+      !sourceRecord || sourceRecord.source !== outcome.source ||
+      sourceRecord.target_type !== "task" || sourceRecord.target_id !== outcome.task_id
+    ) {
+      throw new ValidationError("Activity migration outcome references an incompatible source record");
+    }
+    parseJsonValue(outcome.raw_json, "Activity migration raw source");
+    if (outcome.outcome === "migrated") {
+      const event = activityEvents.get(String(outcome.activity_event_id));
+      if (!event || event.task_id !== outcome.task_id || event.source_record_id !== outcome.source_record_id || event.source_index !== outcome.source_index) {
+        throw new ValidationError("Activity migration outcome does not match its event");
+      }
+    } else if (outcome.activity_event_id !== null) {
+      throw new ValidationError("Activity migration exception cannot reference an event");
     }
   }
   const grantees = new Set<string>();

@@ -10,6 +10,7 @@ import type {
   TaskRecord,
   UserRecord,
 } from "./types";
+import { activityEventAfterPreviousChange } from "./activity-write";
 
 type DbRow = Record<string, unknown>;
 
@@ -140,6 +141,12 @@ export async function createComment(
   const id = `comment_${crypto.randomUUID()}`;
   const now = laterTimestamp(task.updatedAt);
   const db = getD1();
+  const activity = activityEventAfterPreviousChange(db, currentUser, {
+    taskId: task.id,
+    eventType: "comment_added",
+    payload: { commentId: id, parentCommentId },
+    createdAt: now,
+  });
   await db.batch([
     db.prepare(
       `INSERT OR IGNORE INTO comments
@@ -156,6 +163,7 @@ export async function createComment(
       now,
       now,
     ),
+    activity.statement,
     db.prepare(
       `UPDATE comments SET resolved_at = NULL, resolved_by_user_id = NULL,
          resolution_comment_id = NULL, version = version + 1, updated_at = ?
@@ -167,8 +175,8 @@ export async function createComment(
          comment_count = (SELECT COUNT(*) FROM comments
            WHERE task_id = ? AND deleted_at IS NULL),
          updated_at = ${MONOTONIC_TASK_UPDATED_AT}
-       WHERE id = ? AND EXISTS (SELECT 1 FROM comments WHERE id = ?)`,
-    ).bind(task.id, now, now, task.id, id),
+       WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
+    ).bind(task.id, now, now, task.id, activity.id),
   ]);
   const inserted = await getD1()
     .prepare(
@@ -202,13 +210,22 @@ export async function editComment(
   const now = laterTimestamp(String(comment.updated_at));
   const taskNow = laterTimestamp(task.updatedAt);
   const db = getD1();
+  const activity = activityEventAfterPreviousChange(db, currentUser, {
+    taskId: task.id,
+    eventType: "comment_edited",
+    payload: { commentId },
+    createdAt: taskNow,
+  });
   const result = await db.batch([
     db.prepare(
       `UPDATE comments SET body = ?, updated_at = ?, version = version + 1
        WHERE id = ? AND task_id = ? AND version = ?`,
     ).bind(body, now, commentId, task.id, Number(comment.version)),
-    db.prepare(`UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT} WHERE id = ?`)
-      .bind(taskNow, taskNow, task.id),
+    activity.statement,
+    db.prepare(
+      `UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT}
+       WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
+    ).bind(taskNow, taskNow, task.id, activity.id),
   ]);
   // D1 may include nested sync-trigger writes in meta.changes. The guarded
   // primary-key update still touches at most one Comment row.
@@ -239,17 +256,25 @@ export async function deleteComment(
   const now = laterTimestamp(String(comment.updated_at));
   const taskNow = laterTimestamp(task.updatedAt);
   const db = getD1();
+  const activity = activityEventAfterPreviousChange(db, currentUser, {
+    taskId: task.id,
+    eventType: "comment_deleted",
+    payload: { commentId },
+    createdAt: taskNow,
+  });
   const result = await db.batch([
     db.prepare(
       `UPDATE comments SET body = '', deleted_at = ?, updated_at = ?,
          version = version + 1
        WHERE id = ? AND task_id = ? AND version = ?`,
     ).bind(now, now, commentId, task.id, Number(comment.version)),
+    activity.statement,
     db.prepare(
       `UPDATE tasks SET comment_count = (
          SELECT COUNT(*) FROM comments WHERE task_id = ? AND deleted_at IS NULL
-       ), updated_at = ${MONOTONIC_TASK_UPDATED_AT} WHERE id = ?`,
-    ).bind(task.id, taskNow, taskNow, task.id),
+       ), updated_at = ${MONOTONIC_TASK_UPDATED_AT}
+       WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
+    ).bind(task.id, taskNow, taskNow, task.id, activity.id),
   ]);
   if ((result[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Comment was changed in another session");
@@ -280,9 +305,21 @@ export async function resolveCommentThread(
       throw new ValidationError("Resolution comment must belong to the thread");
     }
   }
+  if (
+    Boolean(root.resolved_at) === input.resolved &&
+    (!input.resolved || nullableString(root.resolution_comment_id) === resolutionCommentId)
+  ) {
+    return getCommentRecord(currentUser, task, rootId);
+  }
   const now = laterTimestamp(String(root.updated_at));
   const taskNow = laterTimestamp(task.updatedAt);
   const db = getD1();
+  const activity = activityEventAfterPreviousChange(db, currentUser, {
+    taskId: task.id,
+    eventType: input.resolved ? "comment_resolved" : "comment_reopened",
+    payload: { rootCommentId: rootId, resolutionCommentId },
+    createdAt: taskNow,
+  });
   const result = await db.batch([
     db.prepare(
       `UPDATE comments SET resolved_at = ?, resolved_by_user_id = ?,
@@ -297,8 +334,11 @@ export async function resolveCommentThread(
       task.id,
       Number(root.version),
     ),
-    db.prepare(`UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT} WHERE id = ?`)
-      .bind(taskNow, taskNow, task.id),
+    activity.statement,
+    db.prepare(
+      `UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT}
+       WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
+    ).bind(taskNow, taskNow, task.id, activity.id),
   ]);
   if ((result[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Comment thread was changed in another session");
@@ -320,7 +360,21 @@ export async function setCommentReaction(
     throw new ValidationError("active must be true or false");
   }
   const db = getD1();
+  const existingReaction = await db.prepare(
+    `SELECT 1 AS active FROM comment_reactions
+     WHERE comment_id = ? AND user_id = ? AND emoji = ?`,
+  ).bind(commentId, currentUser.id, emoji).first<{ active: number }>();
+  if (Boolean(existingReaction) === input.active) {
+    const reactions = await loadReactionMap([commentId], currentUser.id);
+    return reactions.get(commentId) ?? [];
+  }
   const taskNow = laterTimestamp(task.updatedAt);
+  const activity = activityEventAfterPreviousChange(db, currentUser, {
+    taskId: task.id,
+    eventType: "comment_reaction_changed",
+    payload: { commentId, emoji, active: input.active },
+    createdAt: taskNow,
+  });
   await db.batch([
     input.active
       ? db.prepare(
@@ -331,8 +385,11 @@ export async function setCommentReaction(
           `DELETE FROM comment_reactions
            WHERE comment_id = ? AND user_id = ? AND emoji = ?`,
         ).bind(commentId, currentUser.id, emoji),
-    db.prepare(`UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT} WHERE id = ?`)
-      .bind(taskNow, taskNow, task.id),
+    activity.statement,
+    db.prepare(
+      `UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT}
+       WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
+    ).bind(taskNow, taskNow, task.id, activity.id),
   ]);
   const reactions = await loadReactionMap([commentId], currentUser.id);
   return reactions.get(commentId) ?? [];

@@ -40,6 +40,7 @@ import {
   listAgentLabels,
   listAgentTasks,
   listAgentTaskAttachments,
+  listAgentTaskActivity,
   listAgentTaskComments,
   moveAgentTask,
   setAgentTaskParent,
@@ -648,6 +649,23 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
           version,
           toolOrigin(context),
         )),
+  );
+
+  server.registerTool(
+    "list_task_activity",
+    {
+      title: "List task activity",
+      description: "Lists bounded ACL-scoped native and migrated Task activity without adding event bodies to workspace or task summaries.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        limit: z.number().int().min(1).max(50).optional(),
+        cursor: z.string().min(1).optional(),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ taskRef, limit, cursor }) => toolCall(() =>
+      listAgentTaskActivity(context.user, taskRef, { limit, cursor })),
   );
 
   server.registerTool(

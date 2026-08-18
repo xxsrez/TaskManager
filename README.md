@@ -17,8 +17,9 @@ retry, lazy metadata, server-generated thumbnails, preview/download и
 recoverable delete/restore. Готовые raster images можно безопасно встраивать в
 Markdown description через versioned private reference с общей server-side
 валидацией для UI, Agent API и MCP. Agent REST/MCP поддерживают native
-attachments и versioned Task relations; system/Project backup переносит
-attachments и relation concurrency metadata с legacy compatibility.
+attachments, versioned Task relations и bounded read-only Task Activity;
+system/Project backup schema `10` переносит attachments, relation concurrency,
+append-only events и Linear reconciliation metadata с legacy compatibility.
 Google sign-in остаётся
 обязательным, но ещё не реализован: доступный Sites contract пока не даёт
 подтверждённого external-provider adapter.
@@ -55,4 +56,5 @@ npm run dev
 - [Решение об обязательном Project и identifiers Tasks](docs/decisions/0012-project-required-task-identifiers.md)
 - [Runbook релизов Sites](docs/operations/sites-release.md)
 - [Runbook вложений](docs/operations/attachments.md)
+- [Runbook Task Activity](docs/operations/task-activity.md)
 - [Исследование Linear](docs/reports/2026-08-13-linear-product-study.md)

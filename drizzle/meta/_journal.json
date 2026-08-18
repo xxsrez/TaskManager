@@ -162,6 +162,13 @@
       "when": 1787034842579,
       "tag": "0022_cheerful_sue_storm",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1787037665989,
+      "tag": "0023_tan_millenium_guard",
+      "breakpoints": true
     }
   ]
 }

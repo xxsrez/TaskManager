@@ -8,6 +8,10 @@ import {
 } from "./domain";
 import { getTask } from "./repository";
 import type { TaskRecord, TaskRelationRecord, UserRecord } from "./types";
+import {
+  activityBatchAssertion,
+  activityEventStatement,
+} from "./activity-write";
 
 type DbRow = Record<string, unknown>;
 
@@ -66,6 +70,12 @@ export async function createTaskRelation(
   const relationId = `relation_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
   const db = getD1();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId: anchor.id,
+    eventType: "relation_created",
+    payload: { relation: { id: relationId, ...semantic } },
+    createdAt: now,
+  });
   const insert = db
     .prepare(
       `INSERT INTO task_relations (
@@ -108,8 +118,24 @@ export async function createTaskRelation(
       const status = await loadDuplicateStatus(source.ownerUserId);
       const taskVersion = expectedTaskVersion(input.taskVersion, source);
       const timestamps = statusTimestamps(status.category, source, now);
+      const duplicateActivity = activityEventStatement(db, currentUser, {
+        taskId: anchor.id,
+        eventType: "relation_created",
+        payload: {
+          relation: { id: relationId, ...semantic },
+          changes: {
+            status: {
+              taskId: source.id,
+              before: { id: source.statusId },
+              after: { id: status.id, name: status.name },
+            },
+          },
+        },
+        createdAt: now,
+      });
       const results = await db.batch([
         insert,
+        activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
         duplicateStatusUpdate(
           db,
           currentUser.id,
@@ -119,16 +145,23 @@ export async function createTaskRelation(
           timestamps,
           now,
         ),
+        activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
+        duplicateActivity.statement,
       ]);
       if (
         (results[0]?.meta.changes ?? 0) < 1 ||
-        (results[1]?.meta.changes ?? 0) < 1
+        (results[2]?.meta.changes ?? 0) < 1
       ) {
         throw new ConflictError("A task changed before the relation was saved");
       }
     } else {
-      const result = await insert.run();
-      if ((result.meta.changes ?? 0) < 1) {
+      const results = await db.batch([
+        insert,
+        activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
+        activity.statement,
+        touchTaskActivity(db, anchor.id, now),
+      ]);
+      if ((results[0]?.meta.changes ?? 0) < 1) {
         throw new ConflictError("Task access changed before the relation was saved");
       }
     }
@@ -179,6 +212,12 @@ export async function updateTaskRelation(
   }
   const now = new Date().toISOString();
   const db = getD1();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId: anchor.id,
+    eventType: "relation_updated",
+    payload: { before: current, after: { ...current, ...semantic, version: current.version + 1 } },
+    createdAt: now,
+  });
   const update = db
     .prepare(
       `UPDATE task_relations SET
@@ -218,8 +257,25 @@ export async function updateTaskRelation(
       const status = await loadDuplicateStatus(source.ownerUserId);
       const taskVersion = expectedTaskVersion(input.taskVersion, source);
       const timestamps = statusTimestamps(status.category, source, now);
+      const duplicateActivity = activityEventStatement(db, currentUser, {
+        taskId: anchor.id,
+        eventType: "relation_updated",
+        payload: {
+          before: current,
+          after: { ...current, ...semantic, version: current.version + 1 },
+          changes: {
+            status: {
+              taskId: source.id,
+              before: { id: source.statusId },
+              after: { id: status.id, name: status.name },
+            },
+          },
+        },
+        createdAt: now,
+      });
       const results = await db.batch([
         update,
+        activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
         duplicateStatusUpdate(
           db,
           currentUser.id,
@@ -229,16 +285,23 @@ export async function updateTaskRelation(
           timestamps,
           now,
         ),
+        activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
+        duplicateActivity.statement,
       ]);
       if (
         (results[0]?.meta.changes ?? 0) < 1 ||
-        (results[1]?.meta.changes ?? 0) < 1
+        (results[2]?.meta.changes ?? 0) < 1
       ) {
         throw new ConflictError("A task or relation changed before save");
       }
     } else {
-      const result = await update.run();
-      if ((result.meta.changes ?? 0) < 1) {
+      const results = await db.batch([
+        update,
+        activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
+        activity.statement,
+        touchTaskActivity(db, anchor.id, now),
+      ]);
+      if ((results[0]?.meta.changes ?? 0) < 1) {
         throw new ConflictError("A task or relation changed before save");
       }
     }
@@ -275,14 +338,23 @@ export async function deleteTaskRelation(
       : relation.sourceTaskId,
   );
   assertEditableProjectTasks(anchor, peer);
-  const result = await getD1()
-    .prepare(
+  const now = new Date().toISOString();
+  const db = getD1();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId: anchor.id,
+    eventType: "relation_deleted",
+    payload: { relation },
+    createdAt: now,
+  });
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch([
+      db.prepare(
       `DELETE FROM task_relations
        WHERE id = ? AND version = ?
          AND ${editableParticipantExists("source_task")}
          AND ${editableParticipantExists("target_task")}`,
-    )
-    .bind(
+      ).bind(
       relation.id,
       expectedVersion,
       relation.sourceTaskId,
@@ -291,12 +363,31 @@ export async function deleteTaskRelation(
       relation.targetTaskId,
       currentUser.id,
       currentUser.id,
-    )
-    .run();
-  if ((result.meta.changes ?? 0) < 1) {
+      ),
+      activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
+      activity.statement,
+      touchTaskActivity(db, anchor.id, now),
+    ]);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError("A task or relation changed before removal");
+    }
+    throw error;
+  }
+  if ((results[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("A task or relation changed before removal");
   }
   return { deleted: true, relation };
+}
+
+function touchTaskActivity(db: D1Database, taskId: string, now: string) {
+  return db.prepare(
+    `UPDATE tasks SET updated_at = CASE
+       WHEN updated_at >= ?
+         THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
+       ELSE ? END
+     WHERE id = ?`,
+  ).bind(now, now, taskId);
 }
 
 export function normalizeRelation(
@@ -369,16 +460,16 @@ async function findLogicalRelation(
 async function loadDuplicateStatus(ownerUserId: string) {
   const row = await getD1()
     .prepare(
-      `SELECT id, category FROM workflow_statuses
+      `SELECT id, name, category FROM workflow_statuses
        WHERE owner_user_id = ? AND system_role = 'duplicate'
          AND archived_at IS NULL LIMIT 1`,
     )
     .bind(ownerUserId)
-    .first<{ id: string; category: string }>();
+    .first<{ id: string; name: string; category: string }>();
   if (!row || row.category !== "canceled") {
     throw new ValidationError("Reserved Duplicate status is not available");
   }
-  return { id: row.id, category: "canceled" as const };
+  return { id: row.id, name: row.name, category: "canceled" as const };
 }
 
 function duplicateStatusUpdate(

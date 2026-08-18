@@ -94,6 +94,8 @@ export function mergeTaskSummary(
     retained.detailInvalidationCursor;
   const commentInvalidationCursor = incoming.commentInvalidationCursor ??
     retained.commentInvalidationCursor;
+  const activityInvalidationCursor = incoming.activityInvalidationCursor ??
+    retained.activityInvalidationCursor;
   const attachmentInvalidationCursor = incoming.attachmentInvalidationCursor ??
     retained.attachmentInvalidationCursor;
   const externalSourceInvalidationCursor = incoming.externalSourceInvalidationCursor ??
@@ -105,6 +107,9 @@ export function mergeTaskSummary(
   }
   if (commentInvalidationCursor !== undefined) {
     clientState.commentInvalidationCursor = commentInvalidationCursor;
+  }
+  if (activityInvalidationCursor !== undefined) {
+    clientState.activityInvalidationCursor = activityInvalidationCursor;
   }
   if (attachmentInvalidationCursor !== undefined) {
     clientState.attachmentInvalidationCursor = attachmentInvalidationCursor;
@@ -130,19 +135,22 @@ function applyLazyInvalidations(
 ): TaskRecord[] {
   const detailIds = new Set(invalidations.taskDetails);
   const commentIds = new Set(invalidations.taskComments);
+  const activityIds = new Set(invalidations.taskActivities);
   const attachmentIds = new Set(invalidations.taskAttachments);
   const externalSourceIds = new Set(invalidations.taskExternalSources);
-  if (!detailIds.size && !commentIds.size && !attachmentIds.size && !externalSourceIds.size) return tasks;
+  if (!detailIds.size && !commentIds.size && !activityIds.size && !attachmentIds.size && !externalSourceIds.size) return tasks;
   return tasks.map((task) => {
     const detailInvalidated = detailIds.has(task.id) &&
       task.detailInvalidationCursor !== cursor;
     const commentsInvalidated = commentIds.has(task.id) &&
       task.commentInvalidationCursor !== cursor;
+    const activityInvalidated = activityIds.has(task.id) &&
+      task.activityInvalidationCursor !== cursor;
     const attachmentsInvalidated = attachmentIds.has(task.id) &&
       task.attachmentInvalidationCursor !== cursor;
     const externalSourceInvalidated = externalSourceIds.has(task.id) &&
       task.externalSourceInvalidationCursor !== cursor;
-    if (!detailInvalidated && !commentsInvalidated && !attachmentsInvalidated && !externalSourceInvalidated) {
+    if (!detailInvalidated && !commentsInvalidated && !activityInvalidated && !attachmentsInvalidated && !externalSourceInvalidated) {
       return task;
     }
     return {
@@ -151,6 +159,7 @@ function applyLazyInvalidations(
         ? { detailStale: true, detailInvalidationCursor: cursor }
         : {}),
       ...(commentsInvalidated ? { commentInvalidationCursor: cursor } : {}),
+      ...(activityInvalidated ? { activityInvalidationCursor: cursor } : {}),
       ...(attachmentsInvalidated ? { attachmentInvalidationCursor: cursor } : {}),
       ...(externalSourceInvalidated
         ? { externalSourceInvalidationCursor: cursor }

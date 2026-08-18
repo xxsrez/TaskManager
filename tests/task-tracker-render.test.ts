@@ -747,6 +747,7 @@ test("task detail reconciliation patches and removes related task summaries", ()
     invalidations: {
       taskDetails: [],
       taskComments: [],
+      taskActivities: [],
       taskAttachments: [],
       taskExternalSources: [],
     },
@@ -764,6 +765,7 @@ test("task detail reconciliation patches and removes related task summaries", ()
     invalidations: {
       taskDetails: [],
       taskComments: [],
+      taskActivities: [],
       taskAttachments: [],
       taskExternalSources: [],
     },
@@ -794,6 +796,7 @@ test("task detail invalidation marks loaded same-version context for lazy refres
     invalidations: {
       taskDetails: [focusedTask.id],
       taskComments: [],
+      taskActivities: [],
       taskAttachments: [],
       taskExternalSources: [],
     },
@@ -813,6 +816,7 @@ test("task detail invalidation marks loaded same-version context for lazy refres
     invalidations: {
       taskDetails: [focusedTask.id],
       taskComments: [],
+      taskActivities: [],
       taskAttachments: [],
       taskExternalSources: [],
     },
@@ -831,6 +835,7 @@ test("task detail invalidation marks loaded same-version context for lazy refres
     invalidations: {
       taskDetails: [focusedTask.id],
       taskComments: [],
+      taskActivities: [],
       taskAttachments: [],
       taskExternalSources: [],
     },

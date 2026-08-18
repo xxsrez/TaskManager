@@ -72,7 +72,16 @@ function fixture(): Record<string, unknown> {
         attachments: [
           { title: "Evidence", subtitle: null, url: "https://example.com" },
         ],
-        stateHistory: [{ state: { name: "Done" } }],
+        stateHistory: [
+          {
+            id: "history-1",
+            fromState: { name: "Todo" },
+            state: { name: "Done" },
+            actor: { name: "Historical Operator" },
+            createdAt: "2026-08-03T00:00:00.000Z",
+          },
+          { id: "history-invalid", state: { name: "Done" } },
+        ],
         url: "https://linear.app/example/AND-2",
         gitBranchName: "and-2-child",
         createdAt: "2026-08-02T00:00:00.000Z",
@@ -193,6 +202,15 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   assert.equal(plan.historicalComments[0]?.authorName, "Historical Author");
   assert.equal(plan.historicalComments[0]?.quotedText, "Historical quote");
   assert.equal(plan.commentMigrationOutcomes[0]?.outcome, "migrated");
+  assert.equal(plan.historicalActivityEvents.length, 1);
+  assert.equal(plan.historicalActivityEvents[0]?.actorName, "Historical Operator");
+  assert.equal(plan.historicalActivityEvents[0]?.eventType, "status_changed");
+  assert.equal(plan.activityMigrationOutcomes[0]?.outcome, "migrated");
+  assert.equal(plan.activityMigrationOutcomes[1]?.outcome, "exception");
+  assert.equal(
+    plan.activityMigrationOutcomes[1]?.reason,
+    "activity_timestamp_missing",
+  );
 });
 
 test("Linear import writes Project identifiers and aliases idempotently", async () => {
@@ -207,6 +225,8 @@ test("Linear import writes Project identifiers and aliases idempotently", async 
     const first = await importLinearWorkspace(owner, fixture());
     const second = await importLinearWorkspace(owner, fixture());
     assert.equal(first.tasks, 2);
+    assert.equal(first.activityMigrated, 1);
+    assert.equal(first.activityExceptions, 1);
     assert.deepEqual(second, first);
 
     const project = await harness.database.prepare(
@@ -251,6 +271,32 @@ test("Linear import writes Project identifiers and aliases idempotently", async 
     assert.equal(outcomes.results.length, 1);
     assert.equal(outcomes.results[0]?.outcome, "migrated");
     assert.ok(outcomes.results[0]?.comment_id);
+    const activity = await harness.database.prepare(
+      `SELECT ae.source, ae.actor_kind, ae.actor_name, ae.event_type,
+         ae.payload_json, amo.outcome, amo.reason
+       FROM activity_migration_outcomes amo
+       LEFT JOIN activity_events ae ON ae.id = amo.activity_event_id
+       ORDER BY amo.source_index`,
+    ).all<Record<string, unknown>>();
+    assert.equal(activity.results.length, 2);
+    assert.deepEqual(activity.results[0], {
+      source: "linear",
+      actor_kind: "historical",
+      actor_name: "Historical Operator",
+      event_type: "status_changed",
+      payload_json: JSON.stringify({
+        changes: { status: { before: "Todo", after: "Done" } },
+        sourceTimestamp: "2026-08-03T00:00:00.000Z",
+      }),
+      outcome: "migrated",
+      reason: null,
+    });
+    assert.equal(activity.results[1]?.outcome, "exception");
+    assert.equal(activity.results[1]?.reason, "activity_timestamp_missing");
+    const eventCount = await harness.database.prepare(
+      "SELECT COUNT(*) AS count FROM activity_events WHERE source = 'linear'",
+    ).first<{ count: number }>();
+    assert.equal(eventCount?.count, 1);
   } finally {
     await harness.dispose();
   }

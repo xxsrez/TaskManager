@@ -80,6 +80,7 @@ function response(cursor: string, hasMore: boolean): WorkspaceSyncResponse {
       invalidations: {
         taskDetails: [],
         taskComments: [],
+        taskActivities: [],
         taskAttachments: [],
         taskExternalSources: [],
       },

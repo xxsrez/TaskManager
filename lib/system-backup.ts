@@ -14,6 +14,7 @@ import {
   liveTableDeleteOrder,
   normalizeDbRow,
   restoreInsertSql,
+  restoreTableDefinitions,
   tableDefinitions,
   validateSystemBackup,
   type BackupTables,
@@ -185,7 +186,7 @@ export async function applySystemBackup(
     statements.push(db.prepare(`DELETE FROM ${table}`));
   }
   for (const table of liveTableDeleteOrder) statements.push(db.prepare(`DELETE FROM ${table}`));
-  for (const table of tableDefinitions) {
+  for (const table of restoreTableDefinitions) {
     statements.push(
       db.prepare(restoreInsertSql(table))
         .bind(input.importId, table.name),

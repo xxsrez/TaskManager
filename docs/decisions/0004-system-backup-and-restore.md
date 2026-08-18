@@ -33,6 +33,13 @@ version и updated timestamp. Schema `2`–`4` остаются импортир
 outcome — отдельная audit row для каждой source row, row guard повышен с 1000
 до 5000 при неизменных лимитах 10 MB на container и 1.5 MB на row.
 
+Дополнение 2026-08-18: append-only Task Activity повышает `schemaVersion` до
+`10`. Snapshot переносит `activity_events` и `activity_migration_outcomes`;
+schemas `2`–`9` после проверки исходного checksum нормализуются с пустой
+Activity и не получают выдуманный backfill из текущего Task state. Retention
+совпадает с lifetime Task, а существующие 5 000 rows/table, 10 MB/container и
+1.5 MB/row guards отклоняют oversized export целиком.
+
 ## Контекст
 
 Task Manager хранит структурированное product state в Sites D1: Users,
@@ -55,7 +62,8 @@ admin boundary.
    навигации не показывается.
 2. В первой версии backup — версионированный logical JSON snapshot, а не raw
    SQLite/SQL dump. Он включает все product, identity, ownership, ACL,
-   provenance, native/historical comments, reconciliation outcomes, reactions
+   provenance, native/historical comments, append-only Task Activity,
+   reconciliation outcomes, reactions
    и archived records, но не
    schema/migrations, hosted secrets,
    Sites audience/deployments/analytics, browser-local preferences и

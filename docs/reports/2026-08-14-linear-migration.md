@@ -12,6 +12,14 @@ cutover `0022` мигрирует такие rows в unified historical comments
 означает production deploy: production migration по-прежнему требует отдельной
 явной команды.
 
+Обновление 2026-08-18: current migration `0023` переносит полезные
+`stateHistory` rows в append-only historical Task Activity с source timestamps,
+status names и actor snapshots, записывая явный `migrated`/`exception` outcome.
+Процедура и retention/rollback boundary описаны в
+[runbook Task Activity](../operations/task-activity.md). Raw status evidence
+сохраняется в provenance до отдельно разрешённого production cutover TM-245;
+этот документ такого разрешения не даёт.
+
 ## Результат
 
 Все 204 задачи workspace `Andrei Miasnikov` перенесены в owner-only production
@@ -112,7 +120,8 @@ validate_docs.rb --strict-navigation
   названия и исходные Linear URLs. Для автономного хранения файлов нужен новый
   R2-backed upload slice и отдельное расширение спецификации.
 - Импортированные комментарии read-only. Создание, редактирование, реакции и
-  native activity feed остаются вне текущего MVP.
+  native activity feed на момент этого production snapshot оставались вне
+  реализованного среза; current schema реализует их отдельно.
 - В Linear нет cycles для этой team; issue documents отсутствуют, project
   initiatives пусты. Поэтому для них не было записей, требующих миграции.
 - Локальные JSON snapshots приватны, игнорируются Git и не входят в deployment

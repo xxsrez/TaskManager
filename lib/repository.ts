@@ -68,6 +68,12 @@ import {
   taskDescriptionAttachmentPredicate,
   validateTaskDescriptionAttachments,
 } from "./task-description-attachments";
+import {
+  activityBatchAssertion,
+  activityEventStatement,
+  changedFields,
+  newActivityId,
+} from "./activity-write";
 
 type DbRow = Record<string, unknown>;
 
@@ -777,6 +783,10 @@ export async function getTaskExternalSource(
                WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS comments_migrated,
               (SELECT COUNT(*) FROM comment_migration_outcomes outcome
                WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS comment_exceptions
+              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS activity_migrated
+              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS activity_exceptions
        FROM external_records er
        WHERE er.target_type = 'task' AND er.target_id = ? AND er.source = 'linear'
        ORDER BY er.imported_at DESC
@@ -1260,6 +1270,16 @@ export async function createTask(
   );
   const taskId = `task_${crypto.randomUUID()}`;
   const publicId = crypto.randomUUID();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId,
+    eventType: "task_created",
+    payload: {
+      identifier: `${sequenceRow.task_code}-${sequence}`,
+      project: { id: project.id, name: project.name },
+      status: { id: status.id, name: status.name },
+    },
+    createdAt: now,
+  });
 
   await db.batch([
     db.prepare(
@@ -1296,6 +1316,7 @@ export async function createTask(
     ...labelIds.map((labelId) => db.prepare(
       `INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)`,
     ).bind(taskId, labelId)),
+    activity.statement,
   ]);
   return { id: taskId, publicId };
 }
@@ -1359,6 +1380,16 @@ export async function createSubtask(
   const publicId = crypto.randomUUID();
   const assertionId = `subtask_assert_${crypto.randomUUID()}`;
   const db = getD1();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId,
+    eventType: "task_created",
+    payload: {
+      parentTaskId: parent.id,
+      project: { id: project.id, name: project.name },
+      status: { id: status.id, name: status.name },
+    },
+    createdAt: now,
+  });
 
   try {
     const results = await db.batch([
@@ -1461,6 +1492,7 @@ export async function createSubtask(
       ...labelIds.map((labelId) => db.prepare(
         `INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)`,
       ).bind(taskId, labelId)),
+      activity.statement,
     ]);
     if (
       (results[0]?.meta.changes ?? 0) < 1 ||
@@ -1525,6 +1557,16 @@ export async function setTaskParent(
   const now = new Date().toISOString();
   const oldParentTaskId = task.parentTaskId;
   const db = getD1();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId: task.id,
+    eventType: "hierarchy_changed",
+    payload: {
+      changes: {
+        parentTaskId: { before: oldParentTaskId, after: parentTaskId },
+      },
+    },
+    createdAt: now,
+  });
   const parentGuard = parentTaskId
     ? `EXISTS (
          SELECT 1 FROM tasks parent
@@ -1543,8 +1585,10 @@ export async function setTaskParent(
        )`
     : "1 = 1";
   const parentBindings = parentTaskId ? [parentTaskId, parentTaskId] : [];
-  const results = await db.batch([
-    db.prepare(
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch([
+      db.prepare(
       `UPDATE tasks SET parent_task_id = ?, version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND project_id IS NOT NULL
          AND ${parentGuard} AND ${editableTaskWhere}`,
@@ -1559,6 +1603,12 @@ export async function setTaskParent(
       currentUser.id,
       currentUser.id,
     ),
+    activityBatchAssertion(
+      db,
+      `activity_assert_${crypto.randomUUID()}`,
+      now,
+    ),
+    activity.statement,
     db.prepare(
       `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
        SELECT ?, 'task_detail'
@@ -1588,8 +1638,16 @@ export async function setTaskParent(
       task.id,
       expectedVersion + 1,
       parentTaskId,
-    ),
-  ]);
+      ),
+    ]);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError(
+        "Task hierarchy, Project access, or Task version changed before the update committed",
+      );
+    }
+    throw error;
+  }
   if ((results[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError(
       "Task hierarchy, Project access, or Task version changed before the update committed",
@@ -1652,6 +1710,9 @@ export async function updateTask(
   const status = Object.hasOwn(input, "statusId")
     ? await loadStatus(task.ownerUserId, String(input.statusId))
     : await loadStatus(task.ownerUserId, task.statusId, { allowArchived: true });
+  const previousStatus = status.id === task.statusId
+    ? status
+    : await loadStatus(task.ownerUserId, task.statusId, { allowArchived: true });
   const now = new Date().toISOString();
   const timestamps = statusTimestamps(status.category, task, now);
   const title = Object.hasOwn(input, "title")
@@ -1683,8 +1744,43 @@ export async function updateTask(
     ? finiteNumber(input.rank, "Rank")
     : task.rank;
 
-  const result = await getD1()
-    .prepare(
+  const changes = changedFields([
+    ["title", task.title, title],
+    ["description", task.description ?? "", description],
+    ["status", { id: task.statusId, name: previousStatus.name }, { id: status.id, name: status.name }],
+    ["priority", task.priority, nextPriority],
+    ["assigneeUserId", task.assigneeUserId, assigneeUserId],
+    ["projectId", task.projectId, projectId],
+    ["releaseId", task.releaseId, releaseId],
+    ["estimate", task.estimate, estimate],
+    ["dueDate", task.dueDate, dueDate],
+    ["rank", task.rank, rank],
+    ["archivedAt", task.archivedAt, archivedAt],
+  ]);
+  if (Object.keys(changes).length === 0) return task;
+  if (Object.hasOwn(changes, "description")) {
+    changes.description = {
+      before: task.description ? "Set" : "Empty",
+      after: description ? "Set" : "Empty",
+    };
+  }
+  const eventType = Object.hasOwn(changes, "archivedAt")
+    ? archivedAt ? "task_archived" : "task_restored"
+    : Object.keys(changes).length === 1 && Object.hasOwn(changes, "status")
+      ? "status_changed"
+      : "task_updated";
+  const db = getD1();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId,
+    eventType,
+    payload: { changes },
+    createdAt: now,
+  });
+
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch([
+      db.prepare(
       `UPDATE tasks SET
         title = ?, description = ?, status_id = ?, priority = ?,
         assignee_user_id = ?, project_id = ?, release_id = ?, estimate = ?, due_date = ?, rank = ?,
@@ -1718,8 +1814,7 @@ export async function updateTask(
              AND locked_release.status = 'released'
          )
        )`,
-    )
-    .bind(
+      ).bind(
       title,
       description,
       status.id,
@@ -1745,9 +1840,21 @@ export async function updateTask(
       input.confirmReleasedComposition === true ? 1 : 0,
       releaseId,
       releaseId,
-    )
-    .run();
-  if ((result.meta.changes ?? 0) < 1) {
+      ),
+      activityBatchAssertion(
+        db,
+        `activity_assert_${crypto.randomUUID()}`,
+        now,
+      ),
+      activity.statement,
+    ]);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError("Task was changed in another session");
+    }
+    throw error;
+  }
+  if ((results[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Task was changed in another session");
   }
   return loadAccessibleTask(currentUser.id, taskId);
@@ -1915,6 +2022,38 @@ export async function moveTask(
   ];
   const assertionId = `move_assert_${crypto.randomUUID()}`;
   const aliasId = `alias_${crypto.randomUUID()}`;
+  const activityId = newActivityId();
+  const activityInsert = db.prepare(
+    `INSERT INTO activity_events
+      (id, task_id, schema_version, event_type, actor_kind, actor_user_id,
+       actor_name, payload_json, source, created_at)
+     SELECT ?, moved.id, 1, 'task_moved', 'user', ?, ?,
+       json_object('changes', json_object(
+         'project', json_object(
+           'before', json_object('id', ?, 'name', ?),
+           'after', json_object('id', ?, 'name', ?)
+         ),
+         'identifier', json_object('before', ?, 'after', moved.identifier),
+         'releaseId', json_object('before', ?, 'after', moved.release_id),
+         'assigneeUserId', json_object('before', ?, 'after', moved.assignee_user_id)
+       )),
+       'native', ?
+     FROM tasks moved WHERE moved.id = ? AND moved.version = ?`,
+  ).bind(
+    activityId,
+    currentUser.id,
+    currentUser.displayName,
+    sourceProject.id,
+    sourceProject.name,
+    targetProject.id,
+    targetProject.name,
+    task.identifier,
+    task.releaseId,
+    task.assigneeUserId,
+    now,
+    task.id,
+    expectedVersion + 1,
+  );
 
   try {
     const results = await db.batch([
@@ -1972,6 +2111,7 @@ export async function moveTask(
            VALUES (?, ?, ?, ?)`,
         )
         .bind(aliasId, task.id, task.identifier, now),
+      activityInsert,
     ]);
     if (
       (results[0]?.meta.changes ?? 0) < 1 ||
@@ -2033,70 +2173,109 @@ export async function bulkUpdateTasks(
     throw new ValidationError("Bulk status changes require tasks from one workflow owner");
   }
   const statements: D1PreparedStatement[] = [];
+  const primaryIndexes: number[] = [];
   for (const task of tasks) {
+    let update: D1PreparedStatement;
+    let eventType: string;
+    let changes: Record<string, unknown>;
     if (field === "priority") {
-      statements.push(
-        db
-          .prepare(
+      if (task.priority === nextPriority) continue;
+      update = db
+        .prepare(
             `UPDATE tasks SET priority = ?, version = version + 1, updated_at = ?
              WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
-          )
-          .bind(
-            nextPriority,
-            now,
-            task.id,
-            task.version,
-            currentUser.id,
-            currentUser.id,
-            currentUser.id,
-            currentUser.id,
-          ),
-      );
+        )
+        .bind(
+          nextPriority,
+          now,
+          task.id,
+          task.version,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+        );
+      eventType = "task_updated";
+      changes = { priority: { before: task.priority, after: nextPriority } };
     } else if (field === "archived") {
-      statements.push(
-        db
-          .prepare(
-            `UPDATE tasks SET archived_at = ?, version = version + 1, updated_at = ?
-             WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
-          )
-          .bind(
-            input.value ? now : null,
-            now,
-            task.id,
-            task.version,
-            currentUser.id,
-            currentUser.id,
-            currentUser.id,
-            currentUser.id,
-          ),
-      );
+      const desiredArchived = Boolean(input.value);
+      if (Boolean(task.archivedAt) === desiredArchived) continue;
+      const nextArchivedAt = desiredArchived ? now : null;
+      update = db
+        .prepare(
+          `UPDATE tasks SET archived_at = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
+        )
+        .bind(
+          nextArchivedAt,
+          now,
+          task.id,
+          task.version,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+        );
+      eventType = desiredArchived ? "task_archived" : "task_restored";
+      changes = { archivedAt: { before: task.archivedAt, after: nextArchivedAt } };
     } else {
+      if (task.statusId === targetStatus!.id) continue;
       const timestamps = statusTimestamps(targetStatus!.category, task, now);
-      statements.push(
-        db
-          .prepare(
-            `UPDATE tasks SET status_id = ?, started_at = ?, completed_at = ?,
-              canceled_at = ?, version = version + 1, updated_at = ?
-             WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
-          )
-          .bind(
-            targetStatus!.id,
-            timestamps.startedAt,
-            timestamps.completedAt,
-            timestamps.canceledAt,
-            now,
-            task.id,
-            task.version,
-            currentUser.id,
-            currentUser.id,
-            currentUser.id,
-            currentUser.id,
-          ),
-      );
+      update = db
+        .prepare(
+          `UPDATE tasks SET status_id = ?, started_at = ?, completed_at = ?,
+            canceled_at = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
+        )
+        .bind(
+          targetStatus!.id,
+          timestamps.startedAt,
+          timestamps.completedAt,
+          timestamps.canceledAt,
+          now,
+          task.id,
+          task.version,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+        );
+      eventType = "status_changed";
+      changes = {
+        status: {
+          before: { id: task.statusId },
+          after: { id: targetStatus!.id, name: targetStatus!.name },
+        },
+      };
     }
+    primaryIndexes.push(statements.length);
+    const activity = activityEventStatement(db, currentUser, {
+      taskId: task.id,
+      eventType,
+      payload: { changes, bulk: true },
+      createdAt: now,
+    });
+    statements.push(
+      update,
+      activityBatchAssertion(
+        db,
+        `activity_assert_${crypto.randomUUID()}`,
+        now,
+      ),
+      activity.statement,
+    );
   }
-  const results = await db.batch(statements);
-  if (results.some((result) => (result.meta.changes ?? 0) < 1)) {
+  if (!statements.length) return tasks;
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch(statements);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError("One or more tasks changed in another session");
+    }
+    throw error;
+  }
+  if (primaryIndexes.some((index) => (results[index]?.meta.changes ?? 0) < 1)) {
     throw new ConflictError("One or more tasks changed in another session");
   }
   return loadAccessibleTasks(currentUser.id, ids);
@@ -2265,8 +2444,24 @@ export async function setTaskLabel(
   }
   const label = await loadTaskOwnerLabel(task.ownerUserId, labelId, !active);
   const db = getD1();
-  if (active) {
-    await db.prepare(
+  const existing = await db.prepare(
+    "SELECT 1 AS assigned FROM task_labels WHERE task_id = ? AND label_id = ?",
+  ).bind(task.id, label.id).first<{ assigned: number }>();
+  if (Boolean(existing) === active) {
+    return getTaskLabelState(currentUser, task.id);
+  }
+  const now = new Date().toISOString();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId: task.id,
+    eventType: "labels_changed",
+    payload: {
+      label: { id: label.id, name: label.name },
+      active,
+    },
+    createdAt: now,
+  });
+  const mutation = active
+    ? db.prepare(
       `INSERT OR IGNORE INTO task_labels (task_id, label_id)
        SELECT tasks.id, labels.id FROM tasks, labels
        WHERE tasks.id = ? AND labels.id = ?
@@ -2280,9 +2475,8 @@ export async function setTaskLabel(
       currentUser.id,
       currentUser.id,
       currentUser.id,
-    ).run();
-  } else {
-    await db.prepare(
+    )
+    : db.prepare(
       `DELETE FROM task_labels
        WHERE task_id = ? AND label_id = ? AND EXISTS (
          SELECT 1 FROM tasks
@@ -2295,7 +2489,29 @@ export async function setTaskLabel(
       currentUser.id,
       currentUser.id,
       currentUser.id,
-    ).run();
+    );
+  try {
+    await db.batch([
+      mutation,
+      activityBatchAssertion(
+        db,
+        `activity_assert_${crypto.randomUUID()}`,
+        now,
+      ),
+      activity.statement,
+      db.prepare(
+        `UPDATE tasks SET updated_at = CASE
+           WHEN updated_at >= ?
+             THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
+           ELSE ? END
+         WHERE id = ?`,
+      ).bind(now, now, task.id),
+    ]);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError("Task access or Label state changed before the assignment committed");
+    }
+    throw error;
   }
   const state = await getTaskLabelState(currentUser, task.id);
   const applied = state.taskLabels.some((item) => item.labelId === label.id);
@@ -2332,48 +2548,73 @@ export async function bulkSetTaskLabel(
   );
   const db = getD1();
   const placeholders = sqlPlaceholders(taskIds);
-  const eligibleTasks = `eligible_tasks AS (
-    SELECT tasks.id FROM tasks
-    WHERE tasks.id IN (${placeholders}) AND tasks.owner_user_id = ?
-      AND ${editableTaskWhere}
-  )`;
-  if (active) {
-    await db.prepare(
-      `WITH ${eligibleTasks}, eligible_label AS (
-         SELECT id FROM labels
-         WHERE id = ? AND owner_user_id = ? AND archived_at IS NULL
-       )
-       INSERT OR IGNORE INTO task_labels (task_id, label_id)
-       SELECT eligible_tasks.id, eligible_label.id
-       FROM eligible_tasks CROSS JOIN eligible_label
-       WHERE (SELECT COUNT(*) FROM eligible_tasks) = ?`,
-    ).bind(
-      ...taskIds,
-      tasks[0]!.ownerUserId,
-      currentUser.id,
-      currentUser.id,
-      currentUser.id,
-      currentUser.id,
-      label.id,
-      tasks[0]!.ownerUserId,
-      taskIds.length,
-    ).run();
-  } else {
-    await db.prepare(
-      `WITH ${eligibleTasks}
-       DELETE FROM task_labels
-       WHERE label_id = ? AND task_id IN (SELECT id FROM eligible_tasks)
-         AND (SELECT COUNT(*) FROM eligible_tasks) = ?`,
-    ).bind(
-      ...taskIds,
-      tasks[0]!.ownerUserId,
-      currentUser.id,
-      currentUser.id,
-      currentUser.id,
-      currentUser.id,
-      label.id,
-      taskIds.length,
-    ).run();
+  const currentRows = await db.prepare(
+    `SELECT task_id FROM task_labels
+     WHERE task_id IN (${placeholders}) AND label_id = ?`,
+  ).bind(...taskIds, label.id).all<{ task_id: string }>();
+  const assigned = new Set(currentRows.results.map((row) => row.task_id));
+  const changedTasks = tasks.filter((task) => assigned.has(task.id) !== active);
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [];
+  for (const task of changedTasks) {
+    const activity = activityEventStatement(db, currentUser, {
+      taskId: task.id,
+      eventType: "labels_changed",
+      payload: { label: { id: label.id, name: label.name }, active, bulk: true },
+      createdAt: now,
+    });
+    statements.push(
+      active
+        ? db.prepare(
+          `INSERT OR IGNORE INTO task_labels (task_id, label_id)
+           SELECT tasks.id, ? FROM tasks
+           WHERE tasks.id = ? AND ${editableTaskWhere}`,
+        ).bind(
+          label.id,
+          task.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+        )
+        : db.prepare(
+          `DELETE FROM task_labels
+           WHERE task_id = ? AND label_id = ? AND EXISTS (
+             SELECT 1 FROM tasks
+             WHERE tasks.id = task_labels.task_id AND ${editableTaskWhere}
+           )`,
+        ).bind(
+          task.id,
+          label.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+        ),
+      activityBatchAssertion(
+        db,
+        `activity_assert_${crypto.randomUUID()}`,
+        now,
+      ),
+      activity.statement,
+      db.prepare(
+        `UPDATE tasks SET updated_at = CASE
+           WHEN updated_at >= ?
+             THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
+           ELSE ? END
+         WHERE id = ?`,
+      ).bind(now, now, task.id),
+    );
+  }
+  if (statements.length) {
+    try {
+      await db.batch(statements);
+    } catch (error) {
+      if (isConstraintError(error)) {
+        throw new ConflictError("Task access or Label state changed during the bulk action");
+      }
+      throw error;
+    }
   }
   const rows = await db.prepare(
     `SELECT task_id, label_id FROM task_labels
@@ -3911,6 +4152,10 @@ function mapExternalSource(row: DbRow): ExternalSourceRecord {
     commentMigration: {
       migrated: Number(row.comments_migrated ?? 0),
       exceptions: Number(row.comment_exceptions ?? 0),
+    },
+    activityMigration: {
+      migrated: Number(row.activity_migrated ?? 0),
+      exceptions: Number(row.activity_exceptions ?? 0),
     },
   };
 }

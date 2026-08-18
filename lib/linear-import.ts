@@ -5,6 +5,11 @@ import {
   type PlannedCommentMigrationOutcome,
   type PlannedHistoricalComment,
 } from "./imported-comments";
+import {
+  planImportedActivity,
+  type PlannedActivityMigrationOutcome,
+  type PlannedHistoricalActivityEvent,
+} from "./imported-activity";
 import { validateViewQuery } from "./view-contract";
 
 type JsonObject = Record<string, unknown>;
@@ -40,6 +45,8 @@ export type LinearImportReport = {
   externalRecords: number;
   commentsMigrated: number;
   commentExceptions: number;
+  activityMigrated: number;
+  activityExceptions: number;
 };
 
 type PlannedStatus = {
@@ -153,6 +160,8 @@ export type LinearImportPlan = {
   externalRecords: PlannedExternalRecord[];
   historicalComments: PlannedHistoricalComment[];
   commentMigrationOutcomes: PlannedCommentMigrationOutcome[];
+  historicalActivityEvents: PlannedHistoricalActivityEvent[];
+  activityMigrationOutcomes: PlannedActivityMigrationOutcome[];
 };
 
 const STATUS_PRESENTATION: Record<
@@ -206,6 +215,8 @@ export function buildLinearImportPlan(
   const externalRecords: PlannedExternalRecord[] = [];
   const historicalComments: PlannedHistoricalComment[] = [];
   const commentMigrationOutcomes: PlannedCommentMigrationOutcome[] = [];
+  const historicalActivityEvents: PlannedHistoricalActivityEvent[] = [];
+  const activityMigrationOutcomes: PlannedActivityMigrationOutcome[] = [];
 
   const statuses = sourceStatuses.map((entry, index) => {
     const row = object(entry, `statuses[${index}]`);
@@ -431,6 +442,14 @@ export function buildLinearImportPlan(
     });
     historicalComments.push(...commentPlan.comments);
     commentMigrationOutcomes.push(...commentPlan.outcomes);
+    const activityPlan = planImportedActivity({
+      taskId: task.id,
+      sourceRecordId: sourceRecord.id,
+      stateHistory: row.stateHistory ?? [],
+      reconciledAt: exportedAt,
+    });
+    historicalActivityEvents.push(...activityPlan.events);
+    activityMigrationOutcomes.push(...activityPlan.outcomes);
     for (const labelName of stringArray(row.labels)) {
       const label = labelByName.get(labelName);
       if (!label) {
@@ -540,6 +559,8 @@ export function buildLinearImportPlan(
     externalRecords,
     historicalComments,
     commentMigrationOutcomes,
+    historicalActivityEvents,
+    activityMigrationOutcomes,
   };
 }
 
@@ -921,6 +942,60 @@ export async function importLinearWorkspace(
   );
 
   await runBatches(
+    plan.historicalActivityEvents.map((event) =>
+      db.prepare(
+        `INSERT INTO activity_events
+          (id, task_id, schema_version, event_type, actor_kind, actor_user_id,
+           actor_name, payload_json, source, source_record_id, source_event_id,
+           source_index, created_at)
+         VALUES (?, ?, 1, ?, 'historical', NULL, ?, ?, 'linear', ?, ?, ?, ?)
+         ON CONFLICT(source_record_id, source_index)
+           WHERE source_record_id IS NOT NULL AND source_index IS NOT NULL DO NOTHING`,
+      ).bind(
+        event.id,
+        event.taskId,
+        event.eventType,
+        event.actorName,
+        event.payloadJson,
+        event.sourceRecordId,
+        event.sourceEventId,
+        event.sourceIndex,
+        event.createdAt,
+      ),
+    ),
+  );
+
+  await runBatches(
+    plan.activityMigrationOutcomes.map((outcome) =>
+      db.prepare(
+        `INSERT INTO activity_migration_outcomes
+          (id, task_id, source, source_record_id, source_event_id, source_index,
+           outcome, reason, activity_event_id, raw_json, reconciled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_record_id, source_index) DO UPDATE SET
+           source_event_id = excluded.source_event_id,
+           outcome = excluded.outcome,
+           reason = excluded.reason,
+           activity_event_id = excluded.activity_event_id,
+           raw_json = excluded.raw_json,
+           reconciled_at = excluded.reconciled_at`,
+      ).bind(
+        outcome.id,
+        outcome.taskId,
+        outcome.source,
+        outcome.sourceRecordId,
+        outcome.sourceEventId,
+        outcome.sourceIndex,
+        outcome.outcome,
+        outcome.reason,
+        outcome.activityEventId,
+        outcome.rawJson,
+        outcome.reconciledAt,
+      ),
+    ),
+  );
+
+  await runBatches(
     [...new Set(plan.historicalComments.map((comment) => comment.taskId))].map((taskId) =>
       db.prepare(
         `UPDATE tasks SET comment_count = (
@@ -944,6 +1019,10 @@ export async function importLinearWorkspace(
     externalRecords: plan.externalRecords.length,
     commentsMigrated: plan.historicalComments.length,
     commentExceptions: plan.commentMigrationOutcomes.filter(
+      (outcome) => outcome.outcome === "exception",
+    ).length,
+    activityMigrated: plan.historicalActivityEvents.length,
+    activityExceptions: plan.activityMigrationOutcomes.filter(
       (outcome) => outcome.outcome === "exception",
     ).length,
   };

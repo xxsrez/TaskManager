@@ -94,6 +94,7 @@ export async function getWorkspaceSync(
   const invalidatedTaskIds = [
     ...touched.task_detail,
     ...touched.task_comments,
+    ...touched.task_activity,
     ...touched.task_attachments,
     ...touched.task_external_source,
   ];
@@ -139,6 +140,7 @@ function emptyChanges(): WorkspaceSyncChanges {
     invalidations: {
       taskDetails: [],
       taskComments: [],
+      taskActivities: [],
       taskAttachments: [],
       taskExternalSources: [],
     },
@@ -155,6 +157,7 @@ type IncrementalEntity =
   | "saved_view"
   | "task_detail"
   | "task_comments"
+  | "task_activity"
   | "task_attachments"
   | "task_external_source";
 
@@ -165,6 +168,7 @@ function isIncrementalEntity(value: string): value is IncrementalEntity {
     value === "saved_view" ||
     value === "task_detail" ||
     value === "task_comments" ||
+    value === "task_activity" ||
     value === "task_attachments" ||
     value === "task_external_source";
 }
@@ -177,6 +181,7 @@ function coalesceTouchedEntities(rows: ChangeRow[]) {
     saved_view: new Set<string>(),
     task_detail: new Set<string>(),
     task_comments: new Set<string>(),
+    task_activity: new Set<string>(),
     task_attachments: new Set<string>(),
     task_external_source: new Set<string>(),
   };
@@ -201,6 +206,7 @@ function buildChanges(
     invalidations: {
       taskDetails: [...touched.task_detail].filter((id) => accessibleTaskIds.has(id)),
       taskComments: [...touched.task_comments].filter((id) => accessibleTaskIds.has(id)),
+      taskActivities: [...touched.task_activity].filter((id) => accessibleTaskIds.has(id)),
       taskAttachments: [...touched.task_attachments].filter((id) =>
         accessibleTaskIds.has(id)
       ),

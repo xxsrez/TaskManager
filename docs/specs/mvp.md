@@ -196,6 +196,8 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - relations: `blocks`, `related`, `duplicate_of`;
 - unified comment threads: native discussions и импортированная история,
   replies, reactions и resolved state;
+- append-only Task Activity с native mutations и перенесённой Linear status
+  history;
 - native attachments с проверенным type/size/checksum и processing state;
 - created, updated, started, completed, canceled и archived timestamps.
 - для импортированной задачи — source provenance, ссылки на исходные
@@ -223,8 +225,8 @@ commands задают желаемое состояние идемпотентн
 - Переход в системную категорию `started` впервые выставляет `started_at`.
 - Переход в `completed` выставляет `completed_at` и очищает `canceled_at`.
 - Переход в `canceled` выставляет `canceled_at` и очищает `completed_at`.
-- Повторное открытие очищает terminal timestamp, но не историю изменений, если
-  такая история будет добавлена позднее.
+- Повторное открытие очищает terminal timestamp и добавляет ActivityEvent, не
+  удаляя прежнюю историю изменений.
 - Архивная задача исключена из обычных views, но доступна через архив и может
   быть восстановлена.
 - Необратимое удаление требует отдельного подтверждения и не является
@@ -299,10 +301,40 @@ commands задают желаемое состояние идемпотентн
   `migrated` или `exception`. Повторный импорт не дублирует Comment; counts,
   backup/restore и lazy invalidation используют общий comment model.
 - Локальный draft изолирован ключом current User + Task + optional thread.
-  Mentions, attachments именно к comment, notifications, subscriptions и общий
-  activity feed не входят в этот срез.
+  Mentions, attachments именно к comment, notifications и subscriptions не
+  входят в этот срез.
 
-### 5.6 Native attachments
+### 5.6 Task Activity
+
+- Каждая успешная перечисленная ниже Task mutation создаёт ровно один versioned append-only
+  `ActivityEvent` в той же D1 transaction. Event хранит Task, server-verified
+  User actor либо historical actor snapshot, timestamp, тип и минимальный
+  structured before/after payload.
+- Покрываются create/update, status/lifecycle, priority, assignee,
+  Project/Release, due date, estimate, labels, hierarchy, relations,
+  archive/restore и значимые comment events. Compound relation/`Duplicate`
+  сохраняется одним согласованным event; Project move содержит old/new Project
+  и old/new identifier в одной записи.
+- No-op desired state, idempotent retry, stale optimistic version, failed SQL
+  guard и rollback не создают ложного event. Project-code backfill не создаёт
+  synthetic event на каждую историческую Task и остаётся migration provenance.
+- Activity читается отдельной ACL-scoped keyset pagination с maximum 50. Ни
+  event bodies, ни raw migration evidence не входят в bootstrap, compact Task
+  projection или sync journal. Sync передаёт только `task_activity`
+  invalidation ID; открытый consumer перечитывает свою lazy page.
+- Event inherits текущий Task ACL. Viewer читает Activity, но не получает новых
+  mutation прав; revoke немедленно закрывает endpoint без подтверждения
+  существования Task.
+- Linear `stateHistory` создаёт historical `status_changed` events с исходными
+  timestamp, status names и actor display snapshot без `User` identity.
+  Каждая source row получает `migrated`/`exception`; повторный import не
+  дублирует events. Raw evidence остаётся в reconciliation/backup до cutover.
+- Project/system backup schema `10` сохраняет events и reconciliation outcomes.
+  Activity хранится до удаления Task; отдельного retention deletion нет.
+  Logical export ограничен 5 000 rows на таблицу и общим размером package,
+  поэтому превышение останавливает export явно, а не обрезает историю.
+
+### 5.7 Native attachments
 
 - Attachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
   читать/download/preview; upload, recoverable delete и restore требуют Editor.
@@ -565,11 +597,12 @@ created/updated/started/completed/canceled dates и archived state.
 
 - Task Manager предоставляет agent API для workspace summary, Projects,
   Releases, compact task lists, одной полной Task, task create/update,
-  unified native/historical comment threads и native Attachment metadata/binary.
+  bounded read-only Task Activity, unified native/historical comment threads и
+  native Attachment metadata/binary.
 - List response не содержит task description, release notes, imported comments,
   native comment bodies, attachment metadata/bodies или полного provenance.
-  Unified comments, native attachments и import provenance читаются отдельными
-  ACL-scoped запросами; provenance не дублирует comment bodies.
+  Activity, unified comments, native attachments и import provenance читаются
+  отдельными ACL-scoped запросами; provenance не дублирует event/comment bodies.
 - Versioned HTTP API применяет те же server-side ownership/ACL rules и domain
   repository commands, что и product UI.
   `/api/bootstrap` остаётся внутренним UI snapshot и не является agent API.
@@ -607,7 +640,7 @@ created/updated/started/completed/canceled dates и archived state.
   workspace snapshot. Изменение label назначения передаёт authoritative
   task-scoped label context только для затронутой Task: доступные определения и
   полный набор её назначений заменяют локальное состояние этой Task, не
-  выгружая весь catalog. Relations, comments и imported external context
+  выгружая весь catalog. Relations, comments, Activity и imported external context
   передают только task-scoped invalidation IDs без своих records; их endpoint
   перечитывает только активный details/Peek/activity consumer. Закрытый cache
   остаётся загруженным, но помечается stale до следующего открытия.
@@ -821,3 +854,5 @@ created/updated/started/completed/canceled dates и archived state.
 19. Native Task relations: application UI/API, versioned Agent REST/MCP,
     idempotency, ACL обеих сторон, atomic Duplicate transition, lazy sync и
     backup/import compatibility.
+20. Append-only Task Activity: атомарные native events, Linear status-history
+    migration, lazy UI/Agent/MCP reads, ACL/revoke и backup/restore schema `10`.

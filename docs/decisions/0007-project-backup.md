@@ -25,6 +25,11 @@ outcomes повышают Project bundle `schemaVersion` до `9`. Schema `2`–
 остаётся импортируемой как native-only comment state после проверки исходного
 checksum.
 
+Дополнение 2026-08-18: append-only Task Activity повышает Project bundle
+`schemaVersion` до `10`. Events и Linear activity outcomes входят в точный
+subtree; schemas `2`–`9` нормализуются с пустыми activity tables без synthetic
+history. Native actor Users проверяются как существующие same-Site dependencies.
+
 ## Контекст
 
 Владельцу Project нужна доступная без application-admin роли страховка от
@@ -39,7 +44,7 @@ ADR-0004 для этого не подходит: он раскрывает со
    product API.
 2. Export создаёт versioned logical JSON bundle одного Project. Он включает сам
    Project, Tasks, Releases, project-scoped SavedViews, label assignments,
-   внутреннюю hierarchy/relations, native/historical comments,
+   внутреннюю hierarchy/relations, native/historical comments, Task Activity,
    reconciliation outcomes/reactions, provenance и
    snapshot используемых
    WorkflowStatuses/Labels. Users, UserIdentities, API credentials, hosted

@@ -694,6 +694,15 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .activity-header > h2 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--muted); font-size: 11px; font-weight: 560; text-transform: uppercase; letter-spacing: .04em; }
 .activity-header > span { color: var(--muted); font-size: 10px; }
 .activity-empty { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
+.activity-events { display: grid; gap: 7px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.activity-event { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 7px; padding: 4px 0; }
+.activity-event-icon { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: var(--surface-subtle); color: var(--muted); }
+.activity-event > div { min-width: 0; }
+.activity-event header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 5px; color: var(--text-secondary); font-size: 10px; }
+.activity-event header b { color: var(--text); font-weight: 570; }
+.activity-event header small { padding: 1px 4px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); }
+.activity-event header time { margin-left: auto; color: var(--muted); font-size: 9px; }
+.activity-event p { margin: 2px 0 0; color: var(--muted); font-size: 10px; line-height: 16px; overflow-wrap: anywhere; }
 .comment-error { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 8px 6px 10px; border-radius: 7px; background: color-mix(in srgb, var(--danger) 7%, var(--surface)); color: var(--danger); font-size: 11px; }
 .comment-error button { min-height: 28px; padding: 0 8px; border-radius: 5px; background: var(--raised); color: inherit; cursor: pointer; }
 .comment-threads { display: grid; gap: 14px; }

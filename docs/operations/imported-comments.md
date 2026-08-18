@@ -149,8 +149,9 @@ cutover; intentional future snapshot changes документируются от
    metadata, но отдельного legacy comment archive или raw body нет.
 6. Проверить Agent REST/MCP `list_task_comments`/`get_task_thread` и
    `get_task_external_context` с теми же ACL и privacy projections.
-7. Экспортировать и валидировать system и Project backup schema `9`, затем на
-   disposable UAT data пройти restore и повторить counts/thread smoke.
+7. Экспортировать и валидировать system и Project backup schema `10` (comment
+   history введена в schema `9`), затем на disposable UAT data пройти restore и
+   повторить counts/thread smoke.
 
 ## Rollback и recovery
 

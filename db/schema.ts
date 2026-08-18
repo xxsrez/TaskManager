@@ -427,6 +427,97 @@ export const tasks = sqliteTable(
   ],
 );
 
+export const activityEvents = sqliteTable(
+  "activity_events",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    schemaVersion: integer("schema_version").notNull().default(1),
+    eventType: text("event_type").notNull(),
+    actorKind: text("actor_kind").notNull(),
+    actorUserId: text("actor_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    actorName: text("actor_name").notNull(),
+    payloadJson: text("payload_json").notNull(),
+    source: text("source").notNull().default("native"),
+    sourceRecordId: text("source_record_id"),
+    sourceEventId: text("source_event_id"),
+    sourceIndex: integer("source_index"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_activity_events_task_created").on(
+      table.taskId,
+      table.createdAt,
+      table.id,
+    ),
+    uniqueIndex("idx_activity_events_source_position")
+      .on(table.sourceRecordId, table.sourceIndex)
+      .where(sql`${table.sourceRecordId} IS NOT NULL AND ${table.sourceIndex} IS NOT NULL`),
+    check(
+      "check_activity_event_actor",
+      sql`(
+        (${table.actorKind} = 'user' AND ${table.actorUserId} IS NOT NULL)
+        OR
+        (${table.actorKind} IN ('historical', 'system') AND ${table.actorUserId} IS NULL)
+      )`,
+    ),
+    check(
+      "check_activity_event_source",
+      sql`(
+        (${table.source} = 'native' AND ${table.actorKind} IN ('user', 'system')
+          AND ${table.sourceRecordId} IS NULL AND ${table.sourceEventId} IS NULL
+          AND ${table.sourceIndex} IS NULL)
+        OR
+        (${table.source} = 'linear' AND ${table.sourceRecordId} IS NOT NULL
+          AND ${table.sourceIndex} IS NOT NULL AND ${table.actorKind} = 'historical'
+          AND ${table.actorUserId} IS NULL)
+      )`,
+    ),
+  ],
+);
+
+export const activityMigrationOutcomes = sqliteTable(
+  "activity_migration_outcomes",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    sourceRecordId: text("source_record_id")
+      .notNull()
+      .references(() => externalRecords.id, { onDelete: "cascade" }),
+    sourceEventId: text("source_event_id"),
+    sourceIndex: integer("source_index").notNull(),
+    outcome: text("outcome").notNull(),
+    reason: text("reason"),
+    activityEventId: text("activity_event_id").references(
+      () => activityEvents.id,
+      { onDelete: "set null" },
+    ),
+    rawJson: text("raw_json").notNull(),
+    reconciledAt: text("reconciled_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_activity_migration_source_position").on(
+      table.sourceRecordId,
+      table.sourceIndex,
+    ),
+    index("idx_activity_migration_task_outcome").on(
+      table.taskId,
+      table.outcome,
+    ),
+    check(
+      "check_activity_migration_outcome",
+      sql`${table.outcome} IN ('migrated', 'exception')`,
+    ),
+  ],
+);
+
 export const taskIdentifierAliases = sqliteTable(
   "task_identifier_aliases",
   {

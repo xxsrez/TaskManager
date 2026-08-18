@@ -815,6 +815,7 @@ test("lazy invalidations preserve cached bodies and apply idempotently by cursor
     invalidations: {
       taskDetails: [task.id],
       taskComments: [task.id],
+      taskActivities: [task.id],
       taskAttachments: [task.id],
       taskExternalSources: [task.id],
     },
@@ -827,6 +828,7 @@ test("lazy invalidations preserve cached bodies and apply idempotently by cursor
   assert.equal(once.tasks[0]?.detailStale, true);
   assert.equal(once.tasks[0]?.detailInvalidationCursor, response.cursor);
   assert.equal(once.tasks[0]?.commentInvalidationCursor, response.cursor);
+  assert.equal(once.tasks[0]?.activityInvalidationCursor, response.cursor);
   assert.equal(once.tasks[0]?.attachmentInvalidationCursor, response.cursor);
   assert.equal(once.tasks[0]?.externalSourceInvalidationCursor, response.cursor);
   assert.deepEqual(once.taskLabels, current.taskLabels);
@@ -847,6 +849,7 @@ function emptySyncResponse(
       invalidations: {
         taskDetails: [],
         taskComments: [],
+        taskActivities: [],
         taskAttachments: [],
         taskExternalSources: [],
       },

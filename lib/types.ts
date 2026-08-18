@@ -110,6 +110,7 @@ export type TaskRecord = {
   /** Client-only cursors make repeated delivery idempotent for lazy consumers. */
   detailInvalidationCursor?: string;
   commentInvalidationCursor?: string;
+  activityInvalidationCursor?: string;
   attachmentInvalidationCursor?: string;
   externalSourceInvalidationCursor?: string;
   createdAt: string;
@@ -237,6 +238,33 @@ export type CommentPage = {
   hasMore: boolean;
 };
 
+export type ActivityEventRecord = {
+  id: string;
+  taskId: string;
+  schemaVersion: 1;
+  eventType: string;
+  actor: {
+    id: string | null;
+    displayName: string;
+    kind: "user" | "historical" | "system";
+  };
+  payload: Record<string, unknown>;
+  source: "native" | "linear";
+  historical: null | {
+    sourceRecordId: string;
+    sourceEventId: string | null;
+    sourceIndex: number;
+  };
+  createdAt: string;
+};
+
+export type ActivityPage = {
+  events: ActivityEventRecord[];
+  totalCount: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+};
+
 export type ExternalSourceRecord = {
   targetType: "task" | "project" | "release" | "saved_view" | "label" | "workflow_status";
   targetId: string;
@@ -251,6 +279,10 @@ export type ExternalSourceRecord = {
   }>;
   stateHistoryEntries: number;
   commentMigration: {
+    migrated: number;
+    exceptions: number;
+  };
+  activityMigration: {
     migrated: number;
     exceptions: number;
   };
@@ -417,6 +449,8 @@ export type SystemBackupCounts = Record<
   | "attachments"
   | "comments"
   | "comment_migration_outcomes"
+  | "activity_events"
+  | "activity_migration_outcomes"
   | "comment_reactions"
   | "labels"
   | "task_labels"
@@ -500,6 +534,7 @@ export type WorkspaceSyncChanges = {
   invalidations: {
     taskDetails: string[];
     taskComments: string[];
+    taskActivities: string[];
     taskAttachments: string[];
     taskExternalSources: string[];
   };

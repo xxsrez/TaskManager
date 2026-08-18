@@ -111,6 +111,8 @@ import { parseTaskImageLine } from "@/lib/task-description-format";
 import type {
   AdminOverview,
   AccessRole,
+  ActivityEventRecord,
+  ActivityPage,
   AppliedSystemBackup,
   AppSnapshot,
   CommentPage,
@@ -365,6 +367,9 @@ function mergeTaskMutation(
   }
   if (retained.commentInvalidationCursor !== undefined) {
     clientState.commentInvalidationCursor = retained.commentInvalidationCursor;
+  }
+  if (retained.activityInvalidationCursor !== undefined) {
+    clientState.activityInvalidationCursor = retained.activityInvalidationCursor;
   }
   if (retained.attachmentInvalidationCursor !== undefined) {
     clientState.attachmentInvalidationCursor = retained.attachmentInvalidationCursor;
@@ -628,6 +633,9 @@ function mergeLoadedTask(
       : {}),
     ...(retained?.commentInvalidationCursor !== undefined
       ? { commentInvalidationCursor: retained.commentInvalidationCursor }
+      : {}),
+    ...(retained?.activityInvalidationCursor !== undefined
+      ? { activityInvalidationCursor: retained.activityInvalidationCursor }
       : {}),
     ...(retained?.externalSourceInvalidationCursor !== undefined
       ? {
@@ -3540,8 +3548,11 @@ function TaskActivity({ task, currentUser, canWrite }: {
   canWrite: boolean;
 }) {
   const [page, setPage] = useState<CommentPage | null>(null);
+  const [activityPage, setActivityPage] = useState<ActivityPage | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activityLoading, setActivityLoading] = useState(true);
   const [error, setError] = useState("");
+  const [activityError, setActivityError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
@@ -3579,6 +3590,24 @@ function TaskActivity({ task, currentUser, canWrite }: {
     }
   }
 
+  async function loadActivity(cursor: string | null = null, append = false) {
+    setActivityLoading(true);
+    setActivityError("");
+    try {
+      const next = await fetchCommentJson<ActivityPage>(
+        `/api/tasks/${encodeURIComponent(task.id)}/activity?limit=25${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      setActivityPage((current) => append && current ? {
+        ...next,
+        events: [...current.events, ...next.events],
+      } : next);
+    } catch (requestError) {
+      setActivityError(requestError instanceof Error ? requestError.message : "Activity could not be loaded");
+    } finally {
+      setActivityLoading(false);
+    }
+  }
+
   useEffect(() => {
     // Keep the draft, but discard the loaded page after a remote comment event.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -3587,6 +3616,15 @@ function TaskActivity({ task, currentUser, canWrite }: {
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task.commentInvalidationCursor, task.id]);
+
+  useEffect(() => {
+    // Activity is a separate lazy projection; reload only for the open Task.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setActivityPage(null);
+    const timer = window.setTimeout(() => void loadActivity(), 0);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task.activityInvalidationCursor, task.id]);
 
   useEffect(() => {
     if (!page || !window.location.hash.startsWith("#comment-")) return;
@@ -3626,7 +3664,7 @@ function TaskActivity({ task, currentUser, canWrite }: {
       setDraft(submittedReplyTo
         ? window.localStorage.getItem(commentDraftStorageKey(currentUser.id, task.id)) ?? ""
         : "");
-      await loadComments();
+      await Promise.all([loadComments(), loadActivity()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Comment could not be saved");
     } finally {
@@ -3644,7 +3682,7 @@ function TaskActivity({ task, currentUser, canWrite }: {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       });
-      await loadComments();
+      await Promise.all([loadComments(), loadActivity()]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Comment action failed");
     } finally {
@@ -3664,11 +3702,18 @@ function TaskActivity({ task, currentUser, canWrite }: {
   }
 
   const count = page?.totalCount ?? task.commentCount;
+  const activityCount = activityPage?.totalCount ?? 0;
   return <section className="task-activity details-section" aria-labelledby={`activity-${task.id}`}>
     <header className="activity-header">
       <h2 id={`activity-${task.id}`}><MessageSquare size={14} />Activity</h2>
-      <span>{count} {count === 1 ? "comment" : "comments"}</span>
+      <span>{activityCount} {activityCount === 1 ? "event" : "events"} · {count} {count === 1 ? "comment" : "comments"}</span>
     </header>
+    {activityLoading && !activityPage && <p className="inline-note" role="status">Loading activity…</p>}
+    {activityError && <div className="comment-error" role="alert"><span>{activityError}</span><button type="button" onClick={() => void loadActivity()}>Retry</button></div>}
+    {activityPage && activityPage.events.length > 0 && <div className="activity-events">
+      {activityPage.events.map((event) => <ActivityTimelineEvent key={event.id} event={event} />)}
+    </div>}
+    {activityPage?.hasMore && <button className="button ghost load-comments" type="button" disabled={activityLoading} onClick={() => void loadActivity(activityPage.nextCursor, true)}>{activityLoading ? "Loading…" : "Load older activity"}</button>}
     {loading && !page && <p className="inline-note" role="status">Loading comments…</p>}
     {error && <div className="comment-error" role="alert"><span>{error}</span><button type="button" onClick={() => void loadComments()}>Retry</button></div>}
     {page && page.threads.length === 0 && <p className="activity-empty">No comments yet.</p>}
@@ -3721,6 +3766,72 @@ function TaskActivity({ task, currentUser, canWrite }: {
       </div>
     </div>}
   </section>;
+}
+
+function ActivityTimelineEvent({ event }: { event: ActivityEventRecord }) {
+  const changes = event.payload.changes && typeof event.payload.changes === "object"
+    ? event.payload.changes as Record<string, unknown>
+    : null;
+  const summary = changes
+    ? Object.entries(changes).map(([field, value]) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return field;
+      const change = value as Record<string, unknown>;
+      return `${activityFieldLabel(field)}: ${activityValue(change.before)} → ${activityValue(change.after)}`;
+    }).join(" · ")
+    : activityEventFallback(event);
+  return <div className="activity-event">
+    <span className="activity-event-icon"><CircleDot size={12} /></span>
+    <div>
+      <header><b>{event.actor.displayName}</b><span>{activityEventLabel(event.eventType)}</span>{event.actor.kind === "historical" && <small>Imported history</small>}<time dateTime={event.createdAt} title={longDateTime(event.createdAt)}>{relativeTime(event.createdAt)}</time></header>
+      {summary && <p>{summary}</p>}
+    </div>
+  </div>;
+}
+
+function activityEventLabel(value: string) {
+  return ({
+    task_created: "created the task",
+    task_updated: "updated the task",
+    task_moved: "moved the task",
+    task_archived: "archived the task",
+    task_restored: "restored the task",
+    status_changed: "changed status",
+    hierarchy_changed: "changed hierarchy",
+    labels_changed: "changed labels",
+    relation_created: "added a relation",
+    relation_updated: "updated a relation",
+    relation_deleted: "removed a relation",
+    comment_added: "added a comment",
+    comment_edited: "edited a comment",
+    comment_deleted: "deleted a comment",
+    comment_resolved: "resolved a thread",
+    comment_reopened: "reopened a thread",
+    comment_reaction_changed: "changed a reaction",
+  } as Record<string, string>)[value] ?? value.replaceAll("_", " ");
+}
+
+function activityFieldLabel(value: string) {
+  return ({ assigneeUserId: "Assignee", dueDate: "Due date", estimate: "Estimate", parentTaskId: "Parent", project: "Project", projectId: "Project", releaseId: "Release", archivedAt: "Archive", status: "Status", priority: "Priority", identifier: "Identifier", title: "Title" } as Record<string, string>)[value] ?? value;
+}
+
+function activityValue(value: unknown): string {
+  if (value == null || value === "") return "None";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    return String(record.name ?? record.identifier ?? record.id ?? "Changed");
+  }
+  return "Changed";
+}
+
+function activityEventFallback(event: ActivityEventRecord) {
+  if (event.eventType === "labels_changed") {
+    const label = event.payload.label as Record<string, unknown> | undefined;
+    return `${event.payload.active ? "Added" : "Removed"} ${String(label?.name ?? "label")}`;
+  }
+  if (event.eventType.startsWith("relation_")) return "Task relation changed";
+  if (event.eventType.startsWith("comment_")) return "Discussion activity";
+  return "";
 }
 
 function CommentThread({ thread, busy, onReply, onEdit, onDelete, onReact, onResolve }: {
@@ -4048,7 +4159,7 @@ function ImportedSourceDetails({ source, hasExternalSource, full = false }: {
   if (!full) {
     return source.sourceUrl ? <DetailsSection title="Imported source" icon={<Link2 size={14} />}><a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record</a></DetailsSection> : null;
   }
-  return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record {source.sourceId}</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentMigration.migrated} historical comments in Activity</span>{source.commentMigration.exceptions > 0 && <span className="source-reconciliation-warning"><AlertTriangle size={13} />{source.commentMigration.exceptions} source comment records require reconciliation</span>}<span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>;
+  return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record {source.sourceId}</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentMigration.migrated} historical comments in Activity</span>{source.commentMigration.exceptions > 0 && <span className="source-reconciliation-warning"><AlertTriangle size={13} />{source.commentMigration.exceptions} source comment records require reconciliation</span>}<span><Boxes size={13} />{source.activityMigration.migrated} historical status events in Activity</span>{source.activityMigration.exceptions > 0 && <span className="source-reconciliation-warning"><AlertTriangle size={13} />{source.activityMigration.exceptions} source activity records require reconciliation</span>}{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>;
 }
 
 function PropertyValue({ label, value }: { label: string; value: string }) {

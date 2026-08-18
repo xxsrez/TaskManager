@@ -53,6 +53,7 @@ import type {
 } from "./types";
 import { parseStoredViewDisplay, parseStoredViewQuery } from "./view-contract";
 import { taskFilterSql } from "./task-filter";
+import { listTaskActivity } from "./activity";
 
 type DbRow = Record<string, unknown>;
 
@@ -347,6 +348,10 @@ export async function getAgentTaskExternalContext(
                WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS comments_migrated,
               (SELECT COUNT(*) FROM comment_migration_outcomes outcome
                WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS comment_exceptions
+              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS activity_migrated
+              ,(SELECT COUNT(*) FROM activity_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS activity_exceptions
        FROM external_records er
        WHERE er.target_type = 'task' AND er.target_id = ? AND er.owner_user_id = ?
        ORDER BY er.imported_at DESC LIMIT 1`,
@@ -367,6 +372,10 @@ export async function getAgentTaskExternalContext(
       commentMigration: {
         migrated: Number(row.comments_migrated ?? 0),
         exceptions: Number(row.comment_exceptions ?? 0),
+      },
+      activityMigration: {
+        migrated: Number(row.activity_migrated ?? 0),
+        exceptions: Number(row.activity_exceptions ?? 0),
       },
     },
     page: {
@@ -1171,6 +1180,52 @@ export async function listAgentTaskComments(
   };
 }
 
+export async function listAgentTaskActivity(
+  currentUser: UserRecord,
+  taskReference: string,
+  input: { limit?: number; cursor?: string | null } = {},
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const page = await listTaskActivity(currentUser, String(task.id), input);
+  return {
+    data: page.events.map((event) => ({
+      ref: event.id,
+      eventType: event.eventType,
+      actor: {
+        displayName: event.actor.displayName,
+        kind: event.actor.kind,
+        isCurrentUser: event.actor.id === currentUser.id,
+      },
+      payload: privacyMinimizedActivityPayload(event.payload),
+      source: event.source,
+      historical: event.historical ? {
+        sourceEventId: event.historical.sourceEventId,
+        sourceIndex: event.historical.sourceIndex,
+      } : null,
+      createdAt: event.createdAt,
+      schemaVersion: event.schemaVersion,
+    })),
+    page: { hasMore: page.hasMore, nextCursor: page.nextCursor },
+    totalCount: page.totalCount,
+  };
+}
+
+function privacyMinimizedActivityPayload(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return sanitize(value) as Record<string, unknown>;
+
+  function sanitize(input: unknown): unknown {
+    if (Array.isArray(input)) return input.map(sanitize);
+    if (!input || typeof input !== "object") return input;
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>)
+        .filter(([key]) => !/(^id$|Id$|_id$|^ref$)/.test(key))
+        .map(([key, nested]) => [key, sanitize(nested)]),
+    );
+  }
+}
+
 export async function getAgentTaskThread(
   currentUser: UserRecord,
   taskReference: string,
@@ -1454,8 +1509,9 @@ async function loadProvenanceSummary(taskId: string, ownerUserId: string) {
            AS comment_count,
          COALESCE(json_array_length(metadata_json, '$.attachments'), 0)
            AS attachment_count,
-         COALESCE(json_array_length(metadata_json, '$.stateHistory'), 0)
-           AS state_history_count
+         (SELECT COUNT(*) FROM activity_migration_outcomes outcome
+          WHERE outcome.source_record_id = external_records.id
+            AND outcome.outcome = 'migrated') AS activity_count
        FROM external_records
        WHERE target_type = 'task' AND target_id = ? AND owner_user_id = ?
        ORDER BY imported_at DESC LIMIT 1`,
@@ -1465,13 +1521,14 @@ async function loadProvenanceSummary(taskId: string, ownerUserId: string) {
   if (!row) return null;
   const commentCount = Number(row.comment_count ?? 0);
   const attachmentCount = Number(row.attachment_count ?? 0);
+  const activityCount = Number(row.activity_count ?? 0);
   return {
     source: String(row.source),
     sourceUrl: nullableString(row.source_url),
     commentCount,
     attachmentCount,
-    stateHistoryCount: Number(row.state_history_count ?? 0),
-    hasExternalContext: commentCount > 0 || attachmentCount > 0,
+    activityCount,
+    hasExternalContext: commentCount > 0 || attachmentCount > 0 || activityCount > 0,
   };
 }
 

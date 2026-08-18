@@ -48,13 +48,15 @@
     cleanup и recovery.
 20. [Runbook импортированной истории комментариев](operations/imported-comments.md)
     — reconciliation, backup, rollback и UAT smoke для cutover/import.
-21. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+21. [Runbook Task Activity](operations/task-activity.md) — atomic events,
+    Linear status-history reconciliation, retention, backup и UAT smoke.
+22. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-22. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+23. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-23. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+24. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
-24. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+25. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
 
@@ -70,6 +72,9 @@
 keyboard actions. Реализованы хранение и read-only details для labels и
 parent/subtasks, native create/edit/remove Task relations, а также идемпотентный Linear snapshot import
 с provenance, unified historical comments и explicit reconciliation outcomes.
+Task Activity добавляет append-only native mutations и lossless Linear status
+history через отдельные lazy UI/REST/MCP pages; system/Project backup schema
+`10` сохраняет events и reconciliation outcomes.
 Administration
 поддерживает полный системный export и атомарный replace-import через
 версионированный logical snapshot. Редакторы
@@ -107,8 +112,8 @@ inspection, retry safety, recoverable cleanup, details/composer UI,
 server-generated thumbnails, description images и lazy multi-session
 invalidation. Agent REST/MCP добавляют paginated metadata, private binary
 delivery, OpenAI native file input, versioned attachment delete и native
-relation commands. Attachment-aware system/Project backup и relation schema
-`9` реализованы с legacy compatibility.
+relation commands. Attachment-aware system/Project backup и Task Activity
+schema `10` реализованы с legacy compatibility.
 ADR-0012 заменяет optional/standalone Task semantics: каждая Task требует
 Project, получает identifier из Project code/sequence, а прежние identifiers
 сохраняются как ACL-scoped aliases.

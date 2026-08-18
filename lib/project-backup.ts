@@ -2,6 +2,7 @@ import { getD1 } from "@/db";
 import { NotFoundError, PermissionError, ValidationError } from "./domain";
 import {
   createProjectBackup,
+  projectBackupRestoreTableDefinitions,
   projectBackupTableDefinitions,
   projectBackupTableNames,
   projectRestoreInsertSql,
@@ -58,6 +59,16 @@ export async function exportProjectBackup(
       ORDER BY c.task_id, c.created_at, c.id`).bind(projectId, currentUser.id),
     db.prepare(`SELECT ${definition("comment_migration_outcomes").columns.map((column) => `outcome.${column}`).join(", ")}
       FROM comment_migration_outcomes outcome JOIN tasks t ON t.id = outcome.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY outcome.task_id, outcome.source_record_id, outcome.source_index`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("activity_events").columns.map((column) => `event.${column}`).join(", ")}
+      FROM activity_events event JOIN tasks t ON t.id = event.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY event.task_id, event.created_at, event.id`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("activity_migration_outcomes").columns.map((column) => `outcome.${column}`).join(", ")}
+      FROM activity_migration_outcomes outcome JOIN tasks t ON t.id = outcome.task_id
       JOIN projects p ON p.id = t.project_id
       WHERE t.project_id = ? AND p.owner_user_id = ?
       ORDER BY outcome.task_id, outcome.source_record_id, outcome.source_index`).bind(projectId, currentUser.id),
@@ -131,14 +142,16 @@ export async function exportProjectBackup(
     tasks: 3,
     comments: 4,
     comment_migration_outcomes: 5,
-    comment_reactions: 6,
-    labels: 7,
-    task_labels: 8,
-    task_relations: 9,
-    saved_views: 10,
-    external_records: 11,
-    attachments: 12,
-    task_identifier_aliases: 13,
+    activity_events: 6,
+    activity_migration_outcomes: 7,
+    comment_reactions: 8,
+    labels: 9,
+    task_labels: 10,
+    task_relations: 11,
+    saved_views: 12,
+    external_records: 13,
+    attachments: 14,
+    task_identifier_aliases: 15,
   };
   projectBackupTableNames.forEach((name) => {
     const table = definition(name);
@@ -148,7 +161,7 @@ export async function exportProjectBackup(
     tables.attachments,
   );
   tables.attachments = attachmentData.rows;
-  const sharing = results[14].results.map((value) => {
+  const sharing = results[16].results.map((value) => {
     const row = value as DbRow;
     const permission = String(row.permission);
     if (permission !== "manager" && permission !== "editor" && permission !== "viewer") {
@@ -166,7 +179,7 @@ export async function exportProjectBackup(
     tables,
     objects: attachmentData.objects,
     sharing,
-    externalRelationsOmitted: Number((results[15].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted: Number((results[17].results[0] as DbRow | undefined)?.count ?? 0),
   });
 }
 
@@ -333,6 +346,12 @@ export async function applyProjectBackup(
   }
 
   const statements: D1PreparedStatement[] = [
+    db.prepare(`DELETE FROM activity_migration_outcomes WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(session.project_id),
+    db.prepare(`DELETE FROM activity_events WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(session.project_id),
     db.prepare(`DELETE FROM comment_migration_outcomes WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(session.project_id),
@@ -365,7 +384,7 @@ export async function applyProjectBackup(
     statements.push(db.prepare("DELETE FROM access_grants WHERE resource_type = 'project' AND resource_id = ?").bind(session.project_id));
   }
   statements.push(db.prepare("DELETE FROM projects WHERE id = ?").bind(session.project_id));
-  for (const table of projectBackupTableDefinitions) {
+  for (const table of projectBackupRestoreTableDefinitions) {
     if (table.name === "workflow_statuses" || table.name === "labels") {
       statements.push(
         db.prepare(projectRestoreInsertSql(table, true))
@@ -437,6 +456,12 @@ async function validateLiveDependenciesAndCollisions(
     db.prepare(`SELECT outcome.id FROM comment_migration_outcomes outcome
       JOIN tasks t ON t.id = outcome.task_id
       WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
+    db.prepare(`SELECT event.id FROM activity_events event
+      JOIN tasks t ON t.id = event.task_id
+      WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
+    db.prepare(`SELECT outcome.id FROM activity_migration_outcomes outcome
+      JOIN tasks t ON t.id = outcome.task_id
+      WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
   ]);
   const statusRows = results[0].results as DbRow[];
   const labelRows = results[1].results as DbRow[];
@@ -475,6 +500,7 @@ async function validateLiveDependenciesAndCollisions(
   for (const task of backup.tables.tasks) { add(task.owner_user_id); add(task.creator_user_id); add(task.assignee_user_id); }
   for (const attachment of backup.tables.attachments) add(attachment.uploader_user_id);
   for (const comment of backup.tables.comments) { add(comment.author_user_id); add(comment.resolved_by_user_id); }
+  for (const event of backup.tables.activity_events) add(event.actor_user_id);
   for (const reaction of backup.tables.comment_reactions) add(reaction.user_id);
   for (const relation of backup.tables.task_relations) add(relation.creator_user_id);
   for (const view of backup.tables.saved_views) add(view.owner_user_id);
@@ -502,6 +528,22 @@ async function validateLiveDependenciesAndCollisions(
   for (const outcome of backup.tables.comment_migration_outcomes) {
     if (liveOutcomeIds.has(String(outcome.id))) {
       throw new ValidationError("Project restore collides on a comment migration outcome identity");
+    }
+  }
+  const liveActivityEventIds = new Set(
+    (results[12].results as DbRow[]).map((row) => String(row.id)),
+  );
+  for (const event of backup.tables.activity_events) {
+    if (liveActivityEventIds.has(String(event.id))) {
+      throw new ValidationError("Project restore collides on an activity event identity");
+    }
+  }
+  const liveActivityOutcomeIds = new Set(
+    (results[13].results as DbRow[]).map((row) => String(row.id)),
+  );
+  for (const outcome of backup.tables.activity_migration_outcomes) {
+    if (liveActivityOutcomeIds.has(String(outcome.id))) {
+      throw new ValidationError("Project restore collides on an activity migration outcome identity");
     }
   }
   return warnings;
@@ -563,6 +605,8 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM comment_migration_outcomes WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
+    db.prepare("SELECT COUNT(*) AS count FROM activity_events WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
+    db.prepare("SELECT COUNT(*) AS count FROM activity_migration_outcomes WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
     db.prepare(`SELECT COUNT(*) AS count FROM comment_reactions WHERE comment_id IN (
       SELECT c.id FROM comments c JOIN tasks t ON t.id = c.task_id WHERE t.project_id = ?
     )`).bind(projectId),
@@ -588,10 +632,11 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
   const counts = results.map((result) => Number((result.results[0] as DbRow | undefined)?.count ?? 0));
   return {
     projects: counts[0], releases: counts[1], tasks: counts[2], comments: counts[3],
-    comment_migration_outcomes: counts[4], comment_reactions: counts[5],
-    saved_views: counts[6], task_labels: counts[7], task_relations: counts[8],
-    external_records: counts[9], attachments: counts[10],
-    task_identifier_aliases: counts[11], sharing: counts[12],
+    comment_migration_outcomes: counts[4], activity_events: counts[5],
+    activity_migration_outcomes: counts[6], comment_reactions: counts[7],
+    saved_views: counts[8], task_labels: counts[9], task_relations: counts[10],
+    external_records: counts[11], attachments: counts[12],
+    task_identifier_aliases: counts[13], sharing: counts[14],
     workflow_statuses: 0, labels: 0,
   };
 }
