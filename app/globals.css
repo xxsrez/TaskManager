@@ -327,6 +327,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .modal, .details-panel { position: relative; z-index: 1; }
 .modal.composer-modal { width: min(680px, calc(100vw - 28px)); }
 .modal.task-move-modal { width: min(520px, calc(100vw - 28px)); }
+.modal-backdrop:has(.project-dialog) { padding-top: 20px; }
 .modal.project-dialog { width: min(680px, calc(100vw - 28px)); max-height: calc(100dvh - 40px); overflow-y: auto; }
 @keyframes modal-in { from { opacity: 0; transform: translateY(5px) scale(.988); } }
 .modal-title-row, .dialog-header { height: 46px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); }

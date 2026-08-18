@@ -319,6 +319,7 @@ test("native description images use private refs, cursor upload, and responsive 
 
 test("Project lifecycle surfaces remain bounded and touchable on mobile", () => {
   assert.match(declarations(".modal.project-dialog"), /max-height:\s*calc\(100dvh\s*-\s*40px\)/);
+  assert.match(declarations(".modal-backdrop:has(.project-dialog)"), /padding-top:\s*20px/);
   assert.match(declarations(".project-overview-heading"), /grid-template-columns:\s*40px\s+minmax\(0,\s*1fr\)\s+auto/);
   assert.match(
     css,
