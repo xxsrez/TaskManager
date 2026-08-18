@@ -30,7 +30,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3;
+  schemaVersion: 2 | 3 | 4;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -42,7 +42,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 3 as const;
+export const systemBackupSchemaVersion = 4 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 1000;
 const maxStagedRowBytes = 1_500_000;
@@ -83,9 +83,12 @@ export const backupTableNames = [
 export const tableDefinitions = [
   definition("users", ["id", "display_name", "email", "timezone", "created_at", "updated_at"], "id"),
   definition("user_identities", ["user_id", "provider", "provider_account_key", "verified_email", "created_at"], "provider, provider_account_key"),
-  definition("workflow_statuses", ["id", "owner_user_id", "name", "category", "color", "position", "is_default", "created_at", "updated_at"], "id", {
+  definition("workflow_statuses", ["id", "owner_user_id", "name", "category", "color", "position", "is_default", "system_role", "archived_at", "version", "created_at", "updated_at"], "id", {
     position: { number: true, integer: true },
     is_default: { number: true, integer: true },
+    system_role: { nullable: true },
+    archived_at: { nullable: true },
+    version: { number: true, integer: true },
   }),
   definition("projects", ["id", "public_id", "owner_user_id", "creator_user_id", "name", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"], "id", {
     lead_user_id: { nullable: true }, start_date: { nullable: true }, target_date: { nullable: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
@@ -116,6 +119,16 @@ export const tableDefinitions = [
     revoked_at: { nullable: true },
   }),
 ] as const satisfies readonly TableDefinition[];
+
+const legacyWorkflowStatusDefinition = definition(
+  "workflow_statuses",
+  ["id", "owner_user_id", "name", "category", "color", "position", "is_default", "created_at", "updated_at"],
+  "id",
+  {
+    position: { number: true, integer: true },
+    is_default: { number: true, integer: true },
+  },
+);
 
 export const liveTableDeleteOrder: BackupTableName[] = [
   "comment_reactions",
@@ -186,52 +199,63 @@ export async function createSystemBackup(
 export async function validateSystemBackup(value: unknown): Promise<SystemBackup> {
   const payload = object(value, "Backup payload");
   const schemaVersion = payload.schemaVersion;
-  const legacy = schemaVersion === 2;
+  const withoutAttachments = schemaVersion === 2;
+  const legacyWorkflow = schemaVersion === 2 || schemaVersion === 3;
+  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
-    legacy
+    withoutAttachments
       ? ["format", "version", "schemaVersion", "exportedAt", "counts", "tables", "sha256"]
       : ["format", "version", "schemaVersion", "siteOrigin", "environmentScope", "exportedAt", "counts", "tables", "objects", "sha256"],
     "Backup payload",
   );
-  if (payload.format !== systemBackupFormat || payload.version !== systemBackupVersion || (!legacy && schemaVersion !== systemBackupSchemaVersion)) {
+  if (payload.format !== systemBackupFormat || payload.version !== systemBackupVersion || !supported) {
     throw new ValidationError("Unsupported Task Manager backup format or version");
   }
   const exportedAt = timestamp(payload.exportedAt, "exportedAt");
   const sourceTables = object(payload.tables, "tables");
-  const sourceTableNames = legacy
+  const sourceTableNames = withoutAttachments
     ? backupTableNames.filter((name) => name !== "attachments")
     : backupTableNames;
   assertOnlyKeys(sourceTables, sourceTableNames, "tables");
-  const tables = {} as BackupTables;
+  const sourceNormalizedTables = {} as BackupTables;
   let totalRows = 0;
   for (const table of tableDefinitions) {
     const sourceRows =
-      legacy && table.name === "attachments"
+      withoutAttachments && table.name === "attachments"
         ? []
         : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
     if (totalRows > maxSystemBackupRows) throw new ValidationError(`Backup contains more than ${maxSystemBackupRows} rows`);
-    tables[table.name] = sourceRows.map((row, index) => normalizeBackupRow(table, row, index));
+    const sourceDefinition = legacyWorkflow && table.name === "workflow_statuses"
+      ? legacyWorkflowStatusDefinition
+      : table;
+    sourceNormalizedTables[table.name] = sourceRows.map((row, index) =>
+      normalizeBackupRow(sourceDefinition, row, index),
+    );
   }
-  const counts = countTables(tables);
+  const sourceCounts = countTables(sourceNormalizedTables);
   const claimedCounts = object(payload.counts, "counts");
   assertOnlyKeys(claimedCounts, sourceTableNames, "counts");
   for (const name of sourceTableNames) {
-    if (claimedCounts[name] !== counts[name]) throw new ValidationError(`Count mismatch for ${name}`);
+    if (claimedCounts[name] !== sourceCounts[name]) throw new ValidationError(`Count mismatch for ${name}`);
   }
+  const tables = legacyWorkflow
+    ? upgradeLegacySystemWorkflow(sourceNormalizedTables)
+    : sourceNormalizedTables;
+  const counts = countTables(tables);
   validateRelationships(tables);
-  const objects = legacy
+  const objects = withoutAttachments
     ? []
     : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3,
-    ...(!legacy
+    schemaVersion: schemaVersion as 2 | 3 | 4,
+    ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
-    ...(!legacy
+    ...(!withoutAttachments
       ? {
           environmentScope: normalizeEnvironmentScope(
             requiredString(payload.environmentScope, "environmentScope"),
@@ -239,26 +263,26 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         }
       : {}),
     exportedAt,
-    counts: legacy
-      ? Object.fromEntries(sourceTableNames.map((name) => [name, counts[name]]))
-      : counts,
-    tables: legacy
+    counts: withoutAttachments
+      ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
+      : sourceCounts,
+    tables: withoutAttachments
       ? Object.fromEntries(
-          sourceTableNames.map((name) => [name, tables[name]]),
+          sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
         )
-      : tables,
-    ...(!legacy ? { objects } : {}),
+      : sourceNormalizedTables,
+    ...(!withoutAttachments ? { objects } : {}),
   };
   const checksum = await sha256(JSON.stringify(body));
   if (payload.sha256 !== checksum) throw new ValidationError("Backup checksum does not match its content");
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3,
-    siteOrigin: legacy
+    schemaVersion: schemaVersion as 2 | 3 | 4,
+    siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
-    environmentScope: legacy
+    environmentScope: withoutAttachments
       ? null
       : normalizeEnvironmentScope(
           requiredString(payload.environmentScope, "environmentScope"),
@@ -314,11 +338,41 @@ function validateRelationships(tables: BackupTables) {
 
   const statuses = uniqueIndex(tables.workflow_statuses, ["id"], "workflow statuses");
   uniqueIndex(tables.workflow_statuses, ["owner_user_id", "name"], "workflow status owner/name");
+  uniqueIndex(
+    tables.workflow_statuses.filter((status) => status.system_role !== null),
+    ["owner_user_id", "system_role"],
+    "workflow status owner/system role",
+  );
+  const duplicateOwners = new Set<string>();
+  const defaultOwners = new Set<string>();
   for (const status of tables.workflow_statuses) {
     requireReference(users, status.owner_user_id, "Workflow status owner");
     nonEmpty(status.name, "Workflow status name");
     oneOf(status.category, ["backlog", "unstarted", "started", "completed", "canceled"], "Workflow category");
     if (status.is_default !== 0 && status.is_default !== 1) throw new ValidationError("Workflow is_default must be 0 or 1");
+    if (status.system_role !== null && status.system_role !== "duplicate") {
+      throw new ValidationError("Workflow system role is invalid");
+    }
+    positiveVersion(status.version, "Workflow status version");
+    if (status.system_role === "duplicate") {
+      if (status.name !== "Duplicate" || status.category !== "canceled" || status.archived_at !== null || status.is_default !== 0) {
+        throw new ValidationError("Reserved Duplicate workflow status is invalid");
+      }
+      duplicateOwners.add(String(status.owner_user_id));
+    }
+    if (status.is_default === 1) {
+      if (status.archived_at !== null || !["backlog", "unstarted"].includes(String(status.category))) {
+        throw new ValidationError("Workflow default must be an active Backlog or Unstarted status");
+      }
+      if (defaultOwners.has(String(status.owner_user_id))) {
+        throw new ValidationError("Workflow catalog must have one default status");
+      }
+      defaultOwners.add(String(status.owner_user_id));
+    }
+  }
+  for (const user of tables.users) {
+    if (!duplicateOwners.has(String(user.id))) throw new ValidationError("Workflow catalog is missing its reserved Duplicate status");
+    if (!defaultOwners.has(String(user.id))) throw new ValidationError("Workflow catalog is missing its default status");
   }
 
   const projects = uniqueIndex(tables.projects, ["id"], "projects");
@@ -587,6 +641,51 @@ function validateRelationships(tables: BackupTables) {
         : ["editor", "viewer", "full_access"];
     if (!allowedPermissions.includes(String(grant.permission))) throw new ValidationError("Unsupported grant permission");
   }
+}
+
+function upgradeLegacySystemWorkflow(source: BackupTables): BackupTables {
+  const statuses: BackupRow[] = source.workflow_statuses.map((status): BackupRow => ({
+    ...status,
+    system_role: null,
+    archived_at: null,
+    version: 1,
+  }));
+  for (const user of source.users) {
+    const ownerId = String(user.id);
+    const owned = statuses
+      .filter((status) => status.owner_user_id === ownerId)
+      .sort((left, right) => Number(left.position) - Number(right.position) || String(left.id).localeCompare(String(right.id)));
+    const duplicate = owned.find((status) => status.name === "Duplicate")
+      ?? owned.find((status) => String(status.name).toLocaleLowerCase() === "duplicate");
+    if (duplicate) {
+      duplicate.name = "Duplicate";
+      duplicate.category = "canceled";
+      duplicate.is_default = 0;
+      duplicate.system_role = "duplicate";
+    } else {
+      const maxPosition = owned.reduce((maximum, status) => Math.max(maximum, Number(status.position)), -1);
+      statuses.push({
+        id: `status:${ownerId}:duplicate`,
+        owner_user_id: ownerId,
+        name: "Duplicate",
+        category: "canceled",
+        color: "#9ca3af",
+        position: maxPosition + 1,
+        is_default: 0,
+        system_role: "duplicate",
+        archived_at: null,
+        version: 1,
+        created_at: user.created_at,
+        updated_at: user.updated_at,
+      });
+    }
+    if (!owned.some((status) => status.is_default === 1)) {
+      const fallback = owned.find((status) => status.category === "unstarted")
+        ?? owned.find((status) => status.category === "backlog");
+      if (fallback) fallback.is_default = 1;
+    }
+  }
+  return { ...source, workflow_statuses: statuses };
 }
 
 function normalizeBackupRow(table: TableDefinition, value: unknown, index: number): BackupRow {

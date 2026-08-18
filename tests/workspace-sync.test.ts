@@ -483,9 +483,13 @@ test("invalid or pruned cursors request a safe full reset", async () => {
   await createTask(owner, { title: "Gap two" });
   await database
     .prepare(
-      "DELETE FROM workspace_change_events WHERE audience_user_id = ? AND sequence = 1",
+      `DELETE FROM workspace_change_events
+       WHERE audience_user_id = ? AND sequence = (
+         SELECT MIN(sequence) FROM workspace_change_events
+         WHERE audience_user_id = ? AND entity_type = 'task'
+       )`,
     )
-    .bind(owner.id)
+    .bind(owner.id, owner.id)
     .run();
 
   const gap = await getWorkspaceSync(owner, initial.syncCursor!);
@@ -515,9 +519,14 @@ test("an internal cursor gap cannot be skipped by a later event", async () => {
   await createTask(owner, { title: "Internal gap three" });
   await database
     .prepare(
-      "DELETE FROM workspace_change_events WHERE audience_user_id = ? AND sequence = 2",
+      `DELETE FROM workspace_change_events
+       WHERE audience_user_id = ? AND sequence = (
+         SELECT sequence FROM workspace_change_events
+         WHERE audience_user_id = ? AND entity_type = 'task'
+         ORDER BY sequence LIMIT 1 OFFSET 1
+       )`,
     )
-    .bind(owner.id)
+    .bind(owner.id, owner.id)
     .run();
 
   const response = await getWorkspaceSync(owner, initial.syncCursor!);
@@ -752,6 +761,9 @@ function baseSnapshot(): AppSnapshot {
       color: "#888888",
       position: 0,
       isDefault: true,
+      systemRole: null,
+      archivedAt: null,
+      version: 1,
     }],
     projects: [],
     releases: [],

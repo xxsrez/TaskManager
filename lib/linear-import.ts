@@ -37,6 +37,7 @@ export type LinearImportReport = {
 type PlannedStatus = {
   id: string;
   sourceId: string;
+  sourceName: string;
   name: string;
   category: string;
   color: string;
@@ -194,15 +195,17 @@ export function buildLinearImportPlan(
   const statuses = sourceStatuses.map((entry, index) => {
     const row = object(entry, `statuses[${index}]`);
     const sourceId = requiredString(row.id, `statuses[${index}].id`);
-    const name = requiredString(row.name, `statuses[${index}].name`);
-    const presentation = STATUS_PRESENTATION[name] ?? {
+    const sourceName = requiredString(row.name, `statuses[${index}].name`);
+    const name = sourceName;
+    const presentation = STATUS_PRESENTATION[sourceName] ?? {
       category: statusCategory(row.type),
       color: "#6b7280",
       position: 100 + index,
     };
     const status = {
-      id: statusTargetId(ownerUserId, name, presentation.category),
+      id: statusTargetId(ownerUserId, sourceName, presentation.category),
       sourceId,
+      sourceName,
       name,
       category: presentation.category,
       color: presentation.color,
@@ -220,7 +223,7 @@ export function buildLinearImportPlan(
     );
     return status;
   });
-  const statusByName = new Map(statuses.map((status) => [status.name, status]));
+  const statusByName = new Map(statuses.map((status) => [status.sourceName, status]));
 
   const labels = sourceLabels.map((entry, index) => {
     const row = object(entry, `labels[${index}]`);
@@ -500,6 +503,14 @@ export async function importLinearWorkspace(
   const plan = buildLinearImportPlan(currentUser.id, payload);
   const db = getD1();
 
+  if (plan.statuses.some((status) => status.isDefault === 1)) {
+    await db.prepare(
+      `UPDATE workflow_statuses
+       SET is_default = 0, version = version + 1, updated_at = ?
+       WHERE owner_user_id = ? AND is_default = 1`,
+    ).bind(plan.exportedAt, currentUser.id).run();
+  }
+
   await runBatches(
     plan.statuses.map((status) =>
       db
@@ -510,10 +521,11 @@ export async function importLinearWorkspace(
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
-             category = excluded.category,
              color = excluded.color,
              position = excluded.position,
              is_default = excluded.is_default,
+             archived_at = NULL,
+             version = workflow_statuses.version + 1,
              updated_at = excluded.updated_at`,
         )
         .bind(
@@ -891,6 +903,9 @@ function statusTargetId(
   name: string,
   category: string,
 ) {
+  if (name.toLocaleLowerCase() === "duplicate") {
+    return `status:${ownerUserId}:duplicate`;
+  }
   return BASE_STATUS_NAMES.has(name)
     ? `status:${ownerUserId}:${category}`
     : targetId(ownerUserId, "status", slug(name));

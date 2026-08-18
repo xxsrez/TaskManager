@@ -323,7 +323,10 @@ Logical backup schema `3` переносит Attachment row и original одни
 container: row ссылается на `sha256:<digest>`, object set содержит size,
 SHA-256 и base64 bytes. Live `object_key`, signed URL и thumbnail не переносятся.
 Restore всегда выдаёт новый key текущей среды. Schema `2` допустима только как
-legacy no-attachment backup. Owner/project active-byte quotas вычисляются по
+legacy no-attachment backup. Schema `4` дополнительно сохраняет workflow
+archive/system-role/version metadata; validators schema `2`/`3` нормализуют
+legacy statuses и для полного system restore восстанавливают reserved
+`Duplicate`. Owner/project active-byte quotas вычисляются по
 текущему Project owner, а не историческому `tasks.owner_user_id`.
 
 ## Comment и CommentReaction
@@ -376,10 +379,16 @@ create.
 | `color` | UI token/color |
 | `position` | Порядок в workflow |
 | `is_default` | Статус новых задач |
+| `system_role` | `duplicate` только для одного зарезервированного статуса owner-каталога; иначе `null` |
 | `archived_at` | Скрытие без поломки старых задач |
+| `version` | Optimistic concurrency version каталожной записи |
 
 Категория — системный смысл, name — пользовательская формулировка. Удалять
-status, на который ссылаются задачи, нельзя без миграции этих задач.
+status, на который ссылаются задачи или SavedViews, нельзя без миграции на
+активный replacement той же категории. Owner управляет только собственным
+каталогом; project collaborator может применять его активные записи, но не
+изменять их. В каталоге ровно один active default категории `backlog` или
+`unstarted` и ровно один active reserved `Duplicate` категории `canceled`.
 
 ## Project
 

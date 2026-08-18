@@ -15,7 +15,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 3 as const;
+export const projectBackupSchemaVersion = 4 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -49,7 +49,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -68,6 +68,16 @@ export const projectBackupTableDefinitions = tableDefinitions.filter(
   (table): table is TableDefinition & { name: ProjectBackupTableName } =>
     projectBackupTableNames.includes(table.name as ProjectBackupTableName),
 );
+
+const legacyWorkflowStatusDefinition: TableDefinition = {
+  name: "workflow_statuses",
+  columns: ["id", "owner_user_id", "name", "category", "color", "position", "is_default", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: {
+    position: { number: true, integer: true },
+    is_default: { number: true, integer: true },
+  },
+};
 
 export function projectRestoreInsertSql(table: TableDefinition, ignoreExistingId = false): string {
   const extracts = table.columns
@@ -118,8 +128,10 @@ export async function createProjectBackup(input: {
 
 export async function validateProjectBackup(value: unknown): Promise<ProjectBackup> {
   const payload = object(value, "Project backup");
-  const legacy = payload.schemaVersion === 2;
-  exactKeys(payload, legacy ? [
+  const withoutAttachments = payload.schemaVersion === 2;
+  const legacyWorkflow = payload.schemaVersion === 2 || payload.schemaVersion === 3;
+  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === projectBackupSchemaVersion;
+  exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
     "warnings", "tables", "sharing", "sha256",
@@ -131,26 +143,31 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   if (
     payload.format !== projectBackupFormat ||
     payload.version !== projectBackupVersion ||
-    (!legacy && payload.schemaVersion !== projectBackupSchemaVersion)
+    !supported
   ) {
     throw new ValidationError("Unsupported Task Manager project backup format or version");
   }
   const sourceTables = object(payload.tables, "tables");
-  const sourceTableNames = legacy
+  const sourceTableNames = withoutAttachments
     ? projectBackupTableNames.filter((name) => name !== "attachments")
     : projectBackupTableNames;
   exactKeys(sourceTables, sourceTableNames, "tables");
-  const tables = {} as ProjectBackupTables;
+  const sourceNormalizedTables = {} as ProjectBackupTables;
   let totalRows = 0;
   for (const table of projectBackupTableDefinitions) {
-    const values = legacy && table.name === "attachments"
+    const values = withoutAttachments && table.name === "attachments"
       ? []
       : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += values.length;
     if (totalRows > maxProjectBackupRows) {
       throw new ValidationError(`Project backup contains more than ${maxProjectBackupRows} rows`);
     }
-    tables[table.name] = values.map((row, index) => normalizeRow(table, row, index));
+    const sourceDefinition = legacyWorkflow && table.name === "workflow_statuses"
+      ? legacyWorkflowStatusDefinition
+      : table;
+    sourceNormalizedTables[table.name] = values.map((row, index) =>
+      normalizeRow(sourceDefinition, row, index),
+    );
   }
   const sharing = array(payload.sharing, "sharing").map(normalizeSharing);
   const warnings = object(payload.warnings, "warnings");
@@ -159,6 +176,9 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     warnings.externalRelationsOmitted,
     "externalRelationsOmitted",
   );
+  const tables = legacyWorkflow
+    ? upgradeLegacyProjectWorkflow(sourceNormalizedTables)
+    : sourceNormalizedTables;
   const body = {
     format: projectBackupFormat,
     version: projectBackupVersion,
@@ -169,7 +189,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     projectPublicId: requiredString(payload.projectPublicId, "projectPublicId"),
     projectName: requiredString(payload.projectName, "projectName"),
     ownerUserId: requiredString(payload.ownerUserId, "ownerUserId"),
-    counts: countProjectTables(tables, sharing),
+    counts: countProjectTables(sourceNormalizedTables, sharing),
     warnings: { externalRelationsOmitted },
     tables,
     sharing,
@@ -177,36 +197,36 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const claimedCounts = object(payload.counts, "counts");
   exactKeys(claimedCounts, [...sourceTableNames, "sharing"], "counts");
   for (const [name, count] of Object.entries(body.counts)) {
-    if (legacy && name === "attachments") continue;
+    if (withoutAttachments && name === "attachments") continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
   validateProjectRelationships(tables, sharing, body);
-  const objects = legacy
+  const objects = withoutAttachments
     ? []
     : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: legacy ? 2 : projectBackupSchemaVersion,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
     projectPublicId: body.projectPublicId,
     projectName: body.projectName,
     ownerUserId: body.ownerUserId,
-    counts: legacy
+    counts: withoutAttachments
       ? Object.fromEntries(
           Object.entries(body.counts).filter(([name]) => name !== "attachments"),
         )
       : body.counts,
     warnings: body.warnings,
-    tables: legacy
+    tables: withoutAttachments
       ? Object.fromEntries(
-          Object.entries(body.tables).filter(([name]) => name !== "attachments"),
+          Object.entries(sourceNormalizedTables).filter(([name]) => name !== "attachments"),
         )
-      : body.tables,
+      : sourceNormalizedTables,
   };
-  const checksumBody = legacy
+  const checksumBody = withoutAttachments
     ? { ...baseChecksumBody, sharing }
     : { ...baseChecksumBody, objects, sharing };
   const checksum = await sha256(JSON.stringify(checksumBody));
@@ -215,7 +235,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -239,6 +259,23 @@ function validateProjectRelationships(
   const statuses = unique(tables.workflow_statuses, "id", "workflow status");
   const labels = unique(tables.labels, "id", "label");
   const views = unique(tables.saved_views, "id", "saved view");
+  for (const status of tables.workflow_statuses) {
+    if (!categories.includes(String(status.category))) {
+      throw new ValidationError("Workflow category is invalid");
+    }
+    if (!Number.isSafeInteger(status.version) || Number(status.version) < 1) {
+      throw new ValidationError("Workflow status version is invalid");
+    }
+    if (status.system_role !== null && status.system_role !== "duplicate") {
+      throw new ValidationError("Workflow system role is invalid");
+    }
+    if (status.system_role === "duplicate" && (
+      status.name !== "Duplicate" || status.category !== "canceled" ||
+      status.archived_at !== null || status.is_default !== 0
+    )) {
+      throw new ValidationError("Reserved Duplicate workflow status is invalid");
+    }
+  }
   for (const release of tables.releases) {
     if (release.project_id !== identity.projectId) throw new ValidationError("Release is outside the backed-up project");
   }
@@ -415,6 +452,31 @@ function validateProjectRelationships(
     grantees.add(descriptor.granteeUserId);
   }
 }
+
+function upgradeLegacyProjectWorkflow(source: ProjectBackupTables): ProjectBackupTables {
+  const statuses: BackupRow[] = source.workflow_statuses.map((status): BackupRow => ({
+    ...status,
+    system_role: String(status.name).toLocaleLowerCase() === "duplicate" && status.category === "canceled"
+      ? "duplicate"
+      : null,
+    archived_at: null,
+    version: 1,
+  }));
+  const duplicateOwners = new Set<string>();
+  for (const status of statuses) {
+    if (status.system_role !== "duplicate") continue;
+    const ownerId = String(status.owner_user_id);
+    if (duplicateOwners.has(ownerId)) status.system_role = null;
+    else {
+      status.name = "Duplicate";
+      status.is_default = 0;
+      duplicateOwners.add(ownerId);
+    }
+  }
+  return { ...source, workflow_statuses: statuses };
+}
+
+const categories = ["backlog", "unstarted", "started", "completed", "canceled"];
 
 function normalizeRow(table: TableDefinition, value: unknown, index: number): BackupRow {
   const source = object(value, `${table.name}[${index}]`);

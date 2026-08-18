@@ -28,6 +28,9 @@ const statuses: WorkflowStatusRecord[] = [
     color: "#888888",
     position: 0,
     isDefault: true,
+    systemRole: null,
+    archivedAt: null,
+    version: 1,
   },
 ];
 const projects: ProjectRecord[] = [
@@ -146,6 +149,9 @@ test("status grouping follows workflow order while first and last tasks change g
     color: "#22c55e",
     position: 1,
     isDefault: false,
+    systemRole: null,
+    archivedAt: null,
+    version: 1,
   };
   const labels = (tasks: TaskRecord[]) => buildTaskGroups({
     tasks,
@@ -177,6 +183,9 @@ test("status drag projection changes only status and rank and can roll back safe
     color: "#22c55e",
     position: 1,
     isDefault: false,
+    systemRole: null,
+    archivedAt: null,
+    version: 1,
   };
   const target = buildTaskGroups({
     tasks: [],

@@ -586,9 +586,15 @@ Linear, но они обязаны использовать тот же visual l
   sidebar preference и sign out.
 - Нажатие на avatar, display name или email в нижней части sidebar открывает
   компактное account menu и не запускает sign out. Первый menu slice показывает
-  verified identity, рабочие переходы в `My tasks`, `Project backup`, доступную
-  администратору `Administration` и общий для всех пункт `Codex setup`, а также
-  выбор `system`/`light`/`dark` theme.
+  verified identity, рабочие переходы в `My tasks`, `Workflow statuses`,
+  `Project backup`, доступную администратору `Administration` и общий для всех
+  пункт `Codex setup`, а также выбор `system`/`light`/`dark` theme.
+- `Workflow statuses` открывает responsive modal owner-каталога. Active rows
+  дают rename, color, reorder внутри immutable category, выбор default и
+  archive; используемый/default status требует replacement той же категории.
+  `Duplicate` помечен как Reserved, а archived rows раскрываются отдельно и
+  поддерживают restore. Ошибка optimistic version остаётся в modal и допускает
+  повтор после актуального reload.
 - `Codex setup` открывает modal с переключаемыми режимами `Codex Desktop` и
   `Codex CLI`. Desktop flow показывает добавление `Srez Marketplace`, в котором
   сейчас опубликован `Task Manager`, его установку и OAuth `Authenticate`/`Connect`;

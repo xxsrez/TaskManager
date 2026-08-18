@@ -443,8 +443,12 @@ saved-view query/display и полный provider metadata в `external_records`
    set. Export заменяет environment object key на `sha256:<digest>` и проверяет
    original byte-for-byte. Restore кладёт validated bytes в R2 staging,
    материализует новые keys, выполняет D1 replace и после commit удаляет старые
-   и staged objects; failure до commit удаляет только новые objects. Schema `2`
-   без Attachments остаётся импортируемой.
+   и staged objects; failure до commit удаляет только новые objects.
+7. Schema `4` переносит `WorkflowStatus.system_role`, `archived_at` и `version`.
+   Legacy schema `2`/`3` проверяется по исходному checksum body, затем
+   нормализуется для current restore; system restore также синтезирует ровно
+   один reserved `Duplicate` на User. Schema `2` без Attachments остаётся
+   импортируемой.
 
 ### Project backup и restore
 

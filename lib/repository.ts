@@ -71,12 +71,14 @@ const defaultStatuses: Array<[
   string,
   number,
   number,
+  "duplicate" | null,
 ]> = [
-  ["Backlog", "backlog", "#6b7280", 0, 0],
-  ["Todo", "unstarted", "#94a3b8", 1, 1],
-  ["In Progress", "started", "#f59e0b", 2, 0],
-  ["Done", "completed", "#22c55e", 3, 0],
-  ["Canceled", "canceled", "#ef4444", 4, 0],
+  ["Backlog", "backlog", "#6b7280", 0, 0, null],
+  ["Todo", "unstarted", "#94a3b8", 1, 1, null],
+  ["In Progress", "started", "#f59e0b", 2, 0, null],
+  ["Done", "completed", "#22c55e", 3, 0, null],
+  ["Canceled", "canceled", "#ef4444", 4, 0, null],
+  ["Duplicate", "canceled", "#9ca3af", 5, 0, "duplicate"],
 ];
 
 const editableTaskWhere = `(
@@ -167,21 +169,22 @@ export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
          VALUES (?, ?, ?, ?)`,
       )
       .bind(userId, actor.provider, actor.providerAccountKey, actor.email),
-    ...defaultStatuses.map(([name, category, color, position, isDefault]) =>
+    ...defaultStatuses.map(([name, category, color, position, isDefault, systemRole]) =>
       db
         .prepare(
           `INSERT INTO workflow_statuses
-            (id, owner_user_id, name, category, color, position, is_default)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            (id, owner_user_id, name, category, color, position, is_default, system_role)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(
-          `status:${userId}:${category}`,
+          `status:${userId}:${systemRole ?? category}`,
           userId,
           name,
           category,
           color,
           position,
           isDefault,
+          systemRole,
         ),
     ),
   ]);
@@ -1162,7 +1165,7 @@ export async function updateTask(
 
   const status = Object.hasOwn(input, "statusId")
     ? await loadStatus(task.ownerUserId, String(input.statusId))
-    : await loadStatus(task.ownerUserId, task.statusId);
+    : await loadStatus(task.ownerUserId, task.statusId, { allowArchived: true });
   const now = new Date().toISOString();
   const timestamps = statusTimestamps(status.category, task, now);
   const title = Object.hasOwn(input, "title")
@@ -1794,19 +1797,23 @@ function requireContentEdit(role: AccessRole) {
   }
 }
 
-async function loadStatus(ownerUserId: string, statusId: string | null) {
+async function loadStatus(
+  ownerUserId: string,
+  statusId: string | null,
+  options: { allowArchived?: boolean } = {},
+) {
   const row = statusId
     ? await getD1()
         .prepare(
           `SELECT * FROM workflow_statuses
-           WHERE id = ? AND owner_user_id = ?`,
+           WHERE id = ? AND owner_user_id = ?${options.allowArchived ? "" : " AND archived_at IS NULL"}`,
         )
         .bind(statusId, ownerUserId)
         .first<DbRow>()
     : await getD1()
         .prepare(
           `SELECT * FROM workflow_statuses
-           WHERE owner_user_id = ?
+           WHERE owner_user_id = ? AND archived_at IS NULL
            ORDER BY is_default DESC, position ASC LIMIT 1`,
         )
         .bind(ownerUserId)
@@ -1999,6 +2006,9 @@ function mapStatus(row: DbRow): WorkflowStatusRecord {
     color: String(row.color),
     position: Number(row.position),
     isDefault: Boolean(row.is_default),
+    systemRole: row.system_role === "duplicate" ? "duplicate" : null,
+    archivedAt: nullableString(row.archived_at),
+    version: Number(row.version ?? 1),
   };
 }
 

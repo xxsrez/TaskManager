@@ -24,6 +24,9 @@ export type WorkflowStatusRecord = {
   color: string;
   position: number;
   isDefault: boolean;
+  systemRole: "duplicate" | null;
+  archivedAt: string | null;
+  version: number;
 };
 
 export type ProjectRecord = {

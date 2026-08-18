@@ -4,7 +4,9 @@
 import {
   Archive,
   ArchiveRestore,
+  ArrowDown,
   ArrowDownWideNarrow,
+  ArrowUp,
   Boxes,
   CalendarDays,
   Check,
@@ -109,6 +111,7 @@ import type {
   ProjectRecord,
   ReleaseRecord,
   SavedViewRecord,
+  StatusCategory,
   StagedSystemBackup,
   TaskRecord,
   TaskDetailRecord,
@@ -128,7 +131,7 @@ type ShareTarget = {
   inherited: boolean;
 };
 
-type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | "codexSetup" | null;
+type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | "codexSetup" | "workflowSettings" | null;
 type CodexSetupMode = "desktop" | "cli";
 type TaskCreateDefaults = Partial<{
   statusId: string;
@@ -1239,6 +1242,7 @@ export function TaskTracker({
   }
   const visibleStatuses = data.statuses
     .filter((status) => groupingOwnerIds.has(status.ownerUserId))
+    .filter((status) => !status.archivedAt || visibleTasks.some((task) => task.statusId === status.id))
     .sort((left, right) => left.position - right.position);
   const groupingProjects = contextProject
     ? data.projects.filter((project) => project.id === contextProject)
@@ -1387,7 +1391,11 @@ export function TaskTracker({
     group: TaskGroup,
     rank: number,
   ) {
-    if (!canMoveTaskToGroup(task, group) || taskMatchesGroup(task, group)) {
+    if (
+      !canMoveTaskToGroup(task, group) ||
+      taskMatchesGroup(task, group) ||
+      (group.kind === "status" && Boolean(statusMap.get(group.value ?? "")?.archivedAt))
+    ) {
       return false;
     }
     const optimistic = projectTaskGroupMove(task, group, rank);
@@ -1826,6 +1834,18 @@ export function TaskTracker({
                   <CircleHelp size={14} />
                   <span>Codex setup</span>
                 </button>
+                <button
+                  className="account-menu-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    setDialog("workflowSettings");
+                  }}
+                >
+                  <SlidersHorizontal size={14} />
+                  <span>Workflow statuses</span>
+                </button>
                 <a className="account-menu-item" href="/import/project" role="menuitem">
                   <Download size={14} />
                   <span>Project backup</span>
@@ -2068,6 +2088,7 @@ export function TaskTracker({
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
+      {dialog === "workflowSettings" && <WorkflowSettingsDialog initialStatuses={data.statuses.filter((status) => status.ownerUserId === data.user.id)} onClose={() => setDialog(null)} onStatuses={(statuses) => setData((current) => ({ ...current, statuses: [...current.statuses.filter((status) => status.ownerUserId !== current.user.id), ...statuses] }))} />}
     </main>
   );
 }
@@ -2375,7 +2396,9 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
     : contextProject ?? releaseProjectId ?? "";
   const [projectId, setProjectId] = useState(initialProjectId);
   const ownerId = data.projects.find((project) => project.id === projectId)?.ownerUserId ?? data.user.id;
-  const statuses = data.statuses.filter((status) => status.ownerUserId === ownerId);
+  const statuses = data.statuses.filter(
+    (status) => status.ownerUserId === ownerId && !status.archivedAt,
+  );
   const [statusId, setStatusId] = useState(defaults.statusId && statuses.some((status) => status.id === defaults.statusId) ? defaults.statusId : statuses.find((status) => status.isDefault)?.id ?? statuses[0]?.id ?? "");
   const [releaseId, setReleaseId] = useState(initialReleaseId);
   const [priority, setPriority] = useState<Priority>(defaults.priority ?? "none");
@@ -2560,7 +2583,10 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
   if (!canEditContent(task.accessRole)) {
     return <ReadOnlyTaskDetails task={task} data={data} source={source} onClose={onClose} onOpenTask={onOpenTask} />;
   }
-  const statuses = data.statuses.filter((status) => status.ownerUserId === task.ownerUserId);
+  const statuses = data.statuses.filter(
+    (status) => status.ownerUserId === task.ownerUserId &&
+      (!status.archivedAt || status.id === task.statusId),
+  );
   const projects = data.projects.filter(
     (project) =>
       project.id === task.projectId ||
@@ -3318,6 +3344,173 @@ function FilterPopover({ statuses, priority, status, onPriority, onStatus, onClo
 function DisplayPopover({ layout, groupBy, orderBy, onLayout, onGroupBy, onClose }: { layout: Layout; groupBy: ViewDisplay["groupBy"]; orderBy: ViewDisplay["orderBy"]; onLayout: (value: Layout) => void; onGroupBy: (value: ViewDisplay["groupBy"]) => void; onClose: () => void }) { return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={groupBy} onChange={(event) => onGroupBy(event.target.value as ViewDisplay["groupBy"])}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><div className="display-static"><span>Order</span><b>{displayLabel(orderBy)}</b></div></Popover>; }
 function Popover({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) { return <div className="popover"><header><b>{title}</b><button onClick={onClose}><X size={13} /></button></header>{children}</div>; }
 
+type WorkflowSettingsStatus = WorkflowStatusRecord & {
+  taskCount: number;
+  savedViewCount: number;
+};
+
+const workflowCategoryLabels: Record<StatusCategory, string> = {
+  backlog: "Backlog",
+  unstarted: "Unstarted",
+  started: "Started",
+  completed: "Completed",
+  canceled: "Canceled",
+};
+
+function WorkflowSettingsDialog({
+  initialStatuses,
+  onClose,
+  onStatuses,
+}: {
+  initialStatuses: WorkflowStatusRecord[];
+  onClose: () => void;
+  onStatuses: (statuses: WorkflowStatusRecord[]) => void;
+}) {
+  const [statuses, setStatuses] = useState<WorkflowSettingsStatus[]>(
+    initialStatuses.map((status) => ({ ...status, taskCount: 0, savedViewCount: 0 })),
+  );
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const [replacements, setReplacements] = useState<Record<string, string>>({});
+  const onStatusesRef = useRef(onStatuses);
+
+  useEffect(() => {
+    onStatusesRef.current = onStatuses;
+  }, [onStatuses]);
+
+  const apply = useCallback((next: WorkflowSettingsStatus[]) => {
+    setStatuses(next);
+    onStatusesRef.current(next);
+  }, []);
+
+  const request = useCallback(async (
+    path: string,
+    method: "POST" | "PATCH",
+    body: Record<string, unknown>,
+    actionId: string,
+  ) => {
+    setBusyId(actionId);
+    setError("");
+    try {
+      const response = await fetch(path, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const value = await response.json() as { statuses?: WorkflowSettingsStatus[]; error?: string };
+      if (!response.ok || !value.statuses) {
+        if (response.status === 409) {
+          const refreshedResponse = await fetch("/api/settings/workflow-statuses", { cache: "no-store" });
+          const refreshed = await refreshedResponse.json() as { statuses?: WorkflowSettingsStatus[] };
+          if (refreshedResponse.ok && refreshed.statuses) apply(refreshed.statuses);
+        }
+        throw new Error(value.error ?? "Workflow status could not be saved");
+      }
+      apply(value.statuses);
+      return true;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Workflow status could not be saved");
+      return false;
+    } finally {
+      setBusyId(null);
+    }
+  }, [apply]);
+
+  useEffect(() => {
+    let current = true;
+    void fetch("/api/settings/workflow-statuses", { cache: "no-store" })
+      .then(async (response) => {
+        const value = await response.json() as { statuses?: WorkflowSettingsStatus[]; error?: string };
+        if (!response.ok || !value.statuses) throw new Error(value.error ?? "Workflow statuses could not be loaded");
+        if (current) apply(value.statuses);
+      })
+      .catch((requestError: unknown) => {
+        if (current) setError(requestError instanceof Error ? requestError.message : "Workflow statuses could not be loaded");
+      })
+      .finally(() => current && setLoading(false));
+    return () => { current = false; };
+  }, [apply]);
+
+  const active = statuses.filter((status) => !status.archivedAt);
+  const archived = statuses.filter((status) => status.archivedAt);
+
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    if (await request("/api/settings/workflow-statuses", "POST", values, "create")) form.reset();
+  }
+
+  function renderStatus(status: WorkflowSettingsStatus) {
+    const categoryPeers = active.filter((candidate) =>
+      candidate.category === status.category && candidate.id !== status.id,
+    );
+    const peerIndex = active.filter((candidate) => candidate.category === status.category)
+      .sort((left, right) => left.position - right.position)
+      .findIndex((candidate) => candidate.id === status.id);
+    const orderedPeers = active.filter((candidate) => candidate.category === status.category)
+      .sort((left, right) => left.position - right.position);
+    const replacementRequired = status.isDefault || status.taskCount > 0 || status.savedViewCount > 0;
+    const replacementId = replacements[status.id] ?? categoryPeers[0]?.id ?? "";
+    return (
+      <article className={`workflow-status-row ${status.archivedAt ? "archived" : ""}`} key={`${status.id}:${status.version}`}>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          const values = Object.fromEntries(new FormData(event.currentTarget));
+          void request(`/api/settings/workflow-statuses/${encodeURIComponent(status.id)}`, "PATCH", {
+            action: "update",
+            version: status.version,
+            name: values.name,
+            color: values.color,
+          }, status.id);
+        }}>
+          <input className="workflow-color" type="color" name="color" defaultValue={status.color} aria-label={`Color for ${status.name}`} disabled={Boolean(status.archivedAt) || busyId !== null} />
+          <span className="workflow-status-main">
+            <input name="name" defaultValue={status.name} aria-label={`Name for ${status.name}`} disabled={Boolean(status.archivedAt) || status.systemRole === "duplicate" || busyId !== null} />
+            <small>{workflowCategoryLabels[status.category]} · {status.taskCount} task{status.taskCount === 1 ? "" : "s"}{status.savedViewCount ? ` · ${status.savedViewCount} view${status.savedViewCount === 1 ? "" : "s"}` : ""}</small>
+          </span>
+          {!status.archivedAt && <button className="button ghost compact" disabled={busyId !== null} type="submit">Save</button>}
+        </form>
+        <div className="workflow-status-actions">
+          {!status.archivedAt && <>
+            <button className="icon-button" type="button" title="Move up" aria-label={`Move ${status.name} up`} disabled={busyId !== null || peerIndex <= 0} onClick={() => {
+              const peer = orderedPeers[peerIndex - 1];
+              if (peer) void request(`/api/settings/workflow-statuses/${encodeURIComponent(status.id)}`, "PATCH", { action: "move", direction: "up", version: status.version, peerVersion: peer.version }, status.id);
+            }}><ArrowUp size={14} /></button>
+            <button className="icon-button" type="button" title="Move down" aria-label={`Move ${status.name} down`} disabled={busyId !== null || peerIndex < 0 || peerIndex >= orderedPeers.length - 1} onClick={() => {
+              const peer = orderedPeers[peerIndex + 1];
+              if (peer) void request(`/api/settings/workflow-statuses/${encodeURIComponent(status.id)}`, "PATCH", { action: "move", direction: "down", version: status.version, peerVersion: peer.version }, status.id);
+            }}><ArrowDown size={14} /></button>
+            {status.isDefault ? <span className="workflow-default">Default</span> : (["backlog", "unstarted"] as StatusCategory[]).includes(status.category) && <button className="button ghost compact" type="button" disabled={busyId !== null} onClick={() => void request(`/api/settings/workflow-statuses/${encodeURIComponent(status.id)}`, "PATCH", { action: "update", version: status.version, isDefault: true }, status.id)}>Make default</button>}
+            {status.systemRole === "duplicate" ? <span className="workflow-reserved">Reserved</span> : <>
+              {replacementRequired && <select aria-label={`Replacement for ${status.name}`} value={replacementId} disabled={busyId !== null} onChange={(event) => setReplacements((current) => ({ ...current, [status.id]: event.target.value }))}><option value="" disabled>Replacement…</option>{categoryPeers.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select>}
+              <button className="button ghost compact danger" type="button" disabled={busyId !== null || categoryPeers.length === 0 || (replacementRequired && !replacementId)} onClick={() => void request(`/api/settings/workflow-statuses/${encodeURIComponent(status.id)}`, "PATCH", { action: "archive", version: status.version, replacementStatusId: replacementId || undefined }, status.id)}><Archive size={13} />Archive</button>
+            </>}
+          </>}
+          {status.archivedAt && <button className="button ghost compact" type="button" disabled={busyId !== null} onClick={() => void request(`/api/settings/workflow-statuses/${encodeURIComponent(status.id)}`, "PATCH", { action: "restore", version: status.version }, status.id)}><ArchiveRestore size={13} />Restore</button>}
+        </div>
+      </article>
+    );
+  }
+
+  return (
+    <Modal onClose={() => busyId === null && onClose()} className="workflow-settings-modal" ariaLabel="Workflow status settings">
+      <DialogHeader title="Workflow statuses" icon={<SlidersHorizontal size={17} />} onClose={() => busyId === null && onClose()} />
+      <p className="dialog-copy">Statuses belong to your workflow. Their category is permanent because it controls task lifecycle timestamps.</p>
+      {error && <p className="dialog-error" role="alert">{error}</p>}
+      {loading ? <p className="dialog-copy">Loading workflow…</p> : <div className="workflow-status-list">{active.map(renderStatus)}</div>}
+      <form className="workflow-status-create" onSubmit={create}>
+        <input name="name" required maxLength={80} placeholder="New status" aria-label="New workflow status name" disabled={busyId !== null} />
+        <select name="category" defaultValue="unstarted" aria-label="New workflow status category" disabled={busyId !== null}>{Object.entries(workflowCategoryLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+        <input className="workflow-color" type="color" name="color" defaultValue="#6b7280" aria-label="New workflow status color" disabled={busyId !== null} />
+        <button className="button primary" disabled={busyId !== null}><Plus size={14} />Add</button>
+      </form>
+      {archived.length > 0 && <details className="workflow-archived"><summary>Archived statuses ({archived.length})</summary><div className="workflow-status-list">{archived.map(renderStatus)}</div></details>}
+    </Modal>
+  );
+}
+
 function EntityDialog({ title, icon, fields, onClose, onSubmit, busy }: { title: string; icon: React.ReactNode; fields: Array<{ name: string; label: string; type?: string; required?: boolean }>; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title={title} icon={icon} onClose={onClose} /><div className="form-stack">{fields.map((field) => <label key={field.name}><span>{field.label}</span><input name={field.name} type={field.type ?? "text"} required={field.required} autoFocus={field === fields[0]} /></label>)}</div><DialogFooter busy={busy} label="Create" /></form></Modal>; }
 function ReleaseDialog({ projects, initialProjectId, onClose, onSubmit, busy }: { projects: ProjectRecord[]; initialProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title="Create release" icon={<Rocket size={17} />} onClose={onClose} /><div className="form-stack"><label><span>Release name</span><input name="name" required autoFocus placeholder="v1.0" /></label><label><span>Project</span><select name="projectId" required defaultValue={initialProjectId ?? ""}><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Target date</span><input name="targetDate" type="date" /></label></div>{!projects.length && <p className="inline-note">Create a project before adding a release.</p>}<DialogFooter busy={busy} label="Create release" disabled={!projects.length} /></form></Modal>; }
 function ViewDialog({ search, status, priority, layout, groupBy, scopeProjectId, onClose, onSubmit, busy }: { search: string; status: string; priority: Priority | "all"; layout: Layout; groupBy: ViewDisplay["groupBy"]; scopeProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
@@ -4070,7 +4263,7 @@ function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSn
   }
   return null;
 }
-function statusGroupsForTasks(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const owners = new Set(tasks.map((task) => task.ownerUserId)); return statuses.filter((status) => owners.has(status.ownerUserId) || tasks.length === 0).sort((a, b) => a.position - b.position); }
+function statusGroupsForTasks(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const owners = new Set(tasks.map((task) => task.ownerUserId)); return statuses.filter((status) => !status.archivedAt && (owners.has(status.ownerUserId) || tasks.length === 0)).sort((a, b) => a.position - b.position); }
 function sortTasks(tasks: TaskRecord[], display?: ViewDisplay) {
   const orderBy = display?.orderBy ?? "manual";
   const direction = display?.direction === "desc" ? -1 : 1;

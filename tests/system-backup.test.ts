@@ -18,7 +18,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 3);
+  assert.equal(backup.schemaVersion, 4);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -41,6 +41,7 @@ test("schema 2 system backups without attachments remain importable", async () =
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => name !== "attachments"),
   );
+  tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => name !== "attachments"),
   );
@@ -57,6 +58,32 @@ test("schema 2 system backups without attachments remain importable", async () =
   const validated = await validateSystemBackup(legacy);
   assert.equal(validated.schemaVersion, 2);
   assert.deepEqual(validated.tables.attachments, []);
+});
+
+test("schema 3 system backups synthesize reserved workflow metadata before restore", async () => {
+  const current = await createSystemBackup(validTables(), now);
+  const legacyStatuses = current.tables.workflow_statuses
+    .filter((status) => status.system_role !== "duplicate")
+    .map(legacyWorkflowRow);
+  const tables = { ...current.tables, workflow_statuses: legacyStatuses };
+  const counts = { ...current.counts, workflow_statuses: legacyStatuses.length };
+  const body = {
+    format: current.format,
+    version: current.version,
+    schemaVersion: 3,
+    siteOrigin: current.siteOrigin,
+    environmentScope: current.environmentScope,
+    exportedAt: current.exportedAt,
+    counts,
+    tables,
+    objects: current.objects,
+  };
+  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
+
+  const validated = await validateSystemBackup(legacy);
+  assert.equal(validated.schemaVersion, 3);
+  assert.equal(validated.tables.workflow_statuses.filter((status) => status.system_role === "duplicate").length, 2);
+  assert.equal(validated.counts.workflow_statuses, legacyStatuses.length + 2);
 });
 
 test("snapshot validation rejects content changed after export", async () => {
@@ -225,6 +252,51 @@ function validTables(): BackupTables {
         color: "#94a3b8",
         position: 0,
         is_default: 1,
+        system_role: null,
+        archived_at: null,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: "status-duplicate-admin",
+        owner_user_id: "user-admin",
+        name: "Duplicate",
+        category: "canceled",
+        color: "#9ca3af",
+        position: 1,
+        is_default: 0,
+        system_role: "duplicate",
+        archived_at: null,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: "status-todo-collaborator",
+        owner_user_id: "user-collaborator",
+        name: "Todo",
+        category: "unstarted",
+        color: "#94a3b8",
+        position: 0,
+        is_default: 1,
+        system_role: null,
+        archived_at: null,
+        version: 1,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: "status-duplicate-collaborator",
+        owner_user_id: "user-collaborator",
+        name: "Duplicate",
+        category: "canceled",
+        color: "#9ca3af",
+        position: 1,
+        is_default: 0,
+        system_role: "duplicate",
+        archived_at: null,
+        version: 1,
         created_at: now,
         updated_at: now,
       },
@@ -418,6 +490,14 @@ async function checksum(value: string) {
   ).join("");
 }
 
+function legacyWorkflowRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) =>
+      !["system_role", "archived_at", "version"].includes(key),
+    ),
+  );
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -437,6 +517,7 @@ function migratedDatabase() {
     "0013_rapid_gravity.sql",
     "0014_puzzling_tana_nile.sql",
     "0015_attachments_sync.sql",
+    "0016_abandoned_stellaris.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

@@ -198,6 +198,9 @@ export const workflowStatuses = sqliteTable(
     isDefault: integer("is_default", { mode: "boolean" })
       .notNull()
       .default(false),
+    systemRole: text("system_role"),
+    archivedAt: text("archived_at"),
+    version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
@@ -206,6 +209,8 @@ export const workflowStatuses = sqliteTable(
       table.ownerUserId,
       table.name,
     ),
+    uniqueIndex("idx_workflow_statuses_owner_system_role")
+      .on(table.ownerUserId, table.systemRole),
   ],
 );
 

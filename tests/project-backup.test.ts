@@ -26,7 +26,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 3);
+  assert.equal(backup.schemaVersion, 4);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -60,6 +60,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => name !== "attachments"),
   );
+  tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => name !== "attachments"),
   );
@@ -83,6 +84,30 @@ test("schema 2 project bundles without attachments remain importable", async () 
   const validated = await validateProjectBackup(legacy);
   assert.equal(validated.schemaVersion, 2);
   assert.deepEqual(validated.tables.attachments, []);
+});
+
+test("schema 3 project bundles upgrade workflow metadata without changing their checksum body", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const tables = {
+    ...current.tables,
+    workflow_statuses: current.tables.workflow_statuses.map(legacyWorkflowRow),
+  };
+  const body = { ...current, schemaVersion: 3, tables };
+  const unsigned = Object.fromEntries(
+    Object.entries(body).filter(([key]) => key !== "sha256"),
+  );
+  const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
+
+  const validated = await validateProjectBackup(legacy);
+  assert.equal(validated.schemaVersion, 3);
+  assert.equal(validated.tables.workflow_statuses[0]?.version, 1);
+  assert.equal(validated.tables.workflow_statuses[0]?.archived_at, null);
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -147,6 +172,7 @@ function validProjectTables(): ProjectBackupTables {
     workflow_statuses: [{
       id: "status-todo", owner_user_id: "user-owner", name: "Todo",
       category: "unstarted", color: "#94a3b8", position: 0, is_default: 1,
+      system_role: null, archived_at: null, version: 1,
       created_at: now, updated_at: now,
     }],
     projects: [{
@@ -217,6 +243,14 @@ async function checksum(value: string) {
   ).join("");
 }
 
+function legacyWorkflowRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) =>
+      !["system_role", "archived_at", "version"].includes(key),
+    ),
+  );
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -226,6 +260,7 @@ function migratedDatabase() {
     "0008_loose_the_fallen.sql", "0009_talented_otto_octavius.sql",
     "0010_crazy_puma.sql", "0011_conscious_paibok.sql", "0012_empty_saracen.sql",
     "0013_rapid_gravity.sql", "0014_puzzling_tana_nile.sql", "0015_attachments_sync.sql",
+    "0016_abandoned_stellaris.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

@@ -285,7 +285,7 @@ Assignee обязан быть владельцем Task либо пользов
 ## 6. Workflow
 
 - Система поставляется со статусами `Backlog`, `Todo`, `In Progress`, `Done`,
-  `Canceled`.
+  `Canceled` и зарезервированным `Duplicate` категории `canceled`.
 - Пользователь может переименовать, перекрасить, добавить и упорядочить
   workflow statuses.
 - Каждый статус принадлежит одной неизменяемой категории: `backlog`,
@@ -294,6 +294,13 @@ Assignee обязан быть владельцем Task либо пользов
   категория используется системными действиями.
 - Один статус категории `backlog` или `unstarted` является default для новых
   задач.
+- Используемый статус архивируется только вместе с явной миграцией Tasks и
+  SavedViews на активный replacement той же категории; поэтому lifecycle
+  timestamps задач не меняют смысл. Архивный статус остаётся видимым на старой
+  задаче, но недоступен в create, bulk, drag-and-drop и Agent mutations.
+- `Duplicate` существует ровно в одном экземпляре на каталог, не является
+  default и не допускает rename или archive: его стабильная системная роль
+  используется native duplicate relations.
 - Workflow statuses принадлежат User. Shared Project использует каталог своего
   owner; collaborator может применять существующие statuses, но не получает
   доступ к account-wide настройке каталога только из project grant.

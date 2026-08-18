@@ -515,7 +515,7 @@ export async function getAgentWorkspace(
     getD1()
       .prepare(
         `SELECT DISTINCT s.* FROM workflow_statuses s
-         WHERE s.owner_user_id = ?
+         WHERE s.archived_at IS NULL AND (s.owner_user_id = ?
             OR EXISTS (
               SELECT 1 FROM projects p
               WHERE p.owner_user_id = s.owner_user_id AND (
@@ -526,7 +526,7 @@ export async function getAgentWorkspace(
                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
                 )
               )
-            )
+            ))
             OR EXISTS (
               SELECT 1 FROM tasks t
               WHERE t.status_id = s.id AND t.project_id IS NULL AND (
@@ -1079,7 +1079,7 @@ async function resolveStatusReference(ownerUserId: string, reference: string) {
   const rows = await getD1()
     .prepare(
       `SELECT id FROM workflow_statuses
-       WHERE owner_user_id = ? ORDER BY position, id`,
+       WHERE owner_user_id = ? AND archived_at IS NULL ORDER BY position, id`,
     )
     .bind(ownerUserId)
     .all<{ id: string }>();
@@ -1257,7 +1257,7 @@ async function loadStatusSummaries(ownerUserId: string) {
   const rows = await getD1()
     .prepare(
       `SELECT * FROM workflow_statuses
-       WHERE owner_user_id = ? ORDER BY position, name`,
+       WHERE owner_user_id = ? AND archived_at IS NULL ORDER BY position, name`,
     )
     .bind(ownerUserId)
     .all<DbRow>();
