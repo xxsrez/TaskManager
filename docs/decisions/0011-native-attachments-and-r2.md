@@ -7,6 +7,10 @@
 Дополнение 2026-08-18: private Attachment transport добавлен в Agent REST и
 MCP без расширения принятой storage/ACL boundary.
 
+Дополнение 2026-08-18: system/project backup schema `3` переносит metadata и
+originals согласованно, а read-only reconciliation сравнивает D1/R2 и
+description refs. Restore никогда не повторно использует source object key.
+
 ## Контекст
 
 D1 хранит структурированные данные, но binary body не должен попадать в D1,
@@ -52,8 +56,18 @@ bootstrap или публичный URL. Attachment обязан менять д
     `_meta["openai/fileParams"]`: server ограниченно скачивает временный HTTPS
     URL без credentials, перепроверяет каждый redirect по OpenAI host allowlist
     и затем вызывает тот же content-inspection/idempotency path. Временный URL
-    и `file_id` не становятся storage identity. Attachment-aware backup/restore
-    остаётся следующим отдельным срезом.
+    и `file_id` не становятся storage identity.
+11. Backup container хранит только logical content address, bounded base64 body,
+    size и SHA-256. Restore записывает staged originals в новые keys текущей
+    среды, затем атомарно заменяет D1 subtree/state и компенсирует pre-commit
+    failure. Read-only reconciliation и quotas не возвращают filename,
+    description body, object key или file body; explicit checksum mode читает
+    object только для внутренней проверки digest.
+12. Reconciliation считает владельцем R2 object либо live Attachment row, либо
+    descriptor активной system/Project import session. Live и backup-staging
+    namespaces проверяются отдельно; truncated scan возвращает unknown orphan
+    count. Derived thumbnail не хранится в R2: он создаётся bounded IMAGES
+    transform на чтении, поэтому отдельного variant object lifecycle нет.
 
 ## Последствия
 
@@ -62,8 +76,9 @@ bootstrap или публичный URL. Attachment обязан менять д
 - Production bucket provisioning и production migration остаются production
   change и требуют отдельной прямой команды пользователя. Обычная delivery
   может provision/migrate/smoke только UAT.
-- Logical export/restore до отдельного attachment-aware среза fail-closed, если
-  затронутые Tasks имеют native Attachment; неполный backup не создаётся.
+- Bounded JSON container остаётся ограничением первой версии: system 10 MB,
+  Project 25 MB. Более крупный state требует chunked streaming manifest в новой
+  schema, а не ослабления validation/atomicity.
 
 ## Отклонённые варианты
 

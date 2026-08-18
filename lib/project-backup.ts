@@ -16,6 +16,14 @@ import type {
   ProjectBackupPreview,
   UserRecord,
 } from "./types";
+import {
+  collectAttachmentBackupObjects,
+  deleteAttachmentObjects,
+  materializeStagedAttachmentObjects,
+  parseStagedAttachmentObject,
+  serializeStagedAttachmentObject,
+  stageAttachmentBackupObjects,
+} from "./attachment-backup";
 
 type DbRow = Record<string, unknown>;
 
@@ -25,7 +33,6 @@ export async function exportProjectBackup(
   siteOrigin: string,
 ): Promise<ProjectBackup> {
   const db = getD1();
-  await assertProjectHasNoNativeAttachments(db, projectId);
   const definition = (name: string) => {
     const value = projectBackupTableDefinitions.find((table) => table.name === name);
     if (!value) throw new Error(`Missing project backup table definition: ${name}`);
@@ -84,6 +91,11 @@ export async function exportProjectBackup(
         (er.target_type = 'task' AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = er.target_id AND t.project_id = ?)) OR
         (er.target_type = 'saved_view' AND EXISTS (SELECT 1 FROM saved_views v WHERE v.id = er.target_id AND v.scope_project_id = ?))
       ) ORDER BY er.id`).bind(projectId, currentUser.id, projectId, projectId, projectId, projectId),
+    db.prepare(`SELECT ${definition("attachments").columns.map((column) => `a.${column}`).join(", ")}
+      FROM attachments a JOIN tasks t ON t.id = a.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY a.task_id, a.created_at, a.id`).bind(projectId, currentUser.id),
     db.prepare(`SELECT ag.grantee_user_id, u.email, u.display_name, ag.permission
       FROM access_grants ag JOIN users u ON u.id = ag.grantee_user_id
       WHERE ag.resource_type = 'project' AND ag.resource_id = ? AND ag.revoked_at IS NULL
@@ -114,12 +126,17 @@ export async function exportProjectBackup(
     task_relations: 8,
     saved_views: 9,
     external_records: 10,
+    attachments: 11,
   };
   projectBackupTableNames.forEach((name) => {
     const table = definition(name);
     tables[name] = results[resultIndex[name]].results.map((row) => normalizeDbRow(table, row as DbRow));
   });
-  const sharing = results[11].results.map((value) => {
+  const attachmentData = await collectAttachmentBackupObjects(
+    tables.attachments,
+  );
+  tables.attachments = attachmentData.rows;
+  const sharing = results[12].results.map((value) => {
     const row = value as DbRow;
     const permission = String(row.permission);
     if (permission !== "manager" && permission !== "editor" && permission !== "viewer") {
@@ -135,8 +152,9 @@ export async function exportProjectBackup(
   return createProjectBackup({
     siteOrigin,
     tables,
+    objects: attachmentData.objects,
     sharing,
-    externalRelationsOmitted: Number((results[12].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted: Number((results[13].results[0] as DbRow | undefined)?.count ?? 0),
   });
 }
 
@@ -171,6 +189,12 @@ export async function stageProjectBackup(
     }),
   );
   const importId = `user-import:${crypto.randomUUID()}`;
+  const attachmentStage = await stageAttachmentBackupObjects(
+    importId,
+    backup.tables.attachments,
+    backup.objects,
+  );
+  backup.tables.attachments = attachmentStage.rows;
   const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const preview: ProjectBackupPreview = {
     importId,
@@ -207,10 +231,17 @@ export async function stageProjectBackup(
   const rows: Array<{ type: string; ordinal: number; json: string }> = projectBackupTableNames.flatMap((name) =>
     backup.tables[name].map((row, ordinal) => ({ type: name, ordinal, json: JSON.stringify(row) })),
   );
-  const resolvedSharing = await resolveSharingRows(db, backup, currentUser.id);
-  rows.push(...resolvedSharing.map((row, ordinal) => ({ type: "sharing" as const, ordinal, json: JSON.stringify(row) })));
-  await db.batch(statements);
+  rows.push(
+    ...attachmentStage.staged.map((object, ordinal) => ({
+      type: "__attachment_objects",
+      ordinal,
+      json: serializeStagedAttachmentObject(object),
+    })),
+  );
   try {
+    const resolvedSharing = await resolveSharingRows(db, backup, currentUser.id);
+    rows.push(...resolvedSharing.map((row, ordinal) => ({ type: "sharing" as const, ordinal, json: JSON.stringify(row) })));
+    await db.batch(statements);
     for (let offset = 0; offset < rows.length; offset += 500) {
       const portion = rows.slice(offset, offset + 500);
       const inserts: D1PreparedStatement[] = [];
@@ -230,6 +261,9 @@ export async function stageProjectBackup(
       db.prepare("DELETE FROM user_import_rows WHERE import_id = ?").bind(importId),
       db.prepare("UPDATE user_import_sessions SET status = 'failed' WHERE id = ? AND status = 'uploading'").bind(importId),
     ]);
+    await deleteAttachmentObjects(
+      attachmentStage.staged.map((object) => object.stagingKey),
+    );
     throw error;
   }
   return preview;
@@ -260,13 +294,31 @@ export async function applyProjectBackup(
   const live = await db.prepare("SELECT owner_user_id FROM projects WHERE id = ?").bind(session.project_id).first<{ owner_user_id: string }>();
   if (live && live.owner_user_id !== currentUser.id) throw new NotFoundError("Project not found");
   if (live && !input.currentBackupDownloaded) throw new ValidationError("Download the current project backup before replacing it");
-  if (live) await assertProjectHasNoNativeAttachments(db, session.project_id);
   await assertAssigneesAndLeadRemainAccessible(db, input.importId, currentUser.id, session.project_id, input.restoreSharing);
+  const [descriptorRows, oldObjectRows] = await db.batch([
+    db.prepare(`SELECT row_json FROM user_import_rows
+      WHERE import_id = ? AND row_type = '__attachment_objects'
+      ORDER BY ordinal`).bind(input.importId),
+    db.prepare(`SELECT a.object_key FROM attachments a
+      JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ?`)
+      .bind(session.project_id),
+  ]);
+  const stagedObjects = descriptorRows.results.map((row) =>
+    parseStagedAttachmentObject((row as DbRow).row_json),
+  );
   const transition = await db.prepare(`UPDATE user_import_sessions SET status = 'applying'
     WHERE id = ? AND created_by_user_id = ? AND kind = 'project_backup'
       AND status = 'staged' AND payload_sha256 = ? AND expires_at >= CURRENT_TIMESTAMP`)
     .bind(input.importId, currentUser.id, input.sha256).run();
   if (transition.meta.changes !== 1) throw new ValidationError("Project backup is already being applied");
+  let writtenObjects: string[] = [];
+  try {
+    writtenObjects = await materializeStagedAttachmentObjects(stagedObjects);
+  } catch (error) {
+    await db.prepare("UPDATE user_import_sessions SET status = 'staged' WHERE id = ? AND status = 'applying'")
+      .bind(input.importId).run();
+    throw error;
+  }
 
   const statements: D1PreparedStatement[] = [
     db.prepare(`DELETE FROM comment_reactions WHERE comment_id IN (
@@ -287,6 +339,9 @@ export async function applyProjectBackup(
       (target_type = 'task' AND target_id IN (SELECT id FROM tasks WHERE project_id = ?)) OR
       (target_type = 'saved_view' AND target_id IN (SELECT id FROM saved_views WHERE scope_project_id = ?))`)
       .bind(session.project_id, session.project_id, session.project_id, session.project_id),
+    db.prepare(`DELETE FROM attachments WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(session.project_id),
     db.prepare("DELETE FROM tasks WHERE project_id = ?").bind(session.project_id),
     db.prepare("DELETE FROM releases WHERE project_id = ?").bind(session.project_id),
     db.prepare("DELETE FROM saved_views WHERE scope_project_id = ?").bind(session.project_id),
@@ -323,10 +378,15 @@ export async function applyProjectBackup(
   try {
     await db.batch(statements);
   } catch (error) {
+    await deleteAttachmentObjects(writtenObjects);
     await db.prepare("UPDATE user_import_sessions SET status = 'staged' WHERE id = ? AND status = 'applying'")
       .bind(input.importId).run();
     throw error;
   }
+  await deleteAttachmentObjects([
+    ...oldObjectRows.results.map((row) => String((row as DbRow).object_key)),
+    ...stagedObjects.map((object) => object.stagingKey),
+  ]);
   await db.prepare("PRAGMA optimize").run();
   return {
     applied: true,
@@ -335,25 +395,6 @@ export async function applyProjectBackup(
     counts: preview.counts,
     sharingRestored: input.restoreSharing,
   };
-}
-
-async function assertProjectHasNoNativeAttachments(
-  db: D1Database,
-  projectId: string,
-) {
-  const row = await db
-    .prepare(
-      `SELECT a.id FROM attachments a
-       JOIN tasks t ON t.id = a.task_id
-       WHERE t.project_id = ? LIMIT 1`,
-    )
-    .bind(projectId)
-    .first();
-  if (row) {
-    throw new ValidationError(
-      "Project backup/restore is disabled while native attachments exist until the attachment-aware backup format is available",
-    );
-  }
 }
 
 async function validateLiveDependenciesAndCollisions(
@@ -371,6 +412,9 @@ async function validateLiveDependenciesAndCollisions(
     db.prepare("SELECT id, public_id FROM saved_views WHERE scope_project_id IS NULL OR scope_project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT owner_user_id, source, source_id, target_id FROM external_records"),
     db.prepare(`SELECT c.id FROM comments c JOIN tasks t ON t.id = c.task_id
+      WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
+    db.prepare(`SELECT a.id, a.public_id FROM attachments a
+      JOIN tasks t ON t.id = a.task_id
       WHERE t.project_id IS NULL OR t.project_id <> ?`).bind(backup.projectId),
   ]);
   const statusRows = results[0].results as DbRow[];
@@ -408,6 +452,7 @@ async function validateLiveDependenciesAndCollisions(
   for (const project of backup.tables.projects) { add(project.owner_user_id); add(project.creator_user_id); add(project.lead_user_id); }
   for (const release of backup.tables.releases) { add(release.owner_user_id); add(release.creator_user_id); }
   for (const task of backup.tables.tasks) { add(task.owner_user_id); add(task.creator_user_id); add(task.assignee_user_id); }
+  for (const attachment of backup.tables.attachments) add(attachment.uploader_user_id);
   for (const comment of backup.tables.comments) { add(comment.author_user_id); add(comment.resolved_by_user_id); }
   for (const reaction of backup.tables.comment_reactions) add(reaction.user_id);
   for (const relation of backup.tables.task_relations) add(relation.creator_user_id);
@@ -415,6 +460,13 @@ async function validateLiveDependenciesAndCollisions(
   for (const record of backup.tables.external_records) add(record.owner_user_id);
   for (const id of referencedUsers) if (!users.has(id)) throw new ValidationError("Project backup references a user that no longer exists in this Site");
   assertNoEntityCollisions(backup, results.slice(3, 8), results[8]);
+  for (const live of results[9].results as DbRow[]) {
+    for (const attachment of backup.tables.attachments) {
+      if (live.id === attachment.id || live.public_id === attachment.public_id) {
+        throw new ValidationError("Project restore collides on an attachment identity");
+      }
+    }
+  }
   return warnings;
 }
 
@@ -485,13 +537,17 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
       (target_type = 'task' AND target_id IN (SELECT id FROM tasks WHERE project_id = ?)) OR
       (target_type = 'saved_view' AND target_id IN (SELECT id FROM saved_views WHERE scope_project_id = ?))`)
       .bind(projectId, projectId, projectId, projectId),
+    db.prepare(`SELECT COUNT(*) AS count FROM attachments WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM access_grants WHERE resource_type = 'project' AND resource_id = ? AND revoked_at IS NULL").bind(projectId),
   ]);
   const counts = results.map((result) => Number((result.results[0] as DbRow | undefined)?.count ?? 0));
   return {
     projects: counts[0], releases: counts[1], tasks: counts[2], comments: counts[3],
     comment_reactions: counts[4], saved_views: counts[5], task_labels: counts[6],
-    task_relations: counts[7], external_records: counts[8], sharing: counts[9],
+    task_relations: counts[7], external_records: counts[8], attachments: counts[9],
+    sharing: counts[10],
     workflow_statuses: 0, labels: 0,
   };
 }

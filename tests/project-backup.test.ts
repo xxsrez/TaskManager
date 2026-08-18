@@ -26,7 +26,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 2);
+  assert.equal(backup.schemaVersion, 3);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -47,6 +47,42 @@ test("the comment-aware project schema rejects an older bundle explicitly", asyn
     validateProjectBackup({ ...backup, schemaVersion: 1 }),
     /unsupported task manager project backup format or version/i,
   );
+});
+
+test("schema 2 project bundles without attachments remain importable", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const tables = Object.fromEntries(
+    Object.entries(current.tables).filter(([name]) => name !== "attachments"),
+  );
+  const counts = Object.fromEntries(
+    Object.entries(current.counts).filter(([name]) => name !== "attachments"),
+  );
+  const body = {
+    format: current.format,
+    version: current.version,
+    schemaVersion: 2,
+    siteOrigin: current.siteOrigin,
+    exportedAt: current.exportedAt,
+    projectId: current.projectId,
+    projectPublicId: current.projectPublicId,
+    projectName: current.projectName,
+    ownerUserId: current.ownerUserId,
+    counts,
+    warnings: current.warnings,
+    tables,
+    sharing: current.sharing,
+  };
+  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
+
+  const validated = await validateProjectBackup(legacy);
+  assert.equal(validated.schemaVersion, 2);
+  assert.deepEqual(validated.tables.attachments, []);
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -146,6 +182,7 @@ function validProjectTables(): ProjectBackupTables {
         archived_at: null, comment_count: 0, version: 1, created_at: now, updated_at: now,
       },
     ],
+    attachments: [],
     comments: [{
       id: "comment-1", task_id: "task-1", author_user_id: "user-owner",
       body: "Native project comment", source: "native", parent_comment_id: null,
@@ -170,6 +207,16 @@ function validProjectTables(): ProjectBackupTables {
   };
 }
 
+async function checksum(value: string) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -178,6 +225,7 @@ function migratedDatabase() {
     "0006_complex_reavers.sql", "0007_curious_sharon_carter.sql",
     "0008_loose_the_fallen.sql", "0009_talented_otto_octavius.sql",
     "0010_crazy_puma.sql", "0011_conscious_paibok.sql", "0012_empty_saracen.sql",
+    "0013_rapid_gravity.sql", "0014_puzzling_tana_nile.sql", "0015_attachments_sync.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

@@ -608,11 +608,13 @@ Linear, но они обязаны использовать тот же visual l
   `Import backup`. Export сразу скачивает versioned JSON; Import открывает
   многошаговый dialog.
 - Верхний ряд содержит compact metric cards: registered users, active users за
-  7 дней, Tasks и SavedViews; secondary notes показывают Projects/Releases.
+  7 дней, Tasks, SavedViews и Attachments; secondary notes показывают
+  Projects/Releases и content-free bytes/pending/failed/deleted counts.
 - Основная dense table содержит User, registration, last active, last content
   activity и owner-scoped counts Tasks/Projects/Releases/Views.
 - Display name/email не смешиваются с resource content. Admin surface не
-  показывает title, description или query чужих records.
+  показывает title, description, filename, object key, file body или query
+  чужих records. Полный integrity report вызывается отдельной admin operation.
 - Пояснение рядом с таблицей явно отличает latest authenticated request от
   отдельного login event, которого первый срез не записывает.
 - `/admin` обычного User разрешается так же fail-closed, как неизвестная или

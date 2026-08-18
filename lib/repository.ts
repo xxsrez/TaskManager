@@ -15,6 +15,7 @@ import {
   isAdminEmail,
   type AdminUserAggregate,
 } from "./admin";
+import { scanAttachmentStorageOwnership } from "./attachment-storage-audit";
 import {
   assertReleaseProject,
   ConflictError,
@@ -896,7 +897,9 @@ export async function getAdminOverview(
   configuredAdminEmails = adminEmailsFromEnvironment(),
 ) {
   assertAdmin(currentUser, configuredAdminEmails);
-  const rows = await getD1()
+  const db = getD1();
+  const [rows, storage] = await Promise.all([
+    db
     .prepare(
       `SELECT
          u.id, u.display_name, u.email, u.created_at, u.updated_at,
@@ -908,7 +911,12 @@ export async function getAdminOverview(
          COALESCE(release_stats.release_count, 0) AS release_count,
          release_stats.last_release_activity_at,
          COALESCE(view_stats.view_count, 0) AS view_count,
-         view_stats.last_view_activity_at
+         view_stats.last_view_activity_at,
+         COALESCE(attachment_stats.attachment_count, 0) AS attachment_count,
+         COALESCE(attachment_stats.attachment_bytes, 0) AS attachment_bytes,
+         COALESCE(attachment_stats.pending_attachment_count, 0) AS pending_attachment_count,
+         COALESCE(attachment_stats.failed_attachment_count, 0) AS failed_attachment_count,
+         COALESCE(attachment_stats.deleted_attachment_count, 0) AS deleted_attachment_count
        FROM users u
        LEFT JOIN (
          SELECT owner_user_id,
@@ -942,13 +950,31 @@ export async function getAdminOverview(
          FROM saved_views
          GROUP BY owner_user_id
        ) view_stats ON view_stats.owner_user_id = u.id
+       LEFT JOIN (
+         SELECT COALESCE(p.owner_user_id, t.owner_user_id) AS owner_user_id,
+                COUNT(*) AS attachment_count,
+                COALESCE(SUM(a.byte_size), 0) AS attachment_bytes,
+                SUM(CASE WHEN a.state IN ('pending', 'uploading') THEN 1 ELSE 0 END)
+                  AS pending_attachment_count,
+                SUM(CASE WHEN a.state = 'failed' THEN 1 ELSE 0 END)
+                  AS failed_attachment_count,
+                SUM(CASE WHEN a.state = 'deleted' THEN 1 ELSE 0 END)
+                  AS deleted_attachment_count
+         FROM attachments a JOIN tasks t ON t.id = a.task_id
+         LEFT JOIN projects p ON p.id = t.project_id
+         GROUP BY COALESCE(p.owner_user_id, t.owner_user_id)
+       ) attachment_stats ON attachment_stats.owner_user_id = u.id
        ORDER BY datetime(u.updated_at) DESC, datetime(u.created_at) DESC`,
     )
-    .all<DbRow>();
+    .all<DbRow>(),
+    scanAttachmentStorageOwnership(db),
+  ]);
 
   return buildAdminOverview(
     rows.results.map(mapAdminUserAggregate),
     configuredAdminEmails,
+    Date.now(),
+    storage,
   );
 }
 
@@ -1948,6 +1974,11 @@ function mapAdminUserAggregate(row: DbRow): AdminUserAggregate {
     lastProjectActivityAt: nullableString(row.last_project_activity_at),
     lastReleaseActivityAt: nullableString(row.last_release_activity_at),
     lastViewActivityAt: nullableString(row.last_view_activity_at),
+    attachmentCount: Number(row.attachment_count ?? 0),
+    attachmentBytes: Number(row.attachment_bytes ?? 0),
+    pendingAttachmentCount: Number(row.pending_attachment_count ?? 0),
+    failedAttachmentCount: Number(row.failed_attachment_count ?? 0),
+    deletedAttachmentCount: Number(row.deleted_attachment_count ?? 0),
   };
 }
 

@@ -79,13 +79,14 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   основной левой навигации нет. Прямой запрос обычного User fail-closed и не
   возвращает user statistics.
 - Overview показывает число зарегистрированных и активных за последние 7 дней
-  пользователей, суммарные Tasks, Projects, Releases и SavedViews.
+  пользователей, суммарные Tasks, Projects, Releases, SavedViews и
+  content-free Attachment count/bytes/states.
 - Таблица пользователей показывает display name, verified email, дату
   регистрации, время последнего authenticated request, последнее изменение
   owned Task/Project/Release/SavedView и owner-scoped counts по этим entities.
-- Admin overview не предоставляет доступ к title, description, filter query или
-  другому содержимому чужих records. Shared resources считаются по owner и не
-  дублируются у collaborator.
+- Admin overview не предоставляет доступ к title, description, filename,
+  object key, file body, filter query или другому содержимому чужих records.
+  Shared resources считаются по owner и не дублируются у collaborator.
 - Отдельные system operations `Export backup` и `Import backup` доступны той же
   server-side admin boundary. Export включает всё D1 application state, включая
   content, identities, ACL, provenance и archived records; hosted secrets,
@@ -333,6 +334,13 @@ Assignee обязан быть владельцем Task либо пользов
   после отдельного opt-in.
 - Replace Project subtree выполняется одной D1 transaction. Ошибка оставляет
   live state без изменений; relations к Tasks вне bundle не становятся живыми.
+- Schema `3` включает Attachment metadata и originals в bounded
+  content-addressed JSON container; live R2 keys и thumbnails не входят.
+  System limit — 10 MB, Project — 25 MB. Schema `2` без Attachments остаётся
+  импортируемой.
+- Restore materializes новые environment-scoped R2 keys до атомарного D1
+  cutover, удаляет старые objects только после success и компенсирует новые при
+  failure. Cross-Site Project restore по-прежнему запрещён.
 
 ## 8. Релизы
 
@@ -621,6 +629,16 @@ completed dates и archived state.
     `get_task` сообщает только count; list не содержит body/internal IDs/R2 key.
     MCP file input проходит bounded OpenAI HTTPS fetch без credentials и
     private redirect; raster ref вставляется только отдельным `update_task`.
+33. Project и system backup с PDF, attached image и embedded image проходит
+    полную validation/staging и exact restore byte-for-byte. Corrupted/missing
+    object или D1 cutover failure не меняет live originals; schema `2` без
+    Attachments по-прежнему импортируется.
+34. Read-only reconciliation находит missing/orphan live или backup-staging
+    object, size/checksum mismatch, stale lifecycle и broken description ref.
+    Truncated scan не публикует неточный orphan count. Admin overview содержит
+    только metadata/object counts, bytes, staging/orphan/states; per-Task,
+    current-owner и Project quotas
+    отклоняют upload без раскрытия чужого usage.
 
 ## 14. Рекомендуемые вертикальные срезы
 

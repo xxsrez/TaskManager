@@ -13,7 +13,8 @@
 - `TASK_MANAGER_ATTACHMENT_SCOPE` различается по средам (`uat`, `production`);
   если переменная не задана, runtime выводит scope из canonical public origin.
 - Безопасные defaults: 25 MiB/file, 50 active attachments/Task, 40M pixels,
-  upload timeout 15 минут, delete grace 7 дней, failed retention 24 часа.
+  2 GiB/current owner, 1 GiB/Project, upload timeout 15 минут, delete grace
+  7 дней, failed retention 24 часа.
   Имена non-secret overrides перечислены в `.env.example`.
 
 Binding создаётся/меняется через Sites storage provisioning; `.openai` binding
@@ -64,7 +65,24 @@ UAT-проверка не переключает production plugin на `task-ma
 - Missing object для `ready` — integrity incident: route отвечает `404`, restore
   запрещён. Не создавайте replacement по старому key; повторите upload с новым
   idempotency key после расследования.
-- До attachment-aware backup/restore system/project export и destructive
-  restore fail-closed, если затронутые Tasks имеют native Attachment. Не
-  обходите guard ручным D1 export: metadata и R2 bodies ещё не являются
-  переносимым комплектом.
+- System backup schema `3` использует общий 10 MB bounded JSON container,
+  Project schema `3` — 25 MB. Каждый original представлен один раз по
+  `sha256:<digest>` внутри package; row не раскрывает live object key. Schema
+  `2` импортируется только как legacy no-attachment state.
+- Validate проверяет package checksum, object size/SHA-256, Attachment↔Task и
+  description refs до staging. Restore пишет `backup-staging`, копирует в новые
+  environment-scoped keys, выполняет D1 cutover и затем удаляет прежние/staged
+  objects. До commit failure удаляет новые keys; после commit cleanup failure
+  считается orphan incident и обнаруживается reconciliation.
+- `POST /api/admin/attachments/reconcile` с action header
+  `attachment-reconciliation` — read-only admin report. Default не читает body;
+  `verifyChecksums=true` boundedly читает objects для digest. Report содержит
+  только counts, opaque refs и owner/Project usage. Scan отдельно сопоставляет
+  live object namespace с Attachment rows, а `backup-staging` — с активными
+  system/Project import descriptors; поэтому брошенный staging object тоже
+  считается orphan. При превышении bounded scan limit orphan count становится
+  unknown, а report помечается `truncated`, чтобы не выдавать partial scan за
+  точный. Purge/repair остаются
+  отдельными explicit actions; production deletion требует отдельной команды.
+- Не пытайтесь обходить package limit ручным D1 export. State больше лимита
+  требует новой chunked/streaming schema; unbounded base64 запрещён.

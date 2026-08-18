@@ -59,6 +59,11 @@ test("admin overview reports registrations, activity, and owned data counts", ()
       lastProjectActivityAt: "2026-08-10T08:00:00.000Z",
       lastReleaseActivityAt: null,
       lastViewActivityAt: "2026-08-13T08:00:00.000Z",
+      attachmentCount: 3,
+      attachmentBytes: 4096,
+      pendingAttachmentCount: 1,
+      failedAttachmentCount: 0,
+      deletedAttachmentCount: 1,
     },
     {
       id: "visitor",
@@ -75,6 +80,11 @@ test("admin overview reports registrations, activity, and owned data counts", ()
       lastProjectActivityAt: null,
       lastReleaseActivityAt: null,
       lastViewActivityAt: null,
+      attachmentCount: 2,
+      attachmentBytes: 1024,
+      pendingAttachmentCount: 0,
+      failedAttachmentCount: 1,
+      deletedAttachmentCount: 0,
     },
   ];
 
@@ -82,6 +92,13 @@ test("admin overview reports registrations, activity, and owned data counts", ()
     rows,
     adminEmails,
     Date.parse("2026-08-14T11:00:00.000Z"),
+    {
+      objectCount: 6,
+      objectBytes: 6144,
+      stagingObjectCount: 1,
+      orphanObjectCount: 1,
+      truncated: false,
+    },
   );
   assert.equal(overview.registeredUserCount, 2);
   assert.equal(overview.activeUserCount, 1);
@@ -89,6 +106,16 @@ test("admin overview reports registrations, activity, and owned data counts", ()
   assert.equal(overview.projectCount, 3);
   assert.equal(overview.releaseCount, 1);
   assert.equal(overview.viewCount, 5);
+  assert.equal(overview.attachmentCount, 5);
+  assert.equal(overview.attachmentBytes, 5120);
+  assert.equal(overview.attachmentObjectCount, 6);
+  assert.equal(overview.attachmentObjectBytes, 6144);
+  assert.equal(overview.stagingAttachmentObjectCount, 1);
+  assert.equal(overview.orphanAttachmentObjectCount, 1);
+  assert.equal(overview.attachmentStorageTruncated, false);
+  assert.equal(overview.pendingAttachmentCount, 1);
+  assert.equal(overview.failedAttachmentCount, 1);
+  assert.equal(overview.deletedAttachmentCount, 1);
   assert.equal(overview.users[0]?.isAdmin, true);
   assert.equal(
     overview.users[0]?.lastContentActivityAt,

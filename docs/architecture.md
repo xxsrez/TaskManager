@@ -439,10 +439,12 @@ saved-view query/display и полный provider metadata в `external_records`
    D1 batch transaction удаляет live rows, вставляет verified staged rows,
    отмечает session applied и очищает payload. Batch failure откатывает весь
    cutover.
-6. Пока attachment-aware backup/restore не реализован, export и restore
-   fail-closed при наличии native Attachment. Native image token не ослабляет
-   этот guard: перенос одной description без соответствующего D1 lifecycle и
-   R2 object запрещён.
+6. Schema `3` добавляет Attachment metadata и bounded content-addressed object
+   set. Export заменяет environment object key на `sha256:<digest>` и проверяет
+   original byte-for-byte. Restore кладёт validated bytes в R2 staging,
+   материализует новые keys, выполняет D1 replace и после commit удаляет старые
+   и staged objects; failure до commit удаляет только новые objects. Schema `2`
+   без Attachments остаётся импортируемой.
 
 ### Project backup и restore
 
@@ -457,6 +459,9 @@ saved-view query/display и полный provider metadata в `external_records`
 4. Preview сравнивает staged и live subtree. Apply повторно проверяет session,
    confirmation и current ownership, затем set-based SQL одной D1 `batch()`
    transaction заменяет subtree; grants вставляются только при opt-in.
+5. Attachment objects выбираются только через Tasks исходного Project. Общий
+   25 MB container полностью валидируется до R2 staging; thumbnails не входят и
+   пересоздаются по запросу.
 
 ## Надёжность и проверка
 

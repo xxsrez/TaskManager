@@ -9,6 +9,12 @@ Tasks и проверяет их author/reaction Users как существую
 `schemaVersion` Project bundle повышена до `2`; schema `1` не применяется к
 новой таблице Tasks с обязательным `comment_count`.
 
+Дополнение 2026-08-18: schema `3` включает native Attachment metadata и bounded
+content-addressed originals; schema `2` без Attachments остаётся импортируемой.
+Project bundle читает только objects Tasks этого Project. Restore использует
+R2 staging/new keys + D1 exact-replace saga и удаляет старые objects только
+после успешного cutover.
+
 ## Контекст
 
 Владельцу Project нужна доступная без application-admin роли страховка от
@@ -43,6 +49,10 @@ ADR-0004 для этого не подходит: он раскрывает со
 7. Relations и parent links на Tasks вне bundle не восстанавливаются как live
    связи. Их count и исходный metadata остаются в warnings/provenance, чтобы
    частичный Project не создавал скрытых cross-scope ссылок.
+8. Attachment originals входят byte-for-byte; logical `sha256:<digest>` refs
+   заменяют live object keys. Thumbnail пересоздаётся. Общий container ограничен
+   25 MB и полностью проверяет size/checksum, Task ownership и description
+   embeds до staging.
 
 ## Последствия
 

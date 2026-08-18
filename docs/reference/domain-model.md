@@ -319,6 +319,13 @@ description содержит его token. Alt обязателен, caption opt
 пользовательским Markdown text. Один Attachment может встречаться в description
 несколько раз и по-прежнему имеет один lifecycle record.
 
+Logical backup schema `3` переносит Attachment row и original одним bounded
+container: row ссылается на `sha256:<digest>`, object set содержит size,
+SHA-256 и base64 bytes. Live `object_key`, signed URL и thumbnail не переносятся.
+Restore всегда выдаёт новый key текущей среды. Schema `2` допустима только как
+legacy no-attachment backup. Owner/project active-byte quotas вычисляются по
+текущему Project owner, а не историческому `tasks.owner_user_id`.
+
 ## Comment и CommentReaction
 
 `Comment` — native discussion record одной Task. Импортированный comment archive

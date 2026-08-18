@@ -13,6 +13,14 @@
 R2 objects. Поэтому export/import сохраняют fail-closed guard при наличии
 любого native Attachment; отдельно переносить description с embed нельзя.
 
+Дополнение 2026-08-18: attachment-aware container повышает `schemaVersion` до
+`3`. Он включает Attachment metadata и bounded content-addressed object set с
+SHA-256/size каждого original; schema `2` без Attachments остаётся импортируемой.
+Restore сначала проверяет весь container и кладёт originals в isolated R2
+staging, затем материализует новые environment-scoped keys, выполняет один D1
+cutover и только после success удаляет прежние/staged objects. Ошибка до D1
+commit компенсирует новые objects и не меняет live state.
+
 ## Контекст
 
 Task Manager хранит структурированное product state в Sites D1: Users,
@@ -66,10 +74,12 @@ admin boundary.
     обычным repository methods возможность просматривать чужие records.
 11. Успешный replace удаляет все API credentials в той же D1 batch transaction.
     После restore каждый User обязан выдать новый token.
-12. До новой attachment-aware schema export и restore отклоняются, если
-    существует native Attachment. Частичный logical snapshot, который сохранил
-    бы description token или metadata без соответствующего R2 object, не
-    создаётся и не применяется.
+12. Schema `3` переносит originals byte-for-byte внутри общего 10 MB bounded
+    JSON container; live R2 keys, signed URLs и derived thumbnails не входят.
+    Uploading/pending state, missing object, size/checksum mismatch или broken
+    description ref блокируют export/validation до mutation. Container больше
+    лимита отклоняется; unbounded base64 и неатомарный partial restore не
+    являются fallback.
 
 ## Последствия
 

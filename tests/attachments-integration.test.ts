@@ -43,8 +43,19 @@ import { buildTaskImageToken } from "../lib/task-description-format";
 import { updateAgentTask } from "../lib/agent-api-repository";
 import { getAgentTaskDetail } from "../lib/agent-api-repository";
 import { issueApiCredential } from "../lib/api-credentials";
-import { exportProjectBackup } from "../lib/project-backup";
-import { exportSystemBackup } from "../lib/system-backup";
+import {
+  applyProjectBackup,
+  exportProjectBackup,
+  stageProjectBackup,
+} from "../lib/project-backup";
+import {
+  applySystemBackup,
+  exportSystemBackup,
+  stageSystemBackup,
+} from "../lib/system-backup";
+import { reconcileAttachmentStorage } from "../lib/attachment-operations";
+import { createSystemBackup } from "../lib/system-backup-format";
+import { getRuntimeEnvironment } from "../lib/runtime-environment";
 import { getWorkspaceSync } from "../lib/workspace-sync";
 import { createD1TestHarness } from "./helpers/d1";
 
@@ -814,7 +825,7 @@ async function mcpResult(response: Response) {
   };
 }
 
-test("legacy logical backups fail closed instead of orphaning native attachment objects", async () => {
+test("attachment-aware logical backups include scoped metadata and verified originals", async () => {
   const { owner, project, task } = await setupSharedTask("Attachment backup guard");
   await createAttachment(owner, task.id, {
     body: new TextEncoder().encode("%PDF-1.7\nbackup guard\n%%EOF"),
@@ -822,9 +833,320 @@ test("legacy logical backups fail closed instead of orphaning native attachment 
     claimedMediaType: "application/pdf",
     idempotencyKey: "backup-guard",
   });
-  await assert.rejects(
-    exportProjectBackup(owner, project.id, "https://example.test"),
-    /attachment-aware backup format/,
+  const projectBackup = await exportProjectBackup(
+    owner,
+    project.id,
+    "https://example.test",
   );
-  await assert.rejects(exportSystemBackup(owner), /attachment-aware backup format/);
+  assert.equal(projectBackup.schemaVersion, 3);
+  assert.equal(projectBackup.tables.attachments.length, 1);
+  assert.equal(projectBackup.objects.length, 1);
+  assert.match(String(projectBackup.tables.attachments[0]?.object_key), /^sha256:/);
+  assert.equal(JSON.stringify(projectBackup).includes("uat/attachments/"), false);
+  const corrupted = structuredClone(projectBackup);
+  corrupted.objects[0]!.data = `${corrupted.objects[0]!.data.slice(0, -4)}AAAA`;
+  await assert.rejects(
+    stageProjectBackup(owner, corrupted, "https://example.test"),
+    /checksum|size/i,
+  );
+
+  const systemBackup = await exportSystemBackup(owner);
+  assert.equal(systemBackup.schemaVersion, 3);
+  assert.ok(systemBackup.tables.attachments.length >= 1);
+  assert.ok(systemBackup.objects.length >= 1);
+});
+
+test("failed project cutover compensates new objects and keeps live originals", async () => {
+  const { owner, project, task } = await setupSharedTask(
+    "Attachment restore compensation",
+  );
+  const bytes = new TextEncoder().encode("%PDF-1.7\ncompensate\n%%EOF");
+  const attachment = await createAttachment(owner, task.id, {
+    body: bytes,
+    filename: "compensate.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "compensate-pdf",
+  });
+  const backup = await exportProjectBackup(
+    owner,
+    project.id,
+    "https://example.test",
+  );
+  const preview = await stageProjectBackup(
+    owner,
+    backup,
+    "https://example.test",
+  );
+  const stagedProject = await database
+    .prepare(`SELECT row_json FROM user_import_rows
+      WHERE import_id = ? AND row_type = 'projects' LIMIT 1`)
+    .bind(preview.importId)
+    .first<{ row_json: string }>();
+  const invalidProject = JSON.parse(stagedProject!.row_json) as Record<
+    string,
+    unknown
+  >;
+  invalidProject.name = null;
+  await database
+    .prepare(`UPDATE user_import_rows SET row_json = ?
+      WHERE import_id = ? AND row_type = 'projects'`)
+    .bind(JSON.stringify(invalidProject), preview.importId)
+    .run();
+  const beforeKeys = (
+    await bucket.list({ prefix: "test/attachments/" })
+  ).objects.map((item) => item.key).sort();
+
+  await assert.rejects(
+    applyProjectBackup(owner, {
+      importId: preview.importId,
+      sha256: preview.sha256,
+      confirmation: project.name,
+      currentBackupDownloaded: true,
+      restoreSharing: true,
+    }),
+    /not null constraint/i,
+  );
+  const afterKeys = (
+    await bucket.list({ prefix: "test/attachments/" })
+  ).objects.map((item) => item.key).sort();
+  assert.deepEqual(afterKeys, beforeKeys);
+  assert.ok(await bucket.head(attachment.objectKey));
+  assert.equal(
+    await database
+      .prepare("SELECT status FROM user_import_sessions WHERE id = ?")
+      .bind(preview.importId)
+      .first<{ status: string }>()
+      .then((row) => row?.status),
+    "staged",
+  );
+});
+
+test("attachment quotas fail closed without exposing another owner's usage", async () => {
+  const { owner, task } = await setupSharedTask("Attachment quota");
+  const environment = getRuntimeEnvironment();
+  const previousOwnerLimit = environment.TASK_MANAGER_ATTACHMENT_MAX_OWNER_BYTES;
+  const previousProjectLimit = environment.TASK_MANAGER_ATTACHMENT_MAX_PROJECT_BYTES;
+  try {
+    environment.TASK_MANAGER_ATTACHMENT_MAX_OWNER_BYTES = "1";
+    environment.TASK_MANAGER_ATTACHMENT_MAX_PROJECT_BYTES = "999999";
+    await assert.rejects(
+      createAttachment(owner, task.id, {
+        body: new TextEncoder().encode("%PDF-1.7\nquota\n%%EOF"),
+        filename: "quota.pdf",
+        claimedMediaType: "application/pdf",
+        idempotencyKey: "owner-quota",
+      }),
+      /storage quota/i,
+    );
+
+    environment.TASK_MANAGER_ATTACHMENT_MAX_OWNER_BYTES = "999999";
+    environment.TASK_MANAGER_ATTACHMENT_MAX_PROJECT_BYTES = "1";
+    await assert.rejects(
+      createAttachment(owner, task.id, {
+        body: new TextEncoder().encode("%PDF-1.7\nproject quota\n%%EOF"),
+        filename: "project-quota.pdf",
+        claimedMediaType: "application/pdf",
+        idempotencyKey: "project-quota",
+      }),
+      /storage quota/i,
+    );
+  } finally {
+    environment.TASK_MANAGER_ATTACHMENT_MAX_OWNER_BYTES = previousOwnerLimit;
+    environment.TASK_MANAGER_ATTACHMENT_MAX_PROJECT_BYTES = previousProjectLimit;
+  }
+});
+
+test("reconciliation reports missing, orphan, and broken refs without file content", async () => {
+  const { owner, task } = await setupSharedTask("Attachment reconciliation");
+  const bytes = new TextEncoder().encode("%PDF-1.7\nreconcile\n%%EOF");
+  const attachment = await createAttachment(owner, task.id, {
+    body: bytes,
+    filename: "reconcile.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "reconcile-pdf",
+  });
+  await bucket.delete(attachment.objectKey);
+  await bucket.put("test/attachments/orphan-smoke", bytes);
+  await bucket.put("test/backup-staging/orphan-smoke/checksum", bytes);
+  await database
+    .prepare("UPDATE tasks SET description = ? WHERE id = ?")
+    .bind("![Missing](attachment:v1:missing-ref)", task.id)
+    .run();
+
+  const report = await reconcileAttachmentStorage(owner, {
+    verifyChecksums: true,
+  });
+  assert.ok(report.missingObjectRefs.includes(attachment.publicId));
+  assert.ok(report.orphanObjectCount !== null);
+  assert.ok(report.orphanObjectCount >= 2);
+  assert.ok(
+    report.brokenDescriptionRefs.some(
+      (item) => item.taskRef === task.publicId && item.attachmentRef === "missing-ref",
+    ),
+  );
+  assert.equal(JSON.stringify(report).includes("reconcile.pdf"), false);
+  assert.equal(JSON.stringify(report).includes("%PDF"), false);
+
+  await bucket.put(attachment.objectKey, bytes);
+  await bucket.delete("test/attachments/orphan-smoke");
+  await bucket.delete("test/backup-staging/orphan-smoke/checksum");
+  await database.prepare("UPDATE tasks SET description = '' WHERE id = ?")
+    .bind(task.id).run();
+});
+
+test("system backup rejects another Site or attachment environment before staging", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const backup = await exportSystemBackup(owner);
+  const foreignSite = await createSystemBackup(
+    backup.tables,
+    backup.exportedAt,
+    backup.objects,
+    "https://foreign.example.test",
+    backup.environmentScope ?? "test",
+  );
+  await assert.rejects(
+    stageSystemBackup(owner, foreignSite),
+    /another Task Manager Site/i,
+  );
+  const foreignEnvironment = await createSystemBackup(
+    backup.tables,
+    backup.exportedAt,
+    backup.objects,
+    backup.siteOrigin ?? "https://local.task-manager.invalid",
+    "production",
+  );
+  await assert.rejects(
+    stageSystemBackup(owner, foreignEnvironment),
+    /another attachment environment/i,
+  );
+});
+
+test("project and system restore stage attachment objects before exact D1 cutover", async () => {
+  const { owner, viewer, outsider, project, task } = await setupSharedTask("Attachment restore");
+  const bytes = new TextEncoder().encode("%PDF-1.7\nrestore bytes\n%%EOF");
+  const attachment = await createAttachment(owner, task.id, {
+    body: bytes,
+    filename: "restore.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "restore-pdf",
+  });
+
+  const projectBackup = await exportProjectBackup(
+    owner,
+    project.id,
+    "https://example.test",
+  );
+  const projectPreview = await stageProjectBackup(
+    owner,
+    projectBackup,
+    "https://example.test",
+  );
+  await bucket.put(attachment.objectKey, new TextEncoder().encode("corrupted"));
+  await applyProjectBackup(owner, {
+    importId: projectPreview.importId,
+    sha256: projectPreview.sha256,
+    confirmation: project.name,
+    currentBackupDownloaded: true,
+    restoreSharing: true,
+  });
+  const restoredProjectAttachment = (
+    await listTaskAttachments(owner, task.id)
+  ).items.find((item) => item.publicId === attachment.publicId)!;
+  const projectContent = await getAttachmentContent(
+    owner,
+    task.id,
+    restoredProjectAttachment.publicId,
+    { preview: false },
+  );
+  assert.deepEqual(
+    new Uint8Array(await projectContent.arrayBuffer()),
+    bytes,
+  );
+  assert.notEqual(restoredProjectAttachment.objectKey, attachment.objectKey);
+  assert.equal(
+    (await getAttachmentContent(viewer, task.id, attachment.publicId, {
+      preview: false,
+    })).status,
+    200,
+  );
+  await assert.rejects(
+    getAttachmentContent(outsider, task.id, attachment.publicId, {
+      preview: false,
+    }),
+    NotFoundError,
+  );
+
+  const systemBackup = await exportSystemBackup(owner);
+  const systemPreview = await stageSystemBackup(owner, systemBackup);
+  await bucket.put(
+    restoredProjectAttachment.objectKey,
+    new TextEncoder().encode("corrupted again"),
+  );
+  const stagedProject = await database.prepare(`SELECT ordinal, row_json
+    FROM admin_import_rows WHERE import_id = ? AND table_name = 'projects'
+    ORDER BY ordinal LIMIT 1`).bind(systemPreview.importId)
+    .first<{ ordinal: number; row_json: string }>();
+  const invalidProject = JSON.parse(stagedProject!.row_json) as Record<string, unknown>;
+  invalidProject.name = null;
+  await database.prepare(`UPDATE admin_import_rows SET row_json = ?
+    WHERE import_id = ? AND table_name = 'projects' AND ordinal = ?`)
+    .bind(JSON.stringify(invalidProject), systemPreview.importId, stagedProject!.ordinal)
+    .run();
+  const beforeFailedApply = (
+    await bucket.list({ prefix: "test/attachments/" })
+  ).objects.map((item) => item.key).sort();
+  await assert.rejects(
+    applySystemBackup(owner, {
+      importId: systemPreview.importId,
+      sha256: systemPreview.sha256,
+      confirmation: "RESTORE",
+    }),
+    /not null constraint/i,
+  );
+  assert.deepEqual(
+    (await bucket.list({ prefix: "test/attachments/" })).objects
+      .map((item) => item.key).sort(),
+    beforeFailedApply,
+  );
+  assert.equal(
+    await database.prepare("SELECT status FROM admin_import_sessions WHERE id = ?")
+      .bind(systemPreview.importId).first<{ status: string }>()
+      .then((row) => row?.status),
+    "staged",
+  );
+  await database.prepare(`UPDATE admin_import_rows SET row_json = ?
+    WHERE import_id = ? AND table_name = 'projects' AND ordinal = ?`)
+    .bind(stagedProject!.row_json, systemPreview.importId, stagedProject!.ordinal)
+    .run();
+  await applySystemBackup(owner, {
+    importId: systemPreview.importId,
+    sha256: systemPreview.sha256,
+    confirmation: "RESTORE",
+  });
+  const restoredSystemAttachment = (
+    await listTaskAttachments(owner, task.id)
+  ).items.find((item) => item.publicId === attachment.publicId)!;
+  const systemContent = await getAttachmentContent(
+    owner,
+    task.id,
+    restoredSystemAttachment.publicId,
+    { preview: false },
+  );
+  assert.deepEqual(new Uint8Array(await systemContent.arrayBuffer()), bytes);
+  assert.notEqual(
+    restoredSystemAttachment.objectKey,
+    restoredProjectAttachment.objectKey,
+  );
+  assert.equal(
+    (await getAttachmentContent(viewer, task.id, attachment.publicId, {
+      preview: false,
+    })).status,
+    200,
+  );
+  await assert.rejects(
+    getAttachmentContent(outsider, task.id, attachment.publicId, {
+      preview: false,
+    }),
+    NotFoundError,
+  );
 });

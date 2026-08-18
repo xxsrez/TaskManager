@@ -8,6 +8,7 @@ import {
 } from "./domain";
 import { getTask } from "./repository";
 import { getRuntimeEnvironment } from "./runtime-environment";
+import { attachmentStorageScope } from "./attachment-storage";
 import {
   TASK_IMAGE_REFERENCE_SCHEME,
   taskDescriptionUsesAttachment,
@@ -23,6 +24,8 @@ type DbRow = Record<string, unknown>;
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAX_COUNT = 50;
+const DEFAULT_MAX_OWNER_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_PROJECT_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_MAX_IMAGE_PIXELS = 40_000_000;
 const DEFAULT_UPLOAD_TIMEOUT_SECONDS = 15 * 60;
 const DEFAULT_DELETE_GRACE_SECONDS = 7 * 24 * 60 * 60;
@@ -116,6 +119,14 @@ export function attachmentLimits() {
       env.TASK_MANAGER_ATTACHMENT_MAX_COUNT,
       DEFAULT_MAX_COUNT,
     ),
+    maxOwnerBytes: configuredPositiveInteger(
+      env.TASK_MANAGER_ATTACHMENT_MAX_OWNER_BYTES,
+      DEFAULT_MAX_OWNER_BYTES,
+    ),
+    maxProjectBytes: configuredPositiveInteger(
+      env.TASK_MANAGER_ATTACHMENT_MAX_PROJECT_BYTES,
+      DEFAULT_MAX_PROJECT_BYTES,
+    ),
     maxImagePixels: configuredPositiveInteger(
       env.TASK_MANAGER_ATTACHMENT_MAX_IMAGE_PIXELS,
       DEFAULT_MAX_IMAGE_PIXELS,
@@ -175,7 +186,7 @@ export async function createAttachment(
   const now = new Date();
   const attachmentId = `attachment_${crypto.randomUUID()}`;
   const publicId = crypto.randomUUID();
-  const objectKey = `${attachmentScope()}/attachments/${crypto.randomUUID()}`;
+  const objectKey = `${attachmentStorageScope()}/attachments/${crypto.randomUUID()}`;
   const createdAt = now.toISOString();
   const uploadExpiresAt = new Date(
     now.getTime() + limits.uploadTimeoutSeconds * 1_000,
@@ -196,7 +207,28 @@ export async function createAttachment(
          WHERE (
            SELECT COUNT(*) FROM attachments
            WHERE task_id = ? AND state IN ('pending', 'uploading', 'ready')
-         ) < ?
+         ) < ? AND (
+           SELECT COALESCE(SUM(a.byte_size), 0)
+           FROM attachments a
+           JOIN tasks quota_task ON quota_task.id = a.task_id
+           LEFT JOIN projects quota_project ON quota_project.id = quota_task.project_id
+           WHERE a.state IN ('pending', 'uploading', 'ready')
+             AND COALESCE(quota_project.owner_user_id, quota_task.owner_user_id) = (
+               SELECT COALESCE(target_project.owner_user_id, target_task.owner_user_id)
+               FROM tasks target_task
+               LEFT JOIN projects target_project ON target_project.id = target_task.project_id
+               WHERE target_task.id = ?
+             )
+         ) + ? <= ? AND (
+           (SELECT project_id FROM tasks WHERE id = ?) IS NULL OR (
+             SELECT COALESCE(SUM(a.byte_size), 0)
+             FROM attachments a JOIN tasks quota_task ON quota_task.id = a.task_id
+             WHERE a.state IN ('pending', 'uploading', 'ready')
+               AND quota_task.project_id = (
+                 SELECT project_id FROM tasks WHERE id = ?
+               )
+           ) + ? <= ?
+         )
          RETURNING id`,
       )
       .bind(
@@ -219,11 +251,18 @@ export async function createAttachment(
         createdAt,
         task.id,
         limits.maxCount,
+        task.id,
+        bytes.byteLength,
+        limits.maxOwnerBytes,
+        task.id,
+        task.id,
+        bytes.byteLength,
+        limits.maxProjectBytes,
       )
       .first<{ id: string }>();
     if (!inserted) {
       throw new ValidationError(
-        `Task already has the maximum of ${limits.maxCount} attachments`,
+        "Attachment count or storage quota would be exceeded",
       );
     }
   } catch (error) {
@@ -761,19 +800,6 @@ function normalizeIdempotencyKey(value: string) {
 function isControlCharacter(character: string) {
   const code = character.charCodeAt(0);
   return code < 0x20 || code === 0x7f;
-}
-
-function attachmentScope() {
-  const env = getRuntimeEnvironment();
-  const configured = env.TASK_MANAGER_ATTACHMENT_SCOPE?.trim();
-  const originHost = env.TASK_MANAGER_PUBLIC_ORIGIN
-    ? new URL(env.TASK_MANAGER_PUBLIC_ORIGIN).hostname
-    : "local";
-  const scope = (configured || originHost).toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
-  if (!scope || scope.length > 100) {
-    throw new Error("Attachment storage scope is invalid");
-  }
-  return scope;
 }
 
 function parseRange(value: string | null | undefined, size: number) {

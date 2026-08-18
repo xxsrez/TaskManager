@@ -1,5 +1,13 @@
 import { ValidationError } from "./domain";
 import type { SystemBackupCounts } from "./types";
+import {
+  validateAttachmentBackupObjects,
+  type AttachmentBackupObject,
+} from "./attachment-backup";
+import {
+  hasMalformedTaskImageReference,
+  parseTaskImageReferences,
+} from "./task-description-format";
 
 export type BackupScalar = string | number | null;
 export type BackupRow = Record<string, BackupScalar>;
@@ -22,16 +30,19 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
+  siteOrigin: string | null;
+  environmentScope: string | null;
   exportedAt: string;
   counts: SystemBackupCounts;
   tables: BackupTables;
+  objects: AttachmentBackupObject[];
   sha256: string;
 };
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 2 as const;
+export const systemBackupSchemaVersion = 3 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 1000;
 const maxStagedRowBytes = 1_500_000;
@@ -48,6 +59,7 @@ const timestampColumns = new Set([
   "released_at",
   "imported_at",
   "revoked_at",
+  "upload_expires_at",
 ]);
 
 export const backupTableNames = [
@@ -57,6 +69,7 @@ export const backupTableNames = [
   "projects",
   "releases",
   "tasks",
+  "attachments",
   "comments",
   "comment_reactions",
   "labels",
@@ -83,6 +96,9 @@ export const tableDefinitions = [
   definition("tasks", ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"], "id", {
     sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, project_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, comment_count: { number: true, integer: true }, version: { number: true, integer: true },
   }),
+  definition("attachments", ["id", "public_id", "task_id", "uploader_user_id", "original_filename", "display_name", "media_type", "byte_size", "checksum_sha256", "object_key", "kind", "state", "image_width", "image_height", "variant_metadata_json", "idempotency_key", "upload_expires_at", "failure_code", "version", "created_at", "updated_at", "deleted_at"], "task_id, created_at, id", {
+    byte_size: { number: true, integer: true }, image_width: { nullable: true, number: true, integer: true }, image_height: { nullable: true, number: true, integer: true }, upload_expires_at: { nullable: true }, failure_code: { nullable: true }, version: { number: true, integer: true }, deleted_at: { nullable: true },
+  }),
   definition("comments", ["id", "task_id", "author_user_id", "body", "source", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"], "task_id, created_at, id", {
     parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
   }),
@@ -108,6 +124,7 @@ export const liveTableDeleteOrder: BackupTableName[] = [
   "task_relations",
   "access_grants",
   "external_records",
+  "attachments",
   "tasks",
   "releases",
   "saved_views",
@@ -141,54 +158,117 @@ export function restoreInsertSql(table: TableDefinition): string {
 export async function createSystemBackup(
   tables: BackupTables,
   exportedAt = new Date().toISOString(),
+  objects: AttachmentBackupObject[] = [],
+  siteOrigin = "https://local.task-manager.invalid",
+  environmentScope = "local",
 ): Promise<SystemBackup> {
   const counts = countTables(tables);
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
     schemaVersion: systemBackupSchemaVersion,
+    siteOrigin: normalizeOrigin(siteOrigin),
+    environmentScope: normalizeEnvironmentScope(environmentScope),
     exportedAt,
     counts,
     tables,
+    objects,
   };
-  return { ...body, sha256: await sha256(canonicalBackupJson(body)) };
+  const backup = { ...body, sha256: await sha256(canonicalBackupJson(body)) };
+  if (new TextEncoder().encode(JSON.stringify(backup)).byteLength > maxSystemBackupBytes) {
+    throw new ValidationError(
+      "System backup exceeds the 10 MB bounded package limit; use a smaller attachment set",
+    );
+  }
+  return backup;
 }
 
 export async function validateSystemBackup(value: unknown): Promise<SystemBackup> {
   const payload = object(value, "Backup payload");
-  assertOnlyKeys(payload, ["format", "version", "schemaVersion", "exportedAt", "counts", "tables", "sha256"], "Backup payload");
-  if (payload.format !== systemBackupFormat || payload.version !== systemBackupVersion || payload.schemaVersion !== systemBackupSchemaVersion) {
+  const schemaVersion = payload.schemaVersion;
+  const legacy = schemaVersion === 2;
+  assertOnlyKeys(
+    payload,
+    legacy
+      ? ["format", "version", "schemaVersion", "exportedAt", "counts", "tables", "sha256"]
+      : ["format", "version", "schemaVersion", "siteOrigin", "environmentScope", "exportedAt", "counts", "tables", "objects", "sha256"],
+    "Backup payload",
+  );
+  if (payload.format !== systemBackupFormat || payload.version !== systemBackupVersion || (!legacy && schemaVersion !== systemBackupSchemaVersion)) {
     throw new ValidationError("Unsupported Task Manager backup format or version");
   }
   const exportedAt = timestamp(payload.exportedAt, "exportedAt");
   const sourceTables = object(payload.tables, "tables");
-  assertOnlyKeys(sourceTables, backupTableNames, "tables");
+  const sourceTableNames = legacy
+    ? backupTableNames.filter((name) => name !== "attachments")
+    : backupTableNames;
+  assertOnlyKeys(sourceTables, sourceTableNames, "tables");
   const tables = {} as BackupTables;
   let totalRows = 0;
   for (const table of tableDefinitions) {
-    const sourceRows = array(sourceTables[table.name], `tables.${table.name}`);
+    const sourceRows =
+      legacy && table.name === "attachments"
+        ? []
+        : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
     if (totalRows > maxSystemBackupRows) throw new ValidationError(`Backup contains more than ${maxSystemBackupRows} rows`);
     tables[table.name] = sourceRows.map((row, index) => normalizeBackupRow(table, row, index));
   }
   const counts = countTables(tables);
   const claimedCounts = object(payload.counts, "counts");
-  assertOnlyKeys(claimedCounts, backupTableNames, "counts");
-  for (const name of backupTableNames) {
+  assertOnlyKeys(claimedCounts, sourceTableNames, "counts");
+  for (const name of sourceTableNames) {
     if (claimedCounts[name] !== counts[name]) throw new ValidationError(`Count mismatch for ${name}`);
   }
   validateRelationships(tables);
+  const objects = legacy
+    ? []
+    : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: systemBackupSchemaVersion,
+    schemaVersion: schemaVersion as 2 | 3,
+    ...(!legacy
+      ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
+      : {}),
+    ...(!legacy
+      ? {
+          environmentScope: normalizeEnvironmentScope(
+            requiredString(payload.environmentScope, "environmentScope"),
+          ),
+        }
+      : {}),
+    exportedAt,
+    counts: legacy
+      ? Object.fromEntries(sourceTableNames.map((name) => [name, counts[name]]))
+      : counts,
+    tables: legacy
+      ? Object.fromEntries(
+          sourceTableNames.map((name) => [name, tables[name]]),
+        )
+      : tables,
+    ...(!legacy ? { objects } : {}),
+  };
+  const checksum = await sha256(JSON.stringify(body));
+  if (payload.sha256 !== checksum) throw new ValidationError("Backup checksum does not match its content");
+  return {
+    format: systemBackupFormat,
+    version: systemBackupVersion,
+    schemaVersion: schemaVersion as 2 | 3,
+    siteOrigin: legacy
+      ? null
+      : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
+    environmentScope: legacy
+      ? null
+      : normalizeEnvironmentScope(
+          requiredString(payload.environmentScope, "environmentScope"),
+        ),
     exportedAt,
     counts,
     tables,
+    objects,
+    sha256: checksum,
   };
-  const checksum = await sha256(canonicalBackupJson(body));
-  if (payload.sha256 !== checksum) throw new ValidationError("Backup checksum does not match its content");
-  return { ...body, sha256: checksum };
 }
 
 export function assertBackupContainsIdentity(
@@ -307,6 +387,74 @@ function validateRelationships(tables: BackupTables) {
     positiveVersion(task.version, "Task version");
   }
   validateParentCycles(tables.tasks, tasks);
+
+  const attachments = uniqueIndex(tables.attachments, ["id"], "attachments");
+  uniqueIndex(tables.attachments, ["public_id"], "attachment public IDs");
+  uniqueIndex(
+    tables.attachments,
+    ["task_id", "uploader_user_id", "idempotency_key"],
+    "attachment idempotency keys",
+  );
+  const attachmentsByPublicId = new Map<string, BackupRow>();
+  for (const attachment of tables.attachments) {
+    const task = requireReference(tasks, attachment.task_id, "Attachment task");
+    requireReference(users, attachment.uploader_user_id, "Attachment uploader");
+    publicId(attachment.public_id, "Attachment public ID");
+    nonEmpty(attachment.original_filename, "Attachment original filename");
+    nonEmpty(attachment.display_name, "Attachment display name");
+    nonEmpty(attachment.media_type, "Attachment media type");
+    nonEmpty(attachment.checksum_sha256, "Attachment checksum");
+    if (!/^[a-f0-9]{64}$/.test(String(attachment.checksum_sha256))) {
+      throw new ValidationError("Attachment checksum must be SHA-256");
+    }
+    if (typeof attachment.byte_size !== "number" || attachment.byte_size < 0) {
+      throw new ValidationError("Attachment byte size must be non-negative");
+    }
+    oneOf(attachment.kind, ["file", "image"], "Attachment kind");
+    oneOf(
+      attachment.state,
+      ["pending", "uploading", "ready", "failed", "deleted"],
+      "Attachment state",
+    );
+    if (attachment.state === "deleted" && attachment.deleted_at === null) {
+      throw new ValidationError("Deleted attachment requires deleted_at");
+    }
+    if (attachment.state !== "deleted" && attachment.deleted_at !== null) {
+      throw new ValidationError("Only deleted attachment can carry deleted_at");
+    }
+    if (
+      (attachment.state === "pending" || attachment.state === "uploading") &&
+      attachment.upload_expires_at === null
+    ) {
+      throw new ValidationError("Unsettled attachment requires upload expiry");
+    }
+    jsonObject(attachment.variant_metadata_json, "Attachment variant metadata");
+    positiveVersion(attachment.version, "Attachment version");
+    attachmentsByPublicId.set(String(attachment.public_id), attachment);
+    if (String(task.id) !== String(attachment.task_id)) {
+      throw new ValidationError("Attachment task is invalid");
+    }
+  }
+  void attachments;
+  for (const task of tables.tasks) {
+    const description = String(task.description ?? "");
+    if (hasMalformedTaskImageReference(description)) {
+      throw new ValidationError("Task description contains a malformed attachment reference");
+    }
+    for (const reference of parseTaskImageReferences(description)) {
+      const attachment = attachmentsByPublicId.get(reference.ref);
+      if (
+        !attachment ||
+        attachment.task_id !== task.id ||
+        attachment.kind !== "image" ||
+        attachment.state !== "ready"
+      ) {
+        throw new ValidationError(
+          "Task description references a missing or unavailable attachment",
+        );
+      }
+    }
+  }
 
   const comments = uniqueIndex(tables.comments, ["id"], "comments");
   uniqueIndex(
@@ -583,6 +731,34 @@ function jsonObject(value: BackupScalar, label: string) {
 function timestamp(value: unknown, label: string): string {
   if (typeof value !== "string" || Number.isNaN(Date.parse(value))) throw new ValidationError(`${label} must be a valid timestamp`);
   return value;
+}
+
+function requiredString(value: unknown, label: string) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new ValidationError(`${label} is required`);
+  }
+  return value;
+}
+
+function normalizeOrigin(value: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new ValidationError("System backup site origin is invalid");
+  }
+  if (url.protocol !== "https:" && url.hostname !== "localhost") {
+    throw new ValidationError("System backup site origin must use HTTPS");
+  }
+  return url.origin;
+}
+
+function normalizeEnvironmentScope(value: string) {
+  const scope = value.trim().toLowerCase();
+  if (!/^[a-z0-9._-]{1,100}$/.test(scope)) {
+    throw new ValidationError("System backup environment scope is invalid");
+  }
+  return scope;
 }
 
 function object(value: unknown, label: string): Record<string, unknown> {

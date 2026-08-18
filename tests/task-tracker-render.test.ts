@@ -1152,6 +1152,16 @@ test("an administrator sees registration and activity statistics", () => {
           projectCount: 0,
           releaseCount: 0,
           viewCount: 2,
+          attachmentCount: 3,
+          attachmentBytes: 4096,
+          attachmentObjectCount: 4,
+          attachmentObjectBytes: 5120,
+          stagingAttachmentObjectCount: 1,
+          orphanAttachmentObjectCount: 1,
+          attachmentStorageTruncated: false,
+          pendingAttachmentCount: 1,
+          failedAttachmentCount: 0,
+          deletedAttachmentCount: 1,
           users: [
             {
               id: "user-1",
@@ -1183,6 +1193,8 @@ test("an administrator sees registration and activity statistics", () => {
   assert.match(markup, />Export</);
   assert.match(markup, />Import</);
   assert.match(markup, /Registered users/);
+  assert.match(markup, /Attachment objects/);
+  assert.match(markup, /1 orphan/);
   assert.match(markup, /test@example\.com/);
   assert.match(markup, /1 changed in 7d/);
   const primaryNavigation = markup.match(/<nav class="nav-scroll"[\s\S]*?<\/nav>/)?.[0] ?? "";

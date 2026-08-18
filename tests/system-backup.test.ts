@@ -18,7 +18,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 2);
+  assert.equal(backup.schemaVersion, 3);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -34,6 +34,29 @@ test("the comment-aware system schema rejects an older backup explicitly", async
     validateSystemBackup({ ...backup, schemaVersion: 1 }),
     /unsupported task manager backup format or version/i,
   );
+});
+
+test("schema 2 system backups without attachments remain importable", async () => {
+  const current = await createSystemBackup(validTables(), now);
+  const tables = Object.fromEntries(
+    Object.entries(current.tables).filter(([name]) => name !== "attachments"),
+  );
+  const counts = Object.fromEntries(
+    Object.entries(current.counts).filter(([name]) => name !== "attachments"),
+  );
+  const body = {
+    format: current.format,
+    version: current.version,
+    schemaVersion: 2,
+    exportedAt: current.exportedAt,
+    counts,
+    tables,
+  };
+  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
+
+  const validated = await validateSystemBackup(legacy);
+  assert.equal(validated.schemaVersion, 2);
+  assert.deepEqual(validated.tables.attachments, []);
 });
 
 test("snapshot validation rejects content changed after export", async () => {
@@ -301,6 +324,7 @@ function validTables(): BackupTables {
         updated_at: now,
       },
     ],
+    attachments: [],
     comments: [
       {
         id: "comment-1",
@@ -384,6 +408,16 @@ function validTables(): BackupTables {
   };
 }
 
+async function checksum(value: string) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -400,6 +434,9 @@ function migratedDatabase() {
     "0010_crazy_puma.sql",
     "0011_conscious_paibok.sql",
     "0012_empty_saracen.sql",
+    "0013_rapid_gravity.sql",
+    "0014_puzzling_tana_nile.sql",
+    "0015_attachments_sync.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

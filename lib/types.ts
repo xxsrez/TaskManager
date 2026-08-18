@@ -288,6 +288,16 @@ export type AdminOverview = {
   projectCount: number;
   releaseCount: number;
   viewCount: number;
+  attachmentCount: number;
+  attachmentBytes: number;
+  attachmentObjectCount: number;
+  attachmentObjectBytes: number;
+  stagingAttachmentObjectCount: number;
+  orphanAttachmentObjectCount: number | null;
+  attachmentStorageTruncated: boolean;
+  pendingAttachmentCount: number;
+  failedAttachmentCount: number;
+  deletedAttachmentCount: number;
   users: AdminUserActivityRecord[];
 };
 
@@ -298,6 +308,7 @@ export type SystemBackupCounts = Record<
   | "projects"
   | "releases"
   | "tasks"
+  | "attachments"
   | "comments"
   | "comment_reactions"
   | "labels"

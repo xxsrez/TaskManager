@@ -21,6 +21,11 @@ export type AdminUserAggregate = {
   lastProjectActivityAt: string | null;
   lastReleaseActivityAt: string | null;
   lastViewActivityAt: string | null;
+  attachmentCount: number;
+  attachmentBytes: number;
+  pendingAttachmentCount: number;
+  failedAttachmentCount: number;
+  deletedAttachmentCount: number;
 };
 
 export class AdminAccessError extends Error {
@@ -52,6 +57,19 @@ export function buildAdminOverview(
   rows: AdminUserAggregate[],
   configuredEmails = process.env.TASK_MANAGER_ADMIN_EMAILS,
   now = Date.now(),
+  storage: {
+    objectCount: number;
+    objectBytes: number;
+    stagingObjectCount: number;
+    orphanObjectCount: number | null;
+    truncated: boolean;
+  } = {
+    objectCount: rows.reduce((total, row) => total + row.attachmentCount, 0),
+    objectBytes: rows.reduce((total, row) => total + row.attachmentBytes, 0),
+    stagingObjectCount: 0,
+    orphanObjectCount: null,
+    truncated: true,
+  },
 ): AdminOverview {
   const users = rows.map((row): AdminUserActivityRecord => ({
     id: row.id,
@@ -82,6 +100,25 @@ export function buildAdminOverview(
     projectCount: sum(users, "projectCount"),
     releaseCount: sum(users, "releaseCount"),
     viewCount: sum(users, "viewCount"),
+    attachmentCount: rows.reduce((total, row) => total + row.attachmentCount, 0),
+    attachmentBytes: rows.reduce((total, row) => total + row.attachmentBytes, 0),
+    attachmentObjectCount: storage.objectCount,
+    attachmentObjectBytes: storage.objectBytes,
+    stagingAttachmentObjectCount: storage.stagingObjectCount,
+    orphanAttachmentObjectCount: storage.orphanObjectCount,
+    attachmentStorageTruncated: storage.truncated,
+    pendingAttachmentCount: rows.reduce(
+      (total, row) => total + row.pendingAttachmentCount,
+      0,
+    ),
+    failedAttachmentCount: rows.reduce(
+      (total, row) => total + row.failedAttachmentCount,
+      0,
+    ),
+    deletedAttachmentCount: rows.reduce(
+      (total, row) => total + row.deletedAttachmentCount,
+      0,
+    ),
     users,
   };
 }

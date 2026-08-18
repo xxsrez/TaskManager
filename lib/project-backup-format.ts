@@ -4,10 +4,18 @@ import {
   type BackupRow,
   type TableDefinition,
 } from "./system-backup-format";
+import {
+  validateAttachmentBackupObjects,
+  type AttachmentBackupObject,
+} from "./attachment-backup";
+import {
+  hasMalformedTaskImageReference,
+  parseTaskImageReferences,
+} from "./task-description-format";
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 2 as const;
+export const projectBackupSchemaVersion = 3 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -17,6 +25,7 @@ export const projectBackupTableNames = [
   "projects",
   "releases",
   "tasks",
+  "attachments",
   "comments",
   "comment_reactions",
   "labels",
@@ -40,7 +49,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -50,6 +59,7 @@ export type ProjectBackup = {
   counts: ProjectBackupCounts;
   warnings: { externalRelationsOmitted: number };
   tables: ProjectBackupTables;
+  objects: AttachmentBackupObject[];
   sharing: ProjectSharingDescriptor[];
   sha256: string;
 };
@@ -74,6 +84,7 @@ export async function createProjectBackup(input: {
   sharing: ProjectSharingDescriptor[];
   externalRelationsOmitted: number;
   exportedAt?: string;
+  objects?: AttachmentBackupObject[];
 }): Promise<ProjectBackup> {
   const project = input.tables.projects[0];
   if (!project || input.tables.projects.length !== 1) {
@@ -92,32 +103,49 @@ export async function createProjectBackup(input: {
     counts: countProjectTables(input.tables, input.sharing),
     warnings: { externalRelationsOmitted: input.externalRelationsOmitted },
     tables: input.tables,
+    objects: input.objects ?? [],
     sharing: [...input.sharing].sort((a, b) => a.granteeUserId.localeCompare(b.granteeUserId)),
   };
   validateProjectRelationships(body.tables, body.sharing, body);
-  return { ...body, sha256: await sha256(JSON.stringify(body)) };
+  const backup = { ...body, sha256: await sha256(JSON.stringify(body)) };
+  if (new TextEncoder().encode(JSON.stringify(backup)).byteLength > maxProjectBackupBytes) {
+    throw new ValidationError(
+      "Project backup exceeds the 25 MB bounded package limit; use a smaller attachment set",
+    );
+  }
+  return backup;
 }
 
 export async function validateProjectBackup(value: unknown): Promise<ProjectBackup> {
   const payload = object(value, "Project backup");
-  exactKeys(payload, [
+  const legacy = payload.schemaVersion === 2;
+  exactKeys(payload, legacy ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
     "warnings", "tables", "sharing", "sha256",
+  ] : [
+    "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
+    "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
+    "warnings", "tables", "objects", "sharing", "sha256",
   ], "Project backup");
   if (
     payload.format !== projectBackupFormat ||
     payload.version !== projectBackupVersion ||
-    payload.schemaVersion !== projectBackupSchemaVersion
+    (!legacy && payload.schemaVersion !== projectBackupSchemaVersion)
   ) {
     throw new ValidationError("Unsupported Task Manager project backup format or version");
   }
   const sourceTables = object(payload.tables, "tables");
-  exactKeys(sourceTables, projectBackupTableNames, "tables");
+  const sourceTableNames = legacy
+    ? projectBackupTableNames.filter((name) => name !== "attachments")
+    : projectBackupTableNames;
+  exactKeys(sourceTables, sourceTableNames, "tables");
   const tables = {} as ProjectBackupTables;
   let totalRows = 0;
   for (const table of projectBackupTableDefinitions) {
-    const values = array(sourceTables[table.name], `tables.${table.name}`);
+    const values = legacy && table.name === "attachments"
+      ? []
+      : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += values.length;
     if (totalRows > maxProjectBackupRows) {
       throw new ValidationError(`Project backup contains more than ${maxProjectBackupRows} rows`);
@@ -147,16 +175,50 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     sharing,
   };
   const claimedCounts = object(payload.counts, "counts");
-  exactKeys(claimedCounts, [...projectBackupTableNames, "sharing"], "counts");
+  exactKeys(claimedCounts, [...sourceTableNames, "sharing"], "counts");
   for (const [name, count] of Object.entries(body.counts)) {
+    if (legacy && name === "attachments") continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
   validateProjectRelationships(tables, sharing, body);
-  const checksum = await sha256(JSON.stringify(body));
+  const objects = legacy
+    ? []
+    : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
+  const baseChecksumBody = {
+    format: body.format,
+    version: body.version,
+    schemaVersion: legacy ? 2 : projectBackupSchemaVersion,
+    siteOrigin: body.siteOrigin,
+    exportedAt: body.exportedAt,
+    projectId: body.projectId,
+    projectPublicId: body.projectPublicId,
+    projectName: body.projectName,
+    ownerUserId: body.ownerUserId,
+    counts: legacy
+      ? Object.fromEntries(
+          Object.entries(body.counts).filter(([name]) => name !== "attachments"),
+        )
+      : body.counts,
+    warnings: body.warnings,
+    tables: legacy
+      ? Object.fromEntries(
+          Object.entries(body.tables).filter(([name]) => name !== "attachments"),
+        )
+      : body.tables,
+  };
+  const checksumBody = legacy
+    ? { ...baseChecksumBody, sharing }
+    : { ...baseChecksumBody, objects, sharing };
+  const checksum = await sha256(JSON.stringify(checksumBody));
   if (payload.sha256 !== checksum) {
     throw new ValidationError("Project backup checksum does not match its content");
   }
-  return { ...body, sha256: checksum };
+  return {
+    ...body,
+    schemaVersion: payload.schemaVersion as 2 | 3,
+    objects,
+    sha256: checksum,
+  } as ProjectBackup;
 }
 
 function validateProjectRelationships(
@@ -187,6 +249,74 @@ function validateProjectRelationships(
     if (task.parent_task_id !== null && !tasks.has(String(task.parent_task_id))) throw new ValidationError("Task parent is outside the project bundle");
   }
   assertNoParentCycle(tables.tasks, tasks);
+  const attachments = unique(tables.attachments, "id", "attachment");
+  const attachmentPublicIds = unique(
+    tables.attachments,
+    "public_id",
+    "attachment public ID",
+  );
+  const attachmentIdempotency = new Set<string>();
+  for (const attachment of tables.attachments) {
+    if (!tasks.has(String(attachment.task_id))) {
+      throw new ValidationError("Attachment is outside the project bundle");
+    }
+    if (!String(attachment.uploader_user_id).trim()) {
+      throw new ValidationError("Attachment uploader is required");
+    }
+    if (!/^[a-f0-9]{64}$/.test(String(attachment.checksum_sha256))) {
+      throw new ValidationError("Attachment checksum must be SHA-256");
+    }
+    if (
+      !Number.isSafeInteger(attachment.byte_size) ||
+      Number(attachment.byte_size) < 0
+    ) {
+      throw new ValidationError("Attachment byte size must be non-negative");
+    }
+    if (attachment.kind !== "file" && attachment.kind !== "image") {
+      throw new ValidationError("Attachment kind is invalid");
+    }
+    if (
+      !["pending", "uploading", "ready", "failed", "deleted"].includes(
+        String(attachment.state),
+      )
+    ) {
+      throw new ValidationError("Attachment state is invalid");
+    }
+    if (attachment.state === "deleted" && attachment.deleted_at === null) {
+      throw new ValidationError("Deleted attachment requires deleted_at");
+    }
+    const idempotency = `${attachment.task_id}\u0000${attachment.uploader_user_id}\u0000${attachment.idempotency_key}`;
+    if (attachmentIdempotency.has(idempotency)) {
+      throw new ValidationError("Duplicate attachment idempotency key");
+    }
+    attachmentIdempotency.add(idempotency);
+    parseJsonObject(
+      attachment.variant_metadata_json,
+      "Attachment variant metadata",
+    );
+  }
+  void attachments;
+  for (const task of tables.tasks) {
+    const description = String(task.description ?? "");
+    if (hasMalformedTaskImageReference(description)) {
+      throw new ValidationError(
+        "Task description contains a malformed attachment reference",
+      );
+    }
+    for (const reference of parseTaskImageReferences(description)) {
+      const attachment = attachmentPublicIds.get(reference.ref);
+      if (
+        !attachment ||
+        attachment.task_id !== task.id ||
+        attachment.kind !== "image" ||
+        attachment.state !== "ready"
+      ) {
+        throw new ValidationError(
+          "Task description references a missing or unavailable attachment",
+        );
+      }
+    }
+  }
   const commentKeys = new Set<string>();
   const activeComments = new Map<string, number>();
   for (const comment of tables.comments) {
