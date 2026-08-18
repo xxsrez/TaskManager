@@ -239,3 +239,59 @@ test("migration rejects unapproved hosts without issuing a request or leaking th
   assert.equal(report.items[0]?.reason, "source_host_not_allowed");
   assert.doesNotMatch(JSON.stringify(report), /unapproved\.example\.test|private-file/);
 });
+
+test("an admin can map one independently verified non-binary URL without a bulk override", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const project = (await getSnapshot(owner)).projects.find((item) => item.name === "Attachment migration")!;
+  const task = await createTask(owner, { title: "Verified non-binary source", projectId: project.id });
+  const sourceRecordId = "external:verified-non-binary";
+  await database.prepare(`INSERT INTO external_records (
+      id, owner_user_id, target_type, target_id, source, source_id,
+      source_url, metadata_json, imported_at
+    ) VALUES (?, ?, 'task', ?, 'linear', 'AM-3', NULL, ?, CURRENT_TIMESTAMP)`)
+    .bind(sourceRecordId, owner.id, task.id, JSON.stringify({
+      attachments: [{ id: "site-home", title: "Production", url: "https://files.example.test/" }],
+    })).run();
+
+  const unavailable = await reconcileImportedAttachments(owner, {
+    mode: "apply",
+    sourceRecordId,
+    sourceIndex: 0,
+    fetcher: (async () => new Response("unavailable", { status: 522 })) as typeof fetch,
+  });
+  assert.equal(unavailable.items[0]?.reason, "source_unavailable:522");
+
+  await assert.rejects(
+    reconcileImportedAttachments(owner, {
+      mode: "apply",
+      sourceRecordId,
+      verifiedNonBinary: true,
+    }),
+    /requires one exact source record and index/i,
+  );
+
+  let requested = false;
+  const mapped = await reconcileImportedAttachments(owner, {
+    mode: "apply",
+    sourceRecordId,
+    sourceIndex: 0,
+    verifiedNonBinary: true,
+    fetcher: (async () => {
+      requested = true;
+      throw new Error("verified mapping must not fetch through the Worker");
+    }) as typeof fetch,
+  });
+  assert.equal(requested, false);
+  assert.equal(mapped.items[0]?.action, "non_binary_mapped");
+  assert.equal(mapped.items[0]?.reason, "verified_non_binary_link_preserved");
+  assert.equal(mapped.nonBinaryMappedCount, 1);
+  assert.equal(mapped.cutoverReady, true);
+
+  const inventory = await reconcileImportedAttachments(owner, {
+    mode: "inventory",
+    sourceRecordId,
+    sourceIndex: 0,
+  });
+  assert.equal(inventory.nonBinaryMappedCount, 1);
+  assert.equal(inventory.cutoverReady, true);
+});

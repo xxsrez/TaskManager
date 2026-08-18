@@ -144,11 +144,20 @@ export async function reconcileImportedAttachments(
     sourceIndex?: number;
     maxRecords?: number;
     maxAttachments?: number;
+    verifiedNonBinary?: boolean;
     fetcher?: typeof fetch;
   } = {},
 ): Promise<AttachmentMigrationReport> {
   assertConfiguredAdmin(currentUser);
   const mode = options.mode ?? "inventory";
+  if (
+    options.verifiedNonBinary === true &&
+    (mode !== "apply" || !options.sourceRecordId || options.sourceIndex === undefined)
+  ) {
+    throw new ValidationError(
+      "Verified non-binary mapping requires one exact source record and index",
+    );
+  }
   const maxRecords = boundedInteger(options.maxRecords, 100, 1, 500);
   const maxAttachments = boundedInteger(options.maxAttachments, 25, 1, 100);
   const db = getD1();
@@ -190,7 +199,13 @@ export async function reconcileImportedAttachments(
     }
     if (applied >= maxAttachments) break;
     applied += 1;
-    items.push(await applyPlannedAttachment(currentUser, item, prior, options.fetcher ?? fetch));
+    items.push(await applyPlannedAttachment(
+      currentUser,
+      item,
+      prior,
+      options.fetcher ?? fetch,
+      options.verifiedNonBinary === true,
+    ));
   }
 
   if (mode === "apply") {
@@ -206,6 +221,7 @@ async function applyPlannedAttachment(
   item: PlannedImportedAttachment,
   prior: StoredOutcome | undefined,
   fetcher: typeof fetch,
+  verifiedNonBinary: boolean,
 ): Promise<AttachmentMigrationItemResult> {
   const task = await getTask(currentUser, item.taskId);
   if (!canEditContent(task.accessRole)) throw new PermissionError("Editor access is required");
@@ -226,6 +242,13 @@ async function applyPlannedAttachment(
   if (item.disposition === "skipped") {
     await storeOutcome(item, "skipped", item.reason, null, null, null);
     return result(item, "skipped", item.reason, null);
+  }
+  if (verifiedNonBinary) {
+    if (!item.url) throw new ValidationError("Attachment URL is unavailable");
+    assertAllowedMigrationUrl(new URL(item.url));
+    const reason = "verified_non_binary_link_preserved";
+    await storeOutcome(item, "non_binary_mapped", reason, null, item.title, item.url);
+    return result(item, "non_binary_mapped", reason, null);
   }
 
   try {
@@ -444,7 +467,10 @@ function summarize(
   returnedItems: AttachmentMigrationItemResult[],
 ): AttachmentMigrationReport {
   const migratedCount = stateItems.filter((item) => item.action === "migrated" || item.action === "already_migrated").length;
-  const nonBinaryMappedCount = stateItems.filter((item) => item.action === "non_binary_mapped" || (item.action === "already_reconciled" && item.reason === "html_link_preserved")).length;
+  const nonBinaryMappedCount = stateItems.filter((item) =>
+    item.action === "non_binary_mapped" ||
+    (item.action === "already_reconciled" && isNonBinaryMappingReason(item.reason))
+  ).length;
   const skippedCount = stateItems.filter((item) => item.action === "skipped").length;
   const blockedCount = stateItems.filter((item) => item.action === "blocked" && item.reason !== "pending_migration").length;
   const pendingCount = stateItems.filter((item) => item.action === "blocked" && item.reason === "pending_migration").length;
@@ -462,6 +488,11 @@ function summarize(
     truncated,
     items: returnedItems,
   };
+}
+
+function isNonBinaryMappingReason(reason: string | null) {
+  return reason === "html_link_preserved" ||
+    reason === "verified_non_binary_link_preserved";
 }
 
 function assertAllowedMigrationUrl(url: URL) {

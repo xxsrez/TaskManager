@@ -21,6 +21,7 @@ export async function POST(request: Request) {
       sourceIndex: typeof value.sourceIndex === "number" ? value.sourceIndex : undefined,
       maxRecords: typeof value.maxRecords === "number" ? value.maxRecords : undefined,
       maxAttachments: typeof value.maxAttachments === "number" ? value.maxAttachments : undefined,
+      verifiedNonBinary: value.verifiedNonBinary === true,
     }), { headers: { "cache-control": "no-store" } });
   });
 }
