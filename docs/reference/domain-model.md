@@ -326,7 +326,9 @@ Restore всегда выдаёт новый key текущей среды. Sche
 legacy no-attachment backup. Schema `4` дополнительно сохраняет workflow
 archive/system-role/version metadata; validators schema `2`/`3` нормализуют
 legacy statuses и для полного system restore восстанавливают reserved
-`Duplicate`. Owner/project active-byte quotas вычисляются по
+`Duplicate`. Schema `5` сохраняет immutable ID, idempotency key, version и
+updated timestamp TaskRelation; validators schema `2`–`4` детерминированно
+синтезируют их для legacy relations. Owner/project active-byte quotas вычисляются по
 текущему Project owner, а не историческому `tasks.owner_user_id`.
 
 ## Comment и CommentReaction
@@ -446,13 +448,20 @@ Label — гибкая классификация, но не подмена stat
 
 | Поле | Семантика |
 |---|---|
+| `id` | Immutable identity relation и canonical Agent reference |
 | `source_task_id` | Исходная задача |
 | `target_task_id` | Целевая задача |
 | `type` | `blocks`, `related`, `duplicate_of` |
-| `created_at`, `creator_id` | Provenance связи |
+| `creator_user_id`, `idempotency_key` | Server-verified creator и retry identity |
+| `version` | Независимая optimistic concurrency relation |
+| `created_at`, `updated_at` | Provenance и последнее semantic изменение |
 
 Для `related` хранится одна канонически упорядоченная пара. `blocked_by`
-вычисляется как обратное чтение `blocks` и не является отдельным type.
+вычисляется как обратное чтение `blocks` и не является отдельным type. Обратные
+`blocks` одной пары считаются одним logical conflict; source имеет не более
+одного `duplicate_of`. Relation допустима только между двумя Project Tasks.
+Project и catalog owner могут различаться, но mutation требует Editor+ на обеих
+сторонах и не создаёт ACL propagation.
 
 ## ExternalRecord
 
@@ -516,9 +525,10 @@ attachments также остаются import provenance.
 3. Task/Release, созданные в Project collaborator, наследуют его исходный
    catalog scope; creator остаётся фактическим. Ownership transfer Project не
    меняет immutable task identifier или catalog references.
-4. Status, Label, Project, Release, parent и обе стороны TaskRelation обязаны
-   принадлежать тому же owner scope, что и Task. Cross-owner hierarchy и
-   relations запрещены.
+4. Status, Label, Project, Release и parent обязаны принадлежать тому же catalog
+   owner scope, что и Task. Cross-owner hierarchy запрещена. TaskRelation —
+   явное исключение: обе стороны обязаны быть Project Tasks, могут относиться к
+   разным Projects/owners и не наследуют доступ друг от друга.
 5. `task.release_id IS NULL` либо release существует и
    `release.project_id = task.project_id`.
 6. Назначение release задаче без project в одной транзакции назначает и project.
@@ -527,7 +537,10 @@ attachments также остаются import provenance.
    сохраняется.
 8. Terminal timestamps выводятся из status category и обновляются в одной
    транзакции со status.
-9. Parent graph ацикличен; self-parent и self-relation запрещены.
+9. Parent graph ацикличен; self-parent и self-relation запрещены. Relation
+   create/update требует write access на обе стороны; `duplicate_of` атомарно
+   назначает source системный `Duplicate`, но remove/change не восстанавливает
+   предыдущий status.
 10. Архивирование project/release не удаляет задачи. Новое назначение в архивную
    сущность запрещено.
 11. Assignee и lead обязаны иметь owner либо granted access к соответствующему

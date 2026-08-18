@@ -506,16 +506,29 @@ export const taskLabels = sqliteTable(
 export const taskRelations = sqliteTable(
   "task_relations",
   {
+    id: text("id").primaryKey(),
     sourceTaskId: text("source_task_id").notNull(),
     targetTaskId: text("target_task_id").notNull(),
     type: text("type").notNull(),
     creatorUserId: text("creator_user_id").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [
-    primaryKey({
-      columns: [table.sourceTaskId, table.targetTaskId, table.type],
-    }),
+    uniqueIndex("idx_task_relations_semantic").on(
+      table.sourceTaskId,
+      table.targetTaskId,
+      table.type,
+    ),
+    uniqueIndex("idx_task_relations_idempotency").on(
+      table.creatorUserId,
+      table.idempotencyKey,
+    ),
+    uniqueIndex("idx_task_relations_duplicate_source")
+      .on(table.sourceTaskId)
+      .where(sql`${table.type} = 'duplicate_of'`),
     index("idx_task_relations_target").on(table.targetTaskId, table.type),
   ],
 );

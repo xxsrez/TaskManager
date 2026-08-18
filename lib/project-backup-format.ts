@@ -15,7 +15,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 4 as const;
+export const projectBackupSchemaVersion = 5 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -49,7 +49,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -77,6 +77,12 @@ const legacyWorkflowStatusDefinition: TableDefinition = {
     position: { number: true, integer: true },
     is_default: { number: true, integer: true },
   },
+};
+
+const legacyTaskRelationDefinition: TableDefinition = {
+  name: "task_relations",
+  columns: ["source_task_id", "target_task_id", "type", "creator_user_id", "created_at"],
+  orderBy: "source_task_id, target_task_id, type",
 };
 
 export function projectRestoreInsertSql(table: TableDefinition, ignoreExistingId = false): string {
@@ -130,7 +136,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const payload = object(value, "Project backup");
   const withoutAttachments = payload.schemaVersion === 2;
   const legacyWorkflow = payload.schemaVersion === 2 || payload.schemaVersion === 3;
-  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === projectBackupSchemaVersion;
+  const legacyRelations = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4;
+  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
@@ -164,7 +171,9 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     }
     const sourceDefinition = legacyWorkflow && table.name === "workflow_statuses"
       ? legacyWorkflowStatusDefinition
-      : table;
+      : legacyRelations && table.name === "task_relations"
+        ? legacyTaskRelationDefinition
+        : table;
     sourceNormalizedTables[table.name] = values.map((row, index) =>
       normalizeRow(sourceDefinition, row, index),
     );
@@ -176,9 +185,10 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     warnings.externalRelationsOmitted,
     "externalRelationsOmitted",
   );
-  const tables = legacyWorkflow
+  let tables = legacyWorkflow
     ? upgradeLegacyProjectWorkflow(sourceNormalizedTables)
     : sourceNormalizedTables;
+  if (legacyRelations) tables = upgradeLegacyProjectRelations(tables);
   const body = {
     format: projectBackupFormat,
     version: projectBackupVersion,
@@ -207,7 +217,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
@@ -235,7 +245,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -423,14 +433,49 @@ function validateProjectRelationships(
     }
   }
   const relationKeys = new Set<string>();
+  const relationIds = new Set<string>();
+  const relationIdempotency = new Set<string>();
+  const relatedPairs = new Set<string>();
+  const blockPairs = new Set<string>();
+  const duplicateSources = new Set<string>();
   for (const relation of tables.task_relations) {
     if (!tasks.has(String(relation.source_task_id)) || !tasks.has(String(relation.target_task_id))) {
       throw new ValidationError("Task relation crosses the project bundle boundary");
     }
     if (relation.source_task_id === relation.target_task_id) throw new ValidationError("Task cannot relate to itself");
+    if (!String(relation.id).trim()) throw new ValidationError("Task relation ID is required");
+    if (relationIds.has(String(relation.id))) throw new ValidationError("Duplicate task relation ID");
+    relationIds.add(String(relation.id));
+    const idempotency = `${relation.creator_user_id}\u0000${relation.idempotency_key}`;
+    if (!String(relation.idempotency_key).trim() || relationIdempotency.has(idempotency)) {
+      throw new ValidationError("Duplicate task relation idempotency key");
+    }
+    relationIdempotency.add(idempotency);
+    if (!Number.isSafeInteger(relation.version) || Number(relation.version) < 1) {
+      throw new ValidationError("Task relation version is invalid");
+    }
+    if (!["blocks", "related", "duplicate_of"].includes(String(relation.type))) {
+      throw new ValidationError("Task relation type is invalid");
+    }
     const key = `${relation.source_task_id}\u0000${relation.target_task_id}\u0000${relation.type}`;
     if (relationKeys.has(key)) throw new ValidationError("Duplicate task relation");
     relationKeys.add(key);
+    const pair = [String(relation.source_task_id), String(relation.target_task_id)].sort().join("\u0000");
+    if (relation.type === "related") {
+      if (relatedPairs.has(pair) || String(relation.source_task_id) > String(relation.target_task_id)) {
+        throw new ValidationError("Related task pair is not canonical");
+      }
+      relatedPairs.add(pair);
+    } else if (relation.type === "blocks") {
+      if (blockPairs.has(pair)) throw new ValidationError("Duplicate logical block relation");
+      blockPairs.add(pair);
+    } else if (relation.type === "duplicate_of") {
+      const sourceId = String(relation.source_task_id);
+      if (duplicateSources.has(sourceId)) {
+        throw new ValidationError("A duplicate task has more than one canonical target");
+      }
+      duplicateSources.add(sourceId);
+    }
   }
   const targets = new Map<string, Set<string>>([
     ["project", new Set([identity.projectId])],
@@ -474,6 +519,23 @@ function upgradeLegacyProjectWorkflow(source: ProjectBackupTables): ProjectBacku
     }
   }
   return { ...source, workflow_statuses: statuses };
+}
+
+function upgradeLegacyProjectRelations(source: ProjectBackupTables): ProjectBackupTables {
+  return {
+    ...source,
+    task_relations: source.task_relations.map((relation): BackupRow => ({
+      id: `relation_legacy:${relation.source_task_id}:${relation.target_task_id}:${relation.type}`,
+      source_task_id: relation.source_task_id,
+      target_task_id: relation.target_task_id,
+      type: relation.type,
+      creator_user_id: relation.creator_user_id,
+      idempotency_key: `legacy:${relation.source_task_id}:${relation.target_task_id}:${relation.type}`,
+      version: 1,
+      created_at: relation.created_at,
+      updated_at: relation.created_at,
+    })),
+  };
 }
 
 const categories = ["backlog", "unstarted", "started", "completed", "canceled"];

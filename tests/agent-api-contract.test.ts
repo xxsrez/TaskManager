@@ -115,6 +115,8 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   const paths = Object.keys(agentApiOpenApi.paths);
   assert.equal(paths.includes("/tasks"), true);
   assert.equal(paths.includes("/tasks/{ref}"), true);
+  assert.equal(paths.includes("/tasks/{ref}/relations"), true);
+  assert.equal(paths.includes("/tasks/{ref}/relations/{relationRef}"), true);
   assert.equal(paths.includes("/projects"), true);
   assert.equal(paths.includes("/releases"), true);
   assert.equal(paths.includes("/tasks/{ref}/comments"), true);
@@ -128,6 +130,14 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/comments"].post.operationId,
     "createTaskComment",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/relations"].post.operationId,
+    "createTaskRelation",
+  );
+  assert.deepEqual(
+    agentApiOpenApi.paths["/tasks/{ref}/relations"].post.security,
+    [{ oauth2: ["api:write"] }, { personalToken: [] }],
   );
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/comments/{commentRef}/resolution"].put

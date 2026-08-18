@@ -210,6 +210,11 @@ version conflict остаётся write boundary и не заменяется po
    к detail только через явный отдельный запрос. Анонимный MCP handshake может
    получить capabilities и схемы tools для установки connector, но каждый
 `tools/call` требует bearer token до data query.
+6. Relation commands разрешают обе Task references через тот же ACL predicate,
+   требуют Editor+ на каждой стороне и вызывают общий application command
+   service. Relation имеет собственную version; create имеет idempotency key.
+   `duplicate_of` выполняет relation write и Task status transition одной D1
+   batch, а UI/REST/MCP затем перечитывают canonical detail projection.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в
@@ -394,7 +399,9 @@ Native comment bodies также не входят в bootstrap или Task deta
 - expression indexes по нормализованным task title/identifier, project
   name/summary и release name для prefix search;
 - join table для labels;
-- нормализованная `task_relations` для `blocks`, `related` и `duplicate_of`;
+- нормализованная `task_relations` для `blocks`, `related` и `duplicate_of` с
+  immutable ID, create-idempotency, optimistic version, semantic indexes и
+  partial uniqueness одного `duplicate_of` target на source;
 - `comments` с task/user/self foreign keys, idempotency и keyset indexes;
 - `comment_reactions` с composite primary key и cascade от comment;
 - `external_records` для owner-scoped provenance идемпотентного импорта;
@@ -449,6 +456,10 @@ saved-view query/display и полный provider metadata в `external_records`
    нормализуется для current restore; system restore также синтезирует ровно
    один reserved `Duplicate` на User. Schema `2` без Attachments остаётся
    импортируемой.
+8. Schema `5` переносит immutable TaskRelation ID, creator-scoped idempotency
+   key, optimistic version и updated timestamp. Legacy schema `2`–`4`
+   проверяется по исходному checksum body, затем получает deterministic relation
+   metadata до current restore.
 
 ### Project backup и restore
 
@@ -466,6 +477,9 @@ saved-view query/display и полный provider metadata в `external_records`
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
+6. Current schema `5` сохраняет relation identity/concurrency metadata;
+   schema `2`–`4` получает deterministic metadata после проверки исходного
+   checksum и до записи staging rows.
 
 ## Надёжность и проверка
 

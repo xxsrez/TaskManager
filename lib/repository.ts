@@ -495,7 +495,8 @@ export async function getSnapshot(
       db
         .prepare(
           `${snapshotTaskIdScopeCte}
-           SELECT tr.source_task_id, tr.target_task_id, tr.type
+           SELECT tr.id, tr.source_task_id, tr.target_task_id, tr.type,
+             tr.version, tr.created_at, tr.updated_at
            FROM task_relations tr
            JOIN visible_task_ids source_visible
              ON source_visible.id = tr.source_task_id
@@ -773,7 +774,8 @@ export async function getTaskDetail(
       .bind(task.id),
     db
       .prepare(
-        `SELECT source_task_id, target_task_id, type
+        `SELECT id, source_task_id, target_task_id, type, version,
+           created_at, updated_at
          FROM task_relations
          WHERE source_task_id = ? OR target_task_id = ?
          ORDER BY created_at, source_task_id, target_task_id, type`,
@@ -2103,9 +2105,13 @@ function mapTaskLabel(row: DbRow): TaskLabelAssignment {
 
 function mapRelation(row: DbRow): TaskRelationRecord {
   return {
+    id: String(row.id),
     sourceTaskId: String(row.source_task_id),
     targetTaskId: String(row.target_task_id),
     type: String(row.type) as TaskRelationRecord["type"],
+    version: Number(row.version),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
   };
 }
 

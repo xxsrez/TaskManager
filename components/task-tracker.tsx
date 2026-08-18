@@ -115,6 +115,7 @@ import type {
   StagedSystemBackup,
   TaskRecord,
   TaskDetailRecord,
+  TaskRelationRecord,
   UserRecord,
   ViewDisplay,
   ViewQuery,
@@ -199,6 +200,60 @@ export function resolveArchiveBulkAction(
 }
 
 type MutationResult = AppSnapshot | { task: TaskRecord } | { taskUpdates: TaskRecord[] };
+
+export type TaskRelationPresentation = {
+  relation: TaskRelationRecord;
+  target: TaskRecord;
+  direction: "incoming" | "outgoing";
+  group: "Blocked by" | "Blocking" | "Related" | "Duplicate of" | "Duplicates";
+  label: "Blocked by" | "Blocks" | "Related" | "Resolved blocker" | "Duplicate of" | "Duplicate";
+};
+
+const taskRelationGroupOrder: TaskRelationPresentation["group"][] = [
+  "Blocked by",
+  "Blocking",
+  "Related",
+  "Duplicate of",
+  "Duplicates",
+];
+
+export function taskRelationPresentations(
+  task: TaskRecord,
+  data: Pick<AppSnapshot, "tasks" | "statuses" | "relations">,
+): TaskRelationPresentation[] {
+  const taskMap = new Map(data.tasks.map((item) => [item.id, item]));
+  const statusMap = new Map(data.statuses.map((status) => [status.id, status]));
+  const presentations: TaskRelationPresentation[] = [];
+  for (const relation of data.relations) {
+    const outgoing = relation.sourceTaskId === task.id;
+    const incoming = relation.targetTaskId === task.id;
+    if (!outgoing && !incoming) continue;
+    const target = taskMap.get(outgoing ? relation.targetTaskId : relation.sourceTaskId);
+    if (!target) continue;
+    if (relation.type === "related") {
+      presentations.push({ relation, target, direction: outgoing ? "outgoing" : "incoming", group: "Related", label: "Related" });
+      continue;
+    }
+    if (relation.type === "duplicate_of") {
+      presentations.push(outgoing
+        ? { relation, target, direction: "outgoing", group: "Duplicate of", label: "Duplicate of" }
+        : { relation, target, direction: "incoming", group: "Duplicates", label: "Duplicate" });
+      continue;
+    }
+    if (outgoing) {
+      presentations.push({ relation, target, direction: "outgoing", group: "Blocking", label: "Blocks" });
+      continue;
+    }
+    const blockerStatus = statusMap.get(target.statusId)?.category;
+    const resolved = blockerStatus === "completed" || blockerStatus === "canceled";
+    presentations.push(resolved
+      ? { relation, target, direction: "incoming", group: "Related", label: "Resolved blocker" }
+      : { relation, target, direction: "incoming", group: "Blocked by", label: "Blocked by" });
+  }
+  return presentations.sort((left, right) =>
+    taskRelationGroupOrder.indexOf(left.group) - taskRelationGroupOrder.indexOf(right.group) ||
+    left.target.identifier.localeCompare(right.target.identifier));
+}
 
 export function applyMutationResult(
   current: AppSnapshot,
@@ -2600,14 +2655,6 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
     .filter((label) => label !== undefined);
   const parent = task.parentTaskId ? taskMap.get(task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
-  const relations: Array<{ relation: AppSnapshot["relations"][number]; direction: "in" | "out"; target: TaskRecord | undefined }> = [];
-  for (const relation of data.relations) {
-    if (relation.sourceTaskId === task.id) {
-      relations.push({ relation, direction: "out", target: taskMap.get(relation.targetTaskId) });
-    } else if (relation.targetTaskId === task.id) {
-      relations.push({ relation, direction: "in", target: taskMap.get(relation.sourceTaskId) });
-    }
-  }
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} full />;
   async function saveDraftField(
     field: keyof TaskDraftDirty,
@@ -2743,7 +2790,14 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
           </div>
           {labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="details-labels">{labels.map((label) => <span key={label.id} style={{ "--label-color": label.color } as React.CSSProperties}>{label.name}</span>)}</div></DetailsSection>}
           {(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}
-          {relations.length > 0 && <DetailsSection title="Relations" icon={<Link2 size={14} />}><div className="details-links">{relations.map(({ relation, direction, target }) => target && <TaskReference key={`${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}:${direction}`} label={relationLabel(relation.type, direction)} task={target} onOpen={onOpenTask} />)}</div></DetailsSection>}
+          <TaskRelations
+            task={task}
+            data={data}
+            onOpenTask={onOpenTask}
+            onRefresh={onRebase}
+            canWrite
+            busy={busy}
+          />
           <TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite description={task.description} />
           <TaskActivity task={task} currentUser={data.user} canWrite />
           {sourceContent}
@@ -2769,7 +2823,214 @@ function ReadOnlyTaskDetails({ task, data, source, onClose, onOpenTask }: { task
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
   const sourceContent = <ImportedSourceDetails source={source} hasExternalSource={task.hasExternalSource || task.externalSourceInvalidationCursor !== undefined} />;
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <TaskDescriptionMarkdown task={task} body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} description={task.description} /><TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <TaskDescriptionMarkdown task={task} body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project?.name ?? "No project"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskRelations task={task} data={data} onOpenTask={onOpenTask} onRefresh={async () => task} canWrite={false} busy={false} /><TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} description={task.description} /><TaskActivity task={task} currentUser={data.user} canWrite={false} />{sourceContent}<div className="timestamps"><span>Created {longDate(task.createdAt)}</span><span>Updated {longDate(task.updatedAt)}</span></div></div></aside></div>;
+}
+
+type RelativeRelationKind = "blocks" | "blocked_by" | "related" | "duplicate_of" | "duplicates";
+
+function TaskRelations({
+  task,
+  data,
+  onOpenTask,
+  onRefresh,
+  canWrite,
+  busy,
+}: {
+  task: TaskRecord;
+  data: AppSnapshot;
+  onOpenTask: (id: string) => void;
+  onRefresh: (taskId: string) => Promise<TaskRecord | null>;
+  canWrite: boolean;
+  busy: boolean;
+}) {
+  const presentations = taskRelationPresentations(task, data);
+  const [adding, setAdding] = useState(false);
+  const [kind, setKind] = useState<RelativeRelationKind>("related");
+  const [query, setQuery] = useState("");
+  const [candidates, setCandidates] = useState<TaskRecord[]>(data.tasks);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [pendingRelationId, setPendingRelationId] = useState<string | null>(null);
+  const [relationError, setRelationError] = useState("");
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+  }, []);
+
+  const existingTargetIds = new Set(presentations.map((item) => item.target.id));
+  const availableCandidates = candidates
+    .filter((candidate) =>
+      candidate.id !== task.id &&
+      candidate.projectId !== null &&
+      canEditContent(candidate.accessRole) &&
+      !existingTargetIds.has(candidate.id) &&
+      (!query.trim() || `${candidate.identifier} ${candidate.title}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())))
+    .slice(0, 8);
+
+  function searchCandidates(nextQuery: string) {
+    setQuery(nextQuery);
+    setSelectedTaskId("");
+    setCandidates(data.tasks);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (!nextQuery.trim()) {
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    searchTimer.current = setTimeout(() => {
+      void fetch(`/api/tasks?search=${encodeURIComponent(nextQuery.trim())}`, { cache: "no-store" })
+        .then(async (response) => {
+          const value = await response.json() as { tasks?: TaskRecord[]; error?: string };
+          if (!response.ok || value.error) throw new Error(value.error ?? "Task search failed");
+          setCandidates(value.tasks ?? []);
+          setRelationError("");
+        })
+        .catch((requestError: unknown) => {
+          setRelationError(requestError instanceof Error ? requestError.message : "Task search failed");
+        })
+        .finally(() => setSearching(false));
+    }, 180);
+  }
+
+  async function sendRelationMutation(
+    path: string,
+    method: "POST" | "PATCH" | "DELETE",
+    input: Record<string, unknown>,
+    pendingId: string,
+  ) {
+    setPendingRelationId(pendingId);
+    setRelationError("");
+    try {
+      const response = await fetch(path, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const value = await response.json() as { error?: string };
+      if (!response.ok || value.error) throw new Error(value.error ?? "Relation could not be saved");
+      await onRefresh(task.id);
+      return true;
+    } catch (requestError) {
+      setRelationError(requestError instanceof Error ? requestError.message : "Relation could not be saved");
+      return false;
+    } finally {
+      setPendingRelationId(null);
+    }
+  }
+
+  async function createRelation() {
+    if (!selectedTaskId || kind === "duplicates") return;
+    const semantic = relativeRelationSemantic(kind);
+    const saved = await sendRelationMutation(
+      `/api/tasks/${encodeURIComponent(task.id)}/relations`,
+      "POST",
+      {
+        targetTaskId: selectedTaskId,
+        ...semantic,
+        taskVersion: task.version,
+        idempotencyKey: crypto.randomUUID(),
+      },
+      "new",
+    );
+    if (saved) {
+      setAdding(false);
+      setQuery("");
+      setSelectedTaskId("");
+    }
+  }
+
+  async function updateRelation(item: TaskRelationPresentation, nextKind: RelativeRelationKind) {
+    if (nextKind === "duplicates") return;
+    await sendRelationMutation(
+      `/api/tasks/${encodeURIComponent(task.id)}/relations/${encodeURIComponent(item.relation.id)}`,
+      "PATCH",
+      {
+        version: item.relation.version,
+        ...relativeRelationSemantic(nextKind),
+        taskVersion: task.version,
+      },
+      item.relation.id,
+    );
+  }
+
+  async function removeRelation(item: TaskRelationPresentation) {
+    await sendRelationMutation(
+      `/api/tasks/${encodeURIComponent(task.id)}/relations/${encodeURIComponent(item.relation.id)}`,
+      "DELETE",
+      { version: item.relation.version },
+      item.relation.id,
+    );
+  }
+
+  if (!canWrite && presentations.length === 0) return null;
+  const grouped = taskRelationGroupOrder
+    .map((group) => ({ group, items: presentations.filter((item) => item.group === group) }))
+    .filter(({ items }) => items.length > 0);
+  const relationBusy = busy || pendingRelationId !== null;
+
+  return <section className="details-section task-relations" aria-label="Task relations">
+    <div className="task-relations-header">
+      <h2><Link2 size={14} />Relations</h2>
+      {canWrite && task.projectId && <button className="button ghost" type="button" disabled={relationBusy} onClick={() => { setAdding((current) => !current); setRelationError(""); }}><Plus size={13} />Add relation</button>}
+    </div>
+    {!task.projectId && canWrite && <p className="inline-note">Add this Task to a Project before creating relations.</p>}
+    {grouped.map(({ group, items }) => <div className="task-relation-group" key={group}>
+      <h3>{group}</h3>
+      <div className="details-links">
+        {items.map((item) => <div className="task-relation-row" key={item.relation.id} aria-busy={pendingRelationId === item.relation.id}>
+          <TaskReference label={item.label} task={item.target} onOpen={onOpenTask} />
+          {canWrite && <div className="task-relation-actions">
+            <select aria-label={`Change relation to ${item.target.identifier}`} value={relativeRelationKind(item)} disabled={relationBusy} onChange={(event) => void updateRelation(item, event.target.value as RelativeRelationKind)}>
+              <option value="related">Related</option>
+              <option value="blocks">Blocks</option>
+              <option value="blocked_by">Blocked by</option>
+              <option value="duplicate_of">Duplicate of</option>
+              {relativeRelationKind(item) === "duplicates" && <option value="duplicates" disabled>Duplicate</option>}
+            </select>
+            <button className="icon-button" type="button" aria-label={`Remove relation to ${item.target.identifier}`} disabled={relationBusy} onClick={() => void removeRelation(item)}><X size={13} /></button>
+          </div>}
+        </div>)}
+      </div>
+    </div>)}
+    {adding && <div className="task-relation-composer">
+      <div>
+        <select aria-label="Relation type" value={kind} disabled={relationBusy} onChange={(event) => setKind(event.target.value as RelativeRelationKind)}>
+          <option value="related">Related</option>
+          <option value="blocks">Blocks</option>
+          <option value="blocked_by">Blocked by</option>
+          <option value="duplicate_of">Duplicate of</option>
+        </select>
+        <input aria-label="Search Tasks for relation" value={query} disabled={relationBusy} placeholder="Search by identifier or title…" onChange={(event) => searchCandidates(event.target.value)} />
+      </div>
+      <div className="task-relation-candidates" aria-busy={searching}>
+        {searching && <span>Searching…</span>}
+        {!searching && availableCandidates.length === 0 && <span>No editable project Tasks found.</span>}
+        {!searching && availableCandidates.map((candidate) => <button type="button" key={candidate.id} className={selectedTaskId === candidate.id ? "selected" : ""} onClick={() => setSelectedTaskId(candidate.id)}><span>{candidate.identifier}</span><b>{candidate.title}</b></button>)}
+      </div>
+      <div className="task-relation-composer-actions">
+        <button className="button ghost" type="button" disabled={relationBusy} onClick={() => setAdding(false)}>Cancel</button>
+        <button className="button secondary" type="button" disabled={relationBusy || !selectedTaskId} onClick={() => void createRelation()}>{pendingRelationId === "new" ? "Adding…" : kind === "duplicate_of" ? "Mark duplicate" : "Add relation"}</button>
+      </div>
+    </div>}
+    {relationError && <p className="task-relation-error" role="alert">{relationError}</p>}
+  </section>;
+}
+
+function relativeRelationSemantic(kind: Exclude<RelativeRelationKind, "duplicates">) {
+  if (kind === "blocked_by") return { type: "blocks" as const, direction: "incoming" as const };
+  return {
+    type: kind,
+    direction: "outgoing" as const,
+  };
+}
+
+function relativeRelationKind(item: TaskRelationPresentation): RelativeRelationKind {
+  if (item.relation.type === "related") return "related";
+  if (item.relation.type === "duplicate_of") {
+    return item.direction === "outgoing" ? "duplicate_of" : "duplicates";
+  }
+  return item.direction === "outgoing" ? "blocks" : "blocked_by";
 }
 
 function useTaskExternalSource(task: TaskRecord) {
@@ -4279,7 +4540,6 @@ function sortTasks(tasks: TaskRecord[], display?: ViewDisplay) {
     return comparison * direction || a.rank - b.rank;
   });
 }
-function relationLabel(type: "blocks" | "related" | "duplicate_of", direction: "in" | "out") { if (type === "blocks") return direction === "out" ? "Blocks" : "Blocked by"; if (type === "duplicate_of") return direction === "out" ? "Duplicate of" : "Duplicated by"; return "Related"; }
 function displayLabel(value: string) { return value === "none" ? "No grouping" : `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`; }
 function taskCountForView(id: string, data: AppSnapshot, statusMap: Map<string, WorkflowStatusRecord>) { if (id === "archived") return data.tasks.filter((task) => task.archivedAt).length; if (id === "backlog") return data.tasks.filter((task) => !task.archivedAt && statusMap.get(task.statusId)?.category === "backlog").length; if (id === "active") return data.tasks.filter((task) => !task.archivedAt && ["unstarted", "started"].includes(statusMap.get(task.statusId)?.category ?? "")).length; return data.tasks.filter((task) => !task.archivedAt).length; }
 function completion(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const statusMap = new Map(statuses.map((status) => [status.id, status])); const eligible = tasks.filter((task) => statusMap.get(task.statusId)?.category !== "canceled"); if (!eligible.length) return 0; return Math.round((eligible.filter((task) => statusMap.get(task.statusId)?.category === "completed").length / eligible.length) * 100); }

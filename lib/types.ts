@@ -118,9 +118,13 @@ export type TaskLabelAssignment = {
 };
 
 export type TaskRelationRecord = {
+  id: string;
   sourceTaskId: string;
   targetTaskId: string;
   type: "blocks" | "related" | "duplicate_of";
+  version: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type TaskDetailRecord = {

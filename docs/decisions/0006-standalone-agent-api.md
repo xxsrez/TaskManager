@@ -12,6 +12,11 @@ scripts, но основной Codex/ChatGPT flow теперь использу�
 thread queries/commands; comment bodies не добавляются в Task collections или
 detail projection.
 
+Дополнение 2026-08-18: relation surface расширен отдельными versioned
+create/update/delete commands. Они используют canonical Task refs, stable
+relation ref, create-idempotency и требуют Editor+ на обеих Project Tasks;
+`duplicate_of` также требует Task version и атомарно меняет status.
+
 ## Контекст
 
 Web UI использует Sites-authenticated JSON routes и полный
@@ -53,8 +58,10 @@ mutations/status transitions. Administration и другие управленч�
 - UI и API разделяют доменные инварианты, но имеют разные query projections.
 - Compact/detail boundary уменьшает token cost и privacy blast radius.
 - Credential table и migration входят в Sites D1; secret не восстанавливается.
-- Первый slice не редактирует labels/hierarchy/relations, не имеет bulk commands
-  и server-side POST idempotency. Их нельзя изображать существующими в OpenAPI.
+- Первый slice по-прежнему не редактирует labels/hierarchy и не имеет bulk
+  commands либо idempotency у `POST /tasks`. Ограничение relations заменено
+  последующим дополнением выше; OpenAPI показывает только фактически
+  реализованные relation endpoints.
 - Comment create имеет собственный idempotency key и отдельную optimistic
   version для edit/delete/resolve; это не меняет отсутствие idempotency record у
   `POST /tasks`.

@@ -54,7 +54,8 @@ task commands. UI snapshot и административные capabilities дл
 8. Personal `tm_pat_` остаётся переходным способом для scripts, local smoke и
    REST clients. Он не является основным onboarding flow connector.
 9. MCP exposes отдельные tools: workspace, list/get Projects, list/get
-   Releases, list/filter/get Tasks, imported context, create/update Task.
+   Releases, list/filter/get Tasks, imported context, create/update Task,
+   versioned create/update/delete Task relation.
    Collections compact и paginated; детали и большой archive загружаются
    только после выбора.
 10. Распространение выполняется через общий Git repository `Srez Marketplace`.

@@ -24,6 +24,11 @@ import {
 import { NotFoundError, PermissionError, ValidationError } from "./domain";
 import { createTask, updateTask } from "./repository";
 import {
+  createTaskRelation,
+  deleteTaskRelation,
+  updateTaskRelation,
+} from "./task-relations";
+import {
   createComment,
   deleteComment,
   editComment,
@@ -666,6 +671,73 @@ export async function updateAgentTask(
   return getAgentTaskDetail(currentUser, String(task.public_id));
 }
 
+export async function createAgentTaskRelation(
+  currentUser: UserRecord,
+  taskReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, [
+    "targetTaskRef",
+    "type",
+    "direction",
+    "idempotencyKey",
+    "taskVersion",
+  ]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const target = await loadAccessibleTaskRow(
+    currentUser.id,
+    String(input.targetTaskRef ?? ""),
+  );
+  const relation = await createTaskRelation(currentUser, String(task.id), {
+    targetTaskId: String(target.id),
+    type: input.type,
+    direction: input.direction,
+    idempotencyKey: input.idempotencyKey,
+    ...(Object.hasOwn(input, "taskVersion")
+      ? { taskVersion: input.taskVersion }
+      : {}),
+  });
+  return relationMutationResult(currentUser, String(task.public_id), relation.id);
+}
+
+export async function updateAgentTaskRelation(
+  currentUser: UserRecord,
+  taskReference: string,
+  relationReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["version", "type", "direction", "taskVersion"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const relation = await updateTaskRelation(
+    currentUser,
+    String(task.id),
+    relationReference,
+    input,
+  );
+  return relationMutationResult(currentUser, String(task.public_id), relation.id);
+}
+
+export async function deleteAgentTaskRelation(
+  currentUser: UserRecord,
+  taskReference: string,
+  relationReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["version"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const result = await deleteTaskRelation(
+    currentUser,
+    String(task.id),
+    relationReference,
+    input,
+  );
+  return {
+    deleted: true,
+    relationRef: result.relation.id,
+    task: await getAgentTaskDetail(currentUser, String(task.public_id)),
+  };
+}
+
 export async function listAgentTaskAttachments(
   currentUser: UserRecord,
   taskReference: string,
@@ -1008,10 +1080,15 @@ async function loadRelations(currentUser: UserRecord, taskId: string) {
   const rows = await getD1()
     .prepare(
       `${taskScopeCte(false)}
-       SELECT other.*, tr.type AS relation_type,
+       SELECT other.*, tr.id AS relation_id, tr.type AS relation_type,
+         tr.version AS relation_version, tr.created_at AS relation_created_at,
+         tr.updated_at AS relation_updated_at,
+         source_status.category AS relation_source_status_category,
          CASE WHEN tr.source_task_id = ? THEN 'outgoing' ELSE 'incoming' END
            AS relation_direction
        FROM task_relations tr
+       JOIN tasks source_task ON source_task.id = tr.source_task_id
+       JOIN workflow_statuses source_status ON source_status.id = source_task.status_id
        JOIN visible_tasks other ON other.id = CASE
          WHEN tr.source_task_id = ? THEN tr.target_task_id
          ELSE tr.source_task_id END
@@ -1028,11 +1105,51 @@ async function loadRelations(currentUser: UserRecord, taskId: string) {
     .all<DbRow>();
   return Promise.all(
     rows.results.map(async (row) => ({
+      ref: String(row.relation_id),
       type: String(row.relation_type),
       direction: String(row.relation_direction),
+      presentation: relationPresentation(
+        String(row.relation_type),
+        String(row.relation_direction),
+        String(row.relation_source_status_category),
+      ),
+      version: Number(row.relation_version),
+      createdAt: String(row.relation_created_at),
+      updatedAt: String(row.relation_updated_at),
       task: await mapCompactTaskLink(row),
     })),
   );
+}
+
+async function relationMutationResult(
+  currentUser: UserRecord,
+  taskReference: string,
+  relationReference: string,
+) {
+  const task = await getAgentTaskDetail(currentUser, taskReference);
+  const relation = task.relations.find(
+    (item) => item.ref === relationReference,
+  );
+  if (!relation) throw new NotFoundError("Relation not found");
+  return { relation, task };
+}
+
+function relationPresentation(
+  type: string,
+  direction: string,
+  sourceStatusCategory: string,
+) {
+  if (type === "related") return "related";
+  if (type === "duplicate_of") {
+    return direction === "outgoing" ? "duplicate_of" : "duplicates";
+  }
+  if (
+    type === "blocks" &&
+    (sourceStatusCategory === "completed" || sourceStatusCategory === "canceled")
+  ) {
+    return "related";
+  }
+  return direction === "outgoing" ? "blocks" : "blocked_by";
 }
 
 async function loadProvenanceSummary(taskId: string, ownerUserId: string) {

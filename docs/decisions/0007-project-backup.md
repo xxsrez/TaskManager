@@ -15,6 +15,11 @@ Project bundle читает только objects Tasks этого Project. Resto
 R2 staging/new keys + D1 exact-replace saga и удаляет старые objects только
 после успешного cutover.
 
+Дополнение 2026-08-18: native writable relations повышают Project bundle
+`schemaVersion` до `5`; immutable relation ID, idempotency key, version и
+updated timestamp входят в точный subtree. Schema `2`–`4` остаются
+импортируемыми через deterministic metadata upgrade.
+
 ## Контекст
 
 Владельцу Project нужна доступная без application-admin роли страховка от

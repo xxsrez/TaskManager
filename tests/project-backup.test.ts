@@ -26,7 +26,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 4);
+  assert.equal(backup.schemaVersion, 5);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -61,6 +61,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
     Object.entries(current.tables).filter(([name]) => name !== "attachments"),
   );
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
+  tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => name !== "attachments"),
   );
@@ -97,6 +98,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
   const tables = {
     ...current.tables,
     workflow_statuses: current.tables.workflow_statuses.map(legacyWorkflowRow),
+    task_relations: current.tables.task_relations.map(legacyRelationRow),
   };
   const body = { ...current, schemaVersion: 3, tables };
   const unsigned = Object.fromEntries(
@@ -108,6 +110,32 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
   assert.equal(validated.schemaVersion, 3);
   assert.equal(validated.tables.workflow_statuses[0]?.version, 1);
   assert.equal(validated.tables.workflow_statuses[0]?.archived_at, null);
+});
+
+test("schema 4 project bundles upgrade legacy relation identity and concurrency metadata", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const tables = {
+    ...current.tables,
+    task_relations: current.tables.task_relations.map(legacyRelationRow),
+  };
+  const unsigned = {
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    schemaVersion: 4,
+    tables,
+  };
+  const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
+
+  const validated = await validateProjectBackup(legacy);
+  assert.equal(validated.schemaVersion, 4);
+  assert.equal(validated.tables.task_relations[0]?.id, "relation_legacy:task-1:task-2:blocks");
+  assert.equal(validated.tables.task_relations[0]?.version, 1);
+  assert.equal(validated.tables.task_relations[0]?.updated_at, now);
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -219,7 +247,11 @@ function validProjectTables(): ProjectBackupTables {
     comment_reactions: [{ comment_id: "comment-1", user_id: "user-owner", emoji: "👍", created_at: now }],
     labels: [{ id: "label-1", owner_user_id: "user-owner", name: "Backup", color: "#6b7280", created_at: now }],
     task_labels: [{ task_id: "task-2", label_id: "label-1" }],
-    task_relations: [{ source_task_id: "task-1", target_task_id: "task-2", type: "blocks", creator_user_id: "user-owner", created_at: now }],
+    task_relations: [{
+      id: "relation-1", source_task_id: "task-1", target_task_id: "task-2",
+      type: "blocks", creator_user_id: "user-owner", idempotency_key: "backup-relation-1",
+      version: 1, created_at: now, updated_at: now,
+    }],
     saved_views: [{
       id: "view-1", public_id: "55555555-5555-4555-8555-555555555555",
       owner_user_id: "user-owner", name: "Project view", scope_project_id: "project-1",
@@ -251,6 +283,14 @@ function legacyWorkflowRow(row: Record<string, string | number | null>) {
   );
 }
 
+function legacyRelationRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) =>
+      !["id", "idempotency_key", "version", "updated_at"].includes(key),
+    ),
+  );
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -260,7 +300,7 @@ function migratedDatabase() {
     "0008_loose_the_fallen.sql", "0009_talented_otto_octavius.sql",
     "0010_crazy_puma.sql", "0011_conscious_paibok.sql", "0012_empty_saracen.sql",
     "0013_rapid_gravity.sql", "0014_puzzling_tana_nile.sql", "0015_attachments_sync.sql",
-    "0016_abandoned_stellaris.sql",
+    "0016_abandoned_stellaris.sql", "0017_complex_epoch.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

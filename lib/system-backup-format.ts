@@ -30,7 +30,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4;
+  schemaVersion: 2 | 3 | 4 | 5;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -42,7 +42,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 4 as const;
+export const systemBackupSchemaVersion = 5 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 1000;
 const maxStagedRowBytes = 1_500_000;
@@ -108,7 +108,9 @@ export const tableDefinitions = [
   definition("comment_reactions", ["comment_id", "user_id", "emoji", "created_at"], "comment_id, emoji, user_id"),
   definition("labels", ["id", "owner_user_id", "name", "color", "created_at"], "id"),
   definition("task_labels", ["task_id", "label_id"], "task_id, label_id"),
-  definition("task_relations", ["source_task_id", "target_task_id", "type", "creator_user_id", "created_at"], "source_task_id, target_task_id, type"),
+  definition("task_relations", ["id", "source_task_id", "target_task_id", "type", "creator_user_id", "idempotency_key", "version", "created_at", "updated_at"], "id", {
+    version: { number: true, integer: true },
+  }),
   definition("saved_views", ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "version", "created_at", "updated_at"], "id", {
     scope_project_id: { nullable: true }, version: { number: true, integer: true },
   }),
@@ -128,6 +130,12 @@ const legacyWorkflowStatusDefinition = definition(
     position: { number: true, integer: true },
     is_default: { number: true, integer: true },
   },
+);
+
+const legacyTaskRelationDefinition = definition(
+  "task_relations",
+  ["source_task_id", "target_task_id", "type", "creator_user_id", "created_at"],
+  "source_task_id, target_task_id, type",
 );
 
 export const liveTableDeleteOrder: BackupTableName[] = [
@@ -201,7 +209,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const schemaVersion = payload.schemaVersion;
   const withoutAttachments = schemaVersion === 2;
   const legacyWorkflow = schemaVersion === 2 || schemaVersion === 3;
-  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === systemBackupSchemaVersion;
+  const legacyRelations = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4;
+  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
     withoutAttachments
@@ -229,7 +238,9 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
     if (totalRows > maxSystemBackupRows) throw new ValidationError(`Backup contains more than ${maxSystemBackupRows} rows`);
     const sourceDefinition = legacyWorkflow && table.name === "workflow_statuses"
       ? legacyWorkflowStatusDefinition
-      : table;
+      : legacyRelations && table.name === "task_relations"
+        ? legacyTaskRelationDefinition
+        : table;
     sourceNormalizedTables[table.name] = sourceRows.map((row, index) =>
       normalizeBackupRow(sourceDefinition, row, index),
     );
@@ -240,9 +251,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   for (const name of sourceTableNames) {
     if (claimedCounts[name] !== sourceCounts[name]) throw new ValidationError(`Count mismatch for ${name}`);
   }
-  const tables = legacyWorkflow
+  let tables = legacyWorkflow
     ? upgradeLegacySystemWorkflow(sourceNormalizedTables)
     : sourceNormalizedTables;
+  if (legacyRelations) tables = upgradeLegacySystemRelations(tables);
   const counts = countTables(tables);
   validateRelationships(tables);
   const objects = withoutAttachments
@@ -251,7 +263,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5,
     ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
@@ -278,7 +290,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5,
     siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
@@ -580,18 +592,38 @@ function validateRelationships(tables: BackupTables) {
     if (task.owner_user_id !== label.owner_user_id) throw new ValidationError("Task and label owners must match");
   }
 
+  uniqueIndex(tables.task_relations, ["id"], "task relation IDs");
   uniqueIndex(tables.task_relations, ["source_task_id", "target_task_id", "type"], "task relations");
+  uniqueIndex(tables.task_relations, ["creator_user_id", "idempotency_key"], "task relation idempotency keys");
   const relatedPairs = new Set<string>();
+  const blockPairs = new Set<string>();
+  const duplicateSources = new Set<string>();
   for (const relation of tables.task_relations) {
     const source = requireReference(tasks, relation.source_task_id, "Relation source");
     const target = requireReference(tasks, relation.target_task_id, "Relation target");
     requireReference(users, relation.creator_user_id, "Relation creator");
-    if (source.id === target.id || source.owner_user_id !== target.owner_user_id) throw new ValidationError("Relations require different tasks in one owner scope");
+    nonEmpty(relation.id, "Relation ID");
+    nonEmpty(relation.idempotency_key, "Relation idempotency key");
+    positiveVersion(relation.version, "Relation version");
+    if (source.id === target.id || source.project_id === null || target.project_id === null) {
+      throw new ValidationError("Relations require different project tasks");
+    }
     oneOf(relation.type, ["blocks", "related", "duplicate_of"], "Relation type");
     if (relation.type === "related") {
       const key = [source.id, target.id].sort().join("\u0000");
       if (relatedPairs.has(key)) throw new ValidationError("Duplicate symmetric related relation");
+      if (String(source.id) > String(target.id)) throw new ValidationError("Related task pairs must use canonical order");
       relatedPairs.add(key);
+    } else if (relation.type === "blocks") {
+      const key = [source.id, target.id].sort().join("\u0000");
+      if (blockPairs.has(key)) throw new ValidationError("Duplicate logical block relation");
+      blockPairs.add(key);
+    } else {
+      const sourceId = String(source.id);
+      if (duplicateSources.has(sourceId)) {
+        throw new ValidationError("A duplicate task has more than one canonical target");
+      }
+      duplicateSources.add(sourceId);
     }
   }
 
@@ -686,6 +718,27 @@ function upgradeLegacySystemWorkflow(source: BackupTables): BackupTables {
     }
   }
   return { ...source, workflow_statuses: statuses };
+}
+
+function upgradeLegacySystemRelations(source: BackupTables): BackupTables {
+  return {
+    ...source,
+    task_relations: source.task_relations.map((relation): BackupRow => ({
+      id: legacyRelationId(relation),
+      source_task_id: relation.source_task_id,
+      target_task_id: relation.target_task_id,
+      type: relation.type,
+      creator_user_id: relation.creator_user_id,
+      idempotency_key: `legacy:${relation.source_task_id}:${relation.target_task_id}:${relation.type}`,
+      version: 1,
+      created_at: relation.created_at,
+      updated_at: relation.created_at,
+    })),
+  };
+}
+
+function legacyRelationId(relation: BackupRow) {
+  return `relation_legacy:${relation.source_task_id}:${relation.target_task_id}:${relation.type}`;
 }
 
 function normalizeBackupRow(table: TableDefinition, value: unknown, index: number): BackupRow {

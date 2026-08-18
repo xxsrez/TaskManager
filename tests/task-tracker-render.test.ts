@@ -25,6 +25,7 @@ import {
   taskDraftSyncMode,
   taskDraftValueChanged,
   taskMatchesSearch,
+  taskRelationPresentations,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
   TaskTracker,
@@ -95,6 +96,62 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+test("task relations are grouped by relative direction and resolved blockers move to Related", () => {
+  const focused = { ...snapshot.tasks[0]!, projectId: "project-1" };
+  const peers = [
+    ["blocker", "TM-2", "todo"],
+    ["resolved", "TM-3", "done"],
+    ["blocked", "TM-4", "todo"],
+    ["related", "TM-5", "todo"],
+    ["canonical", "TM-6", "todo"],
+    ["duplicate", "TM-7", "todo"],
+  ].map(([id, identifier, statusId], index) => ({
+    ...focused,
+    id: `task-${id}`,
+    publicId: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${index}`,
+    identifier,
+    sequenceNumber: index + 2,
+    title: identifier,
+    statusId,
+  }));
+  const relation = (id: string, sourceTaskId: string, targetTaskId: string, type: "blocks" | "related" | "duplicate_of") => ({
+    id,
+    sourceTaskId,
+    targetTaskId,
+    type,
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const presentations = taskRelationPresentations(focused, {
+    tasks: [focused, ...peers],
+    statuses: [
+      ...snapshot.statuses,
+      { ...snapshot.statuses[0]!, id: "done", name: "Done", category: "completed" },
+    ],
+    relations: [
+      relation("r1", "task-blocker", focused.id, "blocks"),
+      relation("r2", "task-resolved", focused.id, "blocks"),
+      relation("r3", focused.id, "task-blocked", "blocks"),
+      relation("r4", focused.id, "task-related", "related"),
+      relation("r5", focused.id, "task-canonical", "duplicate_of"),
+      relation("r6", "task-duplicate", focused.id, "duplicate_of"),
+    ],
+  });
+
+  assert.deepEqual(
+    presentations.map(({ group, label, target }) => [group, label, target.identifier]),
+    [
+      ["Blocked by", "Blocked by", "TM-2"],
+      ["Blocking", "Blocks", "TM-4"],
+      ["Related", "Resolved blocker", "TM-3"],
+      ["Related", "Related", "TM-5"],
+      ["Duplicate of", "Duplicate of", "TM-6"],
+      ["Duplicates", "Duplicate", "TM-7"],
+    ],
+  );
+});
 
 test("bulk archive action restores an entirely archived selection", () => {
   assert.deepEqual(
@@ -411,7 +468,7 @@ test("a full deferred snapshot drops revoked tasks but retains tasks created aft
       tasks: [revokedTask, localTask],
       labels: [{ id: "label-revoked", ownerUserId: "user-1", name: "Old", color: "#777777" }],
       taskLabels: [{ taskId: revokedTask.id, labelId: "label-revoked" }],
-      relations: [{ sourceTaskId: revokedTask.id, targetTaskId: localTask.id, type: "related" }],
+      relations: [{ id: "relation-revoked", sourceTaskId: revokedTask.id, targetTaskId: localTask.id, type: "related", version: 1, createdAt: now, updatedAt: now }],
     },
     { ...snapshot, tasks: [] },
     { taskIdsAtRequest: new Set([revokedTask.id]) },
@@ -526,7 +583,7 @@ test("task detail reconciliation replaces synced labels and relations without ke
       relatedTasks: [staleRelated],
       labels: [{ id: "label-stale", ownerUserId: "user-1", name: "Stale", color: "#111111" }],
       taskLabels: [{ taskId: focusedTask.id, labelId: "label-stale" }],
-      relations: [{ sourceTaskId: focusedTask.id, targetTaskId: staleRelated.id, type: "related" }],
+      relations: [{ id: "relation-stale", sourceTaskId: focusedTask.id, targetTaskId: staleRelated.id, type: "related", version: 1, createdAt: now, updatedAt: now }],
     },
     nextTask,
     {

@@ -409,6 +409,19 @@ List повторяет плотную grouped-list модель Linear.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
 - Timestamps muted и доступны в нижней metadata section.
+- Relations располагаются отдельной секцией с группами `Blocked by`,
+  `Blocking`, `Related`, `Duplicate of` и `Duplicates`. Terminal blocker
+  остаётся видимым под `Related` как resolved blocker; после reopen возвращается
+  в `Blocked by`.
+- Editor+ открывает `Add relation`, выбирает relative type и ищет Task по
+  identifier/title. Результаты содержат только доступные Project Tasks, для
+  которых есть write access; selected target, поиск, сохранение и ошибка имеют
+  явные состояния. Existing relation можно изменить или удалить по её version.
+  `Duplicate of` формулируется как отдельное destructive domain outcome, а не
+  как обычная cosmetic link.
+- Viewer видит те же группы и deep links без add/edit/remove controls. На touch
+  target actions имеют не менее 40 px, composer перестраивается в одну колонку,
+  а portrait/landscape details не создаёт horizontal overflow.
 - Ниже properties, hierarchy и relations располагается lazy секция
   `Attachments`: count, Add files для Editor+, picker/drop/paste, progress,
   retry/cancel, compact file cards и recoverable remove/restore. Viewer видит
@@ -724,6 +737,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
 | Issue composer/details | Modal composer, details, native attachments и Activity | Берём | Без task templates, comment attachments и mentions; Task-file upload после create с честным partial result |
+| Issue relations | Grouped blocking/related/duplicate links и explicit add/edit/remove | Берём ядро | Без auto-related из description/comments в первом writable slice |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
 | Themes | System/light/dark | Берём | Собственные tokens и branding |
@@ -752,7 +766,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 ## 18. Официальные референсы Linear
 
-Проверены 2026-08-17; перед реализацией крупных surfaces требуется повторная
+Проверены 2026-08-18; перед реализацией крупных surfaces требуется повторная
 сверка, потому что интерфейс Linear развивается.
 
 - [Board layout](https://linear.app/docs/board-layout)
@@ -766,6 +780,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 - [Comment on issues](https://linear.app/docs/comment-on-issues)
 - [Upload a file to Linear](https://linear.app/developers/how-to-upload-a-file-to-linear)
 - [Edit issues](https://linear.app/docs/editing-issues)
+- [Issue relations](https://linear.app/docs/issue-relations)
+- [Configure workflows](https://linear.app/docs/configuring-workflows)
 - [Filters](https://linear.app/docs/filters)
 - [Custom Views](https://linear.app/docs/custom-views)
 - [Search](https://linear.app/docs/search)

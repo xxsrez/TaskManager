@@ -21,6 +21,11 @@ staging, затем материализует новые environment-scoped key
 cutover и только после success удаляет прежние/staged objects. Ошибка до D1
 commit компенсирует новые objects и не меняет live state.
 
+Дополнение 2026-08-18: native writable relations повышают logical
+`schemaVersion` до `5`: relation row переносит immutable ID, idempotency key,
+version и updated timestamp. Schema `2`–`4` остаются импортируемыми; validator
+детерминированно синтезирует metadata legacy relations до current restore.
+
 ## Контекст
 
 Task Manager хранит структурированное product state в Sites D1: Users,

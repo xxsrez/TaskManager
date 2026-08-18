@@ -713,15 +713,19 @@ export async function importLinearWorkspace(
       db
         .prepare(
           `INSERT INTO task_relations
-            (source_task_id, target_task_id, type, creator_user_id, created_at)
-           VALUES (?, ?, ?, ?, ?)
+            (id, source_task_id, target_task_id, type, creator_user_id,
+             idempotency_key, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
            ON CONFLICT(source_task_id, target_task_id, type) DO NOTHING`,
         )
         .bind(
+          `relation_linear:${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}`,
           relation.sourceTaskId,
           relation.targetTaskId,
           relation.type,
           currentUser.id,
+          `linear:${relation.sourceTaskId}:${relation.targetTaskId}:${relation.type}`,
+          plan.exportedAt,
           plan.exportedAt,
         ),
     ),

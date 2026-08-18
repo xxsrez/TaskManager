@@ -213,6 +213,22 @@ Assignee обязан быть владельцем Task либо пользов
 - `related` симметрично.
 - `duplicate_of` направлено на каноническую задачу; self-relations и дубликаты
   одной связи запрещены.
+- Relation создаётся только между двумя Tasks, каждая из которых принадлежит
+  Project; Project может различаться. Автор mutation обязан иметь Editor или
+  выше на обеих Tasks, а сама связь не распространяет ACL между Projects.
+- Каждая relation имеет immutable identity, idempotency key создания и
+  независимую optimistic `version`. Изменение direction/type и удаление требуют
+  актуальную relation version; sync инвалидирует lazy details обеих сторон.
+- Для одного source допускается не более одного `duplicate_of`. Создание или
+  перевод в `duplicate_of` атомарно назначает source зарезервированный статус
+  `Duplicate`. Изменение/удаление связи не пытается угадать и восстановить
+  прежний status.
+- Завершённый или отменённый blocker больше не показывается в активной группе
+  `Blocked by`, а остаётся видимым как resolved relation в `Related`; повторное
+  открытие blocker возвращает активное представление.
+- Автоматическое распознавание Task references в description/comments и
+  создание `related` не входят в первый native-write slice: связь создаётся
+  только явным действием пользователя или Agent command.
 - Автоматическое закрытие parent по subtasks не входит в MVP.
 
 ### 5.5 Native comments
@@ -345,6 +361,8 @@ Assignee обязан быть владельцем Task либо пользов
   content-addressed JSON container; live R2 keys и thumbnails не входят.
   System limit — 10 MB, Project — 25 MB. Schema `2` без Attachments остаётся
   импортируемой.
+- Schema `5` включает writable-relation identity/idempotency/version metadata;
+  legacy schema `2`–`4` импортируются через deterministic relation upgrade.
 - Restore materializes новые environment-scoped R2 keys до атомарного D1
   cutover, удаляет старые objects только после success и компенсирует новые при
   failure. Cross-Site Project restore по-прежнему запрещён.
@@ -646,6 +664,14 @@ completed dates и archived state.
     только metadata/object counts, bytes, staging/orphan/states; per-Task,
     current-owner и Project quotas
     отклоняют upload без раскрытия чужого usage.
+35. В Task details найти вторую Project Task, создать `blocks`, `related` и
+    `duplicate_of`, изменить direction/type и удалить relation. Проверить
+    группировку `Blocked by`/`Blocking`/`Related`/`Duplicate of`, перенос
+    terminal blocker в `Related`, атомарный статус `Duplicate`, Viewer без
+    mutation controls, cross-Project Editor access на обеих сторонах, stale
+    relation/task version и lazy sync invalidation обеих Tasks. Повторить
+    create/update/delete через Agent REST и MCP canonical refs; retry create с
+    тем же idempotency key не создаёт вторую row.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -678,3 +704,6 @@ completed dates и archived state.
 17. Native attachments для Agent REST/MCP: progressive metadata, private binary
     delivery, OpenAI file input, versioned delete и transport/security tests.
 18. Attachment-aware system/project backup и restore.
+19. Native Task relations: application UI/API, versioned Agent REST/MCP,
+    idempotency, ACL обеих сторон, atomic Duplicate transition, lazy sync и
+    backup/import compatibility.

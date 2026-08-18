@@ -18,8 +18,10 @@ import {
   assertAgentTaskAttachmentWriteAccess,
   createAgentTaskAttachment,
   createAgentTaskComment,
+  createAgentTaskRelation,
   deleteAgentTaskAttachment,
   deleteAgentTaskComment,
+  deleteAgentTaskRelation,
   editAgentTaskComment,
   createAgentTask,
   getAgentProjectDetail,
@@ -37,6 +39,7 @@ import {
   resolveAgentTaskThread,
   setAgentCommentReaction,
   updateAgentTask,
+  updateAgentTaskRelation,
 } from "./agent-api-repository";
 import { fetchMcpFileInput } from "./agent-file-input";
 import { attachmentLimits } from "./attachments";
@@ -276,6 +279,75 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, ...input }) =>
       writeToolCall(context, () => updateAgentTask(context.user, taskRef, defined(input))),
+  );
+
+  server.registerTool(
+    "create_task_relation",
+    {
+      title: "Create task relation",
+      description:
+        "Creates one native relation after resolving both tasks. Use outgoing blocks for taskRef blocks targetTaskRef, incoming blocks for taskRef is blocked by targetTaskRef, related for a symmetric relation, and outgoing duplicate_of to mark taskRef as a duplicate and move it to the reserved Duplicate status. Reuse idempotencyKey only when retrying the identical command.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical source/context task ref."),
+        targetTaskRef: reference("Canonical peer task ref."),
+        type: z.enum(["blocks", "related", "duplicate_of"]),
+        direction: z.enum(["outgoing", "incoming"]),
+        idempotencyKey: z.string().min(1).max(200),
+        taskVersion: z.number().int().positive().optional().describe(
+          "Current taskRef version; required when type is duplicate_of.",
+        ),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, ...input }) => writeToolCall(context, () =>
+      createAgentTaskRelation(context.user, taskRef, defined(input))),
+  );
+
+  server.registerTool(
+    "update_task_relation",
+    {
+      title: "Update task relation",
+      description:
+        "Changes the type or direction of one relation using its current relation version. Read get_task again after an unknown outcome before retrying. Changing away from duplicate_of does not guess or restore a previous task status.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical context task ref."),
+        relationRef: reference("Canonical relation ref from get_task."),
+        version: z.number().int().positive(),
+        type: z.enum(["blocks", "related", "duplicate_of"]),
+        direction: z.enum(["outgoing", "incoming"]),
+        taskVersion: z.number().int().positive().optional().describe(
+          "Current taskRef version; required when changing to duplicate_of.",
+        ),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, relationRef, ...input }) => writeToolCall(context, () =>
+      updateAgentTaskRelation(
+        context.user,
+        taskRef,
+        relationRef,
+        defined(input),
+      )),
+  );
+
+  server.registerTool(
+    "delete_task_relation",
+    {
+      title: "Delete task relation",
+      description:
+        "Removes one native relation using its current relation version. Removing duplicate_of deliberately leaves the task status unchanged.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical context task ref."),
+        relationRef: reference("Canonical relation ref from get_task."),
+        version: z.number().int().positive(),
+      }),
+      annotations: destructiveWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, relationRef, version }) => writeToolCall(context, () =>
+      deleteAgentTaskRelation(context.user, taskRef, relationRef, { version })),
   );
 
   server.registerTool(

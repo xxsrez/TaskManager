@@ -213,6 +213,50 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/tasks/{ref}/relations": {
+      post: {
+        operationId: "createTaskRelation",
+        summary: "Create a versioned native relation between two editable project tasks",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/TaskRelationCreate"),
+        responses: {
+          "200": envelopeResponse("Created relation and updated task detail", {
+            $ref: "#/components/schemas/TaskRelationMutation",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/relations/{relationRef}": {
+      patch: {
+        operationId: "updateTaskRelation",
+        summary: "Change a relation type or direction using its current version",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter(), relationReferenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/TaskRelationUpdate"),
+        responses: {
+          "200": envelopeResponse("Updated relation and task detail", {
+            $ref: "#/components/schemas/TaskRelationMutation",
+          }),
+          ...errorResponses,
+        },
+      },
+      delete: {
+        operationId: "deleteTaskRelation",
+        summary: "Remove a relation without guessing a previous duplicate status",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter(), relationReferenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/TaskRelationDelete"),
+        responses: {
+          "200": envelopeResponse("Removed relation and updated task detail", {
+            type: "object",
+            additionalProperties: true,
+          }),
+          ...errorResponses,
+        },
+      },
+    },
     "/tasks/{ref}/attachments": {
       get: {
         operationId: "listTaskAttachments",
@@ -564,7 +608,10 @@ export const agentApiOpenApi = {
           lifecycle: { type: "object" },
           parent: { type: ["object", "null"] },
           subtasks: { type: "array", items: { type: "object" } },
-          relations: { type: "array", items: { type: "object" } },
+          relations: {
+            type: "array",
+            items: { $ref: "#/components/schemas/TaskRelation" },
+          },
           provenance: { type: ["object", "null"] },
           availableStatuses: {
             type: "array",
@@ -670,6 +717,70 @@ export const agentApiOpenApi = {
           rank: { type: "number" },
           archived: { type: "boolean" },
         },
+        additionalProperties: false,
+      },
+      TaskRelation: {
+        type: "object",
+        required: [
+          "ref",
+          "type",
+          "direction",
+          "presentation",
+          "version",
+          "createdAt",
+          "updatedAt",
+          "task",
+        ],
+        properties: {
+          ref: { type: "string" },
+          type: { enum: ["blocks", "related", "duplicate_of"] },
+          direction: { enum: ["outgoing", "incoming"] },
+          presentation: {
+            enum: ["blocks", "blocked_by", "related", "duplicate_of", "duplicates"],
+          },
+          version: { type: "integer", minimum: 1 },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+          task: { type: "object" },
+        },
+        additionalProperties: false,
+      },
+      TaskRelationMutation: {
+        type: "object",
+        required: ["relation", "task"],
+        properties: {
+          relation: { $ref: "#/components/schemas/TaskRelation" },
+          task: { $ref: "#/components/schemas/TaskDetail" },
+        },
+        additionalProperties: false,
+      },
+      TaskRelationCreate: {
+        type: "object",
+        required: ["targetTaskRef", "type", "direction", "idempotencyKey"],
+        properties: {
+          targetTaskRef: { type: "string", minLength: 1, maxLength: 200 },
+          type: { enum: ["blocks", "related", "duplicate_of"] },
+          direction: { enum: ["outgoing", "incoming"] },
+          idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+          taskVersion: { type: "integer", minimum: 1 },
+        },
+        additionalProperties: false,
+      },
+      TaskRelationUpdate: {
+        type: "object",
+        required: ["version", "type", "direction"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+          type: { enum: ["blocks", "related", "duplicate_of"] },
+          direction: { enum: ["outgoing", "incoming"] },
+          taskVersion: { type: "integer", minimum: 1 },
+        },
+        additionalProperties: false,
+      },
+      TaskRelationDelete: {
+        type: "object",
+        required: ["version"],
+        properties: { version: { type: "integer", minimum: 1 } },
         additionalProperties: false,
       },
       Attachment: {
@@ -811,6 +922,15 @@ function commentReferenceParameter() {
 function attachmentReferenceParameter() {
   return {
     name: "attachmentRef",
+    in: "path",
+    required: true,
+    schema: { type: "string" },
+  } as const;
+}
+
+function relationReferenceParameter() {
+  return {
+    name: "relationRef",
     in: "path",
     required: true,
     schema: { type: "string" },

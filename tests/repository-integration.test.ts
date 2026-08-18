@@ -393,14 +393,25 @@ test("task detail loads ACL-scoped labels, hierarchy, and relations outside the 
     database.prepare("UPDATE tasks SET parent_task_id = ? WHERE id = ?").bind(parent.id, focused.id),
     database.prepare("INSERT INTO labels (id, owner_user_id, name, color) VALUES (?, ?, ?, ?)").bind("label-detail-context", owner.id, "Detail label", "#123456"),
     database.prepare("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)").bind(focused.id, "label-detail-context"),
-    database.prepare("INSERT INTO task_relations (source_task_id, target_task_id, type, creator_user_id) VALUES (?, ?, ?, ?)").bind(focused.id, related.id, "related", owner.id),
+    database.prepare(`INSERT INTO task_relations
+      (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind("relation-detail-context", focused.id, related.id, "related", owner.id, "relation-detail-context"),
   ]);
 
   const detail = await getTaskDetail(owner, focused.id);
   assert.equal(detail.task.description, "Full focused body");
   assert.deepEqual(detail.labels.map((label) => label.name), ["Detail label"]);
   assert.deepEqual(detail.taskLabels, [{ taskId: focused.id, labelId: "label-detail-context" }]);
-  assert.deepEqual(detail.relations, [{ sourceTaskId: focused.id, targetTaskId: related.id, type: "related" }]);
+  assert.deepEqual(detail.relations, [{
+    id: "relation-detail-context",
+    sourceTaskId: focused.id,
+    targetTaskId: related.id,
+    type: "related",
+    version: 1,
+    createdAt: detail.relations[0]!.createdAt,
+    updatedAt: detail.relations[0]!.updatedAt,
+  }]);
   assert.deepEqual(
     new Set(detail.relatedTasks.map((task) => task.id)),
     new Set([parent.id, related.id]),

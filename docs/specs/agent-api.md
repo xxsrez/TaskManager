@@ -19,6 +19,8 @@ Task Manager предоставляет самостоятельный versioned
 - отдельно перечислять, загружать, скачивать и удалять private native Task
   attachments; raster ref можно затем вставить в description через обычный
   versioned `update_task`.
+- создавать, менять и удалять native Task relations по canonical Task refs и
+  stable relation ref.
 
 API не является обёрткой над `/api/bootstrap`: list queries не загружают и не
 возвращают описания всех задач. UI и внешний API используют одну D1-модель и
@@ -155,6 +157,9 @@ restore атомарно отзывает все authentication capabilities, ч
 | `POST /tasks` | `api:write` | Создать Task и вернуть `TaskDetail` |
 | `GET /tasks/{ref}` | `api:read` | Один `TaskDetail` |
 | `PATCH /tasks/{ref}` | `api:write` | Изменить Task с optimistic version |
+| `POST /tasks/{ref}/relations` | `api:write` | Создать relation идемпотентно |
+| `PATCH /tasks/{ref}/relations/{relationRef}` | `api:write` | Изменить type/direction с relation version |
+| `DELETE /tasks/{ref}/relations/{relationRef}` | `api:write` | Удалить relation с relation version |
 | `GET /tasks/{ref}/attachments` | `api:read` | Paginated native Attachment metadata |
 | `POST /tasks/{ref}/attachments` | `api:write` | Bounded binary upload с idempotency key |
 | `GET /tasks/{ref}/attachments/{attachmentRef}` | `api:read` | Metadata и private content links |
@@ -189,6 +194,8 @@ protocol revisions).
 | `get_task_external_context` | `api:read` | Отдельный paginated imported archive |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
+| `create_task_relation` | `api:write` | Создать native relation с idempotency key |
+| `update_task_relation`, `delete_task_relation` | `api:write` | Изменить или удалить relation по current version |
 | `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |
 | `upload_task_attachment` | `api:write` | Принять native OpenAI file input и идемпотентно сохранить binary |
 | `delete_task_attachment` | `api:write` | Recoverable delete с optimistic version |
@@ -314,9 +321,20 @@ Repository атомарно обновляет `startedAt`, `completedAt` и `ca
 `409 version_conflict`; Viewer — `403 forbidden`. Response содержит новый
 `TaskDetail`, а не workspace snapshot.
 
-Hierarchy, relations, labels, assignee другого User и bulk mutation пока
-read-only через API. Task create ещё не имеет server-side idempotency record,
+Hierarchy, labels, assignee другого User и bulk mutation пока read-only через
+API. Relations имеют отдельные create/update/delete commands: обе Tasks должны
+принадлежать Project, caller должен иметь Editor+ на обеих, `related`
+канонизируется, `blocks` хранит direction, а outgoing `duplicate_of` требует
+актуальную Task version и атомарно назначает системный `Duplicate`. Remove или
+смена type не восстанавливает прежний status. Task create ещё не имеет
+server-side idempotency record,
 поэтому client не должен слепо повторять POST после неизвестного network outcome.
+
+Relation create требует `targetTaskRef`, `type`, `direction` и
+`idempotencyKey`; retry одного semantic command с тем же key возвращает ту же
+relation. Update/delete используют stable `relationRef` из `get_task` и
+актуальную relation `version`. Relation detail возвращает relative
+`direction`/`presentation`, peer compact Task и timestamps без internal Task IDs.
 
 ### 7.1 Comment commands
 
@@ -428,6 +446,10 @@ Authorization invariants:
     `tools/list` объявляет четыре attachment tools, а upload schema содержит
     `_meta["openai/fileParams"]`; invalid/private redirect, oversized body,
     MIME mismatch и stale version отклоняются до небезопасной mutation.
+12. Agent REST/MCP relation create retry сохраняет один stable relation ref;
+    stale update/delete конфликтует, Viewer не пишет, ACL проверяется на обеих
+    Tasks, а outgoing duplicate atomically меняет source status. `get_task`
+    показывает resolved blocker как `related` и не раскрывает internal Task IDs.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются
 проверенными локальной реализацией.

@@ -127,7 +127,7 @@ test("incremental sync removes deleted records and dependent client context", as
   const current: AppSnapshot = {
     ...initial,
     taskLabels: [{ taskId: task.id, labelId: "label-stale" }],
-    relations: [{ sourceTaskId: task.id, targetTaskId: "other", type: "related" }],
+    relations: [{ id: "relation-other", sourceTaskId: task.id, targetTaskId: "other", type: "related", version: 1, createdAt: "2026-08-14T09:00:00.000Z", updatedAt: "2026-08-14T09:00:00.000Z" }],
   };
   const next = applyWorkspaceSync(current, response);
   assert.equal(next.tasks.some((item) => item.id === task.id), false);
@@ -219,10 +219,10 @@ test("task label and relation updates emit only lazy detail invalidations", asyn
     database
       .prepare(
         `INSERT INTO task_relations
-          (source_task_id, target_task_id, type, creator_user_id, created_at)
-         VALUES (?, ?, 'related', ?, CURRENT_TIMESTAMP)`,
+          (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key, created_at)
+         VALUES (?, ?, ?, 'related', ?, ?, CURRENT_TIMESTAMP)`,
       )
-      .bind(source.id, target.id, owner.id),
+      .bind("relation-sync", source.id, target.id, owner.id, "relation-sync"),
   ]);
 
   const response = await getWorkspaceSync(owner, initial.syncCursor!);
@@ -238,6 +238,24 @@ test("task label and relation updates emit only lazy detail invalidations", asyn
   assert.equal(
     detail.relatedTasks.find((task) => task.id === target.id)?.description,
     null,
+  );
+  await database
+    .prepare("UPDATE task_relations SET type = 'blocks', version = version + 1 WHERE id = ?")
+    .bind("relation-sync")
+    .run();
+  const updated = await getWorkspaceSync(owner, response.cursor);
+  assert.deepEqual(
+    [...updated.changes.invalidations.taskDetails].sort(),
+    [source.id, target.id].sort(),
+  );
+  await database
+    .prepare("DELETE FROM task_relations WHERE id = ?")
+    .bind("relation-sync")
+    .run();
+  const removed = await getWorkspaceSync(owner, updated.cursor);
+  assert.deepEqual(
+    [...removed.changes.invalidations.taskDetails].sort(),
+    [source.id, target.id].sort(),
   );
   const after = await getSnapshot(owner);
   assert.equal(after.tasks.find((task) => task.id === source.id)?.updatedAt, source.updatedAt);

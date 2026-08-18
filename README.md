@@ -16,8 +16,9 @@ React/Vinext UI, server routes, D1 schema и migrations, вход через Cha
 retry, lazy metadata, server-generated thumbnails, preview/download и
 recoverable delete/restore. Готовые raster images можно безопасно встраивать в
 Markdown description через versioned private reference с общей server-side
-валидацией для UI, Agent API и MCP. Отдельные Agent/MCP upload commands и
-attachment-aware backup integration поставляются следующими срезами.
+валидацией для UI, Agent API и MCP. Agent REST/MCP поддерживают native
+attachments и versioned Task relations; system/Project backup переносит
+attachments и relation concurrency metadata с legacy compatibility.
 Google sign-in остаётся
 обязательным, но ещё не реализован: доступный Sites contract пока не даёт
 подтверждённого external-provider adapter.

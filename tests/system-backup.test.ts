@@ -18,7 +18,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 4);
+  assert.equal(backup.schemaVersion, 5);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -42,6 +42,7 @@ test("schema 2 system backups without attachments remain importable", async () =
     Object.entries(current.tables).filter(([name]) => name !== "attachments"),
   );
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
+  tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => name !== "attachments"),
   );
@@ -65,7 +66,11 @@ test("schema 3 system backups synthesize reserved workflow metadata before resto
   const legacyStatuses = current.tables.workflow_statuses
     .filter((status) => status.system_role !== "duplicate")
     .map(legacyWorkflowRow);
-  const tables = { ...current.tables, workflow_statuses: legacyStatuses };
+  const tables = {
+    ...current.tables,
+    workflow_statuses: legacyStatuses,
+    task_relations: current.tables.task_relations.map(legacyRelationRow),
+  };
   const counts = { ...current.counts, workflow_statuses: legacyStatuses.length };
   const body = {
     format: current.format,
@@ -84,6 +89,26 @@ test("schema 3 system backups synthesize reserved workflow metadata before resto
   assert.equal(validated.schemaVersion, 3);
   assert.equal(validated.tables.workflow_statuses.filter((status) => status.system_role === "duplicate").length, 2);
   assert.equal(validated.counts.workflow_statuses, legacyStatuses.length + 2);
+});
+
+test("schema 4 system backups upgrade legacy relation identity and concurrency metadata", async () => {
+  const current = await createSystemBackup(validTables(), now);
+  const tables = {
+    ...current.tables,
+    task_relations: current.tables.task_relations.map(legacyRelationRow),
+  };
+  const unsigned = {
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    schemaVersion: 4,
+    tables,
+  };
+  const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
+
+  const validated = await validateSystemBackup(legacy);
+  assert.equal(validated.schemaVersion, 4);
+  assert.equal(validated.tables.task_relations[0]?.id, "relation_legacy:task-1:task-2:blocks");
+  assert.equal(validated.tables.task_relations[0]?.version, 1);
+  assert.equal(validated.tables.task_relations[0]?.updated_at, now);
 });
 
 test("snapshot validation rejects content changed after export", async () => {
@@ -145,6 +170,7 @@ test("snapshot validation rejects manager on a standalone resource", async () =>
   tables.tasks[0]!.project_id = null;
   tables.tasks[0]!.release_id = null;
   tables.tasks[0]!.assignee_user_id = null;
+  tables.task_relations = [];
   tables.access_grants[0]!.resource_type = "task";
   tables.access_grants[0]!.resource_id = "task-1";
   tables.access_grants[0]!.permission = "manager";
@@ -430,11 +456,15 @@ function validTables(): BackupTables {
     task_labels: [{ task_id: "task-1", label_id: "label-1" }],
     task_relations: [
       {
+        id: "relation-1",
         source_task_id: "task-1",
         target_task_id: "task-2",
         type: "blocks",
         creator_user_id: "user-admin",
+        idempotency_key: "backup-relation-1",
+        version: 1,
         created_at: now,
+        updated_at: now,
       },
     ],
     saved_views: [
@@ -498,6 +528,14 @@ function legacyWorkflowRow(row: Record<string, string | number | null>) {
   );
 }
 
+function legacyRelationRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) =>
+      !["id", "idempotency_key", "version", "updated_at"].includes(key),
+    ),
+  );
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -518,6 +556,7 @@ function migratedDatabase() {
     "0014_puzzling_tana_nile.sql",
     "0015_attachments_sync.sql",
     "0016_abandoned_stellaris.sql",
+    "0017_complex_epoch.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }
