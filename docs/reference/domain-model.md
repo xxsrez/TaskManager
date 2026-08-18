@@ -427,6 +427,16 @@ status, на который ссылаются задачи или SavedViews, �
 Project progress вычисляется запросом по задачам, а не хранится как независимо
 редактируемое число.
 
+Project mutation требует current `version` и effective role `editor` или выше.
+Изменение `task_code` допустимо только при `task_sequence = 0` и
+`code_locked_at IS NULL`; unique active-code constraint повторно проверяется в
+D1. `lead_user_id` обязан указывать current Owner либо User с active Project
+grant на момент атомарного UPDATE. Revoke этого grant очищает lead и повышает
+Project version. Terminal status не меняет Tasks, а при наличии open Tasks
+требует отдельный confirm flag. `archived_at` — обратимое состояние и не
+отменяет ACL; archived Project исключается из create/navigation pickers, но
+остаётся доступен в Project index/direct detail для restore.
+
 ## Release
 
 | Поле | Семантика |

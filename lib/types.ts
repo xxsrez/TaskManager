@@ -8,6 +8,12 @@ export type StatusCategory =
 export type Priority = "urgent" | "high" | "medium" | "low" | "none";
 export type AccessRole = "owner" | "manager" | "editor" | "viewer";
 export type GrantRole = Exclude<AccessRole, "owner">;
+export type ProjectStatus =
+  | "planned"
+  | "active"
+  | "paused"
+  | "completed"
+  | "canceled";
 
 export type UserRecord = {
   id: string;
@@ -40,10 +46,11 @@ export type ProjectRecord = {
   codeLockedAt: string | null;
   summary: string;
   description: string;
-  status: string;
+  status: ProjectStatus;
   leadUserId: string | null;
   startDate: string | null;
   targetDate: string | null;
+  icon: string;
   color: string;
   archivedAt?: string | null;
   version: number;

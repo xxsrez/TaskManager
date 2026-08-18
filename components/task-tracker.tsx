@@ -110,6 +110,7 @@ import type {
   LabelRecord,
   Priority,
   ProjectRecord,
+  ProjectStatus,
   ReleaseRecord,
   SavedViewRecord,
   StatusCategory,
@@ -134,7 +135,7 @@ type ShareTarget = {
   inherited: boolean;
 };
 
-type Dialog = "task" | "project" | "release" | "view" | "share" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | null;
+type Dialog = "task" | "project" | "projectEdit" | "release" | "view" | "share" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | null;
 type CodexSetupMode = "desktop" | "cli";
 type TaskCreateDefaults = Partial<{
   statusId: string;
@@ -1357,8 +1358,8 @@ export function TaskTracker({
     : visibleTasks;
   const currentShareTarget = shareTarget(surface, activeTask, data);
   const canCreateTask = contextProjectRecord
-    ? canEditContent(contextProjectRecord.accessRole)
-    : data.projects.some((project) => canEditContent(project.accessRole));
+    ? !contextProjectRecord.archivedAt && canEditContent(contextProjectRecord.accessRole)
+    : data.projects.some((project) => !project.archivedAt && canEditContent(project.accessRole));
   const canSaveView = contextProjectRecord
     ? canEditContent(contextProjectRecord.accessRole)
     : activeSavedView
@@ -1871,7 +1872,7 @@ export function TaskTracker({
               </SidebarSection>
               <SidebarSection title="Projects" action={() => setDialog("project")}>
                 <NavItem compact={false} icon={<Boxes size={13} />} label="All projects" active={surface === "projects"} href="/projects" onNavigate={() => navigateSurface("projects", "list")} />
-                {data.projects.map((project) => (
+                {data.projects.filter((project) => !project.archivedAt).map((project) => (
                   <NavItem key={project.id} compact={false} icon={<span className="project-dot" style={{ background: project.color }} />} label={project.name} active={surface === `project:${project.id}`} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`project:${project.id}`, "list")} />
                 ))}
               </SidebarSection>
@@ -2051,6 +2052,7 @@ export function TaskTracker({
               {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadSystemBackup()}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Export"}</button>}
               {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Import</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
+              {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
               {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
@@ -2146,6 +2148,7 @@ export function TaskTracker({
         {data.taskWindow?.truncated && !taskWindowLoading && !searchNeedle && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
         {(busy || taskWindowLoading) && <div className="progress-line" aria-label={busy ? "Saving" : "Loading remaining tasks"} />}
 
+        {surface.startsWith("project:") && contextProjectRecord && <ProjectOverview project={contextProjectRecord} lead={contextProjectRecord.leadUserId ? userMap.get(contextProjectRecord.leadUserId) : undefined} tasks={data.tasks.filter((task) => task.projectId === contextProjectRecord.id && !task.archivedAt)} statuses={statusMap} onEdit={canEditContent(contextProjectRecord.accessRole) ? () => setDialog("projectEdit") : undefined} />}
         {surface === "workspace" ? (
           <WorkspaceOverviewSurface
             data={data}
@@ -2162,7 +2165,7 @@ export function TaskTracker({
         ) : surface === "views" ? (
           <ViewsSurface data={data} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} />
         ) : surface === "projects" ? (
-          <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
+          <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} users={userMap} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
         ) : surface === "releases" || projectReleaseSurfaceId ? (
           <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => canCreateTask && setDialog("release")} />
         ) : taskSearchStatus ? (
@@ -2181,8 +2184,9 @@ export function TaskTracker({
       {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes })} onMove={async (changes) => mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes })} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} labels={labelsForTask(data, peekTask.id)} hierarchy={taskHierarchySummary(peekTask, data.tasks)} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={createTaskForComposer} busy={busy} />}
-      {dialog === "project" && <ProjectDialog onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => canEditContent(project.accessRole))} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "project" && <ProjectDialog currentUser={data.user} leadOptions={[data.user]} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "projectEdit" && contextProjectRecord && <ProjectDialog project={contextProjectRecord} currentUser={data.user} leadOptions={projectMemberOptions(data, contextProjectRecord)} openTaskCount={openProjectTaskCount(contextProjectRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, ...input }); if (ok) setDialog(null); }} onArchive={async () => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, archived: !contextProjectRecord.archivedAt }); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "view" && canSaveView && <ViewDialog search={search} status={statusFilter} priority={priorityFilter} layout={layout} groupBy={currentGroupBy} scopeProjectId={contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
@@ -2492,7 +2496,9 @@ type ComposerAttachment = {
 };
 
 function TaskComposer({ data, contextProject, contextRelease, defaults, onClose, onSubmit, busy }: { data: AppSnapshot; contextProject: string | null; contextRelease: string | null; defaults: TaskCreateDefaults; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<TaskRecord | null>; busy: boolean }) {
-  const editableProjects = data.projects.filter((project) => canEditContent(project.accessRole));
+  const editableProjects = data.projects.filter(
+    (project) => !project.archivedAt && canEditContent(project.accessRole),
+  );
   const initialReleaseId = defaults.releaseId !== undefined
     ? defaults.releaseId ?? ""
     : contextRelease ?? "";
@@ -4091,11 +4097,14 @@ function LabelSettingsDialog({
   return <Modal onClose={() => busyId === null && onClose()} className="workflow-settings-modal" ariaLabel="Label settings"><DialogHeader title="Labels" icon={<Tag size={17} />} onClose={() => busyId === null && onClose()} /><p className="dialog-copy">Labels belong to your catalog. Archiving blocks new assignments while preserving existing Task history.</p>{error && <p className="dialog-error" role="alert">{error}</p>}{loading ? <p className="dialog-copy">Loading labels…</p> : <div className="label-settings-list">{active.map(row)}</div>}<form className="label-settings-create" onSubmit={create}><input className="workflow-color" type="color" name="color" defaultValue="#6b7280" aria-label="New Label color" disabled={busyId !== null} /><input name="name" required maxLength={80} placeholder="New label" aria-label="New Label name" disabled={busyId !== null} /><input name="description" maxLength={2000} placeholder="Usage guidance" aria-label="New Label description" disabled={busyId !== null} /><button className="button primary" disabled={busyId !== null}><Plus size={14} />Add</button></form>{archived.length > 0 && <details className="workflow-archived"><summary>Archived labels ({archived.length})</summary><div className="label-settings-list">{archived.map(row)}</div></details>}</Modal>;
 }
 
-function ProjectDialog({ onClose, onSubmit, busy }: { onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
-  const [name, setName] = useState("");
-  const [taskCode, setTaskCode] = useState("PR");
-  const [codeEdited, setCodeEdited] = useState(false);
-  return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title="Create project" icon={<FolderKanban size={17} />} onClose={onClose} /><div className="form-stack"><label><span>Project name</span><input name="name" required autoFocus value={name} onChange={(event) => { const next = event.target.value; setName(next); if (!codeEdited) setTaskCode(suggestProjectTaskCode(next)); }} /></label><label><span>Task code</span><input name="taskCode" required minLength={2} maxLength={3} pattern="[A-Z]{2,3}" value={taskCode} onChange={(event) => { setCodeEdited(true); setTaskCode(event.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3)); }} aria-describedby="project-code-help" /></label><small id="project-code-help" className="dialog-copy">2–3 Latin letters. The code locks after this Project receives its first Task.</small><label><span>Short summary</span><input name="summary" /></label><label><span>Target date</span><input name="targetDate" type="date" /></label></div><DialogFooter busy={busy} label="Create" disabled={!name.trim() || !/^[A-Z]{2,3}$/.test(taskCode)} /></form></Modal>;
+export function ProjectDialog({ project, currentUser, leadOptions, openTaskCount, onClose, onSubmit, onArchive, busy }: { project?: ProjectRecord; currentUser: UserRecord; leadOptions: UserRecord[]; openTaskCount: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; onArchive?: () => Promise<void>; busy: boolean }) {
+  const [name, setName] = useState(project?.name ?? "");
+  const [taskCode, setTaskCode] = useState(project?.taskCode ?? "PR");
+  const [codeEdited, setCodeEdited] = useState(Boolean(project));
+  const [status, setStatus] = useState<ProjectStatus>(project?.status ?? "planned");
+  const terminalWarning = Boolean(project && openTaskCount > 0 && (status === "completed" || status === "canceled") && status !== project.status);
+  const codeLocked = Boolean(project?.codeLockedAt || (project?.taskSequence ?? 0) > 0);
+  return <Modal onClose={onClose} className="project-dialog" ariaLabel={project ? `Edit ${project.name}` : "Create project"}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ ...values, leadUserId: values.leadUserId || null, confirmOpenTasks: values.confirmOpenTasks === "on" }); }}><DialogHeader title={project ? "Edit project" : "Create project"} icon={<ProjectIcon project={project} size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>Project name</span><input name="name" required autoFocus value={name} onChange={(event) => { const next = event.target.value; setName(next); if (!codeEdited) setTaskCode(suggestProjectTaskCode(next)); }} /></label><div className="project-form-grid"><label><span>Task code</span><input name="taskCode" required minLength={2} maxLength={3} pattern="[A-Z]{2,3}" value={taskCode} readOnly={codeLocked} className={codeLocked ? "read-only-control" : undefined} onChange={(event) => { setCodeEdited(true); setTaskCode(event.target.value.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3)); }} aria-describedby="project-code-help" /></label><label><span>Status</span><select name="status" value={status} onChange={(event) => setStatus(event.target.value as ProjectStatus)}>{projectStatusOptions.map((value) => <option key={value} value={value}>{projectStatusLabel(value)}</option>)}</select></label></div><small id="project-code-help" className="dialog-copy">{codeLocked ? `Locked after ${project?.taskSequence ?? 0} allocated Task number${project?.taskSequence === 1 ? "" : "s"}.` : "2–3 Latin letters. The code locks after this Project receives its first Task."}</small><label><span>Short summary</span><input name="summary" maxLength={500} defaultValue={project?.summary ?? ""} /></label><label><span>Markdown description</span><textarea name="description" rows={7} defaultValue={project?.description ?? ""} placeholder="Project context, outcome, and constraints…" /></label><div className="project-form-grid"><label><span>Lead</span><select name="leadUserId" defaultValue={project?.leadUserId ?? currentUser.id}><option value="">No lead</option>{leadOptions.map((user) => <option key={user.id} value={user.id}>{user.displayName}</option>)}</select></label><label><span>Icon</span><select name="icon" defaultValue={project?.icon ?? "cube"}><option value="cube">Cube</option><option value="folder">Folder</option><option value="target">Target</option><option value="rocket">Rocket</option></select></label><label><span>Color</span><input name="color" type="color" defaultValue={project?.color ?? "#8b7cf6"} /></label></div><div className="project-form-grid"><label><span>Start date</span><input name="startDate" type="date" defaultValue={project?.startDate ?? ""} /></label><label><span>Target date</span><input name="targetDate" type="date" defaultValue={project?.targetDate ?? ""} /></label></div>{terminalWarning && <label className="project-terminal-warning"><input name="confirmOpenTasks" type="checkbox" required /><span>This Project has {openTaskCount} open Task{openTaskCount === 1 ? "" : "s"}. Confirm the terminal transition.</span></label>}</div><div className="project-dialog-footer">{project && onArchive && <button className={`button ghost ${project.archivedAt ? "" : "danger"}`} type="button" disabled={busy} onClick={() => void onArchive()}>{project.archivedAt ? <ArchiveRestore size={14} /> : <Archive size={14} />}{project.archivedAt ? "Restore project" : "Archive project"}</button>}<div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim() || !/^[A-Z]{2,3}$/.test(taskCode)}>{busy ? "Saving…" : project ? "Save changes" : "Create"}</button></div></div></form></Modal>;
 }
 function ReleaseDialog({ projects, initialProjectId, onClose, onSubmit, busy }: { projects: ProjectRecord[]; initialProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) { return <Modal onClose={onClose}><form onSubmit={(event) => { event.preventDefault(); void onSubmit(Object.fromEntries(new FormData(event.currentTarget))); }}><DialogHeader title="Create release" icon={<Rocket size={17} />} onClose={onClose} /><div className="form-stack"><label><span>Release name</span><input name="name" required autoFocus placeholder="v1.0" /></label><label><span>Project</span><select name="projectId" required defaultValue={initialProjectId ?? ""}><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Target date</span><input name="targetDate" type="date" /></label></div>{!projects.length && <p className="inline-note">Create a project before adding a release.</p>}<DialogFooter busy={busy} label="Create release" disabled={!projects.length} /></form></Modal>; }
 function ViewDialog({ search, status, priority, layout, groupBy, scopeProjectId, onClose, onSubmit, busy }: { search: string; status: string; priority: Priority | "all"; layout: Layout; groupBy: ViewDisplay["groupBy"]; scopeProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
@@ -4455,7 +4464,7 @@ function WorkspaceOverviewSurface({
   const recentTasks = [...openTasks]
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 5);
-  const recentProjects = [...data.projects]
+  const recentProjects = data.projects.filter((project) => !project.archivedAt)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 4);
   const recentReleases = [...data.releases]
@@ -4629,7 +4638,44 @@ function WorkspaceSharedCount({ label, value }: { label: string; value: number }
 }
 
 function ViewsSurface({ data, statusMap, onOpen }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void }) { return <div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{data.views.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>; }
-function ProjectsSurface({ projects, tasks, statuses, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); return <a className="entity-card" key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><FolderKanban size={18} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="progress-meta"><span>{scoped.length} tasks</span>{project.targetDate && <span>Target {shortDate(project.targetDate)}</span>}</div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div><small>{progress}% complete</small></div></a>; })}</div>; }
+const projectStatusOptions: ProjectStatus[] = ["planned", "active", "paused", "completed", "canceled"];
+
+function projectStatusLabel(status: ProjectStatus) {
+  return `${status.slice(0, 1).toUpperCase()}${status.slice(1)}`;
+}
+
+function ProjectIcon({ project, size = 18 }: { project?: Pick<ProjectRecord, "icon" | "color">; size?: number }) {
+  if (project?.icon === "rocket") return <Rocket size={size} />;
+  if (project?.icon === "target") return <CircleDot size={size} />;
+  if (project?.icon === "folder") return <FolderKanban size={size} />;
+  return <Boxes size={size} />;
+}
+
+function openProjectTaskCount(projectId: string, tasks: TaskRecord[], statuses: Map<string, WorkflowStatusRecord>) {
+  return tasks.filter((task) => {
+    if (task.projectId !== projectId || task.archivedAt) return false;
+    const category = statuses.get(task.statusId)?.category;
+    return category !== "completed" && category !== "canceled";
+  }).length;
+}
+
+function projectMemberOptions(data: AppSnapshot, project: ProjectRecord): UserRecord[] {
+  const ids = new Set<string>([project.ownerUserId]);
+  for (const collaborator of data.collaborators) {
+    if (collaborator.resourceType === "project" && collaborator.resourceId === project.id) {
+      ids.add(collaborator.userId);
+    }
+  }
+  return data.users.filter((user) => ids.has(user.id));
+}
+
+export function ProjectOverview({ project, lead, tasks, statuses, onEdit }: { project: ProjectRecord; lead?: UserRecord; tasks: TaskRecord[]; statuses: Map<string, WorkflowStatusRecord>; onEdit?: () => void }) {
+  const progress = completion(tasks, [...statuses.values()]);
+  const openTasks = openProjectTaskCount(project.id, tasks, statuses);
+  return <section className={`project-overview ${project.archivedAt ? "archived" : ""}`} aria-label={`${project.name} project summary`}><div className="project-overview-heading"><span className="project-overview-icon" style={{ background: `${project.color}20`, color: project.color }}><ProjectIcon project={project} size={20} /></span><div><span className="project-code">{project.taskCode}</span><h2>{project.name}</h2><p>{project.summary || "No summary yet"}</p></div><div className="project-overview-actions"><span className={`status-badge project-${project.status}`}>{projectStatusLabel(project.status)}</span>{project.archivedAt && <span className="status-badge">Archived</span>}{onEdit && <button className="button ghost compact" onClick={onEdit}>Edit</button>}</div></div><div className="project-overview-metadata"><span><b>{tasks.length}</b> Tasks</span><span><b>{openTasks}</b> open</span><span><b>{progress}%</b> complete</span><span><b>{lead?.displayName ?? "No lead"}</b> lead</span>{project.startDate && <span>Starts <b>{shortDate(project.startDate)}</b></span>}{project.targetDate && <span>Target <b>{shortDate(project.targetDate)}</b></span>}</div>{project.description && <MarkdownBody body={project.description} className="project-description-markdown" />}</section>;
+}
+
+function ProjectsSurface({ projects, tasks, statuses, users, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; users: Map<string, UserRecord>; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); const lead = project.leadUserId ? users.get(project.leadUserId) : undefined; return <a className={`entity-card ${project.archivedAt ? "archived" : ""}`} key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><ProjectIcon project={project} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.archivedAt ? "archived" : project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="project-card-meta"><span>{lead ? `${lead.displayName} · Lead` : "No lead"}</span><span>{project.startDate ? `Start ${shortDate(project.startDate)}` : "No start"}</span><span>{project.targetDate ? `Target ${shortDate(project.targetDate)}` : "No target"}</span></div><div className="progress-meta"><span>{scoped.length} tasks</span><span>{progress}% complete</span></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div></div></a>; })}</div>; }
 function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); const releaseName = formatReleaseName(project?.name, release.name); return <a className="release-row" key={release.id} aria-label={releaseName} title={releaseName} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{releaseName}</b></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.targetDate ? shortDate(release.targetDate) : "No date"}</span></a>; })}</div>; }
 function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZone: string }) {
   return (

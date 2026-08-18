@@ -49,6 +49,7 @@ const projects: ProjectRecord[] = [
     leadUserId: null,
     startDate: null,
     targetDate: null,
+    icon: "cube",
     color: "#5e6ad2",
     version: 1,
     createdAt: now,

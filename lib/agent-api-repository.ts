@@ -404,7 +404,7 @@ export async function getAgentProjectDetail(
   reference: string,
 ) {
   const project = await loadAccessibleProjectRow(currentUser.id, reference, true);
-  const [releases, workflowStatuses] = await Promise.all([
+  const [releases, workflowStatuses, lead] = await Promise.all([
     getD1()
       .prepare(
         `SELECT r.* FROM releases r
@@ -417,11 +417,22 @@ export async function getAgentProjectDetail(
       .bind(project.id)
       .all<DbRow>(),
     loadStatusSummaries(String(project.owner_user_id)),
+    project.lead_user_id
+      ? getD1().prepare(
+        "SELECT display_name FROM users WHERE id = ?",
+      ).bind(project.lead_user_id).first<{ display_name: string }>()
+      : Promise.resolve(null),
   ]);
   return {
     ...mapProjectSummary(project),
     description: String(project.description ?? ""),
     startDate: nullableString(project.start_date),
+    lead: project.lead_user_id && lead
+      ? {
+          displayName: String(lead.display_name),
+          isCurrentUser: String(project.lead_user_id) === currentUser.id,
+        }
+      : null,
     releases: releases.results.map((row) => ({
       ref: String(row.public_id),
       name: String(row.name),
@@ -1528,6 +1539,10 @@ function mapProjectSummary(row: DbRow) {
     codeLocked: row.code_locked_at != null,
     summary: String(row.summary ?? ""),
     status: String(row.status),
+    icon: String(row.icon ?? "cube"),
+    color: String(row.color ?? "#8b7cf6"),
+    archivedAt: nullableString(row.archived_at),
+    startDate: nullableString(row.start_date),
     targetDate: nullableString(row.target_date),
     taskCounts: counts,
     progress: denominator > 0 ? counts.completed / denominator : 0,

@@ -509,12 +509,17 @@ List повторяет плотную grouped-list модель Linear.
   progress, lead и dates.
 - Create dialog требует code из 2–3 заглавных латинских букв и объясняет, что
   он блокируется после первой Task.
+- Archived cards остаются в Project index с явным `Archived` state для
+  восстановления, но не показываются в основной sidebar и Task/Release
+  create pickers.
 - Progress имеет доступное числовое значение и tooltip с формулой подсчёта.
 
 ### 9.2 Project details
 
-- Header содержит icon/color, inline-editable name, status, share, overflow и
-  details toggle.
+- Header содержит icon/color, name, status, share, backup и `Edit project`.
+  Edit dialog управляет name, code, summary, Markdown description, status,
+  lead, start/target dates, icon/color и archive/restore. Locked code остаётся
+  видимым read-only с причиной.
 - Для current Owner overflow содержит `Export project backup`; action скачивает
   JSON bundle и не показывается Manager/Editor/Viewer. `Restore project` ведёт
   на общую import surface, чтобы deleted Project тоже можно было вернуть.
@@ -522,6 +527,13 @@ List повторяет плотную grouped-list модель Linear.
   tabs для Linear features вне scope не создаются.
 - Overview: summary, description, dates, lead и progress; без documents,
   resources, activity и predictive graph.
+- Terminal status при открытых Tasks показывает их count и требует checkbox
+  подтверждения. Ошибка version/ACL/lead возвращается в общий error region, а
+  успешный response сразу обновляет sidebar, card, breadcrumbs, release names
+  и открытый overview через единый snapshot/sync contract.
+- На mobile overview складывает actions ниже identity, dialog поля переходят в
+  одну колонку, а все footer actions имеют touch target не менее 44 px без
+  horizontal overflow.
 - `Tasks` использует общий list/board contract с project scope.
 - Глобальный Task composer требует Project; состояния `No project` и
   сохранения Task без Project нет.

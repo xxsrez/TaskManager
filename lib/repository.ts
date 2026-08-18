@@ -36,6 +36,7 @@ import type {
   LabelRecord,
   Priority,
   ProjectRecord,
+  ProjectStatus,
   ReleaseRecord,
   SavedViewRecord,
   StatusCategory,
@@ -275,7 +276,7 @@ export async function getSnapshot(
                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
                  LIMIT 1
                ) END AS access_role
-             FROM projects p WHERE p.archived_at IS NULL
+             FROM projects p
            )
            SELECT * FROM scoped WHERE access_role IS NOT NULL
            ORDER BY updated_at DESC`,
@@ -651,7 +652,7 @@ export async function getWorkspaceSyncProjection(
                LIMIT 1
              ) END AS access_role
            FROM projects p
-           WHERE p.archived_at IS NULL AND p.id IN (${projectPlaceholders})
+           WHERE p.id IN (${projectPlaceholders})
          )
          SELECT * FROM scoped WHERE access_role IS NOT NULL`,
       )
@@ -2288,6 +2289,13 @@ export async function createProject(
 ) {
   const now = new Date().toISOString();
   const code = projectTaskCode(input.taskCode);
+  const status = projectStatus(input.status ?? "planned");
+  const leadUserId = input.leadUserId == null || input.leadUserId === ""
+    ? currentUser.id
+    : String(input.leadUserId);
+  if (leadUserId !== currentUser.id) {
+    throw new ValidationError("A new Project lead must be its owner");
+  }
   const duplicate = await getD1()
     .prepare(
       `SELECT id FROM projects
@@ -2302,9 +2310,9 @@ export async function createProject(
     .prepare(
       `INSERT INTO projects
         (id, public_id, owner_user_id, creator_user_id, name, task_code,
-         summary, description,
-         target_date, lead_user_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         summary, description, status, lead_user_id, start_date, target_date,
+         icon, color, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       `project_${crypto.randomUUID()}`,
@@ -2315,8 +2323,12 @@ export async function createProject(
       code,
       optionalText(input.summary, 500),
       optionalText(input.description),
+      status,
+      leadUserId,
+      optionalDate(input.startDate),
       optionalDate(input.targetDate),
-      currentUser.id,
+      projectIcon(input.icon ?? "cube"),
+      projectColor(input.color ?? "#8b7cf6"),
       now,
       now,
     )
@@ -2327,6 +2339,155 @@ export async function createProject(
     }
     throw error;
   }
+}
+
+export async function updateProject(
+  currentUser: UserRecord,
+  projectId: string,
+  input: Record<string, unknown>,
+): Promise<ProjectRecord> {
+  const project = await loadAccessibleProject(currentUser.id, projectId);
+  requireContentEdit(project.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== project.version) {
+    throw new ConflictError("Project was changed in another session");
+  }
+
+  const name = Object.hasOwn(input, "name")
+    ? requireTitle(input.name)
+    : project.name;
+  const taskCode = Object.hasOwn(input, "taskCode")
+    ? projectTaskCode(input.taskCode)
+    : project.taskCode;
+  if (taskCode !== project.taskCode && (project.codeLockedAt || project.taskSequence > 0)) {
+    throw new ValidationError("Project code is locked after the first Task number is allocated");
+  }
+  const summary = Object.hasOwn(input, "summary")
+    ? optionalText(input.summary, 500)
+    : project.summary;
+  const description = Object.hasOwn(input, "description")
+    ? optionalText(input.description)
+    : project.description;
+  const status = Object.hasOwn(input, "status")
+    ? projectStatus(input.status)
+    : project.status;
+  const startDate = Object.hasOwn(input, "startDate")
+    ? optionalDate(input.startDate)
+    : project.startDate;
+  const targetDate = Object.hasOwn(input, "targetDate")
+    ? optionalDate(input.targetDate)
+    : project.targetDate;
+  const icon = Object.hasOwn(input, "icon")
+    ? projectIcon(input.icon)
+    : project.icon;
+  const color = Object.hasOwn(input, "color")
+    ? projectColor(input.color)
+    : project.color;
+  const leadUserId = Object.hasOwn(input, "leadUserId")
+    ? input.leadUserId == null || input.leadUserId === ""
+      ? null
+      : String(input.leadUserId)
+    : project.leadUserId;
+  if (leadUserId) {
+    const accessibleLead = await getD1().prepare(
+      `SELECT 1 FROM projects p
+       WHERE p.id = ? AND (
+         p.owner_user_id = ? OR EXISTS (
+           SELECT 1 FROM access_grants ag
+           WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+         )
+       )`,
+    ).bind(project.id, leadUserId, leadUserId).first();
+    if (!accessibleLead) {
+      throw new ValidationError("Project lead must have access to the Project");
+    }
+  }
+  if (
+    (status === "completed" || status === "canceled")
+    && status !== project.status
+    && input.confirmOpenTasks !== true
+  ) {
+    const open = await getD1().prepare(
+      `SELECT COUNT(*) AS count
+       FROM tasks t JOIN workflow_statuses s ON s.id = t.status_id
+       WHERE t.project_id = ? AND t.archived_at IS NULL
+         AND s.category NOT IN ('completed', 'canceled')`,
+    ).bind(project.id).first<{ count: number }>();
+    if (Number(open?.count ?? 0) > 0) {
+      throw new ValidationError("Confirm the terminal transition while the Project has open Tasks");
+    }
+  }
+  const archivedAt = Object.hasOwn(input, "archived")
+    ? input.archived === true
+      ? project.archivedAt ?? new Date().toISOString()
+      : input.archived === false
+        ? null
+        : (() => { throw new ValidationError("Archived must be true or false"); })()
+    : project.archivedAt ?? null;
+  const now = new Date().toISOString();
+
+  try {
+    const result = await getD1().prepare(
+      `UPDATE projects SET
+         name = ?, task_code = ?, summary = ?, description = ?, status = ?,
+         lead_user_id = ?, start_date = ?, target_date = ?, icon = ?, color = ?,
+         archived_at = ?, version = version + 1, updated_at = ?
+       WHERE id = ? AND version = ?
+         AND (
+           owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants actor_grant
+             WHERE actor_grant.resource_type = 'project'
+               AND actor_grant.resource_id = projects.id
+               AND actor_grant.grantee_user_id = ?
+               AND actor_grant.revoked_at IS NULL
+               AND actor_grant.permission IN ('editor', 'manager', 'full_access')
+           )
+         )
+         AND (
+           ? IS NULL OR owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants lead_grant
+             WHERE lead_grant.resource_type = 'project'
+               AND lead_grant.resource_id = projects.id
+               AND lead_grant.grantee_user_id = ?
+               AND lead_grant.revoked_at IS NULL
+           )
+         )`,
+    ).bind(
+      name,
+      taskCode,
+      summary,
+      description,
+      status,
+      leadUserId,
+      startDate,
+      targetDate,
+      icon,
+      color,
+      archivedAt,
+      now,
+      project.id,
+      expectedVersion,
+      currentUser.id,
+      currentUser.id,
+      leadUserId,
+      leadUserId,
+      leadUserId,
+    ).run();
+    if ((result.meta.changes ?? 0) < 1) {
+      throw new ConflictError("Project access, lead, or version changed before the update committed");
+    }
+  } catch (error) {
+    if (error instanceof ConflictError || error instanceof ValidationError) throw error;
+    if (error instanceof Error && /locked Project task code/i.test(error.message)) {
+      throw new ConflictError("Project code was locked before the update committed");
+    }
+    if (error instanceof Error && /task_code|unique/i.test(error.message)) {
+      throw new ValidationError("Project code is already in use");
+    }
+    throw error;
+  }
+  return loadAccessibleProject(currentUser.id, project.id);
 }
 
 export async function createRelease(
@@ -2489,6 +2650,13 @@ export async function revokeAccess(currentUser: UserRecord, grantId: string) {
       )
       .bind(now, grantId, grant.ownerUserId),
     clearAssignee,
+    grant.resourceType === "project"
+      ? db.prepare(
+        `UPDATE projects SET lead_user_id = NULL,
+           version = version + 1, updated_at = ?
+         WHERE id = ? AND lead_user_id = ?`,
+      ).bind(now, grant.resourceId, grant.granteeUserId)
+      : db.prepare("SELECT 1"),
   ]);
   if ((results[0]?.meta.changes ?? 0) < 1) {
     throw new NotFoundError("Grant not found");
@@ -2986,10 +3154,11 @@ function mapProject(row: DbRow): ProjectRecord {
     codeLockedAt: nullableString(row.code_locked_at),
     summary: String(row.summary ?? ""),
     description: String(row.description ?? ""),
-    status: String(row.status),
+    status: String(row.status) as ProjectStatus,
     leadUserId: nullableString(row.lead_user_id),
     startDate: nullableString(row.start_date),
     targetDate: nullableString(row.target_date),
+    icon: String(row.icon ?? "cube"),
     color: String(row.color),
     archivedAt: nullableString(row.archived_at),
     version: Number(row.version),
@@ -3229,6 +3398,34 @@ function projectTaskCode(value: unknown): string {
     throw new ValidationError("Project code must use 2 or 3 Latin letters");
   }
   return code;
+}
+
+function projectStatus(value: unknown): ProjectStatus {
+  if (
+    value !== "planned"
+    && value !== "active"
+    && value !== "paused"
+    && value !== "completed"
+    && value !== "canceled"
+  ) {
+    throw new ValidationError("Unknown Project status");
+  }
+  return value;
+}
+
+function projectIcon(value: unknown): string {
+  if (value !== "cube" && value !== "folder" && value !== "target" && value !== "rocket") {
+    throw new ValidationError("Unknown Project icon");
+  }
+  return value;
+}
+
+function projectColor(value: unknown): string {
+  const color = String(value ?? "").trim().toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(color)) {
+    throw new ValidationError("Project color must be a six-digit hex color");
+  }
+  return color;
 }
 
 function nullableString(value: unknown): string | null {

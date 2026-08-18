@@ -362,6 +362,17 @@ commands задают желаемое состояние идемпотентн
 - Новый Project принадлежит создавшему его User.
 - Проект поддерживает summary, Markdown description, status, lead, start date,
   target date, icon/color и timestamps.
+- Create/edit выполняются versioned repository command. `Viewer` получает
+  отказ, `Editor` и выше изменяют content/lifecycle; optimistic conflict или
+  revoke между read и write не оставляют partial update.
+- `task_code` разрешено исправить только до первого выделенного Task number.
+  После `code_locked_at` UI делает control read-only, а server отклоняет обход.
+- Lifecycle использует `planned`, `active`, `paused`, `completed`, `canceled`.
+  Переход в terminal status при открытых Tasks требует явного подтверждения;
+  Tasks автоматически не закрываются.
+- Archive является обратимым: archived Project остаётся ACL-scoped record для
+  Project index/direct URL и restore, но исключается из sidebar и create
+  pickers. Purge в этот slice не входит.
 - Каждая Task принадлежит ровно одному Project. Code и allocator Project
   блокируются после первой Task; перенос выдаёт следующий identifier целевого
   Project и сохраняет прежний identifier как alias.
@@ -371,7 +382,8 @@ commands задают желаемое состояние идемпотентн
 - Завершение проекта не завершает открытые задачи автоматически; интерфейс
   должен показать предупреждение и их количество.
 - Lead обязан иметь доступ к Project. Task, созданная collaborator внутри
-  Project, остаётся в owner scope Project.
+  Project, остаётся в owner scope Project. Revoke текущего lead атомарно
+  очищает `lead_user_id` и повышает Project version.
 
 ### 7.1 Project backup и restore
 
@@ -731,6 +743,13 @@ completed dates и archived state.
     stale version отклоняются без partial write. List, board, Peek и details
     показывают hierarchy context; Agent REST и MCP используют те же canonical
     refs и versioned commands, а sync инвалидирует child и old/new parent.
+38. Создать Project со всеми metadata, изменить name/summary/Markdown,
+    status/lead/dates/icon/color и до первой Task исправить code. После первой
+    Task code остаётся locked; Viewer, stale version, invalid/revoked lead и
+    terminal transition без подтверждения отклоняются. Archive приходит через
+    sync как ACL-scoped upsert, исчезает из create pickers и восстанавливается
+    из Project index/direct URL. Agent Project detail возвращает актуальные
+    lifecycle metadata и version, но Project mutations остаются read-only.
 
 ## 14. Рекомендуемые вертикальные срезы
 

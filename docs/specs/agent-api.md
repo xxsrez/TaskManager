@@ -181,6 +181,8 @@ restore атомарно отзывает все authentication capabilities, ч
 | `PUT /tasks/{ref}/comments/{commentRef}/resolution` | `api:write` | Resolve/reopen root с version |
 
 Project/Release endpoints read-only: они нужны для ориентации и task scope.
+Нативное UI изменение Project не расширяет `api:write`; remote Project
+mutation появится только вместе с отдельно документированным OAuth scope.
 SavedViews не входят в v1; task query принимает явные filters и не зависит от
 UI display configuration.
 
@@ -293,9 +295,10 @@ relations и provenance counts. Native `commentCount` и `attachmentCount`
 остаются в `/external-context`. Detail также возвращает `availableStatuses`,
 валидные для изменения именно этой Task.
 
-`ProjectSummary` возвращает name, summary, status, dates, task counts,
-progress, release count, updatedAt и version. Detail добавляет description и
-compact releases. `ReleaseSummary` возвращает project, name, status, dates,
+`ProjectSummary` возвращает name, code/lock/sequence, summary, lifecycle
+status, start/target dates, icon/color, archivedAt, task counts, progress,
+release count, updatedAt и version. Detail добавляет Markdown description,
+current lead и compact releases. `ReleaseSummary` возвращает project, name, status, dates,
 task counts, progress, updatedAt и version; detail добавляет description и
 release notes. Project/Release detail возвращают `workflowStatuses`, валидные
 для создания Task в этом scope. Задачи release читаются через

@@ -62,7 +62,7 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 | Tasks | Task lifecycle, workflow, labels, subtasks, relations, rank |
 | Comments | ACL-scoped native threads, idempotency, reactions и resolution |
 | Attachments | D1 metadata, private R2 objects, sniffing, range delivery и cleanup |
-| Projects | Project metadata, scope и вычисляемый progress |
+| Projects | Versioned Project metadata/lifecycle, lead/access guards, archive/restore и вычисляемый progress |
 | Releases | Release lifecycle, состав и project consistency |
 | Views | Filter AST, query compilation, grouping, ordering, display config |
 | Search | Identifier lookup и text search поверх разрешённого scope |
@@ -312,6 +312,26 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    version. Любой guard/assertion failure откатывает allocator и child вместе.
 5. Move command отдельно требует отсутствие parent и direct subtasks; hierarchy
    никогда не используется как ACL bridge между Projects.
+
+### Project lifecycle mutation
+
+1. `PATCH /api/projects/{id}` передаёт current Project version и desired
+   metadata delta в один repository command; create использует те же validators
+   для status, dates, icon/color и lead.
+2. Repository заранее проверяет effective Editor+, code lock, unique active
+   owner code, lead membership и terminal open-Task confirmation. Atomic
+   UPDATE повторяет version, actor ACL и current lead grant, поэтому revoke
+   race становится conflict без partial metadata write.
+3. Revoke active lead выполняется в одном D1 batch с grant revoke: очищает
+   `lead_user_id`, повышает Project version и создаёт обычный Project sync
+   event. Ownership transfer сохраняет lead, поскольку old/new owner остаются
+   current Project members.
+4. Archived Project не теряет ACL и возвращается в bootstrap/incremental
+   Project projection как record с `archived_at`. UI исключает его из sidebar
+   и create pickers, но Project index/direct URL сохраняют restore action.
+5. Agent API остаётся read-only для Projects: detail проецирует current
+   version, lifecycle, icon/color, lead и releases; отдельный remote mutation
+   потребует нового документированного OAuth scope.
 
 ## API-принципы
 

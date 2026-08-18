@@ -746,7 +746,7 @@ export const agentApiOpenApi = {
       },
       ProjectSummary: {
         type: "object",
-        required: ["ref", "name", "taskCode", "taskSequence", "codeLocked", "summary", "status", "taskCounts", "updatedAt", "version"],
+        required: ["ref", "name", "taskCode", "taskSequence", "codeLocked", "summary", "status", "icon", "color", "archivedAt", "taskCounts", "updatedAt", "version"],
         properties: {
           ref: { type: "string" },
           name: { type: "string" },
@@ -754,7 +754,11 @@ export const agentApiOpenApi = {
           taskSequence: { type: "integer", minimum: 0 },
           codeLocked: { type: "boolean" },
           summary: { type: "string" },
-          status: { type: "string" },
+          status: { enum: ["planned", "active", "paused", "completed", "canceled"] },
+          icon: { enum: ["cube", "folder", "target", "rocket"] },
+          color: { type: "string", pattern: "^#[0-9a-f]{6}$" },
+          archivedAt: { type: ["string", "null"], format: "date-time" },
+          startDate: { type: ["string", "null"], format: "date" },
           targetDate: { type: ["string", "null"], format: "date" },
           taskCounts: { type: "object" },
           progress: { type: "number", minimum: 0, maximum: 1 },
@@ -766,12 +770,12 @@ export const agentApiOpenApi = {
       },
       ProjectDetail: {
         type: "object",
-        required: ["ref", "name", "description", "releases"],
+        required: ["ref", "name", "description", "lead", "releases"],
         properties: {
           ref: { type: "string" },
           name: { type: "string" },
           description: { type: "string" },
-          startDate: { type: ["string", "null"] },
+          lead: { type: ["object", "null"] },
           releases: { type: "array", items: { type: "object" } },
           workflowStatuses: {
             type: "array",

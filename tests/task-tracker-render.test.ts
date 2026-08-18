@@ -17,6 +17,8 @@ import {
   reconcileTaskSearch,
   rebaseTaskDraft,
   PriorityIcon,
+  ProjectDialog,
+  ProjectOverview,
   resolveArchiveBulkAction,
   runSingleFlight,
   shouldTriggerPullRefresh,
@@ -69,10 +71,11 @@ const snapshot: AppSnapshot = {
     codeLockedAt: now,
     summary: "",
     description: "",
-    status: "active",
+    status: "active" as const,
     leadUserId: null,
     startDate: null,
     targetDate: null,
+    icon: "cube",
     color: "#7766dd",
     version: 1,
     createdAt: now,
@@ -306,10 +309,11 @@ test("workspace overview counts only accessible top-level shared resources", () 
     codeLockedAt: now,
     summary: "",
     description: "",
-    status: "active",
+    status: "active" as const,
     leadUserId: null,
     startDate: null,
     targetDate: null,
+    icon: "cube",
     color: "#7766dd",
     version: 1,
     createdAt: now,
@@ -1588,10 +1592,11 @@ test("sidebar release and view labels expose the full name while truncating visu
     codeLockedAt: now,
     summary: "",
     description: "",
-    status: "active",
+    status: "active" as const,
     leadUserId: null,
     startDate: null,
     targetDate: null,
+    icon: "cube",
     color: "#7766dd",
     version: 1,
     createdAt: now,
@@ -1667,10 +1672,11 @@ test("release pages use the project-qualified release name without losing header
     codeLockedAt: now,
     summary: "",
     description: "",
-    status: "active",
+    status: "active" as const,
     leadUserId: null,
     startDate: null,
     targetDate: null,
+    icon: "cube",
     color: "#7766dd",
     version: 1,
     createdAt: now,
@@ -1797,10 +1803,11 @@ test("release breadcrumbs expose every ancestor and leave the current level stat
     codeLockedAt: now,
     summary: "",
     description: "",
-    status: "active",
+    status: "active" as const,
     leadUserId: null,
     startDate: null,
     targetDate: null,
+    icon: "cube",
     color: "#7766dd",
     version: 1,
     createdAt: now,
@@ -1845,4 +1852,56 @@ test("release breadcrumbs expose every ancestor and leave the current level stat
   assert.match(markup, /<a class="breadcrumb-link" href="\/projects\/11111111-1111-4111-8111-111111111111\/releases">Releases<\/a>/);
   assert.match(markup, /<h1 class="breadcrumb-current" title="Project Alpha Release One">Project Alpha Release One<\/h1>/);
   assert.doesNotMatch(markup, /<a class="breadcrumb-link"[^>]*>Project Alpha Release One<\/a>/);
+});
+
+test("Project overview renders current lifecycle metadata without provider-specific controls", () => {
+  const project = {
+    ...snapshot.projects[0]!,
+    summary: "Native Project summary",
+    description: "## Outcome\n\nEditable project context.",
+    status: "paused" as const,
+    leadUserId: snapshot.user.id,
+    startDate: "2026-08-01",
+    targetDate: "2026-09-01",
+    icon: "target",
+  };
+  const markup = renderToStaticMarkup(createElement(ProjectOverview, {
+    project,
+    lead: snapshot.user,
+    tasks: snapshot.tasks,
+    statuses: new Map(snapshot.statuses.map((status) => [status.id, status])),
+    onEdit: () => undefined,
+  }));
+
+  assert.match(markup, /class="project-overview /);
+  assert.match(markup, /Native Project summary/);
+  assert.match(markup, /Paused/);
+  assert.match(markup, /Test User/);
+  assert.match(markup, /Editable project context/);
+  assert.doesNotMatch(markup, /linear/i);
+});
+
+test("Project edit dialog exposes every lifecycle field and reversible archive", () => {
+  const project = {
+    ...snapshot.projects[0]!,
+    archivedAt: now,
+    icon: "rocket",
+  };
+  const markup = renderToStaticMarkup(createElement(ProjectDialog, {
+    project,
+    currentUser: snapshot.user,
+    leadOptions: [snapshot.user],
+    openTaskCount: 1,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+    onArchive: async () => undefined,
+    busy: false,
+  }));
+
+  for (const name of ["name", "taskCode", "status", "summary", "description", "leadUserId", "icon", "color", "startDate", "targetDate"]) {
+    assert.match(markup, new RegExp(`name="${name}"`));
+  }
+  assert.match(markup, /readOnly=""/);
+  assert.match(markup, /Restore project/);
+  assert.match(markup, /Markdown description/);
 });
