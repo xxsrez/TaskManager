@@ -101,8 +101,8 @@ Desktop-first shell повторяет композицию Linear:
   | Surface | Прямой URL |
   |---|---|
   | Workspace overview | `/workspace` |
-  | Issues / board | `/issues`, `/issues/board` |
-  | Built-in issue view | `/issues/{active|backlog|archived}` |
+  | My tasks / board | `/issues`, `/issues/board` |
+  | Built-in issue view | `/issues/{all|active|backlog|archived}` |
   | Views / Saved view | `/views`, `/views/{view-public-id}` |
   | Явный layout view | `/views/{view-public-id}/{list|board}` |
   | Projects / Project | `/projects`, `/projects/{project-id}` |

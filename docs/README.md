@@ -71,19 +71,20 @@
 
 Спецификации целевого MVP остаются `Proposed`. Первый срез уже реализует вход
 через ChatGPT, D1 persistence, owner/ACL-scoped задачи, проекты, релизы,
-сохранённые views, sharing, list/board, details, filters, selection и основные
-keyboard actions. Реализованы хранение и read-only details для labels и
-parent/subtasks, native create/edit/remove Task relations, а также идемпотентный Linear snapshot import
-с provenance, unified historical comments и explicit reconciliation outcomes.
+сохранённые views, sharing, отдельные `My tasks` и `All tasks`, list/board,
+details, полный текущий filter contract, selection, атомарные bulk actions и
+основные keyboard actions. Реализованы каталоги и назначения labels,
+parent/subtask hierarchy, assignee controls, настройка workflow, manual
+reordering с точным neighbor-bound placement и native create/edit/remove Task
+relations, а также идемпотентный Linear snapshot import с provenance, unified
+historical comments и explicit reconciliation outcomes.
 Task Activity добавляет append-only native mutations и lossless Linear status
 history через отдельные lazy UI/REST/MCP pages; system/Project backup schema
 `10` сохраняет events и reconciliation outcomes.
 Administration
 поддерживает полный системный export и атомарный replace-import через
-версионированный logical snapshot. Редакторы
-labels/hierarchy, assignee picker, настройка
-workflow, полный filter AST, Google sign-in и исчерпывающая acceptance matrix
-ещё не реализованы. В
+версионированный logical snapshot. Google sign-in и исчерпывающая acceptance
+matrix ещё не реализованы. В
 [ADR-0001](decisions/0001-identity-sharing-and-sites-hosting.md) и
 [ADR-0005](decisions/0005-project-roles-and-ownership-transfer.md) зафиксированы
 `Accepted`-решения пользователя: отдельные данные каждого пользователя,

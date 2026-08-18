@@ -281,6 +281,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .task-group { min-width: 720px; }
 .group-header { position: sticky; top: 0; z-index: 3; height: 34px; display: flex; align-items: center; padding: 0 10px 0 8px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 96%, transparent); backdrop-filter: blur(10px); }
 .task-group.drag-over { background: var(--active); box-shadow: inset 0 0 0 1px var(--accent); }
+.task-list.drag-over { box-shadow: inset 0 -2px var(--accent); }
 .group-title { flex: 1; display: flex; align-items: center; gap: 7px; height: 28px; padding: 0 5px; background: transparent; cursor: pointer; text-align: left; }
 .group-title small { color: var(--muted); font-size: 11px; }
 .group-title svg.rotated { transform: rotate(-90deg); }
@@ -293,6 +294,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .task-row { position: relative; min-height: var(--task-row-height); display: grid; grid-template-columns: 25px 22px 58px minmax(180px, 1fr) auto; align-items: center; padding: 0 10px 0 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .task-row:hover, .task-row.highlighted { background: var(--hover); }
 .task-row.selected { background: var(--selected); }
+.task-row.drop-before { box-shadow: inset 0 2px var(--accent); }
 .row-check, .card-check { position: relative; width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: white; cursor: pointer; }
 .row-check::before, .card-check::before { position: absolute; inset: -6px; content: ""; }
 .row-check span, .card-check span { width: 13px; height: 13px; border: 1px solid var(--border-strong); border-radius: 4px; opacity: 0; }
@@ -331,6 +333,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .task-card:hover { border-color: var(--border-strong); box-shadow: 0 4px 12px rgba(0,0,0,.07); transform: translateY(-1px); }
 .task-card:active { cursor: grabbing; }
 .task-card.selected { background: color-mix(in srgb, var(--selected) 55%, var(--raised)); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
+.task-card.drop-before { border-top-color: var(--accent); box-shadow: 0 -2px var(--accent), 0 1px 1px rgba(0,0,0,.04); }
 .task-card > a { display: block; }
 .task-card h3 { margin: 0 0 20px; font-size: 13px; font-weight: 480; line-height: 18px; }
 .task-card.editable .card-meta::after { width: 28px; flex: 0 0 28px; content: ""; }
@@ -767,6 +770,9 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .bulk-bar b { padding: 0 9px; font-size: 11px; font-weight: 570; }
 .bulk-bar select, .bulk-bar button { height: 29px; padding: 0 8px; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text-secondary); cursor: pointer; }
 .bulk-bar button { display: inline-flex; align-items: center; gap: 5px; }
+.bulk-assignee { display: flex; align-items: center; }
+.bulk-assignee input { width: 126px; height: 29px; padding: 0 8px; border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text); font-size: 11px; }
+.bulk-assignee input::placeholder { color: var(--muted); }
 
 .workspace-overview { flex: 1; min-width: 0; padding: 18px; overflow-y: auto; overflow-x: hidden; background: var(--surface-subtle); }
 .workspace-empty-banner { min-height: 116px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 14px; margin-bottom: 12px; padding: 18px; border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--active) 48%, var(--raised)); }

@@ -12,6 +12,7 @@ import {
 import { ConflictError, PermissionError, ValidationError } from "../lib/domain";
 import {
   bulkUpdateTasks,
+  bulkMoveTasks,
   bulkSetTaskLabel,
   createLabel,
   createProject,
@@ -27,6 +28,7 @@ import {
   moveTask,
   queryTaskSummaries,
   revokeAccess,
+  reorderTask,
   searchTaskIds,
   searchTaskSummaries,
   setTaskLabel,
@@ -37,10 +39,12 @@ import {
   updateLabel,
 } from "../lib/repository";
 import { createTaskRelation } from "../lib/task-relations";
+import type { TaskRecord } from "../lib/types";
 import { GET as searchTasksRoute, POST as createTaskRoute } from "../app/api/tasks/route";
 import { POST as queryTasksRoute } from "../app/api/tasks/query/route";
 import { GET as getTaskRoute, PATCH as updateTaskRoute } from "../app/api/tasks/[id]/route";
 import { POST as moveTaskRoute } from "../app/api/tasks/[id]/move/route";
+import { POST as reorderTaskRoute } from "../app/api/tasks/[id]/reorder/route";
 import { createD1TestHarness } from "./helpers/d1";
 
 const ownerActor = {
@@ -160,7 +164,7 @@ test("one ACL-scoped filter engine covers every Task field, hierarchy, relations
   const completed = statuses.find((item) => item.category === "completed")!;
   const canceled = statuses.find((item) => item.category === "canceled" && item.systemRole !== "duplicate")!;
 
-  const parentIdentity = await createTask(owner, { title: "Filter parent", projectId: project.id });
+  const parentIdentity = await createTask(owner, { title: "Filter parent", projectId: project.id, assigneeUserId: null });
   const targetIdentity = await createTask(owner, {
     title: "Filter target needle",
     projectId: project.id,
@@ -172,11 +176,11 @@ test("one ACL-scoped filter engine covers every Task field, hierarchy, relations
     dueDate: "2026-08-24",
     labelIds: [label.id],
   });
-  const childIdentity = await createTask(owner, { title: "Filter child", projectId: project.id });
-  const relatedIdentity = await createTask(owner, { title: "Filter related", projectId: project.id });
-  const completedIdentity = await createTask(owner, { title: "Filter completed", projectId: project.id, statusId: completed.id });
-  const canceledIdentity = await createTask(owner, { title: "Filter canceled", projectId: project.id, statusId: canceled.id });
-  const archivedIdentity = await createTask(owner, { title: "Filter archived", projectId: project.id });
+  const childIdentity = await createTask(owner, { title: "Filter child", projectId: project.id, assigneeUserId: null });
+  const relatedIdentity = await createTask(owner, { title: "Filter related", projectId: project.id, assigneeUserId: null });
+  const completedIdentity = await createTask(owner, { title: "Filter completed", projectId: project.id, statusId: completed.id, assigneeUserId: owner.id });
+  const canceledIdentity = await createTask(owner, { title: "Filter canceled", projectId: project.id, statusId: canceled.id, assigneeUserId: owner.id });
+  const archivedIdentity = await createTask(owner, { title: "Filter archived", projectId: project.id, assigneeUserId: owner.id });
 
   let snapshot = await getSnapshot(owner);
   const child = snapshot.tasks.find((item) => item.id === childIdentity.id)!;
@@ -226,6 +230,23 @@ test("one ACL-scoped filter engine covers every Task field, hierarchy, relations
   assert.ok((await queryTaskSummaries(owner, {
     query: { version: 1, op: "all", conditions: [], search: "target needle" },
   })).taskIds.includes(target.id));
+
+  const myTasks = await queryTaskSummaries(owner, { surface: "mine" });
+  assert.ok(myTasks.taskIds.includes(target.id));
+  assert.ok(myTasks.taskIds.includes(completedIdentity.id));
+  assert.ok(myTasks.taskIds.includes(canceledIdentity.id));
+  assert.ok(!myTasks.taskIds.includes(parent.id));
+  assert.ok(!myTasks.taskIds.includes(archivedIdentity.id));
+  const allTasks = await queryTaskSummaries(owner, { surface: "all" });
+  assert.ok(allTasks.taskIds.includes(target.id));
+  assert.ok(allTasks.taskIds.includes(parent.id));
+  await assert.rejects(
+    queryTaskSummaries(owner, {
+      surface: "mine",
+      query: { version: 1, op: "all", conditions: [{ field: "assignee", operator: "is", value: outsider.id }] },
+    }),
+    /assignee filter is inaccessible/i,
+  );
 
   configureActorResolverForTests(async () => ({
     ...ownerActor,
@@ -887,6 +908,7 @@ test("bulk mutations return only updated task records", async () => {
 
   const updated = await bulkUpdateTasks(owner, {
     ids: selected.map((task) => task.id),
+    versions: Object.fromEntries(selected.map((task) => [task.id, task.version])),
     field: "priority",
     value: "high",
   });
@@ -894,6 +916,293 @@ test("bulk mutations return only updated task records", async () => {
   assert.equal(updated.length, 2);
   assert.ok(updated.every((task) => task.priority === "high"));
   assert.ok(updated.every((task) => task.version === 2));
+});
+
+test("bulk assignee changes are atomic, versioned, ACL-safe, and reversible", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "bulk-assignee-owner",
+    email: "bulk-assignee-owner@example.test",
+  });
+  const member = await getOrCreateUser({
+    ...collaboratorActor,
+    providerAccountKey: "bulk-assignee-member",
+    email: "bulk-assignee-member@example.test",
+  });
+  const outsider = await getOrCreateUser({
+    ...outsiderActor,
+    providerAccountKey: "bulk-assignee-outsider",
+    email: "bulk-assignee-outsider@example.test",
+  });
+  await createProject(owner, { name: "Bulk assignee A", taskCode: "BA" });
+  await createProject(owner, { name: "Bulk assignee B", taskCode: "BB" });
+  let ownerSnapshot = await getSnapshot(owner);
+  const projectA = ownerSnapshot.projects.find((project) => project.name === "Bulk assignee A")!;
+  const projectB = ownerSnapshot.projects.find((project) => project.name === "Bulk assignee B")!;
+  for (const project of [projectA, projectB]) {
+    await grantAccess(owner, {
+      resourceType: "project",
+      resourceId: project.id,
+      email: member.email,
+      permission: "editor",
+    });
+  }
+  await createTask(owner, { title: "Bulk assignee one", projectId: projectA.id, assigneeUserId: null });
+  await createTask(owner, { title: "Bulk assignee two", projectId: projectB.id, assigneeUserId: null });
+  const selected = () => getSnapshot(owner).then((snapshot) => snapshot.tasks.filter(
+    (task) => task.title === "Bulk assignee one" || task.title === "Bulk assignee two",
+  ));
+  const request = (tasks: TaskRecord[], value: string | null) => ({
+    ids: tasks.map((task) => task.id),
+    versions: Object.fromEntries(tasks.map((task) => [task.id, task.version])),
+    field: "assigneeUserId",
+    value,
+  });
+
+  let tasks = await selected();
+  let updated = await bulkUpdateTasks(owner, request(tasks, member.id));
+  assert.equal(updated.length, 2);
+  assert.ok(updated.every((task) => task.assigneeUserId === member.id));
+
+  updated = await bulkUpdateTasks(owner, request(updated, null));
+  assert.ok(updated.every((task) => task.assigneeUserId === null));
+
+  await assert.rejects(
+    bulkUpdateTasks(owner, request(updated, outsider.id)),
+    /assignee must have access/i,
+  );
+  assert.ok((await selected()).every((task) => task.assigneeUserId === null));
+
+  const stale = await selected();
+  await updateTask(owner, stale[0]!.id, {
+    version: stale[0]!.version,
+    priority: "urgent",
+  });
+  await assert.rejects(
+    bulkUpdateTasks(owner, request(stale, owner.id)),
+    ConflictError,
+  );
+  assert.ok((await selected()).every((task) => task.assigneeUserId === null));
+
+  ownerSnapshot = await getSnapshot(owner);
+  const projectBGrant = ownerSnapshot.collaborators.find((grant) =>
+    grant.resourceType === "project" &&
+    grant.resourceId === projectB.id &&
+    grant.userId === member.id
+  )!;
+  await updateAccessRole(owner, projectBGrant.grantId, { permission: "viewer" });
+  tasks = await selected();
+  const memberTasks = (await getSnapshot(member)).tasks.filter((task) =>
+    tasks.some((selectedTask) => selectedTask.id === task.id)
+  );
+  await assert.rejects(
+    bulkUpdateTasks(member, request(memberTasks, member.id)),
+    PermissionError,
+  );
+  assert.ok((await selected()).every((task) => task.assigneeUserId === null));
+});
+
+test("bulk Project and Release changes preserve identity and roll back every invalid set", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "bulk-move-owner",
+    email: "bulk-move-owner@example.test",
+  });
+  await createProject(owner, { name: "Bulk move source", taskCode: "BS" });
+  await createProject(owner, { name: "Bulk move target", taskCode: "BT" });
+  let snapshot = await getSnapshot(owner);
+  const source = snapshot.projects.find((project) => project.name === "Bulk move source")!;
+  const target = snapshot.projects.find((project) => project.name === "Bulk move target")!;
+  await createRelease(owner, { name: "Source release", projectId: source.id });
+  await createRelease(owner, { name: "Target release", projectId: target.id });
+  snapshot = await getSnapshot(owner);
+  const sourceRelease = snapshot.releases.find((release) => release.name === "Source release")!;
+  const targetRelease = snapshot.releases.find((release) => release.name === "Target release")!;
+  await createTask(owner, { title: "Bulk move one", projectId: source.id, releaseId: sourceRelease.id });
+  await createTask(owner, { title: "Bulk move two", projectId: source.id });
+  snapshot = await getSnapshot(owner);
+  const selected = snapshot.tasks.filter((task) => task.title === "Bulk move one" || task.title === "Bulk move two");
+  const originalPublicIds = new Map(selected.map((task) => [task.id, task.publicId]));
+  const originalIdentifiers = new Map(selected.map((task) => [task.id, task.identifier]));
+  const versions = Object.fromEntries(selected.map((task) => [task.id, task.version]));
+  const targetSequence = target.taskSequence;
+
+  await assert.rejects(
+    bulkMoveTasks(owner, {
+      ids: selected.map((task) => task.id),
+      versions,
+      targetProjectId: target.id,
+    }),
+    /clearing incompatible Releases/i,
+  );
+  assert.equal((await getSnapshot(owner)).projects.find((project) => project.id === target.id)?.taskSequence, targetSequence);
+
+  const moved = await bulkMoveTasks(owner, {
+    ids: selected.map((task) => task.id),
+    versions,
+    targetProjectId: target.id,
+    clearRelease: true,
+  });
+  assert.deepEqual(moved.map((task) => task.identifier).sort(), [
+    `BT-${targetSequence + 1}`,
+    `BT-${targetSequence + 2}`,
+  ]);
+  assert.ok(moved.every((task) => task.projectId === target.id && task.releaseId === null));
+  assert.ok(moved.every((task) => task.publicId === originalPublicIds.get(task.id)));
+  for (const task of moved) {
+    assert.ok((await searchTaskIds(owner, originalIdentifiers.get(task.id)!)).includes(task.id));
+  }
+
+  const sequenceAfterMove = (await getSnapshot(owner)).projects.find((project) => project.id === target.id)!.taskSequence;
+  const noOp = await bulkMoveTasks(owner, {
+    ids: moved.map((task) => task.id),
+    versions: Object.fromEntries(moved.map((task) => [task.id, task.version])),
+    targetProjectId: target.id,
+  });
+  assert.deepEqual(noOp.map((task) => task.version), moved.map((task) => task.version));
+  assert.equal((await getSnapshot(owner)).projects.find((project) => project.id === target.id)?.taskSequence, sequenceAfterMove);
+
+  let released = await bulkUpdateTasks(owner, {
+    ids: moved.map((task) => task.id),
+    versions: Object.fromEntries(moved.map((task) => [task.id, task.version])),
+    field: "releaseId",
+    value: targetRelease.id,
+  });
+  assert.ok(released.every((task) => task.releaseId === targetRelease.id && task.projectId === target.id));
+  released = await bulkUpdateTasks(owner, {
+    ids: released.map((task) => task.id),
+    versions: Object.fromEntries(released.map((task) => [task.id, task.version])),
+    field: "releaseId",
+    value: null,
+  });
+  assert.ok(released.every((task) => task.releaseId === null));
+
+  await createTask(owner, { title: "Bulk hierarchy parent", projectId: source.id });
+  await createTask(owner, { title: "Bulk hierarchy child", projectId: source.id });
+  snapshot = await getSnapshot(owner);
+  const hierarchyParent = snapshot.tasks.find((task) => task.title === "Bulk hierarchy parent")!;
+  const hierarchyChild = snapshot.tasks.find((task) => task.title === "Bulk hierarchy child")!;
+  await setTaskParent(owner, hierarchyChild.id, { version: hierarchyChild.version, parentTaskId: hierarchyParent.id });
+  snapshot = await getSnapshot(owner);
+  const hierarchyTasks = snapshot.tasks.filter((task) => task.id === hierarchyParent.id || task.id === hierarchyChild.id);
+  const sequenceBeforeBlocked = snapshot.projects.find((project) => project.id === target.id)!.taskSequence;
+  await assert.rejects(
+    bulkMoveTasks(owner, {
+      ids: hierarchyTasks.map((task) => task.id),
+      versions: Object.fromEntries(hierarchyTasks.map((task) => [task.id, task.version])),
+      targetProjectId: target.id,
+      clearRelease: true,
+    }),
+    /hierarch/i,
+  );
+  snapshot = await getSnapshot(owner);
+  assert.equal(snapshot.projects.find((project) => project.id === target.id)?.taskSequence, sequenceBeforeBlocked);
+  assert.ok(snapshot.tasks.filter((task) => hierarchyTasks.some((selectedTask) => selectedTask.id === task.id)).every((task) => task.projectId === source.id));
+});
+
+test("manual rank reorder is neighbor-bound, atomic across groups, and conflict-safe", async () => {
+  const actor = {
+    ...ownerActor,
+    providerAccountKey: "rank-owner",
+    email: "rank-owner@example.test",
+  };
+  const owner = await getOrCreateUser(actor);
+  await createProject(owner, { name: "Manual rank", taskCode: "MR" });
+  let snapshot = await getSnapshot(owner);
+  const project = snapshot.projects.find((item) => item.name === "Manual rank")!;
+  for (const title of ["Rank A", "Rank B", "Rank C", "Rank D"]) {
+    await createTask(owner, { title, projectId: project.id });
+  }
+  snapshot = await getSnapshot(owner);
+  const ordered = snapshot.tasks
+    .filter((task) => task.projectId === project.id)
+    .sort((left, right) => left.rank - right.rank);
+  const [taskA, taskB, taskC, taskD] = ordered;
+  assert.ok(taskA && taskB && taskC && taskD);
+
+  const movedFirst = await reorderTask(owner, taskD.id, {
+    version: taskD.version,
+    groupBy: "status",
+    expectedGroupValue: taskD.statusId,
+    targetGroupValue: taskA.statusId,
+    previousTaskId: null,
+    nextTaskId: taskA.id,
+  });
+  assert.ok(movedFirst.rank < taskA.rank);
+
+  const started = snapshot.statuses.find((status) =>
+    status.ownerUserId === owner.id && status.category === "started"
+  )!;
+  const movedGroup = await reorderTask(owner, taskC.id, {
+    version: taskC.version,
+    groupBy: "status",
+    expectedGroupValue: taskC.statusId,
+    targetGroupValue: started.id,
+    previousTaskId: null,
+    nextTaskId: null,
+  });
+  assert.equal(movedGroup.statusId, started.id);
+  assert.equal(movedGroup.rank, 1000);
+
+  const beforeInvalid = (await getSnapshot(owner)).tasks.find((task) => task.id === taskB.id)!;
+  await assert.rejects(
+    reorderTask(owner, beforeInvalid.id, {
+      version: beforeInvalid.version,
+      groupBy: "status",
+      expectedGroupValue: beforeInvalid.statusId,
+      targetGroupValue: beforeInvalid.statusId,
+      previousTaskId: null,
+      nextTaskId: movedGroup.id,
+    }),
+    /neighbor changed groups/i,
+  );
+  assert.equal((await getSnapshot(owner)).tasks.find((task) => task.id === taskB.id)?.rank, beforeInvalid.rank);
+
+  const current = (await getSnapshot(owner)).tasks.filter((task) => task.projectId === project.id);
+  const currentA = current.find((task) => task.id === taskA.id)!;
+  const currentB = current.find((task) => task.id === taskB.id)!;
+  const currentD = current.find((task) => task.id === taskD.id)!;
+  const results = await Promise.allSettled([
+    reorderTask(owner, currentA.id, {
+      version: currentA.version,
+      groupBy: "status",
+      expectedGroupValue: currentA.statusId,
+      targetGroupValue: currentA.statusId,
+      previousTaskId: currentD.id,
+      nextTaskId: currentB.id,
+    }),
+    reorderTask(owner, currentB.id, {
+      version: currentB.version,
+      groupBy: "status",
+      expectedGroupValue: currentB.statusId,
+      targetGroupValue: currentB.statusId,
+      previousTaskId: currentD.id,
+      nextTaskId: currentA.id,
+    }),
+  ]);
+  assert.ok(results.some((result) => result.status === "fulfilled"));
+  const rankedTasks = (await getSnapshot(owner)).tasks.filter((task) => task.projectId === project.id);
+  for (const statusId of new Set(rankedTasks.map((task) => task.statusId))) {
+    const ranks = rankedTasks.filter((task) => task.statusId === statusId).map((task) => task.rank);
+    assert.equal(new Set(ranks).size, ranks.length);
+  }
+
+  configureActorResolverForTests(async () => actor);
+  const latest = (await getSnapshot(owner)).tasks.find((task) => task.id === taskD.id)!;
+  const response = await reorderTaskRoute(new Request("https://example.test/api/tasks/reorder", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      version: latest.version,
+      groupBy: "status",
+      expectedGroupValue: latest.statusId,
+      targetGroupValue: latest.statusId,
+      previousTaskId: null,
+      nextTaskId: null,
+    }),
+  }), { params: Promise.resolve({ id: latest.id }) });
+  assert.equal(response.status, 200);
+  configureActorResolverForTests(null);
 });
 
 test("workspace snapshots expose an explicit bounded task window", async () => {

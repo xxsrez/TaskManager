@@ -10,6 +10,7 @@ import {
   resolveNavigationHistoryState,
   resolveNavigationTarget,
 } from "../lib/navigation";
+import { metadataForNavigation } from "../lib/navigation-metadata";
 import type { AppSnapshot } from "../lib/types";
 
 const projectPublicId = "11111111-1111-4111-8111-111111111111";
@@ -49,13 +50,18 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(parseNavigationPath("/admin"), { kind: "admin" });
   assert.deepEqual(parseNavigationPath("/issues"), {
     kind: "issues",
-    filter: "all",
+    filter: "mine",
     layout: "list",
   });
   assert.deepEqual(parseNavigationPath("/issues/board"), {
     kind: "issues",
-    filter: "all",
+    filter: "mine",
     layout: "board",
+  });
+  assert.deepEqual(parseNavigationPath("/issues/all"), {
+    kind: "issues",
+    filter: "all",
+    layout: "list",
   });
   assert.deepEqual(parseNavigationPath("/views"), { kind: "views" });
   assert.deepEqual(parseNavigationPath("/projects"), { kind: "projects" });
@@ -243,7 +249,34 @@ test("legacy internal routes resolve but point to canonical public URLs", () => 
 test("old built-in view links redirect into the issues namespace", () => {
   const target = parseNavigationPath("/views/all");
   assert.ok(target);
-  assert.equal(legacyRedirectPath(target, snapshot), "/issues");
+  assert.equal(legacyRedirectPath(target, snapshot), "/issues/all");
+});
+
+test("My tasks and All tasks keep distinct canonical URLs", () => {
+  assert.equal(
+    navigationPath({ surface: "mine", layout: "list", taskId: null }, snapshot),
+    "/issues",
+  );
+  assert.equal(
+    navigationPath({ surface: "mine", layout: "board", taskId: null }, snapshot),
+    "/issues/board",
+  );
+  assert.equal(
+    navigationPath({ surface: "all", layout: "list", taskId: null }, snapshot),
+    "/issues/all",
+  );
+  assert.equal(
+    navigationPath({ surface: "all", layout: "board", taskId: null }, snapshot),
+    "/issues/all/board",
+  );
+  assert.equal(
+    metadataForNavigation({ surface: "mine", layout: "list", taskId: null }, snapshot).title,
+    "My tasks – Task Manager",
+  );
+  assert.equal(
+    metadataForNavigation({ surface: "all", layout: "list", taskId: null }, snapshot).title,
+    "All tasks – Task Manager",
+  );
 });
 
 test("unknown, mismatched, and malformed targets fail closed", () => {

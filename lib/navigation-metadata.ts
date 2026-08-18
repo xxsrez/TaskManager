@@ -55,8 +55,9 @@ export function metadataForNavigation(
       title = `${project.name} releases – Task Manager`;
       description = `Releases in ${project.name}.`;
     }
-  } else if (["all", "active", "backlog", "archived"].includes(navigation.surface)) {
+  } else if (["mine", "all", "active", "backlog", "archived"].includes(navigation.surface)) {
     const label = {
+      mine: "My tasks",
       all: "All tasks",
       active: "Active",
       backlog: "Backlog",

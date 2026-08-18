@@ -1,9 +1,16 @@
 import { readJson, withUser } from "@/lib/http";
-import { bulkUpdateTasks } from "@/lib/repository";
+import { bulkMoveTasks, bulkUpdateTasks } from "@/lib/repository";
 
 export async function POST(request: Request) {
   const input = await readJson(request);
   return withUser(async (user) => {
-    return { taskUpdates: await bulkUpdateTasks(user, input) };
+    return {
+      taskUpdates: input.field === "projectId"
+        ? await bulkMoveTasks(user, {
+            ...input,
+            targetProjectId: input.value,
+          })
+        : await bulkUpdateTasks(user, input),
+    };
   });
 }

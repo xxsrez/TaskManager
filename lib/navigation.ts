@@ -1,7 +1,7 @@
 import type { AppSnapshot } from "./types";
 
 export type Layout = "list" | "board";
-export type IssueFilter = "all" | "active" | "backlog" | "archived";
+export type IssueFilter = "mine" | "all" | "active" | "backlog" | "archived";
 
 export type NavigationTarget =
   | { kind: "root" }
@@ -35,6 +35,7 @@ export type ResolvedNavigation = {
 const navigationStateKey = "taskManagerNavigation";
 
 export const builtInViewIds = new Set<IssueFilter>([
+  "mine",
   "all",
   "active",
   "backlog",
@@ -349,13 +350,13 @@ export function resolveNavigationHistoryState(
 
 function parseIssueSegments(segments: string[]): NavigationTarget | null {
   if (segments.length === 1) {
-    return { kind: "issues", filter: "all", layout: "list" };
+    return { kind: "issues", filter: "mine", layout: "list" };
   }
   if (segments.length === 2 && segments[1] === "board") {
-    return { kind: "issues", filter: "all", layout: "board" };
+    return { kind: "issues", filter: "mine", layout: "board" };
   }
   const filter = parseIssueFilter(segments[1]);
-  if (filter && filter !== "all") {
+  if (filter) {
     if (segments.length === 2) {
       return { kind: "issues", filter, layout: "list" };
     }
@@ -444,7 +445,7 @@ function collectionPath(base: string, layout: Layout): string {
 }
 
 function issueCollectionPath(filter: IssueFilter, layout: Layout): string {
-  const base = filter === "all" ? "/issues" : `/issues/${filter}`;
+  const base = filter === "mine" ? "/issues" : `/issues/${filter}`;
   return layout === "board" ? `${base}/board` : base;
 }
 

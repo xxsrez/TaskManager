@@ -8,6 +8,9 @@ import {
   commentDraftStorageKey,
   fetchTaskSnapshot,
   applyMutationResult,
+  bulkAssigneeOptions,
+  BulkProjectDialog,
+  BulkReleaseDialog,
   mergeDeferredSnapshot,
   nextTaskActivityInvalidationCursor,
   mergeSearchTaskSummaries,
@@ -299,6 +302,97 @@ test("bulk archive action restores an entirely archived selection", () => {
     resolveArchiveBulkAction([{ archivedAt: now }, { archivedAt: now }]),
     { archived: false, label: "Restore" },
   );
+});
+
+test("bulk assignee candidates are the privacy-safe intersection of selected Task audiences", () => {
+  const common = { id: "user-common", displayName: "Common Member", email: "common@example.test", timezone: "UTC" };
+  const onlyA = { id: "user-a", displayName: "Only A", email: "a@example.test", timezone: "UTC" };
+  const onlyB = { id: "user-b", displayName: "Only B", email: "b@example.test", timezone: "UTC" };
+  const projectB = { ...snapshot.projects[0]!, id: "project-2", publicId: "22222222-2222-4222-8222-222222222222", name: "Second", taskCode: "SC" };
+  const taskB = { ...snapshot.tasks[0]!, id: "task-2", publicId: "44444444-4444-4444-8444-444444444444", projectId: projectB.id, identifier: "SC-1" };
+  const data: AppSnapshot = {
+    ...snapshot,
+    users: [common, onlyA, onlyB],
+    projects: [snapshot.projects[0]!, projectB],
+    tasks: [snapshot.tasks[0]!, taskB],
+    collaborators: [
+      { grantId: "common-a", resourceType: "project", resourceId: "project-1", userId: common.id, displayName: common.displayName, email: common.email, permission: "editor" },
+      { grantId: "common-b", resourceType: "project", resourceId: "project-2", userId: common.id, displayName: common.displayName, email: common.email, permission: "viewer" },
+      { grantId: "only-a", resourceType: "project", resourceId: "project-1", userId: onlyA.id, displayName: onlyA.displayName, email: onlyA.email, permission: "editor" },
+      { grantId: "only-b", resourceType: "project", resourceId: "project-2", userId: onlyB.id, displayName: onlyB.displayName, email: onlyB.email, permission: "editor" },
+    ],
+  };
+
+  assert.deepEqual(
+    bulkAssigneeOptions(data, data.tasks).map((user) => user.id),
+    [common.id, snapshot.user.id],
+  );
+});
+
+test("bulk Project and Release dialogs preview every explicit consequence", () => {
+  const target = {
+    ...snapshot.projects[0]!,
+    id: "project-target",
+    publicId: "55555555-5555-4555-8555-555555555555",
+    name: "Target",
+    taskCode: "TG",
+    taskSequence: 40,
+  };
+  const member = { id: "member-source", displayName: "Source only", email: "source@example.test", timezone: "UTC" };
+  const sourceRelease = {
+    id: "release-source",
+    publicId: "66666666-6666-4666-8666-666666666666",
+    projectId: "project-1",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "Released source",
+    description: "",
+    status: "released" as const,
+    targetDate: null,
+    releasedAt: now,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const selected = [
+    { ...snapshot.tasks[0]!, releaseId: sourceRelease.id, assigneeUserId: member.id },
+    { ...snapshot.tasks[0]!, id: "task-2", publicId: "77777777-7777-4777-8777-777777777777", identifier: "TM-2", sequenceNumber: 2 },
+  ];
+  const data: AppSnapshot = {
+    ...snapshot,
+    users: [member],
+    projects: [snapshot.projects[0]!, target],
+    releases: [sourceRelease],
+    tasks: selected,
+    collaborators: [{ grantId: "source-member", resourceType: "project", resourceId: "project-1", userId: member.id, displayName: member.displayName, email: member.email, permission: "editor" }],
+  };
+  const projectMarkup = renderToStaticMarkup(createElement(BulkProjectDialog, {
+    data,
+    tasks: selected,
+    initialTargetProjectId: target.id,
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+  }));
+  const releaseMarkup = renderToStaticMarkup(createElement(BulkReleaseDialog, {
+    data,
+    tasks: [selected[0]!, { ...selected[1]!, projectId: target.id }],
+    initialChoice: "__clear__",
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+  }));
+
+  assert.match(projectMarkup, /<b>2<\/b> Tasks will move to <b>Target/);
+  assert.match(projectMarkup, /TG-41<\/b>.*TG-42/);
+  assert.match(projectMarkup, /Clear 1 incompatible Release assignment/);
+  assert.match(projectMarkup, /Clear 1 assignee without target access/);
+  assert.match(projectMarkup, /Confirm changing 1 released Release composition/);
+  assert.match(projectMarkup, /<button class="button primary" disabled="">Move tasks/);
+  assert.match(releaseMarkup, /span multiple Projects/);
+  assert.match(releaseMarkup, /Only clearing Release is compatible/);
 });
 
 test("workspace overview is a distinct linked surface", () => {
@@ -1040,6 +1134,37 @@ test("an unassigned task row does not invent a current-user assignee", () => {
   assert.doesNotMatch(markup, /title="Assignee"/);
 });
 
+test("My tasks and All tasks render distinct task sets and navigation identity", () => {
+  const assigned = {
+    ...snapshot.tasks[0]!,
+    id: "task-assigned",
+    publicId: "99999999-9999-4999-8999-999999999999",
+    identifier: "TM-2",
+    sequenceNumber: 2,
+    title: "Assigned to me",
+    assigneeUserId: snapshot.user.id,
+    rank: 2000,
+  };
+  const data = { ...snapshot, tasks: [snapshot.tasks[0]!, assigned] };
+  const myTasks = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: data,
+    initialNavigation: { surface: "mine", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+  const allTasks = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: data,
+    initialNavigation: { surface: "all", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+
+  assert.match(myTasks, /Assigned to me/);
+  assert.doesNotMatch(myTasks, /Direct task/);
+  assert.match(myTasks, /href="\/issues"[^>]*aria-current="page"/);
+  assert.match(allTasks, /Assigned to me/);
+  assert.match(allTasks, /Direct task/);
+  assert.match(allTasks, /href="\/issues\/all"/);
+});
+
 test("native Label chips render consistently in task list and board", () => {
   const labelled: AppSnapshot = {
     ...snapshot,
@@ -1253,6 +1378,47 @@ test("editable status-grouped list rows expose the same drag affordance as board
   assert.match(listMarkup, /class="task-row[^>]*draggable="true"/);
   assert.match(listMarkup, /data-drop-target="status"/);
   assert.match(boardMarkup, /class="task-card editable[^>]*draggable="true"/);
+});
+
+test("non-manual ordering disables pointer and keyboard reordering in list and board", () => {
+  const sortedSnapshot: AppSnapshot = {
+    ...snapshot,
+    views: [{
+      id: "view-sorted",
+      publicId: "88888888-8888-4888-8888-888888888888",
+      ownerUserId: "user-1",
+      name: "Sorted by priority",
+      scopeProjectId: null,
+      query: {},
+      display: {
+        layout: "list",
+        groupBy: "status",
+        orderBy: "priority",
+        direction: "asc",
+        showEmptyGroups: false,
+        visibleFields: ["priority"],
+      },
+      version: 1,
+      accessRole: "owner",
+    }],
+  };
+
+  for (const layout of ["list", "board"] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(TaskTracker, {
+        initialData: sortedSnapshot,
+        initialNavigation: {
+          surface: "view:view-sorted",
+          layout,
+          taskId: null,
+        },
+        signOutPath: "/sign-out",
+      }),
+    );
+
+    assert.doesNotMatch(markup, /draggable="true"/);
+    assert.match(markup, /Choose Manual order to reorder Tasks/);
+  }
 });
 
 test("a direct task render has no controlled field warnings", () => {

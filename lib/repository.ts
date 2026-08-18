@@ -73,6 +73,7 @@ import {
   changedFields,
   newActivityId,
 } from "./activity-write";
+import { rankBetweenNeighbors, taskGroupValue } from "./task-groups";
 
 type DbRow = Record<string, unknown>;
 
@@ -115,6 +116,26 @@ const editableTaskWhere = `(
     )
   ))
 )`;
+
+function accessibleTaskWhere(alias: string) {
+  return `(
+    (${alias}.project_id IS NOT NULL AND (
+      EXISTS (SELECT 1 FROM projects access_project
+        WHERE access_project.id = ${alias}.project_id AND access_project.owner_user_id = ?)
+      OR EXISTS (SELECT 1 FROM access_grants access_grant
+        WHERE access_grant.resource_type = 'project'
+          AND access_grant.resource_id = ${alias}.project_id
+          AND access_grant.grantee_user_id = ? AND access_grant.revoked_at IS NULL)
+    )) OR (${alias}.project_id IS NULL AND (
+      ${alias}.owner_user_id = ? OR EXISTS (
+        SELECT 1 FROM access_grants access_grant
+        WHERE access_grant.resource_type = 'task'
+          AND access_grant.resource_id = ${alias}.id
+          AND access_grant.grantee_user_id = ? AND access_grant.revoked_at IS NULL
+      )
+    ))
+  )`;
+}
 
 const snapshotTaskIdScopeCte = `WITH scoped_task_ids AS (
   SELECT t.id, t.updated_at,
@@ -945,7 +966,7 @@ export async function queryTaskSummaries(
     : null;
   await validateTaskFilterReferences(currentUser, query, scopeProject);
 
-  const builtInSurfaces = new Set(["all", "active", "backlog", "archived", "shared"]);
+  const builtInSurfaces = new Set(["mine", "all", "active", "backlog", "archived", "shared"]);
   if (surface.startsWith("view:")) {
     const view = await loadAccessibleView(currentUser.id, surface.slice(5));
     if (view.archivedAt) throw new NotFoundError("Saved View not found");
@@ -974,7 +995,10 @@ export async function queryTaskSummaries(
     predicates.push("v.project_id = ?");
     parameters.push(scopeProject.id);
   }
-  if (surface === "shared") {
+  if (surface === "mine") {
+    predicates.push("v.assignee_user_id = ?");
+    parameters.push(currentUser.id);
+  } else if (surface === "shared") {
     predicates.push("v.access_role <> 'owner'");
   } else if (surface.startsWith("project:")) {
     const project = await loadAccessibleProject(currentUser.id, surface.slice(8));
@@ -992,6 +1016,8 @@ export async function queryTaskSummaries(
 
   if (surface === "archived") {
     predicates.push("v.archived_at IS NOT NULL");
+  } else if (surface === "mine") {
+    predicates.push("v.archived_at IS NULL");
   } else if (!queryExplicitlyFiltersArchived(query)) {
     predicates.push("v.archived_at IS NULL");
   }
@@ -1816,6 +1842,271 @@ export async function updateTask(
   return loadAccessibleTask(currentUser.id, taskId);
 }
 
+export async function reorderTask(
+  currentUser: UserRecord,
+  taskId: string,
+  input: Record<string, unknown>,
+) {
+  const task = await loadAccessibleTask(currentUser.id, taskId);
+  requireContentEdit(task.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== task.version) {
+    throw new ConflictError("Task was changed in another session");
+  }
+  const groupBy = reorderGroupBy(input.groupBy);
+  if (!Object.hasOwn(input, "expectedGroupValue") || !Object.hasOwn(input, "targetGroupValue")) {
+    throw new ValidationError("Expected and target Task groups are required");
+  }
+  const expectedGroupValue = reorderGroupValue(groupBy, input.expectedGroupValue);
+  const targetGroupValue = reorderGroupValue(groupBy, input.targetGroupValue);
+  if (taskGroupValue(task, groupBy) !== expectedGroupValue) {
+    throw new ConflictError("Task no longer belongs to the expected group");
+  }
+  if (groupBy === "project" && targetGroupValue !== task.projectId) {
+    throw new ValidationError("Use the explicit Task move command to change Project");
+  }
+
+  let statusId = task.statusId;
+  let nextPriority = task.priority;
+  let assigneeUserId = task.assigneeUserId;
+  let releaseId = task.releaseId;
+  if (groupBy === "status") {
+    statusId = targetGroupValue!;
+    await loadStatus(task.ownerUserId, statusId);
+  } else if (groupBy === "priority") {
+    nextPriority = priority(targetGroupValue);
+  } else if (groupBy === "assignee") {
+    assigneeUserId = targetGroupValue;
+    await assertTaskAssigneeAccess(assigneeUserId, task.ownerUserId, task.projectId, task.id);
+  } else if (groupBy === "release") {
+    const currentRelease = task.releaseId
+      ? await loadAccessibleRelease(currentUser.id, task.releaseId)
+      : null;
+    const targetRelease = targetGroupValue
+      ? await loadAccessibleRelease(currentUser.id, targetGroupValue)
+      : null;
+    if (targetRelease) requireContentEdit(targetRelease.accessRole);
+    assertReleaseProject(task.projectId, targetRelease?.projectId ?? null);
+    assertReleasedCompositionChange(currentRelease, targetRelease, input);
+    releaseId = targetRelease?.id ?? null;
+  }
+
+  const previousTaskId = optionalTaskNeighbor(input.previousTaskId);
+  const nextTaskId = optionalTaskNeighbor(input.nextTaskId);
+  if (previousTaskId === task.id || nextTaskId === task.id || previousTaskId === nextTaskId && previousTaskId !== null) {
+    throw new ValidationError("Task reorder neighbors are invalid");
+  }
+  const previousTask = previousTaskId
+    ? await loadAccessibleTask(currentUser.id, previousTaskId)
+    : null;
+  const nextTask = nextTaskId
+    ? await loadAccessibleTask(currentUser.id, nextTaskId)
+    : null;
+  for (const neighbor of [previousTask, nextTask]) {
+    if (neighbor && taskGroupValue(neighbor, groupBy) !== targetGroupValue) {
+      throw new ConflictError("Task reorder neighbor changed groups");
+    }
+  }
+
+  const db = getD1();
+  let previousRank = previousTask?.rank ?? null;
+  let nextRank = nextTask?.rank ?? null;
+  if (!previousTask && !nextTask) {
+    const targetGroup = taskGroupSql("candidate", groupBy, targetGroupValue);
+    const row = await db.prepare(
+      `SELECT MAX(candidate.rank) AS last_rank FROM tasks candidate
+       WHERE candidate.id <> ? AND ${targetGroup.sql}
+         AND ${accessibleTaskWhere("candidate")}`,
+    ).bind(
+      task.id,
+      ...targetGroup.bindings,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+    ).first<{ last_rank: number | null }>();
+    previousRank = row?.last_rank === null || row?.last_rank === undefined
+      ? null
+      : Number(row.last_rank);
+    nextRank = null;
+  }
+  let rank: number;
+  try {
+    rank = rankBetweenNeighbors(previousRank, nextRank);
+  } catch (error) {
+    throw new ConflictError(error instanceof Error ? error.message : "Task rank could not be allocated");
+  }
+
+  const expectedGroup = taskGroupSql("tasks", groupBy, expectedGroupValue);
+  const targetRankGroup = taskGroupSql("ranked", groupBy, targetGroupValue);
+  const neighborGuards: string[] = [];
+  const neighborBindings: unknown[] = [];
+  for (const [alias, neighbor] of [["previous_neighbor", previousTask], ["next_neighbor", nextTask]] as const) {
+    if (!neighbor) continue;
+    const neighborGroup = taskGroupSql(alias, groupBy, targetGroupValue);
+    neighborGuards.push(
+      `EXISTS (SELECT 1 FROM tasks ${alias}
+       WHERE ${alias}.id = ? AND ${alias}.rank = ? AND ${neighborGroup.sql}
+         AND ${accessibleTaskWhere(alias)})`,
+    );
+    neighborBindings.push(
+      neighbor.id,
+      neighbor.rank,
+      ...neighborGroup.bindings,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+    );
+  }
+  const now = new Date().toISOString();
+  const targetStatus = await loadStatus(task.ownerUserId, statusId, { allowArchived: true });
+  const timestamps = statusTimestamps(targetStatus.category, task, now);
+  const changes = changedFields([
+    ["status", task.statusId, statusId],
+    ["priority", task.priority, nextPriority],
+    ["assigneeUserId", task.assigneeUserId, assigneeUserId],
+    ["releaseId", task.releaseId, releaseId],
+    ["rank", task.rank, rank],
+  ]);
+  if (!Object.keys(changes).length) return task;
+  const activity = activityEventStatement(db, currentUser, {
+    taskId: task.id,
+    eventType: statusId !== task.statusId ? "status_changed" : "task_updated",
+    payload: { changes, reorder: true },
+    createdAt: now,
+  });
+  const guardSql = neighborGuards.length ? ` AND ${neighborGuards.join(" AND ")}` : "";
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch([
+      db.prepare(
+        `UPDATE tasks SET status_id = ?, priority = ?, assignee_user_id = ?,
+           release_id = ?, rank = ?, started_at = ?, completed_at = ?, canceled_at = ?,
+           version = version + 1, updated_at = ?
+         WHERE id = ? AND version = ? AND ${expectedGroup.sql}
+           AND ${editableTaskWhere}${guardSql}
+           AND NOT EXISTS (
+             SELECT 1 FROM tasks ranked
+             WHERE ranked.id <> tasks.id AND ranked.rank = ?
+               AND ${targetRankGroup.sql}
+               AND ${accessibleTaskWhere("ranked")}
+           )
+           AND (? IS NULL OR EXISTS (
+             SELECT 1 FROM users assignee WHERE assignee.id = ? AND (
+               EXISTS (SELECT 1 FROM projects assignment_project
+                 WHERE assignment_project.id = tasks.project_id AND (
+                   assignment_project.owner_user_id = assignee.id OR EXISTS (
+                     SELECT 1 FROM access_grants assignment_grant
+                     WHERE assignment_grant.resource_type = 'project'
+                       AND assignment_grant.resource_id = assignment_project.id
+                       AND assignment_grant.grantee_user_id = assignee.id
+                       AND assignment_grant.revoked_at IS NULL
+                   )
+                 ))
+             )
+           ))
+           AND (? IS NULL OR EXISTS (
+             SELECT 1 FROM releases selected_release
+             WHERE selected_release.id = ? AND selected_release.project_id = tasks.project_id
+           ))
+           AND (? = 1 OR release_id IS ? OR NOT EXISTS (
+             SELECT 1 FROM releases locked_release
+             WHERE locked_release.id IN (tasks.release_id, ?) AND locked_release.status = 'released'
+           ))`,
+      ).bind(
+        statusId,
+        nextPriority,
+        assigneeUserId,
+        releaseId,
+        rank,
+        timestamps.startedAt,
+        timestamps.completedAt,
+        timestamps.canceledAt,
+        now,
+        task.id,
+        expectedVersion,
+        ...expectedGroup.bindings,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+        ...neighborBindings,
+        rank,
+        ...targetRankGroup.bindings,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+        assigneeUserId,
+        assigneeUserId,
+        releaseId,
+        releaseId,
+        input.confirmReleasedComposition === true ? 1 : 0,
+        releaseId,
+        releaseId,
+      ),
+      activityBatchAssertion(db, `reorder_assert_${crypto.randomUUID()}`, now),
+      activity.statement,
+    ]);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError("Task order changed concurrently; reload and retry");
+    }
+    throw error;
+  }
+  if ((results[0]?.meta.changes ?? 0) < 1) {
+    throw new ConflictError("Task order changed concurrently; reload and retry");
+  }
+  return loadAccessibleTask(currentUser.id, task.id);
+}
+
+function reorderGroupBy(value: unknown): "none" | "status" | "priority" | "assignee" | "project" | "release" {
+  if (value === "none" || value === "status" || value === "priority" || value === "assignee" || value === "project" || value === "release") return value;
+  throw new ValidationError("Task reorder group is invalid");
+}
+
+function reorderGroupValue(
+  groupBy: "none" | "status" | "priority" | "assignee" | "project" | "release",
+  value: unknown,
+): string | null {
+  if (groupBy === "none") {
+    if (value !== null) throw new ValidationError("Ungrouped Task reorder value must be null");
+    return null;
+  }
+  if ((groupBy === "assignee" || groupBy === "release") && value === null) return null;
+  if (typeof value !== "string" || !value || value.length > 240) {
+    throw new ValidationError("Task reorder group value is invalid");
+  }
+  return value;
+}
+
+function optionalTaskNeighbor(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string" || !value || value.length > 240) {
+    throw new ValidationError("Task reorder neighbor is invalid");
+  }
+  return value;
+}
+
+function taskGroupSql(
+  alias: string,
+  groupBy: "none" | "status" | "priority" | "assignee" | "project" | "release",
+  value: string | null,
+): { sql: string; bindings: unknown[] } {
+  if (groupBy === "none") return { sql: "1 = 1", bindings: [] };
+  const column = {
+    status: "status_id",
+    priority: "priority",
+    assignee: "assignee_user_id",
+    project: "project_id",
+    release: "release_id",
+  }[groupBy];
+  return value === null
+    ? { sql: `${alias}.${column} IS NULL`, bindings: [] }
+    : { sql: `${alias}.${column} = ?`, bindings: [value] };
+}
+
 export async function moveTask(
   currentUser: UserRecord,
   taskId: string,
@@ -2105,6 +2396,248 @@ function isConstraintError(error: unknown) {
   return error instanceof Error && /constraint|unique|not null/i.test(error.message);
 }
 
+export async function bulkMoveTasks(
+  currentUser: UserRecord,
+  input: Record<string, unknown>,
+) {
+  const ids = Array.isArray(input.ids) ? [...new Set(input.ids.map(String))] : [];
+  if (ids.length === 0 || ids.length > 100) {
+    throw new ValidationError("Select between 1 and 100 tasks");
+  }
+  if (!input.targetProjectId) {
+    throw new ValidationError("Target Project is required");
+  }
+  const tasks = await loadAccessibleTasks(currentUser.id, ids);
+  tasks.forEach((task) => requireContentEdit(task.accessRole));
+  const versionInput = input.versions;
+  if (!versionInput || typeof versionInput !== "object" || Array.isArray(versionInput)) {
+    throw new ValidationError("Expected task versions are required");
+  }
+  const versions = versionInput as Record<string, unknown>;
+  const expectedVersions = new Map<string, number>();
+  tasks.forEach((task, index) => {
+    const address = ids[index]!;
+    const expected = Number(versions[address] ?? versions[task.id] ?? versions[task.publicId]);
+    if (!Number.isInteger(expected) || expected !== task.version) {
+      throw new ConflictError("One or more tasks changed in another session");
+    }
+    expectedVersions.set(task.id, expected);
+  });
+
+  const targetProject = await loadAccessibleProject(
+    currentUser.id,
+    String(input.targetProjectId),
+  );
+  requireContentEdit(targetProject.accessRole);
+  if (targetProject.archivedAt || targetProject.status === "canceled") {
+    throw new ValidationError("Tasks cannot be moved to this Project");
+  }
+  const movingTasks = tasks.filter((task) => task.projectId !== targetProject.id);
+  if (!movingTasks.length) return tasks;
+  if (movingTasks.some((task) => task.archivedAt)) {
+    throw new ValidationError("Restore archived Tasks before moving them");
+  }
+  for (const sourceProjectId of new Set(movingTasks.map((task) => task.projectId))) {
+    if (!sourceProjectId) throw new ValidationError("Every moved Task must have a Project");
+    const sourceProject = await loadAccessibleProject(currentUser.id, sourceProjectId);
+    requireContentEdit(sourceProject.accessRole);
+  }
+
+  const db = getD1();
+  const placeholders = movingTasks.map(() => "?").join(", ");
+  const hierarchy = await db.prepare(
+    `SELECT id FROM tasks
+     WHERE id IN (${placeholders}) AND (
+       parent_task_id IS NOT NULL OR EXISTS (
+         SELECT 1 FROM tasks child WHERE child.parent_task_id = tasks.id
+       )
+     ) LIMIT 1`,
+  ).bind(...movingTasks.map((task) => task.id)).first<DbRow>();
+  if (hierarchy) {
+    throw new ValidationError("Detach or reparent selected Task hierarchies before moving them");
+  }
+
+  const clearRelease = input.clearRelease === true;
+  if (movingTasks.some((task) => task.releaseId) && !clearRelease) {
+    throw new ValidationError("Confirm clearing incompatible Releases before moving Tasks");
+  }
+  const currentReleases = await Promise.all(
+    [...new Set(movingTasks.map((task) => task.releaseId).filter((id): id is string => Boolean(id)))]
+      .map((releaseId) => loadAccessibleRelease(currentUser.id, releaseId)),
+  );
+  if (
+    currentReleases.some((release) => release.status === "released") &&
+    input.confirmReleasedComposition !== true
+  ) {
+    throw new ValidationError("Confirm changing the composition of a released Release");
+  }
+
+  const clearAssignee = input.clearAssignee === true;
+  const nextAssignees = new Map<string, string | null>();
+  for (const task of movingTasks) {
+    let nextAssignee = task.assigneeUserId;
+    try {
+      await assertTaskAssigneeAccess(
+        nextAssignee,
+        task.ownerUserId,
+        targetProject.id,
+        task.id,
+      );
+    } catch (error) {
+      if (!(error instanceof ValidationError) || !clearAssignee) throw new ValidationError(
+        "Confirm clearing assignees without access to the target Project",
+      );
+      nextAssignee = null;
+    }
+    nextAssignees.set(task.id, nextAssignee);
+  }
+
+  const allocation = await db.prepare(
+    `SELECT MAX(
+       p.task_sequence,
+       COALESCE((SELECT MAX(t.sequence_number) FROM tasks t WHERE t.project_id = p.id), 0)
+     ) AS base_sequence
+     FROM projects p WHERE p.id = ?`,
+  ).bind(targetProject.id).first<{ base_sequence: number }>();
+  const allocationBase = Number(allocation?.base_sequence ?? targetProject.taskSequence);
+  const nextSequence = allocationBase + movingTasks.length;
+  const now = new Date().toISOString();
+  const statements: D1PreparedStatement[] = [];
+  const mutationIndexes: number[] = [];
+  statements.push(
+    db.prepare(
+      `UPDATE projects SET task_sequence = ?, code_locked_at = COALESCE(code_locked_at, ?),
+         version = version + 1, updated_at = ?
+       WHERE id = ? AND version = ? AND task_sequence = ?
+         AND archived_at IS NULL AND status <> 'canceled' AND (
+           owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants target_grant
+             WHERE target_grant.resource_type = 'project'
+               AND target_grant.resource_id = projects.id
+               AND target_grant.grantee_user_id = ?
+               AND target_grant.revoked_at IS NULL
+               AND target_grant.permission IN ('editor', 'manager', 'full_access')
+           )
+         )`,
+    ).bind(
+      nextSequence,
+      now,
+      now,
+      targetProject.id,
+      targetProject.version,
+      targetProject.taskSequence,
+      currentUser.id,
+      currentUser.id,
+    ),
+    moveBatchAssertion(db, `bulk_move_allocator_${crypto.randomUUID()}`, "allocator"),
+  );
+
+  movingTasks.forEach((task, index) => {
+    const sequenceNumber = allocationBase + index + 1;
+    const identifier = `${targetProject.taskCode}-${sequenceNumber}`;
+    const assigneeUserId = nextAssignees.get(task.id) ?? null;
+    const expectedVersion = expectedVersions.get(task.id)!;
+    mutationIndexes.push(statements.length);
+    const activity = activityEventStatement(db, currentUser, {
+      taskId: task.id,
+      eventType: "task_moved",
+      payload: {
+        changes: {
+          project: { before: { id: task.projectId }, after: { id: targetProject.id, name: targetProject.name } },
+          identifier: { before: task.identifier, after: identifier },
+          releaseId: { before: task.releaseId, after: null },
+          assigneeUserId: { before: task.assigneeUserId, after: assigneeUserId },
+        },
+        bulk: true,
+      },
+      createdAt: now,
+    });
+    statements.push(
+      db.prepare(
+        `UPDATE tasks SET project_id = ?, sequence_number = ?, identifier = ?,
+           release_id = NULL, assignee_user_id = ?, version = version + 1, updated_at = ?
+         WHERE id = ? AND version = ? AND project_id = ? AND archived_at IS NULL
+           AND parent_task_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.parent_task_id = tasks.id)
+           AND ${editableTaskWhere}
+           AND EXISTS (
+             SELECT 1 FROM projects target
+             WHERE target.id = ? AND target.archived_at IS NULL AND target.status <> 'canceled'
+               AND (target.owner_user_id = ? OR EXISTS (
+                 SELECT 1 FROM access_grants target_grant
+                 WHERE target_grant.resource_type = 'project'
+                   AND target_grant.resource_id = target.id
+                   AND target_grant.grantee_user_id = ?
+                   AND target_grant.revoked_at IS NULL
+                   AND target_grant.permission IN ('editor', 'manager', 'full_access')
+               ))
+           )
+           AND (? IS NULL OR EXISTS (
+             SELECT 1 FROM users assignee WHERE assignee.id = ? AND EXISTS (
+               SELECT 1 FROM projects target
+               WHERE target.id = ? AND (
+                 target.owner_user_id = assignee.id OR EXISTS (
+                   SELECT 1 FROM access_grants assignee_grant
+                   WHERE assignee_grant.resource_type = 'project'
+                     AND assignee_grant.resource_id = target.id
+                     AND assignee_grant.grantee_user_id = assignee.id
+                     AND assignee_grant.revoked_at IS NULL
+                 )
+               )
+             )
+           ))
+           AND (? = 1 OR NOT EXISTS (
+             SELECT 1 FROM releases current_release
+             WHERE current_release.id = tasks.release_id AND current_release.status = 'released'
+           ))`,
+      ).bind(
+        targetProject.id,
+        sequenceNumber,
+        identifier,
+        assigneeUserId,
+        now,
+        task.id,
+        expectedVersion,
+        task.projectId,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+        targetProject.id,
+        currentUser.id,
+        currentUser.id,
+        assigneeUserId,
+        assigneeUserId,
+        targetProject.id,
+        input.confirmReleasedComposition === true ? 1 : 0,
+      ),
+      moveBatchAssertion(db, `bulk_move_task_${crypto.randomUUID()}`, "task"),
+      db.prepare(
+        `INSERT OR IGNORE INTO task_identifier_aliases
+           (id, task_id, identifier, created_at) VALUES (?, ?, ?, ?)`,
+      ).bind(`alias_${crypto.randomUUID()}`, task.id, task.identifier, now),
+      activity.statement,
+    );
+  });
+
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch(statements);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError("Bulk Project move changed concurrently and was rolled back");
+    }
+    throw error;
+  }
+  if (
+    (results[0]?.meta.changes ?? 0) < 1 ||
+    mutationIndexes.some((index) => (results[index]?.meta.changes ?? 0) < 1)
+  ) {
+    throw new ConflictError("Bulk Project move changed concurrently and was rolled back");
+  }
+  return loadAccessibleTasks(currentUser.id, ids);
+}
+
 export async function bulkUpdateTasks(
   currentUser: UserRecord,
   input: Record<string, unknown>,
@@ -2114,14 +2647,68 @@ export async function bulkUpdateTasks(
     throw new ValidationError("Select between 1 and 100 tasks");
   }
   const field = input.field;
-  if (field !== "statusId" && field !== "priority" && field !== "archived") {
+  if (
+    field !== "statusId" &&
+    field !== "priority" &&
+    field !== "archived" &&
+    field !== "assigneeUserId" &&
+    field !== "releaseId"
+  ) {
     throw new ValidationError("Unsupported bulk action");
   }
   const tasks = await loadAccessibleTasks(currentUser.id, ids);
   tasks.forEach((task) => requireContentEdit(task.accessRole));
+  const versionInput = input.versions;
+  if (!versionInput || typeof versionInput !== "object" || Array.isArray(versionInput)) {
+    throw new ValidationError("Expected task versions are required");
+  }
+  const versions = versionInput as Record<string, unknown>;
+  const expectedVersions = new Map<string, number>();
+  tasks.forEach((task, index) => {
+    const address = ids[index]!;
+    const expected = Number(
+      versions[address] ?? versions[task.id] ?? versions[task.publicId],
+    );
+    if (!Number.isInteger(expected) || expected !== task.version) {
+      throw new ConflictError("One or more tasks changed in another session");
+    }
+    expectedVersions.set(task.id, expected);
+  });
   const now = new Date().toISOString();
   const db = getD1();
   const nextPriority = field === "priority" ? priority(input.value) : null;
+  const nextAssigneeUserId = field === "assigneeUserId"
+    ? requestedAssigneeUserId(input.value)
+    : null;
+  const nextRelease = field === "releaseId" && input.value !== null
+    ? await loadAccessibleRelease(currentUser.id, String(input.value))
+    : null;
+  if (nextRelease) requireContentEdit(nextRelease.accessRole);
+  if (
+    field === "releaseId" &&
+    nextRelease &&
+    tasks.some((task) => task.projectId !== nextRelease.projectId)
+  ) {
+    throw new ValidationError("Selected Release is not compatible with every Task Project");
+  }
+  if (field === "releaseId") {
+    for (const task of tasks) {
+      const currentRelease = task.releaseId
+        ? await loadAccessibleRelease(currentUser.id, task.releaseId)
+        : null;
+      assertReleasedCompositionChange(currentRelease, nextRelease, input);
+    }
+  }
+  if (field === "assigneeUserId") {
+    for (const task of tasks) {
+      await assertTaskAssigneeAccess(
+        nextAssigneeUserId,
+        task.ownerUserId,
+        task.projectId,
+        task.id,
+      );
+    }
+  }
   const targetStatus = field === "statusId"
     ? await loadStatus(tasks[0]!.ownerUserId, String(input.value))
     : null;
@@ -2145,7 +2732,7 @@ export async function bulkUpdateTasks(
           nextPriority,
           now,
           task.id,
-          task.version,
+          expectedVersions.get(task.id),
           currentUser.id,
           currentUser.id,
           currentUser.id,
@@ -2166,7 +2753,7 @@ export async function bulkUpdateTasks(
           nextArchivedAt,
           now,
           task.id,
-          task.version,
+          expectedVersions.get(task.id),
           currentUser.id,
           currentUser.id,
           currentUser.id,
@@ -2174,7 +2761,7 @@ export async function bulkUpdateTasks(
         );
       eventType = desiredArchived ? "task_archived" : "task_restored";
       changes = { archivedAt: { before: task.archivedAt, after: nextArchivedAt } };
-    } else {
+    } else if (field === "statusId") {
       if (task.statusId === targetStatus!.id) continue;
       const timestamps = statusTimestamps(targetStatus!.category, task, now);
       update = db
@@ -2190,7 +2777,7 @@ export async function bulkUpdateTasks(
           timestamps.canceledAt,
           now,
           task.id,
-          task.version,
+          expectedVersions.get(task.id),
           currentUser.id,
           currentUser.id,
           currentUser.id,
@@ -2201,6 +2788,98 @@ export async function bulkUpdateTasks(
         status: {
           before: { id: task.statusId },
           after: { id: targetStatus!.id, name: targetStatus!.name },
+        },
+      };
+    } else if (field === "assigneeUserId") {
+      if (task.assigneeUserId === nextAssigneeUserId) continue;
+      update = db
+        .prepare(
+          `UPDATE tasks SET assignee_user_id = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ? AND ${editableTaskWhere}
+             AND (
+               ? IS NULL OR EXISTS (
+                 SELECT 1 FROM users assignee
+                 WHERE assignee.id = ? AND (
+                   (tasks.project_id IS NOT NULL AND EXISTS (
+                     SELECT 1 FROM projects assignment_project
+                     WHERE assignment_project.id = tasks.project_id AND (
+                       assignment_project.owner_user_id = assignee.id OR EXISTS (
+                         SELECT 1 FROM access_grants assignment_grant
+                         WHERE assignment_grant.resource_type = 'project'
+                           AND assignment_grant.resource_id = assignment_project.id
+                           AND assignment_grant.grantee_user_id = assignee.id
+                           AND assignment_grant.revoked_at IS NULL
+                       )
+                     )
+                   )) OR
+                   (tasks.project_id IS NULL AND (
+                     tasks.owner_user_id = assignee.id OR EXISTS (
+                       SELECT 1 FROM access_grants assignment_grant
+                       WHERE assignment_grant.resource_type = 'task'
+                         AND assignment_grant.resource_id = tasks.id
+                         AND assignment_grant.grantee_user_id = assignee.id
+                         AND assignment_grant.revoked_at IS NULL
+                     )
+                   ))
+                 )
+               )
+             )`,
+        )
+        .bind(
+          nextAssigneeUserId,
+          now,
+          task.id,
+          expectedVersions.get(task.id),
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          nextAssigneeUserId,
+          nextAssigneeUserId,
+        );
+      eventType = "task_updated";
+      changes = {
+        assigneeUserId: {
+          before: task.assigneeUserId,
+          after: nextAssigneeUserId,
+        },
+      };
+    } else {
+      if (task.releaseId === nextRelease?.id) continue;
+      update = db
+        .prepare(
+          `UPDATE tasks SET release_id = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND version = ? AND ${editableTaskWhere}
+             AND (? IS NULL OR EXISTS (
+               SELECT 1 FROM releases selected_release
+               WHERE selected_release.id = ?
+                 AND selected_release.project_id = tasks.project_id
+             ))
+             AND (? = 1 OR NOT EXISTS (
+               SELECT 1 FROM releases locked_release
+               WHERE locked_release.id IN (tasks.release_id, ?)
+                 AND locked_release.status = 'released'
+             ))`,
+        )
+        .bind(
+          nextRelease?.id ?? null,
+          now,
+          task.id,
+          expectedVersions.get(task.id),
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          currentUser.id,
+          nextRelease?.id ?? null,
+          nextRelease?.id ?? null,
+          input.confirmReleasedComposition === true ? 1 : 0,
+          nextRelease?.id ?? null,
+        );
+      eventType = "task_updated";
+      changes = {
+        releaseId: {
+          before: task.releaseId,
+          after: nextRelease?.id ?? null,
         },
       };
     }

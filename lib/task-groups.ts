@@ -164,15 +164,87 @@ export function canMoveTaskToGroup(task: TaskRecord, group: TaskGroup): boolean 
   if (task.accessRole === "viewer") return false;
   if (group.status) return group.status.ownerUserId === task.ownerUserId;
   if (group.project) {
-    return group.project.ownerUserId === task.ownerUserId && group.project.accessRole !== "viewer";
+    return group.value === task.projectId && group.project.accessRole !== "viewer";
   }
   if (group.kind === "project" && group.value === null) {
     return task.accessRole === "owner";
   }
   if (group.release) {
-    return group.release.ownerUserId === task.ownerUserId && group.release.accessRole !== "viewer";
+    return group.release.projectId === task.projectId && group.release.accessRole !== "viewer";
   }
   return true;
+}
+
+export function taskGroupValue(
+  task: TaskRecord,
+  groupBy: ViewDisplay["groupBy"],
+): string | null {
+  switch (groupBy) {
+    case "none": return null;
+    case "status": return task.statusId;
+    case "priority": return task.priority;
+    case "assignee": return task.assigneeUserId;
+    case "project": return task.projectId;
+    case "release": return task.releaseId;
+  }
+}
+
+export function rankBetweenNeighbors(
+  previousRank: number | null,
+  nextRank: number | null,
+): number {
+  if (previousRank !== null && nextRank !== null) {
+    if (!Number.isFinite(previousRank) || !Number.isFinite(nextRank) || previousRank >= nextRank) {
+      throw new Error("Task neighbors are not in a stable manual order");
+    }
+    const midpoint = previousRank + (nextRank - previousRank) / 2;
+    if (!Number.isFinite(midpoint) || midpoint === previousRank || midpoint === nextRank) {
+      throw new Error("Manual rank space is exhausted; reload and retry");
+    }
+    return midpoint;
+  }
+  if (previousRank !== null) {
+    if (!Number.isFinite(previousRank)) throw new Error("Previous Task rank is invalid");
+    return previousRank + 1000;
+  }
+  if (nextRank !== null) {
+    if (!Number.isFinite(nextRank)) throw new Error("Next Task rank is invalid");
+    return nextRank - 1000;
+  }
+  return 1000;
+}
+
+export function reorderInsertionNeighbors(
+  tasks: TaskRecord[],
+  movingTaskId: string,
+  beforeTaskId: string | null,
+): { previousTaskId: string | null; nextTaskId: string | null } {
+  const candidates = tasks.filter((task) => task.id !== movingTaskId);
+  const insertionIndex = beforeTaskId === null
+    ? candidates.length
+    : candidates.findIndex((task) => task.id === beforeTaskId);
+  if (insertionIndex < 0) throw new Error("Task drop target is no longer visible");
+  return {
+    previousTaskId: candidates[insertionIndex - 1]?.id ?? null,
+    nextTaskId: candidates[insertionIndex]?.id ?? null,
+  };
+}
+
+export function keyboardReorderNeighbors(
+  tasks: TaskRecord[],
+  movingTaskId: string,
+  direction: "up" | "down",
+): { previousTaskId: string | null; nextTaskId: string | null } | null {
+  const currentIndex = tasks.findIndex((task) => task.id === movingTaskId);
+  if (currentIndex < 0) return null;
+  if (direction === "up" && currentIndex === 0) return null;
+  if (direction === "down" && currentIndex === tasks.length - 1) return null;
+  const candidates = tasks.filter((task) => task.id !== movingTaskId);
+  const insertionIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+  return {
+    previousTaskId: candidates[insertionIndex - 1]?.id ?? null,
+    nextTaskId: candidates[insertionIndex]?.id ?? null,
+  };
 }
 
 export function taskGroupMutation(

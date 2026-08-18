@@ -3,7 +3,10 @@ import test from "node:test";
 import {
   buildTaskGroups,
   canMoveTaskToGroup,
+  keyboardReorderNeighbors,
   projectTaskGroupMove,
+  rankBetweenNeighbors,
+  reorderInsertionNeighbors,
   rollbackTaskGroupMove,
   shouldShowEmptyTaskGroups,
   taskGroupCreateDefaults,
@@ -335,4 +338,74 @@ test("group moves fail closed across owner and edit boundaries", () => {
     showEmptyGroups: true,
   })[0]!;
   assert.equal(canMoveTaskToGroup(baseTask, statusGroup), false);
+});
+
+test("manual rank allocation is deterministic between exact neighbors", () => {
+  assert.equal(rankBetweenNeighbors(null, null), 1000);
+  assert.equal(rankBetweenNeighbors(null, 1000), 0);
+  assert.equal(rankBetweenNeighbors(1000, null), 2000);
+  assert.equal(rankBetweenNeighbors(1000, 2000), 1500);
+  assert.throws(
+    () => rankBetweenNeighbors(2000, 1000),
+    /not in a stable manual order/,
+  );
+});
+
+test("pointer reordering excludes the moving Task from insertion neighbors", () => {
+  const second = {
+    ...baseTask,
+    id: "task-2",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    identifier: "TM-2",
+    rank: 2000,
+  };
+  const third = {
+    ...baseTask,
+    id: "task-3",
+    publicId: "55555555-5555-4555-8555-555555555555",
+    identifier: "TM-3",
+    rank: 3000,
+  };
+
+  assert.deepEqual(reorderInsertionNeighbors([baseTask, second, third], third.id, baseTask.id), {
+    previousTaskId: null,
+    nextTaskId: baseTask.id,
+  });
+  assert.deepEqual(reorderInsertionNeighbors([baseTask, second, third], baseTask.id, null), {
+    previousTaskId: third.id,
+    nextTaskId: null,
+  });
+  assert.throws(
+    () => reorderInsertionNeighbors([baseTask, second], baseTask.id, "missing"),
+    /no longer visible/,
+  );
+});
+
+test("keyboard reordering emits adjacent neighbor bounds and stops at edges", () => {
+  const second = {
+    ...baseTask,
+    id: "task-2",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    identifier: "TM-2",
+    rank: 2000,
+  };
+  const third = {
+    ...baseTask,
+    id: "task-3",
+    publicId: "55555555-5555-4555-8555-555555555555",
+    identifier: "TM-3",
+    rank: 3000,
+  };
+  const ordered = [baseTask, second, third];
+
+  assert.equal(keyboardReorderNeighbors(ordered, baseTask.id, "up"), null);
+  assert.equal(keyboardReorderNeighbors(ordered, third.id, "down"), null);
+  assert.deepEqual(keyboardReorderNeighbors(ordered, second.id, "up"), {
+    previousTaskId: null,
+    nextTaskId: baseTask.id,
+  });
+  assert.deepEqual(keyboardReorderNeighbors(ordered, second.id, "down"), {
+    previousTaskId: third.id,
+    nextTaskId: null,
+  });
 });
