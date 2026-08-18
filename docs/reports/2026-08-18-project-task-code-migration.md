@@ -1,6 +1,6 @@
 # Миграция обязательных Project и identifiers Tasks
 
-Дата: 2026-08-18  
+Дата: 2026-08-18
 Статус: `Implemented` в UAT
 
 ## Scope
