@@ -232,6 +232,17 @@ commands задают желаемое состояние идемпотентн
 
 - У задачи может быть не более одного parent и любое количество subtasks.
 - Система запрещает прямые и косвенные циклы в иерархии.
+- Parent и child всегда принадлежат одному Project. Set/change/clear parent
+  выполняется одной versioned command; self-parent, cross-Project target,
+  недоступный target и cycle отклоняются повторным server-side guard без
+  промежуточной записи.
+- Create subtask наследует Project parent, атомарно получает следующий
+  project-local identifier и повышает version parent. Поэтому stale retry не
+  создаёт второй Task. Editor и более сильные роли меняют hierarchy, Viewer
+  только читает её.
+- Перенос Task в другой Project запрещён, пока у Task есть parent или прямые
+  subtasks. Archive/restore сохраняет существующие edges; archived Task нельзя
+  выбрать новым parent.
 - `blocks` направлено; обратная сторона показывается как `blocked_by`.
 - `related` симметрично.
 - `duplicate_of` направлено на каноническую задачу; self-relations и дубликаты
@@ -714,6 +725,12 @@ completed dates и archived state.
     canonical refs без дублей; project/system backup schema `7` восстанавливает
     catalog и `task_labels`, а legacy schema `2`–`6` получает совместимые
     defaults.
+37. Editor создаёт subtask, меняет/очищает parent и после reload видит
+    согласованный edge с обеих сторон. Create наследует Project и получает
+    следующий identifier; self-parent, cycle, cross-Project target, Viewer и
+    stale version отклоняются без partial write. List, board, Peek и details
+    показывают hierarchy context; Agent REST и MCP используют те же canonical
+    refs и versioned commands, а sync инвалидирует child и old/new parent.
 
 ## 14. Рекомендуемые вертикальные срезы
 

@@ -323,6 +323,19 @@ Project/identifier, записывает alias и применяет dependent c
 preview номера не является reservation. MCP tool `move_task` вызывает тот же
 command service и использует те же canonical refs/version.
 
+`PUT /tasks/{ref}/parent` принимает current child `version` и nullable
+`parentTaskRef`; `DELETE /tasks/{ref}/parent` принимает `version` и выполняет
+detach. Parent обязан быть доступной Task того же Project, self/cycle и
+archived target отклоняются. Desired state, уже применённый к той же version,
+возвращает текущий detail без лишней записи. MCP `set_task_parent` использует
+тот же contract.
+
+`POST /tasks/{ref}/subtasks` принимает current parent `version`, обязательный
+`title` и optional Task fields кроме Project. Project наследуется, identifier
+выделяется внутри атомарной transaction, а parent version повышается; stale
+retry не создаёт duplicate. MCP `create_subtask` использует те же canonical
+refs и возвращает authoritative child `TaskDetail`.
+
 `description` может содержать native raster reference только в формате
 `![alt](attachment:v1:<public-ref> "optional caption")`. Сначала image должен
 стать готовым Attachment этой же Task через Agent REST upload или MCP

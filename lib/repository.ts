@@ -1127,6 +1127,303 @@ export async function createTask(
   return { id: taskId, publicId };
 }
 
+export async function createSubtask(
+  currentUser: UserRecord,
+  parentTaskId: string,
+  input: Record<string, unknown>,
+): Promise<TaskRecord> {
+  const parent = await loadAccessibleTask(currentUser.id, parentTaskId);
+  requireContentEdit(parent.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== parent.version) {
+    throw new ConflictError("Parent Task was changed in another session");
+  }
+  if (parent.archivedAt) {
+    throw new ValidationError("Subtasks cannot be added to an archived Task");
+  }
+
+  const project = await loadAccessibleProject(currentUser.id, parent.projectId);
+  requireContentEdit(project.accessRole);
+  if (project.archivedAt || project.status === "canceled") {
+    throw new ValidationError("Subtasks require an active Project");
+  }
+  const title = requireTitle(input.title);
+  const description = optionalText(input.description);
+  await validateTaskDescriptionAttachments(null, description);
+  const status = await loadStatus(
+    parent.ownerUserId,
+    input.statusId ? String(input.statusId) : null,
+  );
+  const release = input.releaseId
+    ? await loadAccessibleRelease(currentUser.id, String(input.releaseId))
+    : null;
+  if (release) requireContentEdit(release.accessRole);
+  assertReleaseProject(project.id, release?.projectId ?? null);
+  const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
+    ? requestedAssigneeUserId(input.assigneeUserId)
+    : currentUser.id;
+  await assertTaskAssigneeAccess(
+    assigneeUserId,
+    parent.ownerUserId,
+    project.id,
+    null,
+  );
+  const labelIds = await validateActiveLabelIds(parent.ownerUserId, input.labelIds);
+  const rankRow = await getD1()
+    .prepare(
+      "SELECT COALESCE(MAX(rank), 0) + 1000 AS next FROM tasks WHERE owner_user_id = ? AND status_id = ?",
+    )
+    .bind(parent.ownerUserId, status.id)
+    .first<{ next: number }>();
+  const now = new Date().toISOString();
+  const timestamps = statusTimestamps(
+    status.category,
+    { startedAt: null, completedAt: null, canceledAt: null },
+    now,
+  );
+  const taskId = `task_${crypto.randomUUID()}`;
+  const publicId = crypto.randomUUID();
+  const assertionId = `subtask_assert_${crypto.randomUUID()}`;
+  const db = getD1();
+
+  try {
+    const results = await db.batch([
+      db.prepare(
+        `UPDATE projects SET
+           task_sequence = MAX(
+             task_sequence + 1,
+             (SELECT COALESCE(MAX(sequence_number), 0) + 1
+              FROM tasks WHERE project_id = projects.id)
+           ),
+           code_locked_at = COALESCE(code_locked_at, ?),
+           version = version + 1,
+           updated_at = ?
+         WHERE id = ? AND archived_at IS NULL AND status <> 'canceled'
+           AND EXISTS (
+             SELECT 1 FROM tasks parent
+             WHERE parent.id = ? AND parent.project_id = projects.id
+               AND parent.version = ? AND parent.archived_at IS NULL
+           )
+           AND (
+             owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'project' AND ag.resource_id = projects.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 AND ag.permission IN ('editor', 'manager', 'full_access')
+             )
+           )`,
+      ).bind(
+        now,
+        now,
+        project.id,
+        parent.id,
+        expectedVersion,
+        currentUser.id,
+        currentUser.id,
+      ),
+      moveBatchAssertion(db, assertionId, "allocator"),
+      db.prepare(
+        `INSERT INTO tasks (
+           id, public_id, owner_user_id, creator_user_id, identifier,
+           sequence_number, title, description, status_id, priority,
+           assignee_user_id, project_id, release_id, estimate, due_date,
+           parent_task_id, rank, started_at, completed_at, canceled_at,
+           created_at, updated_at
+         )
+         SELECT ?, ?, p.owner_user_id, ?, p.task_code || '-' || p.task_sequence,
+           p.task_sequence, ?, ?, ?, ?, ?, p.id, ?, ?, ?, parent.id, ?, ?, ?, ?, ?, ?
+         FROM projects p JOIN tasks parent ON parent.project_id = p.id
+         WHERE p.id = ? AND parent.id = ? AND parent.version = ?
+           AND parent.archived_at IS NULL AND p.archived_at IS NULL
+           AND p.status <> 'canceled'
+           AND (
+             p.owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 AND ag.permission IN ('editor', 'manager', 'full_access')
+             )
+           )`,
+      ).bind(
+        taskId,
+        publicId,
+        currentUser.id,
+        title,
+        description,
+        status.id,
+        input.priority ? priority(input.priority) : "none",
+        assigneeUserId,
+        release?.id ?? null,
+        optionalEstimate(input.estimate),
+        optionalDate(input.dueDate),
+        rankRow?.next ?? 1000,
+        timestamps.startedAt,
+        timestamps.completedAt,
+        timestamps.canceledAt,
+        now,
+        now,
+        project.id,
+        parent.id,
+        expectedVersion,
+        currentUser.id,
+        currentUser.id,
+      ),
+      moveBatchAssertion(db, `${assertionId}_task`, "task"),
+      db.prepare(
+        `UPDATE tasks SET version = version + 1, updated_at = ?
+         WHERE id = ? AND version = ? AND project_id = ?
+           AND ${editableTaskWhere}`,
+      ).bind(
+        now,
+        parent.id,
+        expectedVersion,
+        project.id,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+        currentUser.id,
+      ),
+      moveBatchAssertion(db, `${assertionId}_parent`, "parent"),
+      ...labelIds.map((labelId) => db.prepare(
+        `INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)`,
+      ).bind(taskId, labelId)),
+    ]);
+    if (
+      (results[0]?.meta.changes ?? 0) < 1 ||
+      (results[2]?.meta.changes ?? 0) < 1 ||
+      (results[4]?.meta.changes ?? 0) < 1
+    ) {
+      throw new ConflictError("Subtask could not be created atomically");
+    }
+  } catch (error) {
+    if (error instanceof ConflictError) throw error;
+    if (isConstraintError(error)) {
+      throw new ConflictError(
+        "Parent Task, Project access, or Project sequence changed before the subtask committed",
+      );
+    }
+    throw error;
+  }
+
+  return loadAccessibleTask(currentUser.id, taskId);
+}
+
+export async function setTaskParent(
+  currentUser: UserRecord,
+  taskId: string,
+  input: Record<string, unknown>,
+): Promise<TaskRecord> {
+  const task = await loadAccessibleTask(currentUser.id, taskId);
+  requireContentEdit(task.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== task.version) {
+    throw new ConflictError("Task was changed in another session");
+  }
+  const parentTaskId = input.parentTaskId == null
+    ? null
+    : String(input.parentTaskId);
+  if (parentTaskId === task.id) {
+    throw new ValidationError("A Task cannot be its own parent");
+  }
+  if (parentTaskId === task.parentTaskId) return task;
+
+  if (parentTaskId) {
+    const parent = await loadAccessibleTask(currentUser.id, parentTaskId);
+    requireContentEdit(parent.accessRole);
+    if (parent.projectId !== task.projectId) {
+      throw new ValidationError("Parent and subtask must belong to the same Project");
+    }
+    if (parent.archivedAt) {
+      throw new ValidationError("An archived Task cannot become a new parent");
+    }
+    const cycle = await getD1().prepare(
+      `WITH RECURSIVE ancestors(id, parent_task_id) AS (
+         SELECT id, parent_task_id FROM tasks WHERE id = ?
+         UNION ALL
+         SELECT parent.id, parent.parent_task_id
+         FROM tasks parent JOIN ancestors child ON parent.id = child.parent_task_id
+       )
+       SELECT 1 AS found FROM ancestors WHERE id = ? LIMIT 1`,
+    ).bind(parentTaskId, task.id).first<{ found: number }>();
+    if (cycle) throw new ValidationError("Task hierarchy cannot contain a cycle");
+  }
+
+  const now = new Date().toISOString();
+  const oldParentTaskId = task.parentTaskId;
+  const db = getD1();
+  const parentGuard = parentTaskId
+    ? `EXISTS (
+         SELECT 1 FROM tasks parent
+         WHERE parent.id = ? AND parent.id <> tasks.id
+           AND parent.project_id = tasks.project_id
+           AND parent.archived_at IS NULL
+       ) AND NOT EXISTS (
+         WITH RECURSIVE ancestors(id, parent_task_id) AS (
+           SELECT id, parent_task_id FROM tasks WHERE id = ?
+           UNION ALL
+           SELECT parent.id, parent.parent_task_id
+           FROM tasks parent JOIN ancestors child
+             ON parent.id = child.parent_task_id
+         )
+         SELECT 1 FROM ancestors WHERE id = tasks.id
+       )`
+    : "1 = 1";
+  const parentBindings = parentTaskId ? [parentTaskId, parentTaskId] : [];
+  const results = await db.batch([
+    db.prepare(
+      `UPDATE tasks SET parent_task_id = ?, version = version + 1, updated_at = ?
+       WHERE id = ? AND version = ? AND project_id IS NOT NULL
+         AND ${parentGuard} AND ${editableTaskWhere}`,
+    ).bind(
+      parentTaskId,
+      now,
+      task.id,
+      expectedVersion,
+      ...parentBindings,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+    ),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT ?, 'task_detail'
+       WHERE ? IS NOT NULL AND EXISTS (
+         SELECT 1 FROM tasks child
+         WHERE child.id = ? AND child.version = ? AND child.parent_task_id IS ?
+       )`,
+    ).bind(
+      oldParentTaskId,
+      oldParentTaskId,
+      task.id,
+      expectedVersion + 1,
+      parentTaskId,
+    ),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT ?, 'task_detail'
+       WHERE ? IS NOT NULL AND ? IS NOT ? AND EXISTS (
+         SELECT 1 FROM tasks child
+         WHERE child.id = ? AND child.version = ? AND child.parent_task_id IS ?
+       )`,
+    ).bind(
+      parentTaskId,
+      parentTaskId,
+      parentTaskId,
+      oldParentTaskId,
+      task.id,
+      expectedVersion + 1,
+      parentTaskId,
+    ),
+  ]);
+  if ((results[0]?.meta.changes ?? 0) < 1) {
+    throw new ConflictError(
+      "Task hierarchy, Project access, or Task version changed before the update committed",
+    );
+  }
+  return loadAccessibleTask(currentUser.id, task.id);
+}
+
 export async function updateTask(
   currentUser: UserRecord,
   taskId: string,

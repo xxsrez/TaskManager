@@ -22,7 +22,14 @@ import {
   type CreateAttachmentInput,
 } from "./attachments";
 import { NotFoundError, PermissionError, ValidationError } from "./domain";
-import { createTask, moveTask, setTaskLabel, updateTask } from "./repository";
+import {
+  createSubtask,
+  createTask,
+  moveTask,
+  setTaskLabel,
+  setTaskParent,
+  updateTask,
+} from "./repository";
 import {
   createTaskRelation,
   deleteTaskRelation,
@@ -724,6 +731,71 @@ export async function moveAgentTask(
   }
   await moveTask(currentUser, String(task.id), translated);
   return getAgentTaskDetail(currentUser, String(task.public_id));
+}
+
+export async function setAgentTaskParent(
+  currentUser: UserRecord,
+  reference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["version", "parentTaskRef"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, reference);
+  const parentTaskId = input.parentTaskRef == null
+    ? null
+    : String(
+        (await loadAccessibleTaskRow(
+          currentUser.id,
+          String(input.parentTaskRef),
+        )).id,
+      );
+  await setTaskParent(currentUser, String(task.id), {
+    version: input.version,
+    parentTaskId,
+  });
+  return getAgentTaskDetail(currentUser, String(task.public_id));
+}
+
+export async function createAgentSubtask(
+  currentUser: UserRecord,
+  parentReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, [
+    "version",
+    "title",
+    "description",
+    "statusRef",
+    "priority",
+    "releaseRef",
+    "estimate",
+    "dueDate",
+  ]);
+  const parent = await loadAccessibleTaskRow(currentUser.id, parentReference);
+  const translated: Record<string, unknown> = { ...input };
+  delete translated.statusRef;
+  delete translated.releaseRef;
+  if (input.statusRef) {
+    translated.statusId = await resolveStatusReference(
+      String(parent.owner_user_id),
+      String(input.statusRef),
+    );
+  }
+  if (Object.hasOwn(input, "releaseRef")) {
+    translated.releaseId = input.releaseRef
+      ? String(
+          (await loadAccessibleReleaseRow(
+            currentUser.id,
+            String(input.releaseRef),
+          )).id,
+        )
+      : null;
+  }
+  const created = await createSubtask(
+    currentUser,
+    String(parent.id),
+    translated,
+  );
+  return getAgentTaskDetail(currentUser, created.publicId);
 }
 
 export async function listAgentLabels(

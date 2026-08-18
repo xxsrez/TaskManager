@@ -249,6 +249,48 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/tasks/{ref}/parent": {
+      parameters: [referenceParameter()],
+      put: {
+        operationId: "setTaskParent",
+        summary: "Set, change, or clear a same-Project Task parent",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        requestBody: jsonRequest("#/components/schemas/TaskParentUpdate"),
+        responses: {
+          "200": envelopeResponse("Updated task hierarchy", {
+            $ref: "#/components/schemas/TaskDetail",
+          }),
+          ...errorResponses,
+        },
+      },
+      delete: {
+        operationId: "removeTaskParent",
+        summary: "Detach a Task from its current parent",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        requestBody: jsonRequest("#/components/schemas/TaskVersion"),
+        responses: {
+          "200": envelopeResponse("Detached task", {
+            $ref: "#/components/schemas/TaskDetail",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/subtasks": {
+      post: {
+        operationId: "createSubtask",
+        summary: "Create a subtask in the parent Task Project",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/TaskSubtaskCreate"),
+        responses: {
+          "201": envelopeResponse("Created subtask", {
+            $ref: "#/components/schemas/TaskDetail",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
     "/tasks/{ref}/labels/{labelRef}": {
       parameters: [referenceParameter(), {
         name: "labelRef",
@@ -816,6 +858,38 @@ export const agentApiOpenApi = {
             format: "email",
             maxLength: 320,
           },
+        },
+        additionalProperties: false,
+      },
+      TaskVersion: {
+        type: "object",
+        required: ["version"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+        },
+        additionalProperties: false,
+      },
+      TaskParentUpdate: {
+        type: "object",
+        required: ["version", "parentTaskRef"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+          parentTaskRef: { type: ["string", "null"] },
+        },
+        additionalProperties: false,
+      },
+      TaskSubtaskCreate: {
+        type: "object",
+        required: ["version", "title"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+          title: { type: "string", minLength: 1, maxLength: 500 },
+          description: { type: "string", maxLength: 50000 },
+          statusRef: { type: "string" },
+          priority: { enum: ["urgent", "high", "medium", "low", "none"] },
+          releaseRef: { type: ["string", "null"] },
+          estimate: { type: ["integer", "null"] },
+          dueDate: { type: ["string", "null"], format: "date" },
         },
         additionalProperties: false,
       },

@@ -116,6 +116,8 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks"), true);
   assert.equal(paths.includes("/tasks/{ref}"), true);
   assert.equal(paths.includes("/tasks/{ref}/move"), true);
+  assert.equal(paths.includes("/tasks/{ref}/parent"), true);
+  assert.equal(paths.includes("/tasks/{ref}/subtasks"), true);
   assert.equal(paths.includes("/tasks/{ref}/relations"), true);
   assert.equal(paths.includes("/tasks/{ref}/relations/{relationRef}"), true);
   assert.equal(paths.includes("/labels"), true);
@@ -154,9 +156,25 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     agentApiOpenApi.paths["/tasks/{ref}/move"].post.operationId,
     "moveTask",
   );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/parent"].put.operationId,
+    "setTaskParent",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/parent"].delete.operationId,
+    "removeTaskParent",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/subtasks"].post.operationId,
+    "createSubtask",
+  );
   assert.deepEqual(
     agentApiOpenApi.components.schemas.TaskMove.required,
     ["version", "targetProjectRef"],
+  );
+  assert.deepEqual(
+    agentApiOpenApi.components.schemas.TaskParentUpdate.required,
+    ["version", "parentTaskRef"],
   );
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/comments/{commentRef}/resolution"].put

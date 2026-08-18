@@ -298,6 +298,21 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
 5. Same-Project command возвращает текущую Task до allocator. Commit response,
    а не UI preview, задаёт authoritative identifier.
 
+### Иерархия Task
+
+1. UI, Web route, Agent REST и MCP вызывают единый set-parent command с
+   current child version и nullable parent reference.
+2. Repository проверяет ACL и same-Project заранее, а atomic UPDATE повторяет
+   version/edit access, same-Project, active parent и recursive cycle guards.
+   Concurrent противоположные reparent не могут обе закоммитить cycle.
+3. Успешный reparent повышает child version и создаёт bounded lazy detail
+   invalidations для old/new parent; обычный Task trigger доставляет child.
+4. Create-subtask batch внутри одной transaction повышает Project allocator,
+   вставляет child с новым identifier и parent edge, затем повышает parent
+   version. Любой guard/assertion failure откатывает allocator и child вместе.
+5. Move command отдельно требует отсутствие parent и direct subtasks; hierarchy
+   никогда не используется как ACL bridge между Projects.
+
 ## API-принципы
 
 - Commands выражают доменное намерение, когда обычный PATCH может создать

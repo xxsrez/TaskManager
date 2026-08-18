@@ -1031,6 +1031,46 @@ test("native Label chips render consistently in task list and board", () => {
   }
 });
 
+test("native hierarchy context renders in list, board, Peek, and editable details", () => {
+  const child = {
+    ...snapshot.tasks[0]!,
+    id: "task-child-native",
+    publicId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    identifier: "TM-2",
+    sequenceNumber: 2,
+    title: "Native child",
+    parentTaskId: snapshot.tasks[0]!.id,
+    rank: 2000,
+  };
+  const hierarchySnapshot: AppSnapshot = {
+    ...snapshot,
+    tasks: [snapshot.tasks[0]!, child],
+  };
+
+  for (const layout of ["list", "board"] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(TaskTracker, {
+        initialData: hierarchySnapshot,
+        initialNavigation: { surface: "all", layout, taskId: null },
+        signOutPath: "/sign-out",
+      }),
+    );
+    assert.match(markup, /hierarchy-chip/);
+    assert.match(markup, /Subtask of TM-1 · Direct task/);
+  }
+
+  const detailMarkup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: hierarchySnapshot,
+      initialNavigation: { surface: "all", layout: "list", taskId: child.id },
+      signOutPath: "/sign-out",
+    }),
+  );
+  assert.match(detailMarkup, /aria-label="Task parent"/);
+  assert.match(detailMarkup, /aria-label="New subtask title"/);
+  assert.match(detailMarkup, />Add subtask</);
+});
+
 test("priority icons distinguish medium and high by active bar count", () => {
   const medium = renderToStaticMarkup(createElement(PriorityIcon, { priority: "medium" }));
   const high = renderToStaticMarkup(createElement(PriorityIcon, { priority: "high" }));

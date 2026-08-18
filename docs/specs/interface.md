@@ -311,8 +311,14 @@ List повторяет плотную grouped-list модель Linear.
 - click открывает details, `Space` — Peek, double click не назначается
   отдельному скрытому действию;
 - metadata, скрытые через `Display`, не резервируют место;
-- subtask использует indentation и parent affordance без отдельной карточной
-  визуальной системы.
+- subtask использует parent affordance без отдельной карточной визуальной
+  системы: list, board и Peek показывают компактный hierarchy chip с parent
+  identifier либо числом прямых subtasks;
+- details всегда содержит Hierarchy section. Editor выбирает searchable
+  same-Project parent, очищает его через `No parent` и создаёт subtask по title;
+  Viewer видит те же parent/subtask links без mutation controls. На touch
+  select, input и Add subtask складываются в одну колонку и не создают
+  горизонтальный overflow.
 
 ### 6.3 Highlight, selection и bulk actions
 

@@ -16,6 +16,7 @@ import {
 } from "./agent-api-contract";
 import {
   assertAgentTaskAttachmentWriteAccess,
+  createAgentSubtask,
   createAgentTaskAttachment,
   createAgentTaskComment,
   createAgentTaskRelation,
@@ -38,6 +39,7 @@ import {
   listAgentTaskAttachments,
   listAgentTaskComments,
   moveAgentTask,
+  setAgentTaskParent,
   setAgentTaskLabel,
   resolveAgentTaskThread,
   setAgentCommentReaction,
@@ -322,6 +324,59 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, ...input }) =>
       writeToolCall(context, () => moveAgentTask(context.user, taskRef, defined(input))),
+  );
+
+  server.registerTool(
+    "set_task_parent",
+    {
+      title: "Set task parent",
+      description:
+        "Sets, changes, or clears one Task parent using the native same-Project hierarchy contract. Resolve both Tasks first and pass the current child Task version. A null parentTaskRef detaches the Task; retries of an already-applied desired state are unchanged.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical child Task ref."),
+        version: z.number().int().positive(),
+        parentTaskRef: reference("Canonical parent Task ref in the same Project.")
+          .nullable(),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, ...input }) =>
+      writeToolCall(context, () => setAgentTaskParent(
+        context.user,
+        taskRef,
+        defined(input),
+      )),
+  );
+
+  server.registerTool(
+    "create_subtask",
+    {
+      title: "Create subtask",
+      description:
+        "Creates a Task beneath a resolved parent, inheriting its Project and allocating the next Project-local identifier. Pass the current parent version; a stale retry is rejected instead of creating a duplicate.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical parent Task ref."),
+        version: z.number().int().positive(),
+        title: z.string().min(1).max(500),
+        description: z.string().max(100_000).optional(),
+        statusRef: reference("Workflow status ref for the parent Project owner.").optional(),
+        priority: z.enum(["none", "low", "medium", "high", "urgent"]).optional(),
+        releaseRef: reference("Canonical Release ref in the same Project.")
+          .nullable()
+          .optional(),
+        estimate: z.number().finite().nonnegative().nullable().optional(),
+        dueDate: z.string().nullable().optional(),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, ...input }) =>
+      writeToolCall(context, () => createAgentSubtask(
+        context.user,
+        taskRef,
+        defined(input),
+      )),
   );
 
   server.registerTool(

@@ -283,6 +283,16 @@ URL и API identity опираются на `public_id`; `id` остаётся �
 сохраняет прежний как alias. Он не меняет `public_id`, content, comments,
 attachments, labels, relations или внутренние relation keys.
 
+`parent_id` — единственный native hierarchy edge. Parent и child обязаны иметь
+одинаковый ненулевой `project_id`; relation не расширяет ACL. Versioned
+set-parent command повторно проверяет current Project edit grant и отсутствие
+self/cycle внутри той же записи. Desired state, уже совпадающий с current
+parent, идемпотентен и не повышает version. Create-subtask command в одной D1
+transaction резервирует Project sequence, создаёт child с parent edge и
+повышает version parent, поэтому stale retry не дублирует Task. Archive/restore
+edge не удаляет; Project move разрешён только после detach/reparent прямых
+hierarchy edges.
+
 ## Attachment
 
 `Attachment` — metadata приватного бинарного объекта одной Task. Он не является

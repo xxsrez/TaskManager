@@ -168,6 +168,19 @@ test("Label controls remain searchable and stack without mobile overflow", () =>
   );
 });
 
+test("Hierarchy controls stack into touch-sized rows without mobile overflow", () => {
+  assert.match(taskTracker, /aria-label="Task parent"/);
+  assert.match(taskTracker, /aria-label="New subtask title"/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.hierarchy-controls > label, \.hierarchy-controls form\s*\{[^}]*grid-template-columns:\s*1fr\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.hierarchy-controls select, \.hierarchy-controls input, \.hierarchy-controls form \.button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+});
+
 test("pull-to-refresh indicator is mobile-only and respects reduced motion", () => {
   assert.match(declarations(".pull-refresh-indicator"), /display:\s*none\s*;/);
   assert.match(
