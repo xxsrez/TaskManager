@@ -148,6 +148,13 @@
       "when": 1787030364916,
       "tag": "0020_giant_boom_boom",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1787033193544,
+      "tag": "0021_freezing_preak",
+      "breakpoints": true
     }
   ]
 }

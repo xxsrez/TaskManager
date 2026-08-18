@@ -464,17 +464,27 @@ commands задают желаемое состояние идемпотентн
 
 ### 9.2 Фильтрация
 
-Фильтры должны покрывать status/category, priority, assignee, project, release,
-labels, estimate, due date, parent/subtask, relation presence, created/updated/
-completed dates и archived state.
+Фильтры покрывают status/category, priority, assignee, project, release,
+labels, estimate, due date, parent/subtask, relation type/direction/presence,
+created/updated/started/completed/canceled dates и archived state.
 
 - Для категориальных полей доступны `is`, `is_not`, `in`, `not_in`, `is_empty`.
 - Для дат и чисел доступны равенство и сравнения; даты также поддерживают
-  относительные интервалы вроде `overdue` и `next_7_days`.
+  относительные интервалы `overdue`, `next_7_days` и bounded `recent` для
+  `updated_at`. Calendar dates вычисляются в timezone текущего User.
 - Первый UI может соединять условия только через `AND`; формат хранения не
   должен препятствовать последующему добавлению `OR` и вложенных групп.
 - Временные фильтры меняют URL/session state, но не сохранённый view, пока
   пользователь явно не нажал Save.
+- UI, Saved View и Agent translation используют один validated server filter
+  executor. Он сначала строит ACL-scoped Task set, затем применяет AST и
+  возвращает только compact summary projection. List, board, counts и groups
+  используют один authoritative набор Task IDs; description и другие bodies
+  не входят в результат. Reference values проверяются в том же ACL scope и не
+  раскрывают существование недоступной записи.
+- `POST /api/tasks/query` ограничивает page до 2000 записей и продолжает
+  выдачу keyset cursor по `(updated_at, id)`; UI загружает следующие страницы
+  явно, не выполняя unbounded full-workspace fetch.
 - Identity view/project/release/task кодируется отдельным стабильным публичным
   UUID, не раскрывающим внутренний или Linear source ID. Layout `list|board`
   кодируется стабильными path segments по контракту

@@ -46,6 +46,7 @@ import type {
   TaskRelationRecord,
   TaskRecord,
   UserRecord,
+  ViewFilterCondition,
   ViewQuery,
   WorkflowStatusRecord,
 } from "./types";
@@ -55,6 +56,11 @@ import {
   validateViewDisplay,
   validateViewQuery,
 } from "./view-contract";
+import {
+  canonicalViewQuery,
+  queryExplicitlyFiltersArchived,
+  taskFilterSql,
+} from "./task-filter";
 import { getD1 } from "@/db";
 import { getRuntimeEnvironment } from "./runtime-environment";
 import { encodeWorkspaceSyncCursor } from "./workspace-sync-cursor";
@@ -927,6 +933,164 @@ export async function searchTaskSummaries(
     )
     .all<DbRow>();
   return rows.results.map(mapTask);
+}
+
+export type TaskQueryInput = {
+  query?: ViewQuery;
+  surface?: string;
+  scopeProjectId?: string | null;
+  limit?: number;
+  after?: { updatedAt: string; id: string } | null;
+};
+
+export async function queryTaskSummaries(
+  currentUser: UserRecord,
+  input: TaskQueryInput,
+) {
+  const query = validateViewQuery(input.query);
+  const surface = typeof input.surface === "string" && input.surface.length <= 240
+    ? input.surface
+    : "all";
+  if (input.limit !== undefined && (!Number.isInteger(input.limit) || Number(input.limit) < 1)) {
+    throw new ValidationError("Task query limit must be a positive integer");
+  }
+  const limit = Math.min(Number(input.limit ?? 500), MAX_UI_SNAPSHOT_TASKS);
+  if (input.after !== undefined && input.after !== null && (
+    typeof input.after !== "object" ||
+    typeof input.after.updatedAt !== "string" ||
+    !input.after.updatedAt ||
+    typeof input.after.id !== "string" ||
+    !input.after.id
+  )) {
+    throw new ValidationError("Task query cursor is invalid");
+  }
+  const after = input.after ?? null;
+  const scopeProject = input.scopeProjectId
+    ? await loadAccessibleProject(currentUser.id, String(input.scopeProjectId))
+    : null;
+  await validateTaskFilterReferences(currentUser, query, scopeProject);
+
+  const builtInSurfaces = new Set(["all", "active", "backlog", "archived", "shared"]);
+  if (surface.startsWith("view:")) {
+    const view = await loadAccessibleView(currentUser.id, surface.slice(5));
+    if (view.archivedAt) throw new NotFoundError("Saved View not found");
+  } else if (
+    !builtInSurfaces.has(surface) &&
+    !surface.startsWith("project:") &&
+    !surface.startsWith("release:")
+  ) {
+    throw new ValidationError("Task query surface is invalid");
+  }
+
+  const compiled = taskFilterSql(query, {
+    alias: "v",
+    timezone: currentUser.timezone,
+  });
+  const predicates = [compiled.sql];
+  const parameters: unknown[] = [
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    ...compiled.parameters,
+  ];
+
+  if (scopeProject) {
+    predicates.push("v.project_id = ?");
+    parameters.push(scopeProject.id);
+  }
+  if (surface === "shared") {
+    predicates.push("v.access_role <> 'owner'");
+  } else if (surface.startsWith("project:")) {
+    const project = await loadAccessibleProject(currentUser.id, surface.slice(8));
+    predicates.push("v.project_id = ?");
+    parameters.push(project.id);
+  } else if (surface.startsWith("release:")) {
+    const release = await loadAccessibleRelease(currentUser.id, surface.slice(8));
+    predicates.push("v.release_id = ?");
+    parameters.push(release.id);
+  } else if (surface === "active") {
+    predicates.push("v.status_category IN ('unstarted', 'started')");
+  } else if (surface === "backlog") {
+    predicates.push("v.status_category = 'backlog'");
+  }
+
+  if (surface === "archived") {
+    predicates.push("v.archived_at IS NOT NULL");
+  } else if (!queryExplicitlyFiltersArchived(query)) {
+    predicates.push("v.archived_at IS NULL");
+  }
+  if (after) {
+    predicates.push("(v.updated_at < ? OR (v.updated_at = ? AND v.id < ?))");
+    parameters.push(after.updatedAt, after.updatedAt, after.id);
+  }
+  parameters.push(limit + 1);
+
+  const rows = await getD1().prepare(
+    `WITH scoped AS (
+       SELECT t.*, s.category AS status_category,
+         EXISTS (
+           SELECT 1 FROM external_records er
+           WHERE er.target_type = 'task' AND er.target_id = t.id
+         ) AS has_external_source,
+         CASE
+           WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+           WHEN t.project_id IS NOT NULL THEN (
+             SELECT CASE ag.permission
+               WHEN 'full_access' THEN 'manager'
+               WHEN 'manager' THEN 'manager'
+               WHEN 'editor' THEN 'editor'
+               WHEN 'viewer' THEN 'viewer'
+             END
+             FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+           )
+           WHEN t.owner_user_id = ? THEN 'owner'
+           ELSE (
+             SELECT CASE ag.permission
+               WHEN 'full_access' THEN 'editor'
+               WHEN 'editor' THEN 'editor'
+               WHEN 'viewer' THEN 'viewer'
+             END
+             FROM access_grants ag
+             WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
+           )
+         END AS access_role
+       FROM tasks t
+       JOIN workflow_statuses s ON s.id = t.status_id
+       LEFT JOIN projects p ON p.id = t.project_id
+     ), visible_tasks AS (
+       SELECT * FROM scoped WHERE access_role IS NOT NULL
+     )
+     SELECT
+       v.id, v.public_id, v.owner_user_id, v.creator_user_id,
+       v.identifier, v.sequence_number, v.title, NULL AS description,
+       v.status_id, v.priority, v.assignee_user_id, v.project_id, v.release_id,
+       v.estimate, v.due_date, v.parent_task_id, v.rank,
+       v.started_at, v.completed_at, v.canceled_at, v.archived_at,
+       v.comment_count, v.version, v.created_at, v.updated_at,
+       v.has_external_source, v.access_role
+     FROM visible_tasks v
+     WHERE ${predicates.join(" AND ")}
+     ORDER BY v.updated_at DESC, v.id DESC
+     LIMIT ?`,
+  ).bind(...parameters).all<DbRow>();
+
+  const visible = rows.results.slice(0, limit);
+  const last = visible.at(-1);
+  return {
+    taskIds: visible.map((row) => String(row.id)),
+    tasks: visible.map(mapTask),
+    page: {
+      hasMore: rows.results.length > limit,
+      next: rows.results.length > limit && last
+        ? { updatedAt: String(last.updated_at), id: String(last.id) }
+        : null,
+    },
+    referenceTime: new Date().toISOString(),
+  };
 }
 
 export async function getAdminOverview(
@@ -2777,37 +2941,204 @@ async function validateSavedViewReferences(
   query: ViewQuery,
   scopeProject: ProjectRecord | null,
 ) {
+  const canonical = canonicalViewQuery(query);
   const snapshot = await getSnapshot(currentUser);
-  if (scopeProject && query.projectId !== undefined && query.projectId !== scopeProject.id) {
+  const projectIds = filterReferenceValues(canonical.conditions, "project");
+  const releaseIds = filterReferenceValues(canonical.conditions, "release");
+  const statusIds = filterReferenceValues(canonical.conditions, "status");
+  const assigneeIds = filterReferenceValues(canonical.conditions, "assignee");
+  const labelIds = filterReferenceValues(canonical.conditions, "label");
+  const parentIds = filterReferenceValues(canonical.conditions, "parent");
+
+  if (scopeProject && projectIds.some((projectId) => projectId !== scopeProject.id)) {
     throw new ValidationError("A project-scoped Saved View cannot filter outside its Project");
   }
-  if (
-    query.projectId &&
-    !snapshot.projects.some((project) => project.id === query.projectId)
-  ) {
+  if (projectIds.some(
+    (projectId) => !snapshot.projects.some((project) => project.id === projectId),
+  )) {
     throw new ValidationError("Saved View project filter is inaccessible");
   }
-  const release = query.releaseId
-    ? snapshot.releases.find((item) => item.id === query.releaseId)
-    : null;
-  if (query.releaseId && !release) {
+  const releases = releaseIds.map((releaseId) =>
+    snapshot.releases.find((item) => item.id === releaseId));
+  if (releases.some((release) => !release)) {
     throw new ValidationError("Saved View release filter is inaccessible");
   }
-  if (scopeProject && release && release.projectId !== scopeProject.id) {
+  if (scopeProject && releases.some((release) => release?.projectId !== scopeProject.id)) {
     throw new ValidationError("Saved View release must belong to its scoped Project");
   }
-  if (
-    query.projectId &&
-    release &&
-    release.projectId !== query.projectId
-  ) {
+  if (projectIds.length === 1 && releases.some(
+    (release) => release?.projectId !== projectIds[0],
+  )) {
     throw new ValidationError("Saved View release does not belong to its Project filter");
   }
-  if (query.statusIds?.some(
+  if (statusIds.some(
     (statusId) => !snapshot.statuses.some((status) => status.id === statusId),
   )) {
     throw new ValidationError("Saved View status filter is inaccessible");
   }
+  if (assigneeIds.some(
+    (userId) => !snapshot.users.some((user) => user.id === userId),
+  )) {
+    throw new ValidationError("Saved View assignee filter is inaccessible");
+  }
+  if (labelIds.some(
+    (labelId) => !snapshot.labels.some((label) => label.id === labelId),
+  )) {
+    throw new ValidationError("Saved View label filter is inaccessible");
+  }
+  for (const taskId of parentIds) {
+    try {
+      await loadAccessibleTask(currentUser.id, taskId);
+    } catch {
+      throw new ValidationError("Saved View parent filter is inaccessible");
+    }
+  }
+}
+
+async function validateTaskFilterReferences(
+  currentUser: UserRecord,
+  query: ViewQuery,
+  scopeProject: ProjectRecord | null,
+) {
+  const conditions = canonicalViewQuery(query).conditions;
+  const projectIds = filterReferenceValues(conditions, "project");
+  const releaseIds = filterReferenceValues(conditions, "release");
+  const statusIds = filterReferenceValues(conditions, "status");
+  const assigneeIds = filterReferenceValues(conditions, "assignee");
+  const labelIds = filterReferenceValues(conditions, "label");
+  const parentIds = filterReferenceValues(conditions, "parent");
+
+  if (scopeProject && projectIds.some((projectId) => projectId !== scopeProject.id)) {
+    throw new ValidationError("A project-scoped Saved View cannot filter outside its Project");
+  }
+
+  let projects: ProjectRecord[];
+  let releases: ReleaseRecord[];
+  try {
+    [projects, releases] = await Promise.all([
+      Promise.all(projectIds.map((id) => loadAccessibleProject(currentUser.id, id))),
+      Promise.all(releaseIds.map((id) => loadAccessibleRelease(currentUser.id, id))),
+    ]);
+  } catch {
+    throw new ValidationError("Task filter reference is inaccessible");
+  }
+  if (scopeProject && releases.some((release) => release.projectId !== scopeProject.id)) {
+    throw new ValidationError("Saved View release must belong to its scoped Project");
+  }
+  if (projects.length === 1 && releases.some(
+    (release) => release.projectId !== projects[0]!.id,
+  )) {
+    throw new ValidationError("Saved View release does not belong to its Project filter");
+  }
+
+  const db = getD1();
+  const checks: Array<{
+    ids: string[];
+    statement: D1PreparedStatement;
+    message: string;
+  }> = [];
+  if (statusIds.length) {
+    checks.push({
+      ids: statusIds,
+      message: "Saved View status filter is inaccessible",
+      statement: db.prepare(
+        `SELECT s.id FROM workflow_statuses s
+         WHERE s.id IN (${filterPlaceholders(statusIds.length)}) AND (
+           s.owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM projects p
+             WHERE p.owner_user_id = s.owner_user_id AND (
+               p.owner_user_id = ? OR EXISTS (
+                 SELECT 1 FROM access_grants ag
+                 WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               )
+             )
+           )
+         )`,
+      ).bind(...statusIds, currentUser.id, currentUser.id, currentUser.id),
+    });
+  }
+  if (assigneeIds.length) {
+    checks.push({
+      ids: assigneeIds,
+      message: "Saved View assignee filter is inaccessible",
+      statement: db.prepare(
+        `SELECT u.id FROM users u
+         WHERE u.id IN (${filterPlaceholders(assigneeIds.length)}) AND (
+           u.id = ? OR EXISTS (
+             SELECT 1 FROM projects p
+             WHERE (p.owner_user_id = ? OR EXISTS (
+               SELECT 1 FROM access_grants actor_grant
+               WHERE actor_grant.resource_type = 'project'
+                 AND actor_grant.resource_id = p.id
+                 AND actor_grant.grantee_user_id = ?
+                 AND actor_grant.revoked_at IS NULL
+             )) AND (p.owner_user_id = u.id OR EXISTS (
+               SELECT 1 FROM access_grants member_grant
+               WHERE member_grant.resource_type = 'project'
+                 AND member_grant.resource_id = p.id
+                 AND member_grant.grantee_user_id = u.id
+                 AND member_grant.revoked_at IS NULL
+             ))
+           )
+         )`,
+      ).bind(...assigneeIds, currentUser.id, currentUser.id, currentUser.id),
+    });
+  }
+  if (labelIds.length) {
+    checks.push({
+      ids: labelIds,
+      message: "Saved View label filter is inaccessible",
+      statement: db.prepare(
+        `SELECT l.id FROM labels l
+         WHERE l.id IN (${filterPlaceholders(labelIds.length)}) AND (
+           l.owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM projects p
+             WHERE p.owner_user_id = l.owner_user_id AND (
+               p.owner_user_id = ? OR EXISTS (
+                 SELECT 1 FROM access_grants ag
+                 WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               )
+             )
+           )
+         )`,
+      ).bind(...labelIds, currentUser.id, currentUser.id, currentUser.id),
+    });
+  }
+  if (checks.length) {
+    const results = await db.batch<DbRow>(checks.map((check) => check.statement));
+    results.forEach((result, index) => {
+      const check = checks[index]!;
+      if (new Set(result.results.map((row) => String(row.id))).size !== check.ids.length) {
+        throw new ValidationError(check.message);
+      }
+    });
+  }
+  for (const taskId of parentIds) {
+    try {
+      await loadAccessibleTask(currentUser.id, taskId);
+    } catch {
+      throw new ValidationError("Saved View parent filter is inaccessible");
+    }
+  }
+}
+
+function filterPlaceholders(length: number) {
+  return Array.from({ length }, () => "?").join(", ");
+}
+
+function filterReferenceValues(
+  conditions: ViewFilterCondition[],
+  field: ViewFilterCondition["field"],
+) {
+  return [...new Set(conditions
+    .filter((condition) => condition.field === field && condition.operator !== "is_empty")
+    .flatMap((condition) => Array.isArray(condition.value)
+      ? condition.value
+      : typeof condition.value === "string"
+        ? [condition.value]
+        : []))];
 }
 
 export async function grantAccess(

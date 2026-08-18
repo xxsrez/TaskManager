@@ -99,7 +99,7 @@ Linear, а не только использовать похожую домен�
 
 ## Источники
 
-Актуальные официальные материалы Linear, проверенные 2026-08-14:
+Актуальные официальные материалы Linear, повторно проверенные 2026-08-18:
 
 - [Board layout](https://linear.app/docs/board-layout)
 - [Display options](https://linear.app/docs/display-options)

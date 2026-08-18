@@ -265,7 +265,78 @@ export type SavedViewRecord = {
   accessRole: AccessRole;
 };
 
-export type ViewQuery = {
+export type ViewFilterField =
+  | "status"
+  | "status_category"
+  | "priority"
+  | "assignee"
+  | "project"
+  | "release"
+  | "label"
+  | "estimate"
+  | "due_date"
+  | "parent"
+  | "subtasks"
+  | "relation"
+  | "created_at"
+  | "updated_at"
+  | "started_at"
+  | "completed_at"
+  | "canceled_at"
+  | "archived";
+
+export type ViewFilterOperator =
+  | "is"
+  | "is_not"
+  | "in"
+  | "not_in"
+  | "is_empty"
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "on"
+  | "before"
+  | "after"
+  | "on_or_before"
+  | "on_or_after"
+  | "overdue"
+  | "next_7_days"
+  | "recent";
+
+export type ViewFilterRelationValue = {
+  type: TaskRelationRecord["type"] | "any";
+  direction: "outgoing" | "incoming" | "either";
+};
+
+export type ViewFilterValue =
+  | string
+  | number
+  | boolean
+  | string[]
+  | ViewFilterRelationValue;
+
+export type ViewFilterCondition = {
+  field: ViewFilterField;
+  operator: ViewFilterOperator;
+  value?: ViewFilterValue;
+};
+
+export type CanonicalViewQuery = {
+  version: 1;
+  op: "all";
+  conditions: ViewFilterCondition[];
+  search?: string;
+};
+
+/**
+ * Legacy keys remain optional in the public TypeScript shape so older backup
+ * fixtures and callers can still be accepted. validateViewQuery always returns
+ * the canonical versioned representation and new writes never persist them.
+ */
+export type ViewQuery = Partial<CanonicalViewQuery> & {
   search?: string;
   statusIds?: string[];
   priorities?: Priority[];

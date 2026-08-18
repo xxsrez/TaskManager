@@ -157,7 +157,10 @@ test("owner workflow catalog preserves defaults, ordering, optimistic versions, 
   const migratedTask = snapshot.tasks.find((task) => task.id === taskIdentity.id)!;
   assert.equal(migratedTask.statusId, todo.id);
   assert.equal(migratedTask.startedAt, null);
-  assert.deepEqual(snapshot.views[0]?.query.statusIds, [todo.id]);
+  assert.deepEqual(
+    snapshot.views[0]?.query.conditions?.find((condition) => condition.field === "status")?.value,
+    [todo.id],
+  );
 
   const agentWorkspace = await getAgentWorkspace({
     authorizationId: "workflow-test",

@@ -578,14 +578,21 @@ List повторяет плотную grouped-list модель Linear.
 
 - Первый popover показывает searchable список properties.
 - Выбранное условие отображается читаемой формулой из отдельных clickable
-  tokens: property, operator, value.
+  tokens: property, operator, value. Поддерживаются status/category, priority,
+  assignee, project, release, label, estimate, due date, parent/subtasks,
+  relation type/direction, lifecycle dates и archived state.
 - Изменение любого token открывает соответствующий picker; удаление условия
-  доступно без открытия advanced editor.
+  доступно без открытия advanced editor. Каталожные `in`/`not_in` используют
+  multi-select, date и number имеют нативный bounded input, relation разделяет
+  type и direction. Пустой searchable catalog показывает явный empty state.
 - MVP соединяет условия через `AND`; `OR` и nested groups не показываются как
   disabled promises.
 - Active filters отражаются в URL и видимы в toolbar. `Clear all` возвращает
-  базовый view state.
+  базовый view state; каждый chip удаляется отдельной touch/keyboard action.
 - Counts и suggestions формируются только в authorization scope пользователя.
+- Loading сохраняет предыдущий результат до authoritative ответа; нулевой
+  результат различает loading, error и честный empty state. Если bounded page
+  имеет продолжение, list и board показывают общий `Load more` control.
 
 ### 10.3 Display popover
 

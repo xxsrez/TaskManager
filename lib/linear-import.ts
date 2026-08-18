@@ -1,5 +1,6 @@
 import type { UserRecord, ViewDisplay, ViewQuery } from "./types";
 import { optionalDate, ValidationError } from "./domain";
+import { validateViewQuery } from "./view-contract";
 
 type JsonObject = Record<string, unknown>;
 
@@ -472,11 +473,11 @@ export function buildLinearImportPlan(
         `Linear view ${sourceId} references missing milestone`,
       );
     }
-    const query = {
+    const query = validateViewQuery({
       ...object(row.query ?? {}, `views[${index}].query`),
       ...(projectId ? { projectId } : {}),
       ...(releaseId ? { releaseId } : {}),
-    } as ViewQuery;
+    });
     const display = viewDisplay(row.display);
     const view: PlannedView = {
       id: targetId(ownerUserId, "view", sourceId),

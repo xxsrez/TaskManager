@@ -168,6 +168,18 @@ test("Label controls remain searchable and stack without mobile overflow", () =>
   );
 });
 
+test("filter formula stays bounded on desktop and stacks into mobile touch rows", () => {
+  assert.match(declarations(".filter-popover"), /max-height:/);
+  assert.match(declarations(".filter-popover"), /overflow-y:\s*auto\s*;/);
+  assert.match(declarations(".filter-chip-list"), /overflow-x:\s*auto\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.filter-builder\.compact \.filter-condition-row\s*\{[^}]*grid-template-columns:/,
+  );
+  assert.match(taskTracker, /encodeTemporaryViewQuery/);
+  assert.match(taskTracker, /Load more/);
+});
+
 test("Hierarchy controls stack into touch-sized rows without mobile overflow", () => {
   assert.match(taskTracker, /aria-label="Task parent"/);
   assert.match(taskTracker, /aria-label="New subtask title"/);

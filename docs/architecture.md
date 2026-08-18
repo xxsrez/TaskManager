@@ -401,10 +401,17 @@ Task rows в этом snapshot являются summary projection: они со�
 board, grouping и navigation, но вместо `description` передают явный `null`.
 Открытие Task отдельно запрашивает полную запись через `GET /api/tasks/{id}` с
 повторной ACL-проверкой; server render прямой task URL добавляет detail только
-для выбранной Task. Поиск по description также выполняется отдельным
-authorization-scoped `GET /api/tasks?search=…`, поэтому отсутствие bodies в
-bootstrap не ослабляет search contract и не требует загружать их при обычном
-открытии workspace.
+для выбранной Task. Task surfaces выполняют versioned AST через
+authorization-scoped `POST /api/tasks/query`: один SQL compiler используется
+для Saved Views, временных URL-фильтров и перевода Agent task query. Compiler
+получает только `visible_tasks`, применяет typed operators и возвращает compact
+summary + bounded keyset continuation `(updated_at, id)`; description участвует
+только в server-side search predicate и не покидает server projection.
+Reference validation читает только запрошенные ACL-scoped catalogs, а не
+перестраивает полный snapshot. Migration `0021` добавляет измеренно нужные
+reverse Label, project/status/archive, assignee/archive, due/archive и
+updated/id indexes; менее частые lifecycle-date predicates остаются внутри
+уже ограниченного ACL set без широкого набора speculative indexes.
 Authenticated identity lookup для уже зарегистрированного User обновляет
 activity/display fields и возвращает User одним D1 `UPDATE … RETURNING`;
 стартовые workflow statuses создаются в том же batch, что и новая identity.
@@ -658,9 +665,7 @@ relations, saved-view query/display и полный provider metadata в
 2. CSRF hardening сверх Sites session boundary, audit event minimum и account
    recovery.
 3. UX explicit linking/unlinking providers и смены primary email.
-4. Переход фонового расширенного bootstrap к server-filtered cursor pages для
-   workspaces больше 2000 Tasks.
-5. Политика immutability released scope и нормализация manual ranks.
-6. Server-side idempotency task create, bulk command contract, OAuth/API rate
+4. Политика immutability released scope и нормализация manual ranks.
+5. Server-side idempotency task create, bulk command contract, OAuth/API rate
    limits, retention audit events и критерии перехода на managed IdP перед
    публичным каталогом.

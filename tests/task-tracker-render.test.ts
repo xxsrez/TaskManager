@@ -1576,6 +1576,11 @@ test("mobile shell exposes complete navigation and view controls", () => {
   assert.match(markup, /aria-label="List view" aria-pressed="true"/);
   assert.match(markup, /aria-label="Kanban view" aria-pressed="false"/);
   assert.match(markup, />Filter</);
+  assert.match(markup, /aria-label="Search filter properties"/);
+  assert.match(markup, />Status category</);
+  assert.match(markup, />Relation</);
+  assert.match(markup, />Canceled date</);
+  assert.match(markup, />Archived</);
   assert.match(markup, />Display</);
   assert.match(markup, />List</);
   assert.match(markup, />Board</);

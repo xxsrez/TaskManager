@@ -164,8 +164,12 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   assert.equal(child.priority, "urgent");
   assert.equal(child.releaseId, plan.releases[0].id);
   assert.equal(plan.views[0].display.layout, "board");
-  assert.equal(plan.views[0].query.projectId, plan.projects[0].id);
-  assert.equal(plan.views[0].query.releaseId, plan.releases[0].id);
+  assert.ok(plan.views[0].query.conditions?.some(
+    (condition) => condition.field === "project" && condition.value === plan.projects[0].id,
+  ));
+  assert.ok(plan.views[0].query.conditions?.some(
+    (condition) => condition.field === "release" && condition.value === plan.releases[0].id,
+  ));
   assert.equal(
     plan.statuses.find((status) => status.name === "Duplicate")?.category,
     "canceled",

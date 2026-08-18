@@ -371,6 +371,16 @@ export const tasks = sqliteTable(
       table.archivedAt,
     ),
     index("idx_tasks_project_release").on(table.projectId, table.releaseId),
+    index("idx_tasks_project_status_archived").on(
+      table.projectId,
+      table.statusId,
+      table.archivedAt,
+    ),
+    index("idx_tasks_assignee_archived").on(
+      table.assigneeUserId,
+      table.archivedAt,
+    ),
+    index("idx_tasks_due_archived").on(table.dueDate, table.archivedAt),
     index("idx_tasks_parent").on(table.parentTaskId),
     index("idx_tasks_release_archived").on(
       table.releaseId,
@@ -380,6 +390,7 @@ export const tasks = sqliteTable(
       table.ownerUserId,
       table.updatedAt,
     ),
+    index("idx_tasks_updated_id").on(table.updatedAt, table.id),
     index("idx_tasks_title_search").on(sql`lower(${table.title})`),
     index("idx_tasks_identifier_search").on(sql`lower(${table.identifier})`),
   ],
@@ -525,7 +536,10 @@ export const taskLabels = sqliteTable(
     taskId: text("task_id").notNull(),
     labelId: text("label_id").notNull(),
   },
-  (table) => [primaryKey({ columns: [table.taskId, table.labelId] })],
+  (table) => [
+    primaryKey({ columns: [table.taskId, table.labelId] }),
+    index("idx_task_labels_label_task").on(table.labelId, table.taskId),
+  ],
 );
 
 export const taskRelations = sqliteTable(

@@ -548,12 +548,18 @@ attachments также остаются import provenance.
   "version": 1,
   "op": "all",
   "conditions": [
-    { "field": "project_id", "operator": "is", "value": "project-uuid" },
+    { "field": "project", "operator": "is", "value": "project-uuid" },
     { "field": "priority", "operator": "in", "value": ["high", "urgent"] },
-    { "field": "archived_at", "operator": "is_empty" }
+    { "field": "archived", "operator": "is", "value": false }
   ]
 }
 ```
+
+Версия `1` допускает только root `op: "all"`; тем самым MVP не хранит второй
+flat query contract, а оставляет явную границу для будущих `any`/nested groups.
+Условие имеет точную комбинацию `field`/`operator`/typed `value`; relative
+операторы без аргумента не сохраняют `value`. Legacy flat JSON повышается до
+этой формы при чтении/следующей записи.
 
 Create/rename/query/display/scope/archive/restore проходят через один
 ACL-scoped SavedView repository contract. Update атомарно проверяет effective

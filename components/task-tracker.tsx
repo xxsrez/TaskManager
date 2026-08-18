@@ -82,7 +82,14 @@ import {
   type ResolvedNavigation,
 } from "@/lib/navigation";
 import { formatReleaseName } from "@/lib/release-presentation";
-import { defaultViewDisplay } from "@/lib/view-contract";
+import { defaultViewDisplay, emptyViewQuery } from "@/lib/view-contract";
+import {
+  canonicalViewQuery,
+  decodeTemporaryViewQuery,
+  encodeTemporaryViewQuery,
+  mergeViewQueries,
+  taskMatchesViewQuery,
+} from "@/lib/task-filter";
 import {
   applyWorkspaceSync,
   mergeTaskSummary,
@@ -122,6 +129,9 @@ import type {
   TaskDetailRecord,
   TaskRelationRecord,
   UserRecord,
+  ViewFilterCondition,
+  ViewFilterField,
+  ViewFilterOperator,
   ViewDisplay,
   ViewQuery,
   WorkflowStatusRecord,
@@ -151,6 +161,10 @@ export type TaskSearchState = {
   taskIds: string[];
   tasks: TaskRecord[];
   status: "ready" | "error";
+  page?: {
+    hasMore: boolean;
+    next: { updatedAt: string; id: string } | null;
+  } | null;
 };
 
 export const TASK_MANAGER_MARKETPLACE_URL = "https://github.com/xxsrez/marketplace";
@@ -811,10 +825,10 @@ export function TaskTracker({
   const [layout, setLayout] = useState<Layout>(initialNavigation.layout);
   const [search, setSearch] = useState("");
   const [taskSearch, setTaskSearch] = useState<TaskSearchState | null>(null);
+  const [taskQueryPaging, setTaskQueryPaging] = useState(false);
   const [taskDetail, setTaskDetail] = useState<TaskDetailRecord | null>(null);
   const [forcedTaskDetailId, setForcedTaskDetailId] = useState<string | null>(null);
-  const [priorityFilter, setPriorityFilter] = useState<Priority | "all">("all");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [temporaryQuery, setTemporaryQuery] = useState<ViewQuery>(() => emptyViewQuery());
   const [dialog, setDialog] = useState<Dialog>(null);
   const [createDefaults, setCreateDefaults] = useState<TaskCreateDefaults>({});
   const [displayOverrides, setDisplayOverrides] = useState<Partial<Record<string, ViewDisplay>>>({});
@@ -851,6 +865,7 @@ export function TaskTracker({
   const accountTriggerRef = useRef<HTMLButtonElement>(null);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const mobileSidebarCloseRef = useRef<HTMLButtonElement>(null);
+  const temporaryQueryUrlReady = useRef(false);
   const taskReturnPath = useRef(
     navigationPath({ ...initialNavigation, taskId: null }, initialData),
   );
@@ -1047,6 +1062,31 @@ export function TaskTracker({
   }, [initialNavigation]);
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const decoded = decodeTemporaryViewQuery(
+        new URL(window.location.href).searchParams.get("filter"),
+      );
+      const { search: urlSearch, ...filterOnly } = decoded;
+      setTemporaryQuery(filterOnly);
+      setSearch(urlSearch ?? "");
+      temporaryQueryUrlReady.current = true;
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!temporaryQueryUrlReady.current) return;
+    const encoded = encodeTemporaryViewQuery({
+      ...canonicalViewQuery(temporaryQuery),
+      ...(search.trim() ? { search } : {}),
+    });
+    const url = new URL(window.location.href);
+    if (encoded) url.searchParams.set("filter", encoded);
+    else url.searchParams.delete("filter");
+    window.history.replaceState(window.history.state, "", url);
+  }, [search, temporaryQuery]);
+
+  useEffect(() => {
     if (!taskWindowLoading) return;
     const controller = new AbortController();
     let idleId: number | null = null;
@@ -1109,28 +1149,49 @@ export function TaskTracker({
     layout,
   }), [displayOverrides, layout, savedDisplay, surface]);
   const currentGroupBy = currentDisplay.groupBy;
-  const searchNeedle = (search || activeSavedView?.query.search || "").trim().toLowerCase();
+  const canonicalTemporaryQuery = useMemo(
+    () => canonicalViewQuery(temporaryQuery),
+    [temporaryQuery],
+  );
+  const temporaryViewQuery = useMemo(() => ({
+    ...canonicalTemporaryQuery,
+    ...(search.trim() ? { search } : {}),
+  }), [canonicalTemporaryQuery, search]);
+  const currentViewQuery = useMemo(
+    () => mergeViewQueries(activeSavedView?.query, temporaryViewQuery),
+    [activeSavedView, temporaryViewQuery],
+  );
+  const taskQueryKey = JSON.stringify({
+    query: currentViewQuery,
+    surface,
+    scopeProjectId: activeSavedView?.scopeProjectId ?? null,
+  });
+  const searchNeedle = (currentViewQuery.search ?? "").trim().toLowerCase();
 
   useEffect(() => {
-    if (!searchNeedle) return;
+    if (isCollectionSurface(surface)) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      void fetch(`/api/tasks?search=${encodeURIComponent(searchNeedle)}`, {
+      void fetch("/api/tasks/query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: taskQueryKey,
         signal: controller.signal,
       })
         .then(async (response) => {
           const value = (await response.json()) as
-            | { taskIds: string[]; tasks: TaskRecord[] }
+            | { taskIds: string[]; tasks: TaskRecord[]; page: { hasMore: boolean; next: { updatedAt: string; id: string } | null } }
             | { error: string };
           if (!response.ok || "error" in value) {
             throw new Error("error" in value ? value.error : "Task search failed");
           }
           if (controller.signal.aborted) return;
           setTaskSearch({
-            query: searchNeedle,
+            query: taskQueryKey,
             taskIds: value.taskIds,
             tasks: value.tasks,
             status: "ready",
+            page: value.page,
           });
         })
         .catch((requestError: unknown) => {
@@ -1138,19 +1199,20 @@ export function TaskTracker({
             return;
           }
           setTaskSearch({
-            query: searchNeedle,
+            query: taskQueryKey,
             taskIds: [],
             tasks: [],
             status: "error",
+            page: null,
           });
           setError(requestError instanceof Error ? requestError.message : "Task search failed");
         });
-    }, 150);
+    }, 120);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [refreshEpoch, searchNeedle]);
+  }, [refreshEpoch, surface, taskQueryKey]);
 
   function refreshTaskList() {
     return runSingleFlight(pullRefreshFlight, async () => {
@@ -1179,16 +1241,55 @@ export function TaskTracker({
     });
   }
 
+  async function loadMoreFilteredTasks() {
+    const next = taskSearch?.query === taskQueryKey ? taskSearch.page?.next : null;
+    if (!next || taskQueryPaging) return;
+    setTaskQueryPaging(true);
+    setError("");
+    try {
+      const request = JSON.parse(taskQueryKey) as Record<string, unknown>;
+      const response = await fetch("/api/tasks/query", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...request, after: next, limit: 500 }),
+      });
+      const value = await response.json() as
+        | { taskIds: string[]; tasks: TaskRecord[]; page: { hasMore: boolean; next: { updatedAt: string; id: string } | null } }
+        | { error: string };
+      if (!response.ok || "error" in value) {
+        throw new Error("error" in value ? value.error : "Could not load more tasks");
+      }
+      setTaskSearch((current) => {
+        if (!current || current.query !== taskQueryKey) return current;
+        return {
+          ...current,
+          taskIds: [...new Set([...current.taskIds, ...value.taskIds])],
+          tasks: mergeSearchTaskSummaries(current.tasks, value.tasks),
+          page: value.page,
+        };
+      });
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not load more tasks");
+    } finally {
+      setTaskQueryPaging(false);
+    }
+  }
+
   const taskPool = useMemo(
-    () => taskSearch?.query === searchNeedle
+    () => taskSearch?.query === taskQueryKey
       ? mergeSearchTaskSummaries(data.tasks, taskSearch.tasks)
       : data.tasks,
-    [data.tasks, searchNeedle, taskSearch],
+    [data.tasks, taskQueryKey, taskSearch],
   );
 
   const visibleTasks = useMemo(() => {
     let tasks = taskPool;
-    const query: ViewQuery = activeSavedView?.query ?? {};
+    const authoritativeIds = taskSearch?.query === taskQueryKey && taskSearch.status === "ready"
+      ? new Set(taskSearch.taskIds)
+      : null;
+    if (authoritativeIds) {
+      return sortTasks(tasks.filter((task) => authoritativeIds.has(task.id)), currentDisplay);
+    }
     if (surface === "shared") {
       tasks = tasks.filter((task) => task.accessRole !== "owner");
     } else if (surface.startsWith("project:")) {
@@ -1205,54 +1306,46 @@ export function TaskTracker({
         (task) => statusMap.get(task.statusId)?.category === "backlog",
       );
     }
-
-    const showArchived = surface === "archived" || query.archived === true;
-    tasks = tasks.filter((task) => (showArchived ? task.archivedAt : !task.archivedAt));
-    if (query.projectId !== undefined) {
-      tasks = tasks.filter((task) => task.projectId === query.projectId);
+    const archivedCondition = canonicalViewQuery(currentViewQuery).conditions.some(
+      (condition) => condition.field === "archived",
+    );
+    if (!archivedCondition) {
+      tasks = tasks.filter((task) => surface === "archived" ? task.archivedAt : !task.archivedAt);
     }
     if (activeSavedView?.scopeProjectId) {
       tasks = tasks.filter(
         (task) => task.projectId === activeSavedView.scopeProjectId,
       );
     }
-    if (query.releaseId !== undefined) {
-      tasks = tasks.filter((task) => task.releaseId === query.releaseId);
-    }
-    if (query.statusIds?.length) {
-      tasks = tasks.filter((task) => query.statusIds?.includes(task.statusId));
-    }
-    if (query.priorities?.length) {
-      tasks = tasks.filter((task) => query.priorities?.includes(task.priority));
-    }
-    if (query.updatedWithinHours && query.updatedWithinHours > 0) {
-      const cutoff = viewReferenceTime - query.updatedWithinHours * 60 * 60 * 1000;
-      tasks = tasks.filter((task) => new Date(task.updatedAt).getTime() >= cutoff);
-    }
-    if (statusFilter !== "all") tasks = tasks.filter((task) => task.statusId === statusFilter);
-    if (priorityFilter !== "all") tasks = tasks.filter((task) => task.priority === priorityFilter);
-    const needle = searchNeedle;
-    if (needle) {
-      const remoteMatches = taskSearch?.query === needle
-        ? new Set(taskSearch.taskIds)
-        : null;
-      tasks = tasks.filter((task) => taskMatchesSearch(task, needle, remoteMatches));
-    }
+    tasks = tasks.filter((task) => taskMatchesViewQuery(task, currentViewQuery, {
+      statuses: data.statuses,
+      taskLabels: data.taskLabels,
+      relations: data.relations,
+      tasks: data.tasks,
+      referenceTime: new Date(viewReferenceTime),
+      timezone: data.user.timezone,
+    }));
+    if (searchNeedle) tasks = tasks.filter((task) => taskMatchesSearch(task, searchNeedle, null));
     return sortTasks(tasks, currentDisplay);
   }, [
     activeSavedView,
+    currentViewQuery,
+    data.relations,
+    data.statuses,
+    data.taskLabels,
+    data.tasks,
+    data.user.timezone,
     taskPool,
-    priorityFilter,
     searchNeedle,
-    statusFilter,
     statusMap,
     surface,
     taskSearch,
+    taskQueryKey,
     viewReferenceTime,
     currentDisplay,
   ]);
-  const taskSearchStatus = searchNeedle && visibleTasks.length === 0
-    ? taskSearch?.query !== searchNeedle
+  const taskSearchStatus = visibleTasks.length === 0
+    ? taskSearch?.query !== taskQueryKey
       ? "loading"
       : taskSearch.status === "error"
         ? "error"
@@ -1412,16 +1505,10 @@ export function TaskTracker({
       ? canEditContent(activeSavedView.accessRole)
       : true;
   const sidebarCompact = sidebarCollapsed && !mobileSidebarOpen;
-  const currentViewQuery: ViewQuery = {
-    ...(activeSavedView?.query ?? {}),
-    ...(search ? { search } : {}),
-    ...(statusFilter !== "all" ? { statusIds: [statusFilter] } : {}),
-    ...(priorityFilter !== "all" ? { priorities: [priorityFilter] } : {}),
-  };
   const hasViewChanges = activeSavedView
     ? JSON.stringify(currentViewQuery) !== JSON.stringify(activeSavedView.query) ||
       JSON.stringify(currentDisplay) !== JSON.stringify(activeSavedView.display)
-    : Boolean(search || priorityFilter !== "all" || statusFilter !== "all" ||
+    : Boolean(search || canonicalTemporaryQuery.conditions.length ||
       JSON.stringify(currentDisplay) !== JSON.stringify(defaultViewDisplay()));
 
   async function mutate(path: string, method: string, body: unknown) {
@@ -1688,6 +1775,8 @@ export function TaskTracker({
   function navigateSurface(nextSurface: string, nextLayout?: Layout) {
     setMobileSidebarOpen(false);
     setMobileActionsOpen(false);
+    setSearch("");
+    setTemporaryQuery(emptyViewQuery());
     applyNavigation({
       surface: nextSurface,
       layout: nextLayout ?? defaultLayoutForSurface(nextSurface, data),
@@ -1724,8 +1813,7 @@ export function TaskTracker({
 
   function cancelViewChanges() {
     setSearch("");
-    setStatusFilter("all");
-    setPriorityFilter("all");
+    setTemporaryQuery(emptyViewQuery());
     setDisplayOverrides((current) => {
       const next = { ...current };
       delete next[surface];
@@ -1752,8 +1840,7 @@ export function TaskTracker({
     });
     if (!ok) return;
     setSearch("");
-    setStatusFilter("all");
-    setPriorityFilter("all");
+    setTemporaryQuery(emptyViewQuery());
     setDisplayOverrides((current) => {
       const next = { ...current };
       delete next[surface];
@@ -1924,7 +2011,7 @@ export function TaskTracker({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setHighlighted(0);
     setSelected(new Set());
-  }, [surface, search, priorityFilter, statusFilter]);
+  }, [surface, search, temporaryQuery]);
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
@@ -2186,8 +2273,8 @@ export function TaskTracker({
                     {search && <button onClick={() => setSearch("")}><X size={12} /></button>}
                   </div>
                   <div className="popover-anchor">
-                    <button className={`button ghost ${filterOpen ? "active" : ""}`} onClick={() => setFilterOpen((value) => !value)}><ListFilter size={14} />Filter{(priorityFilter !== "all" || statusFilter !== "all") && <span className="filter-count">{Number(priorityFilter !== "all") + Number(statusFilter !== "all")}</span>}</button>
-                    {filterOpen && <FilterPopover statuses={data.statuses} priority={priorityFilter} status={statusFilter} onPriority={setPriorityFilter} onStatus={setStatusFilter} onClose={() => setFilterOpen(false)} />}
+                    <button className={`button ghost ${filterOpen ? "active" : ""}`} onClick={() => setFilterOpen((value) => !value)}><ListFilter size={14} />Filter{canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}</button>
+                    {filterOpen && <FilterPopover data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onClose={() => setFilterOpen(false)} />}
                   </div>
                   <div className="segmented" aria-label="Layout">
                     <button className={layout === "list" ? "active" : ""} onClick={() => changeLayout("list")} title="List"><LayoutList size={14} /></button>
@@ -2201,6 +2288,7 @@ export function TaskTracker({
                   {activeSavedView && hasViewChanges && <button className="button ghost" onClick={cancelViewChanges}><X size={13} />Cancel</button>}
                   {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" onClick={() => setDialog("view")}><Copy size={13} />Save as</button>}
                 </div>
+                {canonicalTemporaryQuery.conditions.length > 0 && <FilterChips data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onEdit={() => setFilterOpen(true)} />}
                 <div className="segmented mobile-layout-switcher" role="group" aria-label="Layout">
                   <button type="button" className={layout === "list" ? "active" : ""} aria-label="List view" aria-pressed={layout === "list"} onClick={() => changeLayout("list")}><LayoutList size={16} /></button>
                   <button type="button" className={layout === "board" ? "active" : ""} aria-label="Kanban view" aria-pressed={layout === "board"} onClick={() => changeLayout("board")}><Columns3 size={16} /></button>
@@ -2219,7 +2307,7 @@ export function TaskTracker({
                     }}
                   >
                     <SlidersHorizontal size={17} />
-                    {(priorityFilter !== "all" || statusFilter !== "all") && <span className="filter-count">{Number(priorityFilter !== "all") + Number(statusFilter !== "all")}</span>}
+                    {canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}
                   </button>
                   <div
                     className="mobile-view-controls"
@@ -2240,8 +2328,7 @@ export function TaskTracker({
                     </label>
                     <section className="mobile-control-section">
                       <h3>Filter</h3>
-                      <label><span>Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Any status</option>{data.statuses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-                      <label><span>Priority</span><select value={priorityFilter} onChange={(event) => setPriorityFilter(event.target.value as Priority | "all")}><option value="all">Any priority</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label>
+                      <FilterConditionEditor data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} compact />
                     </section>
                     <section className="mobile-control-section">
                       <h3>Display</h3>
@@ -2256,7 +2343,7 @@ export function TaskTracker({
                       <label className="display-checkbox"><input type="checkbox" checked={currentDisplay.showEmptyGroups} disabled={currentGroupBy === "status" || currentGroupBy === "none"} onChange={(event) => changeDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>
                     </section>
                     <div className="mobile-controls-footer">
-                      <button className="button ghost" type="button" onClick={() => { setPriorityFilter("all"); setStatusFilter("all"); }}>Clear filters</button>
+                      <button className="button ghost" type="button" disabled={!canonicalTemporaryQuery.conditions.length} onClick={() => setTemporaryQuery(emptyViewQuery())}>Clear filters</button>
                       {activeSavedView && hasViewChanges && canSaveView && <button className="button secondary" type="button" onClick={() => { setMobileActionsOpen(false); void saveCurrentView(); }}><Save size={14} />Save</button>}
                       {activeSavedView && hasViewChanges && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); cancelViewChanges(); }}><X size={14} />Cancel</button>}
                       {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); setDialog("view"); }}><Copy size={14} />Save as</button>}
@@ -2297,9 +2384,9 @@ export function TaskTracker({
         ) : taskSearchStatus ? (
           <TaskSearchNotice status={taskSearchStatus} />
         ) : layout === "board" ? (
-          <TaskBoard tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />
+          <><TaskBoard tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
         ) : (
-          <TaskList tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} pullRefreshing={pullRefreshing} pullRefreshError={pullRefreshError} pullRefreshDisabled={busy || taskWindowLoading} onRefresh={refreshTaskList} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />
+          <><TaskList tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} pullRefreshing={pullRefreshing} pullRefreshError={pullRefreshError} pullRefreshDisabled={busy || taskWindowLoading} onRefresh={refreshTaskList} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
         )}
       </section>
 
@@ -2315,7 +2402,7 @@ export function TaskTracker({
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialProjectId={contextProject} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog view={activeSavedView} editing query={currentViewQuery} display={currentDisplay} projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialScopeProjectId={activeSavedView.scopeProjectId} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); setSearch(""); setStatusFilter("all"); setPriorityFilter("all"); } }} onArchive={async () => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, archived: true }); if (ok) { setDialog(null); navigateSurface("views", "list"); } }} busy={busy} />}
+      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog view={activeSavedView} editing query={currentViewQuery} display={currentDisplay} projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialScopeProjectId={activeSavedView.scopeProjectId} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); setSearch(""); setTemporaryQuery(emptyViewQuery()); } }} onArchive={async () => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, archived: true }); if (ok) { setDialog(null); navigateSurface("views", "list"); } }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
@@ -3975,12 +4062,213 @@ function LabelPicker({ labels, selected, onToggle, disabled, label }: { labels: 
   return <div className="label-picker"><div className="label-chip-list">{selectedLabels.map((item) => <LabelChip key={item.id} label={item} />)}{selectedLabels.length === 0 && <span className="muted-value">No labels</span>}</div><details><summary aria-label={label}><Tag size={13} />{selected.size ? `${selected.size} selected` : "Add labels"}<ChevronDown size={11} /></summary><div className="label-picker-menu" role="listbox" aria-multiselectable="true"><label className="label-picker-search"><Search size={13} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search labels…" aria-label="Search labels" /></label>{visible.length ? visible.map((item) => <label key={item.id} title={item.description || item.name}><input type="checkbox" checked={selected.has(item.id)} disabled={disabled || Boolean(item.archivedAt && !selected.has(item.id))} onChange={() => onToggle(item.id)} /><span className="label-color-dot" style={{ background: item.color }} /> <span>{item.name}</span>{item.archivedAt && <small>Archived</small>}</label>) : <p>{assignable.length ? "No matching labels." : "No active labels in this catalog."}</p>}</div></details></div>;
 }
 
-function FilterPopover({ statuses, priority, status, onPriority, onStatus, onClose }: { statuses: WorkflowStatusRecord[]; priority: Priority | "all"; status: string; onPriority: (value: Priority | "all") => void; onStatus: (value: string) => void; onClose: () => void }) { return <Popover title="Filter" onClose={onClose}><label className="popover-field"><span>Status</span><select value={status} onChange={(event) => onStatus(event.target.value)}><option value="all">Any status</option>{statuses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="popover-field"><span>Priority</span><select value={priority} onChange={(event) => onPriority(event.target.value as Priority | "all")}><option value="all">Any priority</option>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></label><button className="button ghost popover-clear" onClick={() => { onPriority("all"); onStatus("all"); }}>Clear filters</button></Popover>; }
+const filterFieldOptions: Array<{ value: ViewFilterField; label: string }> = [
+  { value: "status", label: "Status" },
+  { value: "status_category", label: "Status category" },
+  { value: "priority", label: "Priority" },
+  { value: "assignee", label: "Assignee" },
+  { value: "project", label: "Project" },
+  { value: "release", label: "Release" },
+  { value: "label", label: "Label" },
+  { value: "estimate", label: "Estimate" },
+  { value: "due_date", label: "Due date" },
+  { value: "parent", label: "Parent" },
+  { value: "subtasks", label: "Subtasks" },
+  { value: "relation", label: "Relation" },
+  { value: "created_at", label: "Created date" },
+  { value: "updated_at", label: "Updated date" },
+  { value: "started_at", label: "Started date" },
+  { value: "completed_at", label: "Completed date" },
+  { value: "canceled_at", label: "Canceled date" },
+  { value: "archived", label: "Archived" },
+];
+
+const filterOperatorLabels: Record<ViewFilterOperator, string> = {
+  is: "is",
+  is_not: "is not",
+  in: "is any of",
+  not_in: "is not any of",
+  is_empty: "is empty",
+  eq: "equals",
+  neq: "does not equal",
+  gt: "is greater than",
+  gte: "is at least",
+  lt: "is less than",
+  lte: "is at most",
+  on: "is on",
+  before: "is before",
+  after: "is after",
+  on_or_before: "is on or before",
+  on_or_after: "is on or after",
+  overdue: "is overdue",
+  next_7_days: "is in the next 7 days",
+  recent: "was updated recently",
+};
+
+function FilterPopover({ data, query, onQuery, onClose }: {
+  data: AppSnapshot;
+  query: ViewQuery;
+  onQuery: (query: ViewQuery) => void;
+  onClose: () => void;
+}) {
+  return <Popover title="Filter" className="filter-popover" onClose={onClose}><FilterConditionEditor data={data} query={query} onQuery={onQuery} /></Popover>;
+}
+
+function FilterConditionEditor({ data, query, onQuery, compact = false }: {
+  data: AppSnapshot;
+  query: ViewQuery;
+  onQuery: (query: ViewQuery) => void;
+  compact?: boolean;
+}) {
+  const [propertySearch, setPropertySearch] = useState("");
+  const canonical = canonicalViewQuery(query);
+  const needle = propertySearch.trim().toLocaleLowerCase();
+  const fields = needle
+    ? filterFieldOptions.filter((field) => field.label.toLocaleLowerCase().includes(needle))
+    : filterFieldOptions;
+  const replaceConditions = (conditions: ViewFilterCondition[]) => onQuery({
+    version: 1,
+    op: "all",
+    conditions,
+  });
+  const add = (field: ViewFilterField) => {
+    replaceConditions([...canonical.conditions, defaultFilterCondition(field, data)]);
+    setPropertySearch("");
+  };
+  return <div className={`filter-builder ${compact ? "compact" : ""}`}>
+    <label className="filter-property-search"><Search size={13} /><input type="search" value={propertySearch} onChange={(event) => setPropertySearch(event.target.value)} placeholder="Search properties…" aria-label="Search filter properties" /></label>
+    <div className="filter-property-grid" role="list" aria-label="Filter properties">
+      {fields.map((field) => <button type="button" key={field.value} onClick={() => add(field.value)}>{field.label}</button>)}
+      {!fields.length && <p>No matching properties.</p>}
+    </div>
+    {canonical.conditions.length > 0 && <div className="filter-formula" aria-label="Active filter formula">
+      <span className="filter-formula-operator">AND</span>
+      {canonical.conditions.map((condition, index) => <div className="filter-condition-row" key={`${condition.field}:${index}`}>
+        <b>{filterFieldOptions.find((field) => field.value === condition.field)?.label ?? condition.field}</b>
+        <select aria-label={`${condition.field} operator`} value={condition.operator} onChange={(event) => {
+          const operator = event.target.value as ViewFilterOperator;
+          const next = [...canonical.conditions];
+          next[index] = {
+            field: condition.field,
+            operator,
+            ...filterConditionValue(condition.field, operator, data, condition.value),
+          };
+          replaceConditions(next);
+        }}>{filterOperators(condition.field).map((operator) => <option key={operator} value={operator}>{filterOperatorLabels[operator]}</option>)}</select>
+        <FilterValueEditor condition={condition} data={data} onChange={(value) => {
+          const next = [...canonical.conditions];
+          next[index] = value === undefined
+            ? { field: condition.field, operator: condition.operator }
+            : { ...condition, value };
+          replaceConditions(next);
+        }} />
+        <button type="button" className="icon-button quiet" aria-label={`Remove ${condition.field} filter`} onClick={() => replaceConditions(canonical.conditions.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button>
+      </div>)}
+      <button className="button ghost popover-clear" type="button" onClick={() => replaceConditions([])}>Clear all</button>
+    </div>}
+  </div>;
+}
+
+function FilterValueEditor({ condition, data, onChange }: {
+  condition: ViewFilterCondition;
+  data: AppSnapshot;
+  onChange: (value: ViewFilterCondition["value"] | undefined) => void;
+}) {
+  if (["is_empty", "overdue", "next_7_days"].includes(condition.operator)) return null;
+  if (condition.field === "relation") {
+    const value = condition.value as { type: TaskRelationRecord["type"] | "any"; direction: "outgoing" | "incoming" | "either" };
+    return <span className="filter-relation-value"><select aria-label="Relation type" value={value.type} onChange={(event) => onChange({ ...value, type: event.target.value as typeof value.type })}><option value="any">Any relation</option><option value="blocks">Blocks</option><option value="related">Related</option><option value="duplicate_of">Duplicate of</option></select><select aria-label="Relation direction" value={value.direction} onChange={(event) => onChange({ ...value, direction: event.target.value as typeof value.direction })}><option value="either">Either direction</option><option value="outgoing">Outgoing</option><option value="incoming">Incoming</option></select></span>;
+  }
+  if (condition.field === "subtasks" || condition.field === "archived") {
+    return <select aria-label={`${condition.field} value`} value={String(condition.value)} onChange={(event) => onChange(event.target.value === "true")}><option value="true">Yes</option><option value="false">No</option></select>;
+  }
+  if (condition.field === "estimate" || condition.operator === "recent") {
+    return <input aria-label={`${condition.field} value`} type="number" min={condition.operator === "recent" ? 1 : undefined} step="1" value={Number(condition.value)} onChange={(event) => onChange(Number(event.target.value))} />;
+  }
+  if (["due_date", "created_at", "updated_at", "started_at", "completed_at", "canceled_at"].includes(condition.field)) {
+    return <input aria-label={`${condition.field} date`} type="date" value={String(condition.value ?? "")} onChange={(event) => onChange(event.target.value)} />;
+  }
+  const options = filterCatalogOptions(condition.field, data);
+  if (condition.operator === "in" || condition.operator === "not_in") {
+    const selected = new Set(Array.isArray(condition.value) ? condition.value : []);
+    return <select multiple aria-label={`${condition.field} values`} value={[...selected]} onChange={(event) => onChange([...event.currentTarget.selectedOptions].map((option) => option.value))}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>;
+  }
+  return <select aria-label={`${condition.field} value`} value={String(condition.value ?? "")} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>;
+}
+
+function FilterChips({ data, query, onQuery, onEdit }: {
+  data: AppSnapshot;
+  query: ViewQuery;
+  onQuery: (query: ViewQuery) => void;
+  onEdit: () => void;
+}) {
+  const canonical = canonicalViewQuery(query);
+  const remove = (index: number) => onQuery({ version: 1, op: "all", conditions: canonical.conditions.filter((_, itemIndex) => itemIndex !== index) });
+  return <div className="filter-chip-list" aria-label="Active filters">{canonical.conditions.map((condition, index) => <span className="filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data)}</button><button type="button" aria-label={`Remove ${condition.field} filter`} onClick={() => remove(index)}><X size={11} /></button></span>)}<button className="filter-clear-all" type="button" onClick={() => onQuery(emptyViewQuery())}>Clear all</button></div>;
+}
+
+function filterOperators(field: ViewFilterField): ViewFilterOperator[] {
+  if (field === "estimate") return ["eq", "neq", "gt", "gte", "lt", "lte", "is_empty"];
+  if (field === "due_date") return ["on", "before", "after", "on_or_before", "on_or_after", "overdue", "next_7_days", "is_empty"];
+  if (["created_at", "started_at", "completed_at", "canceled_at"].includes(field)) return ["on", "before", "after", "on_or_before", "on_or_after", "is_empty"];
+  if (field === "updated_at") return ["on", "before", "after", "on_or_before", "on_or_after", "recent", "is_empty"];
+  if (field === "subtasks" || field === "archived") return ["is", "is_not"];
+  if (field === "relation") return ["is", "is_not", "is_empty"];
+  return ["is", "is_not", "in", "not_in", "is_empty"];
+}
+
+function defaultFilterCondition(field: ViewFilterField, data: AppSnapshot): ViewFilterCondition {
+  if (["status", "assignee", "project", "release", "label", "parent"].includes(field) && !filterCatalogOptions(field, data).length) {
+    return { field, operator: "is_empty" };
+  }
+  const operator: ViewFilterOperator = field === "estimate" ? "eq" : ["due_date", "created_at", "updated_at", "started_at", "completed_at", "canceled_at"].includes(field) ? "on" : "is";
+  return { field, operator, ...filterConditionValue(field, operator, data) };
+}
+
+function filterConditionValue(field: ViewFilterField, operator: ViewFilterOperator, data: AppSnapshot, previous?: ViewFilterCondition["value"]): Pick<ViewFilterCondition, "value"> | Record<string, never> {
+  if (["is_empty", "overdue", "next_7_days"].includes(operator)) return {};
+  if (field === "relation") return { value: typeof previous === "object" && previous && !Array.isArray(previous) ? previous : { type: "any", direction: "either" } };
+  if (field === "subtasks") return { value: typeof previous === "boolean" ? previous : true };
+  if (field === "archived") return { value: typeof previous === "boolean" ? previous : false };
+  if (field === "estimate") return { value: typeof previous === "number" ? previous : 0 };
+  if (operator === "recent") return { value: typeof previous === "number" ? previous : 24 };
+  if (["due_date", "created_at", "updated_at", "started_at", "completed_at", "canceled_at"].includes(field)) return { value: typeof previous === "string" ? previous : new Date().toISOString().slice(0, 10) };
+  const options = filterCatalogOptions(field, data);
+  if (operator === "in" || operator === "not_in") {
+    const previousValues = Array.isArray(previous) ? previous : typeof previous === "string" ? [previous] : [];
+    return { value: previousValues.length ? previousValues : options[0] ? [options[0].value] : [] };
+  }
+  return { value: typeof previous === "string" ? previous : options[0]?.value ?? "" };
+}
+
+function filterCatalogOptions(field: ViewFilterField, data: AppSnapshot) {
+  if (field === "status") return data.statuses.map((item) => ({ value: item.id, label: item.name }));
+  if (field === "status_category") return ["backlog", "unstarted", "started", "completed", "canceled"].map((value) => ({ value, label: value[0]!.toUpperCase() + value.slice(1) }));
+  if (field === "priority") return Object.entries(priorityMeta).map(([value, meta]) => ({ value, label: meta.label }));
+  if (field === "assignee") return data.users.map((item) => ({ value: item.id, label: item.displayName }));
+  if (field === "project") return data.projects.map((item) => ({ value: item.id, label: item.name }));
+  if (field === "release") return data.releases.map((item) => ({ value: item.id, label: item.name }));
+  if (field === "label") return data.labels.map((item) => ({ value: item.id, label: item.name }));
+  if (field === "parent") return data.tasks.map((item) => ({ value: item.id, label: `${item.identifier} · ${item.title}` }));
+  return [];
+}
+
+function filterConditionSummary(condition: ViewFilterCondition, data: AppSnapshot) {
+  const field = filterFieldOptions.find((item) => item.value === condition.field)?.label ?? condition.field;
+  if (["is_empty", "overdue", "next_7_days"].includes(condition.operator)) return `${field} ${filterOperatorLabels[condition.operator]}`;
+  if (condition.field === "relation") {
+    const value = condition.value as { type: string; direction: string };
+    return `${field} ${filterOperatorLabels[condition.operator]} ${value.type}/${value.direction}`;
+  }
+  const options = new Map(filterCatalogOptions(condition.field, data).map((item) => [item.value, item.label]));
+  const values = Array.isArray(condition.value) ? condition.value : [String(condition.value)];
+  return `${field} ${filterOperatorLabels[condition.operator]} ${values.map((value) => options.get(String(value)) ?? String(value)).join(", ")}`;
+}
 function DisplayPopover({ display, onLayout, onDisplay, onClose }: { display: ViewDisplay; onLayout: (value: Layout) => void; onDisplay: (changes: Partial<ViewDisplay>) => void; onClose: () => void }) {
   const emptyGroupsDisabled = display.groupBy === "status" || display.groupBy === "none";
   return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={display.layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={display.layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={display.groupBy} onChange={(event) => onDisplay({ groupBy: event.target.value as ViewDisplay["groupBy"] })}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Order by</span><select value={display.orderBy} onChange={(event) => onDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={display.direction} disabled={display.orderBy === "manual"} onChange={(event) => onDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={display.visibleFields.includes(option.value)} onChange={() => onDisplay({ visibleFields: toggleViewField(display.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox" title={display.groupBy === "status" ? "Empty status groups are always hidden." : undefined}><input type="checkbox" checked={display.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => onDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>{display.groupBy === "status" && <small className="display-help">Empty status groups are always hidden.</small>}</Popover>;
 }
-function Popover({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) { return <div className="popover"><header><b>{title}</b><button onClick={onClose}><X size={13} /></button></header>{children}</div>; }
+function Popover({ title, onClose, children, className = "" }: { title: string; onClose: () => void; children: React.ReactNode; className?: string }) { return <div className={`popover ${className}`}><header><b>{title}</b><button onClick={onClose}><X size={13} /></button></header>{children}</div>; }
 
 type WorkflowSettingsStatus = WorkflowStatusRecord & {
   taskCount: number;
@@ -4911,6 +5199,7 @@ function AdminMetric({ label, value, note, icon }: { label: string; value: numbe
 function formatAttachmentBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`; if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`; return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`; }
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate?: () => void }) { const labels = { task: ["No tasks here", "There is no work in this view yet."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "There are no releases in this scope yet."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button>}</div>; }
 function TaskSearchNotice({ status }: { status: "loading" | "error" }) { return <div className="empty-state" role="status"><Search size={22} /><h2>{status === "loading" ? "Searching tasks…" : "Search unavailable"}</h2><p>{status === "loading" ? "Looking across every task you can access." : "The search request failed. Change the query or try again."}</p></div>; }
+function TaskQueryPagination({ busy, onMore }: { busy: boolean; onMore: () => void }) { return <div className="task-query-pagination" role="status"><span>More matching tasks are available.</span><button className="button ghost" type="button" disabled={busy} onClick={onMore}>{busy ? "Loading…" : "Load more"}</button></div>; }
 type TaskHierarchySummary = {
   parent?: TaskRecord;
   subtaskCount: number;

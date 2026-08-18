@@ -135,6 +135,25 @@ SavedView -> filter + layout + grouping + ordering + visible fields
 Задача может быть в project без release и вне project. Release без project
 невозможен. List и Kanban никогда не владеют задачами.
 
+## Повторная сверка фильтров 2026-08-18
+
+Официальные страницы [Filters](https://linear.app/docs/filters),
+[Custom Views](https://linear.app/docs/custom-views) и
+[Display options](https://linear.app/docs/display-options) повторно проверены
+перед реализацией filter contract.
+
+Подтверждённый baseline Linear: `F` открывает filters, изменения отражаются в
+URL, property picker searchable, а условия представлены редактируемыми tokens.
+Документация показывает `is`/`is not`, множественные категориальные значения,
+date before/after и advanced AND/OR с nested groups. Temporary filters можно
+передать ссылкой и затем сохранить/скопировать в Custom View.
+
+Принятое отличие Task Manager: MVP UI показывает только root `AND` и не
+публикует disabled `OR`, nested groups, AI filters, teams или cycles. Stored
+query уже versioned (`version: 1`, `op: all`, typed conditions), поэтому это
+ограничение интерфейса не создаёт второго flat формата. Собственные controls,
+copy и assets сохраняют product identity Task Manager.
+
 ## Источники
 
 Все источники — официальная документация Linear, проверенная 2026-08-13:

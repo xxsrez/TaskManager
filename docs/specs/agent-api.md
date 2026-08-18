@@ -275,6 +275,12 @@ Data responses используют `Cache-Control: private, no-store` и
 - `order=manual|updated|created|priority|due|title`;
 - `direction=asc|desc`.
 
+REST/MCP параметры переводятся в тот же versioned Task filter AST и SQL
+executor, что Saved Views и UI. Внешний API намеренно сохраняет bounded prefix
+семантику `search`; это compile mode общего executor, а не отдельный набор
+ACL/filter predicates. Cursor order/predicate добавляется после того же
+authoritative filtered Task set.
+
 `GET /projects` поддерживает prefix `search` по name/summary и `archived`.
 `GET /releases` — `project_ref`, повторяемый `status`, prefix `search` по
 name. Неизвестные parameters отклоняются.

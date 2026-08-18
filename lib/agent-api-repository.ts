@@ -46,16 +46,23 @@ import {
   setCommentReaction,
 } from "./comments";
 import type { AgentAuthorizationContext } from "./agent-api-context";
-import type { AccessRole, AttachmentRecord, UserRecord } from "./types";
+import type {
+  AccessRole,
+  AttachmentRecord,
+  UserRecord,
+  ViewFilterCondition,
+} from "./types";
 import { parseStoredViewDisplay, parseStoredViewQuery } from "./view-contract";
+import { taskFilterSql } from "./task-filter";
 
 type DbRow = Record<string, unknown>;
 
 const taskScopeCte = (detail: boolean) => `WITH scoped_tasks AS (
   SELECT
     ${detail ? "t.*" : `t.id, t.public_id, t.owner_user_id, t.identifier,
-      t.title, t.status_id, t.priority, t.assignee_user_id, t.project_id,
-      t.release_id, t.due_date, t.parent_task_id, t.rank, t.archived_at,
+      t.title, t.description, t.status_id, t.priority, t.assignee_user_id, t.project_id,
+      t.release_id, t.estimate, t.due_date, t.parent_task_id, t.rank,
+      t.started_at, t.completed_at, t.canceled_at, t.archived_at,
       t.comment_count,
       t.version, t.created_at, t.updated_at,
       CASE WHEN length(t.description) > 0 THEN 1 ELSE 0 END AS has_description`},
@@ -205,48 +212,33 @@ export async function listAgentTasks(
     throw new ValidationError("Release does not belong to the selected project");
   }
 
-  const predicates = [
-    query.archived ? "v.archived_at IS NOT NULL" : "v.archived_at IS NULL",
+  const conditions: ViewFilterCondition[] = [
+    { field: "archived", operator: "is", value: query.archived },
   ];
-  const parameters: unknown[] = taskScopeParameters(currentUser.id);
-  if (project) {
-    predicates.push("v.project_id = ?");
-    parameters.push(project.id);
-  }
-  if (release) {
-    predicates.push("v.release_id = ?");
-    parameters.push(release.id);
-  }
+  if (project) conditions.push({ field: "project", operator: "is", value: String(project.id) });
+  if (release) conditions.push({ field: "release", operator: "is", value: String(release.id) });
   if (query.statusCategories.length) {
-    predicates.push(
-      `v.status_category IN (${placeholders(query.statusCategories.length)})`,
-    );
-    parameters.push(...query.statusCategories);
+    conditions.push({ field: "status_category", operator: "in", value: query.statusCategories });
   }
   if (query.priorities.length) {
-    predicates.push(`v.priority IN (${placeholders(query.priorities.length)})`);
-    parameters.push(...query.priorities);
+    conditions.push({ field: "priority", operator: "in", value: query.priorities });
   }
   if (query.assignee === "me") {
-    predicates.push("v.assignee_user_id = ?");
-    parameters.push(currentUser.id);
+    conditions.push({ field: "assignee", operator: "is", value: currentUser.id });
   } else if (query.assignee === "unassigned") {
-    predicates.push("v.assignee_user_id IS NULL");
+    conditions.push({ field: "assignee", operator: "is_empty" });
   }
-  if (query.search) {
-    predicates.push(
-      `((lower(v.title) >= ? AND lower(v.title) < ?)
-        OR (lower(v.identifier) >= ? AND lower(v.identifier) < ?)
-        OR EXISTS (
-          SELECT 1 FROM task_identifier_aliases alias
-          WHERE alias.task_id = v.id
-            AND lower(alias.identifier) >= ?
-            AND lower(alias.identifier) < ?
-        ))`,
-    );
-    const [start, end] = prefixRange(query.search);
-    parameters.push(start, end, start, end, start, end);
-  }
+  const compiled = taskFilterSql({
+    version: 1,
+    op: "all",
+    conditions,
+    ...(query.search ? { search: query.search } : {}),
+  }, { searchMode: "prefix" });
+  const predicates = [compiled.sql];
+  const parameters: unknown[] = [
+    ...taskScopeParameters(currentUser.id),
+    ...compiled.parameters,
+  ];
 
   const direction = query.direction === "asc" ? "ASC" : "DESC";
   const order = taskOrderExpression(query.order);

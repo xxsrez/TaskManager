@@ -25,16 +25,20 @@ import {
   getTaskDetail,
   grantAccess,
   moveTask,
+  queryTaskSummaries,
   revokeAccess,
   searchTaskIds,
   searchTaskSummaries,
   setTaskLabel,
+  setTaskParent,
   transferProjectOwnership,
   updateAccessRole,
   updateTask,
   updateLabel,
 } from "../lib/repository";
+import { createTaskRelation } from "../lib/task-relations";
 import { GET as searchTasksRoute, POST as createTaskRoute } from "../app/api/tasks/route";
+import { POST as queryTasksRoute } from "../app/api/tasks/query/route";
 import { GET as getTaskRoute, PATCH as updateTaskRoute } from "../app/api/tasks/[id]/route";
 import { POST as moveTaskRoute } from "../app/api/tasks/[id]/move/route";
 import { createD1TestHarness } from "./helpers/d1";
@@ -131,6 +135,131 @@ test("project ACL is enforced by repository reads and writes", async () => {
       projectId: null,
     }),
     /Project cannot be cleared/,
+  );
+});
+
+test("one ACL-scoped filter engine covers every Task field, hierarchy, relations, dates, and archive state", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "filter-owner-account",
+    email: "filter-owner@example.test",
+  });
+  const outsider = await getOrCreateUser({
+    ...outsiderActor,
+    providerAccountKey: "filter-outsider-account",
+    email: "filter-outsider@example.test",
+  });
+  await createProject(owner, { name: "Filter Contract", taskCode: "FC" });
+  const project = (await getSnapshot(owner)).projects.find((item) => item.name === "Filter Contract")!;
+  await createRelease(owner, { name: "Filter Release", projectId: project.id });
+  const release = (await getSnapshot(owner)).releases.find((item) => item.name === "Filter Release")!;
+  const labels = await createLabel(owner, { name: "Filter Label", color: "#336699" });
+  const label = labels.find((item) => item.name === "Filter Label")!;
+  const statuses = (await getSnapshot(owner)).statuses.filter((item) => item.ownerUserId === owner.id);
+  const started = statuses.find((item) => item.category === "started")!;
+  const completed = statuses.find((item) => item.category === "completed")!;
+  const canceled = statuses.find((item) => item.category === "canceled" && item.systemRole !== "duplicate")!;
+
+  const parentIdentity = await createTask(owner, { title: "Filter parent", projectId: project.id });
+  const targetIdentity = await createTask(owner, {
+    title: "Filter target needle",
+    projectId: project.id,
+    releaseId: release.id,
+    statusId: started.id,
+    priority: "urgent",
+    assigneeUserId: owner.id,
+    estimate: 5,
+    dueDate: "2026-08-24",
+    labelIds: [label.id],
+  });
+  const childIdentity = await createTask(owner, { title: "Filter child", projectId: project.id });
+  const relatedIdentity = await createTask(owner, { title: "Filter related", projectId: project.id });
+  const completedIdentity = await createTask(owner, { title: "Filter completed", projectId: project.id, statusId: completed.id });
+  const canceledIdentity = await createTask(owner, { title: "Filter canceled", projectId: project.id, statusId: canceled.id });
+  const archivedIdentity = await createTask(owner, { title: "Filter archived", projectId: project.id });
+
+  let snapshot = await getSnapshot(owner);
+  const child = snapshot.tasks.find((item) => item.id === childIdentity.id)!;
+  await setTaskParent(owner, child.id, { version: child.version, parentTaskId: parentIdentity.id });
+  await createTaskRelation(owner, targetIdentity.id, {
+    targetTaskId: relatedIdentity.id,
+    type: "blocks",
+    direction: "outgoing",
+    idempotencyKey: "filter-contract-blocks",
+  });
+  const archived = (await getSnapshot(owner)).tasks.find((item) => item.id === archivedIdentity.id)!;
+  await updateTask(owner, archived.id, { version: archived.version, archived: true });
+  snapshot = await getSnapshot(owner);
+
+  const target = snapshot.tasks.find((item) => item.id === targetIdentity.id)!;
+  const parent = snapshot.tasks.find((item) => item.id === parentIdentity.id)!;
+  const completedTask = snapshot.tasks.find((item) => item.id === completedIdentity.id)!;
+  const canceledTask = snapshot.tasks.find((item) => item.id === canceledIdentity.id)!;
+  const query = async (condition: Record<string, unknown>) => queryTaskSummaries(owner, {
+    limit: 200,
+    query: { version: 1, op: "all", conditions: [condition as never] },
+  });
+  const includes = async (condition: Record<string, unknown>, taskId: string) => {
+    assert.ok((await query(condition)).taskIds.includes(taskId), JSON.stringify(condition));
+  };
+
+  await includes({ field: "status", operator: "is", value: started.id }, target.id);
+  await includes({ field: "status_category", operator: "is", value: "started" }, target.id);
+  await includes({ field: "priority", operator: "in", value: ["urgent"] }, target.id);
+  await includes({ field: "assignee", operator: "is", value: owner.id }, target.id);
+  await includes({ field: "project", operator: "is", value: project.id }, target.id);
+  await includes({ field: "release", operator: "is", value: release.id }, target.id);
+  await includes({ field: "label", operator: "is", value: label.id }, target.id);
+  await includes({ field: "estimate", operator: "gte", value: 5 }, target.id);
+  await includes({ field: "due_date", operator: "on", value: "2026-08-24" }, target.id);
+  await includes({ field: "parent", operator: "is", value: parent.id }, child.id);
+  await includes({ field: "subtasks", operator: "is", value: true }, parent.id);
+  await includes({ field: "relation", operator: "is", value: { type: "blocks", direction: "outgoing" } }, target.id);
+  await includes({ field: "created_at", operator: "on", value: target.createdAt.slice(0, 10) }, target.id);
+  await includes({ field: "updated_at", operator: "recent", value: 24 }, target.id);
+  await includes({ field: "started_at", operator: "on", value: target.startedAt!.slice(0, 10) }, target.id);
+  await includes({ field: "completed_at", operator: "on", value: completedTask.completedAt!.slice(0, 10) }, completedTask.id);
+  await includes({ field: "canceled_at", operator: "on", value: canceledTask.canceledAt!.slice(0, 10) }, canceledTask.id);
+  await includes({ field: "archived", operator: "is", value: true }, archivedIdentity.id);
+  await includes({ field: "release", operator: "is_empty" }, parent.id);
+  assert.ok((await query({ field: "priority", operator: "is_not", value: "urgent" })).taskIds.every((id) => id !== target.id));
+  assert.ok((await queryTaskSummaries(owner, {
+    query: { version: 1, op: "all", conditions: [], search: "target needle" },
+  })).taskIds.includes(target.id));
+
+  configureActorResolverForTests(async () => ({
+    ...ownerActor,
+    providerAccountKey: "filter-owner-account",
+    email: "filter-owner@example.test",
+  }));
+  const routeResponse = await queryTasksRoute(new Request("https://example.test/api/tasks/query", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      query: { version: 1, op: "all", conditions: [{ field: "label", operator: "is", value: label.id }] },
+      limit: 1,
+    }),
+  }));
+  assert.equal(routeResponse.status, 200);
+  const routeBody = await routeResponse.json() as { taskIds: string[]; page: { hasMore: boolean; next: unknown } };
+  assert.deepEqual(routeBody.taskIds, [target.id]);
+  assert.equal(routeBody.page.hasMore, false);
+  configureActorResolverForTests(null);
+
+  const [labelPlan, duePlan, pagePlan] = await database.batch<Record<string, unknown>>([
+    database.prepare("EXPLAIN QUERY PLAN SELECT task_id FROM task_labels WHERE label_id = ?").bind(label.id),
+    database.prepare("EXPLAIN QUERY PLAN SELECT id FROM tasks WHERE due_date >= ? AND archived_at IS NULL").bind("2026-08-18"),
+    database.prepare("EXPLAIN QUERY PLAN SELECT id FROM tasks ORDER BY updated_at DESC, id DESC LIMIT 20"),
+  ]);
+  assert.match(JSON.stringify(labelPlan.results), /idx_task_labels_label_task/);
+  assert.match(JSON.stringify(duePlan.results), /idx_tasks_due_archived/);
+  assert.match(JSON.stringify(pagePlan.results), /idx_tasks_updated_id/);
+
+  await assert.rejects(
+    queryTaskSummaries(outsider, {
+      query: { version: 1, op: "all", conditions: [{ field: "project", operator: "is", value: project.id }] },
+    }),
+    /inaccessible|not found/i,
   );
 });
 
