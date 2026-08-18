@@ -257,9 +257,16 @@ export const comments = sqliteTable(
   {
     id: text("id").primaryKey(),
     taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
-    authorUserId: text("author_user_id").notNull().references(() => users.id),
+    authorUserId: text("author_user_id").references(() => users.id),
     body: text("body").notNull(),
     source: text("source").notNull().default("native"),
+    sourceRecordId: text("source_record_id"),
+    sourceCommentId: text("source_comment_id"),
+    sourceParentCommentId: text("source_parent_comment_id"),
+    historicalAuthorName: text("historical_author_name"),
+    historicalCreatedAt: text("historical_created_at"),
+    historicalUpdatedAt: text("historical_updated_at"),
+    historicalQuotedText: text("historical_quoted_text"),
     parentCommentId: text("parent_comment_id").references(
       (): AnySQLiteColumn => comments.id,
       { onDelete: "cascade" },
@@ -281,13 +288,37 @@ export const comments = sqliteTable(
       table.taskId,
       table.authorUserId,
       table.idempotencyKey,
-    ),
+    ).where(sql`${table.authorUserId} IS NOT NULL`),
+    uniqueIndex("idx_comments_source_identity").on(
+      table.taskId,
+      table.source,
+      table.sourceCommentId,
+    ).where(sql`${table.sourceCommentId} IS NOT NULL`),
     index("idx_comments_task_created").on(
       table.taskId,
       table.createdAt,
       table.id,
     ),
     index("idx_comments_parent").on(table.parentCommentId, table.createdAt, table.id),
+    check(
+      "check_comment_source_shape",
+      sql`(
+        (${table.source} = 'native' AND ${table.authorUserId} IS NOT NULL
+          AND ${table.sourceRecordId} IS NULL AND ${table.sourceCommentId} IS NULL
+          AND ${table.sourceParentCommentId} IS NULL
+          AND ${table.historicalAuthorName} IS NULL
+          AND ${table.historicalCreatedAt} IS NULL
+          AND ${table.historicalUpdatedAt} IS NULL
+          AND ${table.historicalQuotedText} IS NULL)
+        OR
+        (${table.source} = 'linear' AND ${table.authorUserId} IS NULL
+          AND ${table.sourceRecordId} IS NOT NULL
+          AND ${table.sourceCommentId} IS NOT NULL
+          AND ${table.historicalAuthorName} IS NOT NULL
+          AND ${table.historicalCreatedAt} IS NOT NULL
+          AND ${table.historicalUpdatedAt} IS NOT NULL)
+      )`,
+    ),
   ],
 );
 
@@ -616,6 +647,37 @@ export const externalRecords = sqliteTable(
     index("idx_external_records_target").on(
       table.targetType,
       table.targetId,
+    ),
+  ],
+);
+
+export const commentMigrationOutcomes = sqliteTable(
+  "comment_migration_outcomes",
+  {
+    id: text("id").primaryKey(),
+    taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    sourceRecordId: text("source_record_id").notNull(),
+    sourceCommentId: text("source_comment_id"),
+    sourceIndex: integer("source_index").notNull(),
+    outcome: text("outcome").notNull(),
+    reason: text("reason"),
+    commentId: text("comment_id").references(() => comments.id, { onDelete: "set null" }),
+    rawJson: text("raw_json").notNull(),
+    reconciledAt: text("reconciled_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("idx_comment_migration_source_index").on(
+      table.sourceRecordId,
+      table.sourceIndex,
+    ),
+    index("idx_comment_migration_task_outcome").on(
+      table.taskId,
+      table.outcome,
+    ),
+    check(
+      "check_comment_migration_outcome",
+      sql`${table.outcome} IN ('migrated', 'exception')`,
     ),
   ],
 );

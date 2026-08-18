@@ -30,7 +30,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -42,9 +42,9 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 8 as const;
+export const systemBackupSchemaVersion = 9 as const;
 export const maxSystemBackupBytes = 10_000_000;
-const maxSystemBackupRows = 1000;
+const maxSystemBackupRows = 5000;
 const maxStagedRowBytes = 1_500_000;
 const dateColumns = new Set(["start_date", "target_date", "due_date"]);
 const timestampColumns = new Set([
@@ -61,6 +61,9 @@ const timestampColumns = new Set([
   "revoked_at",
   "upload_expires_at",
   "code_locked_at",
+  "historical_created_at",
+  "historical_updated_at",
+  "reconciled_at",
 ]);
 
 export const backupTableNames = [
@@ -73,6 +76,7 @@ export const backupTableNames = [
   "task_identifier_aliases",
   "attachments",
   "comments",
+  "comment_migration_outcomes",
   "comment_reactions",
   "labels",
   "task_labels",
@@ -105,8 +109,11 @@ export const tableDefinitions = [
   definition("attachments", ["id", "public_id", "task_id", "uploader_user_id", "original_filename", "display_name", "media_type", "byte_size", "checksum_sha256", "object_key", "kind", "state", "image_width", "image_height", "variant_metadata_json", "idempotency_key", "upload_expires_at", "failure_code", "version", "created_at", "updated_at", "deleted_at"], "task_id, created_at, id", {
     byte_size: { number: true, integer: true }, image_width: { nullable: true, number: true, integer: true }, image_height: { nullable: true, number: true, integer: true }, upload_expires_at: { nullable: true }, failure_code: { nullable: true }, version: { number: true, integer: true }, deleted_at: { nullable: true },
   }),
-  definition("comments", ["id", "task_id", "author_user_id", "body", "source", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"], "task_id, created_at, id", {
-    parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
+  definition("comments", ["id", "task_id", "author_user_id", "body", "source", "source_record_id", "source_comment_id", "source_parent_comment_id", "historical_author_name", "historical_created_at", "historical_updated_at", "historical_quoted_text", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"], "task_id, created_at, id", {
+    author_user_id: { nullable: true }, source_record_id: { nullable: true }, source_comment_id: { nullable: true }, source_parent_comment_id: { nullable: true }, historical_author_name: { nullable: true }, historical_created_at: { nullable: true }, historical_updated_at: { nullable: true }, historical_quoted_text: { nullable: true }, parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
+  }),
+  definition("comment_migration_outcomes", ["id", "task_id", "source", "source_record_id", "source_comment_id", "source_index", "outcome", "reason", "comment_id", "raw_json", "reconciled_at"], "task_id, source_record_id, source_index", {
+    source_comment_id: { nullable: true }, source_index: { number: true, integer: true }, reason: { nullable: true }, comment_id: { nullable: true },
   }),
   definition("comment_reactions", ["comment_id", "user_id", "emoji", "created_at"], "comment_id, emoji, user_id"),
   definition("labels", ["id", "owner_user_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"], "id", {
@@ -181,7 +188,15 @@ const legacyLabelDefinition = definition(
   "id",
 );
 
+const legacyCommentDefinition = definition(
+  "comments",
+  ["id", "task_id", "author_user_id", "body", "source", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"],
+  "task_id, created_at, id",
+  { parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true } },
+);
+
 export const liveTableDeleteOrder: BackupTableName[] = [
+  "comment_migration_outcomes",
   "comment_reactions",
   "comments",
   "task_labels",
@@ -256,8 +271,9 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const legacyRelations = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4;
   const legacyIdentifiers = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5;
   const legacyLabels = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6;
-  const legacySavedViews = schemaVersion !== systemBackupSchemaVersion;
-  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === systemBackupSchemaVersion;
+  const legacySavedViews = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7;
+  const legacyHistoricalComments = schemaVersion !== systemBackupSchemaVersion;
+  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8 || schemaVersion === systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
     withoutAttachments
@@ -272,7 +288,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const sourceTables = object(payload.tables, "tables");
   const sourceTableNames = backupTableNames.filter((name) =>
     !(withoutAttachments && name === "attachments") &&
-    !(legacyIdentifiers && name === "task_identifier_aliases"),
+    !(legacyIdentifiers && name === "task_identifier_aliases") &&
+    !(legacyHistoricalComments && name === "comment_migration_outcomes"),
   );
   assertOnlyKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as BackupTables;
@@ -280,7 +297,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   for (const table of tableDefinitions) {
     const sourceRows =
       (withoutAttachments && table.name === "attachments") ||
-      (legacyIdentifiers && table.name === "task_identifier_aliases")
+      (legacyIdentifiers && table.name === "task_identifier_aliases") ||
+      (legacyHistoricalComments && table.name === "comment_migration_outcomes")
         ? []
         : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
@@ -295,6 +313,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         ? legacyTaskRelationDefinition
       : legacyLabels && table.name === "labels"
         ? legacyLabelDefinition
+      : legacyHistoricalComments && table.name === "comments"
+        ? legacyCommentDefinition
       : legacySavedViews && table.name === "saved_views" &&
           !sourceRows.some((row) => Object.hasOwn(object(row, "saved view"), "archived_at"))
         ? legacySavedViewDefinition
@@ -316,6 +336,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   if (legacyIdentifiers) tables = upgradeLegacySystemIdentifiers(tables);
   if (legacyLabels) tables = upgradeLegacySystemLabels(tables);
   if (legacySavedViews) tables = upgradeLegacySystemSavedViews(tables);
+  if (legacyHistoricalComments) tables = upgradeLegacySystemComments(tables);
   const counts = countTables(tables);
   validateRelationships(tables);
   const objects = withoutAttachments
@@ -324,7 +345,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
     ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
@@ -336,10 +357,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         }
       : {}),
     exportedAt,
-    counts: withoutAttachments || legacyIdentifiers
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments
       ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
       : sourceCounts,
-    tables: withoutAttachments || legacyIdentifiers
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments
       ? Object.fromEntries(
           sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
         )
@@ -351,7 +372,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
     siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
@@ -623,16 +644,40 @@ function validateRelationships(tables: BackupTables) {
 
   const comments = uniqueIndex(tables.comments, ["id"], "comments");
   uniqueIndex(
-    tables.comments,
+    tables.comments.filter((comment) => comment.author_user_id !== null),
     ["task_id", "author_user_id", "idempotency_key"],
     "comment idempotency keys",
+  );
+  uniqueIndex(
+    tables.comments.filter((comment) => comment.source_comment_id !== null),
+    ["task_id", "source", "source_comment_id"],
+    "historical comment source identities",
   );
   const activeCommentsByTask = new Map<string, number>();
   for (const comment of tables.comments) {
     const task = requireReference(tasks, comment.task_id, "Comment task");
-    requireReference(users, comment.author_user_id, "Comment author");
     nonEmpty(comment.idempotency_key, "Comment idempotency key");
-    oneOf(comment.source, ["native"], "Comment source");
+    oneOf(comment.source, ["native", "linear"], "Comment source");
+    if (comment.source === "native") {
+      requireReference(users, comment.author_user_id, "Comment author");
+      for (const value of [comment.source_record_id, comment.source_comment_id,
+        comment.source_parent_comment_id, comment.historical_author_name,
+        comment.historical_created_at, comment.historical_updated_at,
+        comment.historical_quoted_text]) {
+        if (value !== null) throw new ValidationError("Native comments cannot carry historical facts");
+      }
+    } else {
+      if (comment.author_user_id !== null) {
+        throw new ValidationError("Historical comments cannot impersonate a User");
+      }
+      for (const [value, label] of [
+        [comment.source_record_id, "source record"],
+        [comment.source_comment_id, "source comment"],
+        [comment.historical_author_name, "author snapshot"],
+        [comment.historical_created_at, "source created timestamp"],
+        [comment.historical_updated_at, "source updated timestamp"],
+      ] as const) nonEmpty(value, `Historical comment ${label}`);
+    }
     if (comment.deleted_at === null) {
       nonEmpty(comment.body, "Comment body");
       activeCommentsByTask.set(task.id as string, (activeCommentsByTask.get(task.id as string) ?? 0) + 1);
@@ -664,7 +709,7 @@ function validateRelationships(tables: BackupTables) {
   for (const task of tables.tasks) {
     const actual = activeCommentsByTask.get(String(task.id)) ?? 0;
     if (task.comment_count !== actual) {
-      throw new ValidationError("Task comment_count does not match native comments");
+      throw new ValidationError("Task comment_count does not match unified comments");
     }
   }
   uniqueIndex(
@@ -745,7 +790,7 @@ function validateRelationships(tables: BackupTables) {
     positiveVersion(view.version, "Saved view version");
   }
 
-  uniqueIndex(tables.external_records, ["id"], "external records");
+  const externalRecords = uniqueIndex(tables.external_records, ["id"], "external records");
   uniqueIndex(tables.external_records, ["owner_user_id", "source", "source_id"], "external source IDs");
   const targets: Record<string, Map<string, BackupRow>> = { task: tasks, project: projects, release: releases, saved_view: views, label: labels, workflow_status: statuses };
   for (const record of tables.external_records) {
@@ -755,6 +800,56 @@ function validateRelationships(tables: BackupTables) {
     const target = requireReference(targetMap, record.target_id, "External record target");
     if (target.owner_user_id !== record.owner_user_id) throw new ValidationError("External record owner must match target owner");
     jsonObject(record.metadata_json, "External metadata");
+  }
+  for (const comment of tables.comments) {
+    if (comment.source !== "linear") continue;
+    const sourceRecord = requireReference(
+      externalRecords,
+      comment.source_record_id,
+      "Historical comment source record",
+    );
+    if (
+      sourceRecord.source !== comment.source ||
+      sourceRecord.target_type !== "task" ||
+      sourceRecord.target_id !== comment.task_id
+    ) {
+      throw new ValidationError("Historical comment references an incompatible source record");
+    }
+  }
+
+  uniqueIndex(tables.comment_migration_outcomes, ["id"], "comment migration outcomes");
+  uniqueIndex(
+    tables.comment_migration_outcomes,
+    ["source_record_id", "source_index"],
+    "comment migration source rows",
+  );
+  for (const outcome of tables.comment_migration_outcomes) {
+    requireReference(tasks, outcome.task_id, "Comment migration task");
+    const sourceRecord = requireReference(
+      externalRecords,
+      outcome.source_record_id,
+      "Comment migration source record",
+    );
+    oneOf(outcome.source, ["linear"], "Comment migration source");
+    oneOf(outcome.outcome, ["migrated", "exception"], "Comment migration outcome");
+    if (
+      sourceRecord.source !== outcome.source ||
+      sourceRecord.target_type !== "task" ||
+      sourceRecord.target_id !== outcome.task_id
+    ) {
+      throw new ValidationError("Comment migration outcome references an incompatible source record");
+    }
+    jsonValue(outcome.raw_json, "Comment migration raw source");
+    if (outcome.outcome === "migrated") {
+      const comment = requireReference(comments, outcome.comment_id, "Migrated comment");
+      if (
+        comment.task_id !== outcome.task_id ||
+        comment.source_record_id !== outcome.source_record_id ||
+        comment.source_comment_id !== outcome.source_comment_id
+      ) throw new ValidationError("Comment migration outcome does not match its historical comment");
+    } else if (outcome.comment_id !== null) {
+      throw new ValidationError("Comment migration exception cannot reference a migrated comment");
+    }
   }
 
   uniqueIndex(tables.access_grants, ["id"], "access grants");
@@ -861,6 +956,24 @@ function upgradeLegacySystemSavedViews(source: BackupTables): BackupTables {
       ...view,
       archived_at: null,
     })),
+  };
+}
+
+function upgradeLegacySystemComments(source: BackupTables): BackupTables {
+  return {
+    ...source,
+    comments: source.comments.map((comment): BackupRow => ({
+      ...comment,
+      source: "native",
+      source_record_id: null,
+      source_comment_id: null,
+      source_parent_comment_id: null,
+      historical_author_name: null,
+      historical_created_at: null,
+      historical_updated_at: null,
+      historical_quoted_text: null,
+    })),
+    comment_migration_outcomes: [],
   };
 }
 
@@ -1067,6 +1180,15 @@ function jsonObject(value: BackupScalar, label: string) {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
   } catch {
     throw new ValidationError(`${label} must contain a JSON object`);
+  }
+}
+
+function jsonValue(value: BackupScalar, label: string) {
+  if (typeof value !== "string") throw new ValidationError(`${label} must be JSON text`);
+  try {
+    JSON.parse(value);
+  } catch {
+    throw new ValidationError(`${label} must contain valid JSON`);
   }
 }
 

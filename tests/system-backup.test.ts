@@ -18,7 +18,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 8);
+  assert.equal(backup.schemaVersion, 9);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -26,6 +26,33 @@ test("a complete system snapshot validates and preserves application data", asyn
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.tables.tasks[0]?.title, "Ship backup support");
   assert.equal(validated.tables.access_grants[0]?.permission, "full_access");
+});
+
+test("system snapshots preserve historical comments and reconciliation outcomes", async () => {
+  const tables = validTables();
+  tables.tasks[0]!.comment_count = 2;
+  tables.comments.push({
+    id: "comment-history-1", task_id: "task-1", author_user_id: null,
+    body: "Imported decision", source: "linear", source_record_id: "external-1",
+    source_comment_id: "linear-comment-1", source_parent_comment_id: null,
+    historical_author_name: "Former teammate", historical_created_at: now,
+    historical_updated_at: now, historical_quoted_text: "Original context",
+    parent_comment_id: null, idempotency_key: "linear:linear-comment-1",
+    created_at: now, updated_at: now, deleted_at: null, resolved_at: null,
+    resolved_by_user_id: null, resolution_comment_id: null, version: 1,
+  });
+  tables.comment_migration_outcomes.push({
+    id: "outcome-1", task_id: "task-1", source: "linear",
+    source_record_id: "external-1", source_comment_id: "linear-comment-1",
+    source_index: 0, outcome: "migrated", reason: null,
+    comment_id: "comment-history-1", raw_json: '{"id":"linear-comment-1"}',
+    reconciled_at: now,
+  });
+  const backup = await createSystemBackup(tables, now);
+  const validated = await validateSystemBackup(backup);
+  assert.equal(validated.tables.comments[1]?.author_user_id, null);
+  assert.equal(validated.tables.comments[1]?.historical_quoted_text, "Original context");
+  assert.equal(validated.tables.comment_migration_outcomes[0]?.outcome, "migrated");
 });
 
 test("system validation accepts a locked Project whose allocated Tasks are gone", async () => {
@@ -59,14 +86,15 @@ test("the comment-aware system schema rejects an older backup explicitly", async
 test("schema 2 system backups without attachments remain importable", async () => {
   const current = await createSystemBackup(validTables(), now);
   const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
+    Object.entries(current.tables).filter(([name]) => !["attachments", "task_identifier_aliases", "comment_migration_outcomes"].includes(name)),
   );
+  tables.comments = current.tables.comments.map(legacyCommentRow);
   tables.projects = current.tables.projects.map(legacyProjectRow);
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   tables.labels = current.tables.labels.map(legacyLabelRow);
   const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
+    Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases", "comment_migration_outcomes"].includes(name)),
   );
   const body = {
     format: current.format,
@@ -89,14 +117,15 @@ test("schema 3 system backups synthesize reserved workflow metadata before resto
     .filter((status) => status.system_role !== "duplicate")
     .map(legacyWorkflowRow);
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     workflow_statuses: legacyStatuses,
     task_relations: current.tables.task_relations.map(legacyRelationRow),
     labels: current.tables.labels.map(legacyLabelRow),
+    comments: current.tables.comments.map(legacyCommentRow),
   };
   const counts = {
-    ...Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
+    ...Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     workflow_statuses: legacyStatuses.length,
   };
   const body = {
@@ -121,15 +150,16 @@ test("schema 3 system backups synthesize reserved workflow metadata before resto
 test("schema 4 system backups upgrade legacy relation identity and concurrency metadata", async () => {
   const current = await createSystemBackup(validTables(), now);
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
     labels: current.tables.labels.map(legacyLabelRow),
+    comments: current.tables.comments.map(legacyCommentRow),
   };
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     tables,
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
@@ -147,9 +177,11 @@ test("schema 6 system backups upgrade Label catalog metadata and keep assignment
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 6,
     tables: {
-      ...current.tables,
+      ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "comment_migration_outcomes")),
       labels: current.tables.labels.map(legacyLabelRow),
+      comments: current.tables.comments.map(legacyCommentRow),
     },
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "comment_migration_outcomes")),
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
@@ -485,6 +517,13 @@ function validTables(): BackupTables {
         author_user_id: "user-admin",
         body: "Native backup comment",
         source: "native",
+        source_record_id: null,
+        source_comment_id: null,
+        source_parent_comment_id: null,
+        historical_author_name: null,
+        historical_created_at: null,
+        historical_updated_at: null,
+        historical_quoted_text: null,
         parent_comment_id: null,
         idempotency_key: "backup-comment-1",
         created_at: now,
@@ -496,6 +535,7 @@ function validTables(): BackupTables {
         version: 1,
       },
     ],
+    comment_migration_outcomes: [],
     comment_reactions: [
       { comment_id: "comment-1", user_id: "user-collaborator", emoji: "👍", created_at: now },
     ],
@@ -612,6 +652,16 @@ function legacyLabelRow(row: Record<string, string | number | null>) {
   );
 }
 
+function legacyCommentRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) => ![
+      "source_record_id", "source_comment_id", "source_parent_comment_id",
+      "historical_author_name", "historical_created_at",
+      "historical_updated_at", "historical_quoted_text",
+    ].includes(key)),
+  );
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -636,6 +686,8 @@ function migratedDatabase() {
     "0018_tearful_black_panther.sql",
     "0019_silky_drax.sql",
     "0020_giant_boom_boom.sql",
+    "0021_freezing_preak.sql",
+    "0022_cheerful_sue_storm.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

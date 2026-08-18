@@ -133,7 +133,14 @@ function fixture(): Record<string, unknown> {
       },
     ],
     commentsByIssue: {
-      "AND-2": [{ id: "c1", body: "Imported discussion" }],
+      "AND-2": [{
+        id: "c1",
+        body: "Imported discussion",
+        author: { name: "Historical Author" },
+        createdAt: "2026-08-01T03:00:00.000Z",
+        updatedAt: "2026-08-01T04:00:00.000Z",
+        quotedText: "Historical quote",
+      }],
       "AND-1": [],
     },
   };
@@ -182,6 +189,10 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   assert.match(childSource.metadataJson, /"stateHistory"/);
   assert.match(childSource.metadataJson, /"Evidence"/);
   assert.match(childSource.metadataJson, /"Imported discussion"/);
+  assert.equal(plan.historicalComments.length, 1);
+  assert.equal(plan.historicalComments[0]?.authorName, "Historical Author");
+  assert.equal(plan.historicalComments[0]?.quotedText, "Historical quote");
+  assert.equal(plan.commentMigrationOutcomes[0]?.outcome, "migrated");
 });
 
 test("Linear import writes Project identifiers and aliases idempotently", async () => {
@@ -220,6 +231,26 @@ test("Linear import writes Project identifiers and aliases idempotently", async 
       tasks.results.map((row) => [row.identifier, row.alias_identifier]),
       [["PRO-1", "AND-1"], ["PRO-2", "AND-2"]],
     );
+    const historical = await harness.database.prepare(
+      `SELECT c.source, c.author_user_id, c.historical_author_name,
+         c.historical_quoted_text, c.created_at, t.comment_count
+       FROM comments c JOIN tasks t ON t.id = c.task_id
+       WHERE c.source = 'linear'`,
+    ).all<Record<string, unknown>>();
+    assert.deepEqual(historical.results, [{
+      source: "linear",
+      author_user_id: null,
+      historical_author_name: "Historical Author",
+      historical_quoted_text: "Historical quote",
+      created_at: "2026-08-01T03:00:00.000Z",
+      comment_count: 1,
+    }]);
+    const outcomes = await harness.database.prepare(
+      `SELECT outcome, reason, comment_id FROM comment_migration_outcomes`,
+    ).all<Record<string, unknown>>();
+    assert.equal(outcomes.results.length, 1);
+    assert.equal(outcomes.results[0]?.outcome, "migrated");
+    assert.ok(outcomes.results[0]?.comment_id);
   } finally {
     await harness.dispose();
   }

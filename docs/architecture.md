@@ -204,9 +204,9 @@ version conflict остаётся write boundary и не заменяется po
    counts, ambiguity resolution и cursor pagination.
 3. Collection use case строит фиксированный compact projection без description,
    comment bodies, attachment metadata/bodies, internal IDs и user emails.
-4. Detail use case по canonical `public_id` загружает одну сущность; native
-   comment threads, native Attachment metadata и большой imported archive
-   остаются разными отдельными paginated вызовами. Только detail добавляет
+4. Detail use case по canonical `public_id` загружает одну сущность; unified
+   comment threads, native Attachment metadata и import provenance
+   остаются отдельными lazy вызовами. Только detail добавляет
    bounded attachment count hint.
 5. REST возвращает versioned schema и request/as-of metadata. MCP публикует
    task-oriented tools с теми же projections. Любой client переходит от summary
@@ -421,8 +421,8 @@ activity/display fields и возвращает User одним D1 `UPDATE … R
 выполняются одним D1 batch. SQL predicates и отдельные результаты сохраняются,
 но критический путь HTML и `/api/bootstrap` больше не платит за десять
 последовательных сетевых round trips к D1.
-`/api/bootstrap` не включает тяжёлый импортированный архив комментариев и
-attachments: при открытии details одной импортированной Task UI отдельно
+`/api/bootstrap` не включает comment bodies и import provenance: при открытии
+details одной импортированной Task UI отдельно
 запрашивает `/api/tasks/{id}/external-source`, а server сначала повторно
 проверяет ACL этой Task. Content-free admin overview вычисляется только для
 прямого открытия `/admin`; обычный snapshot хранит лишь server-derived признак
@@ -457,10 +457,12 @@ redirect validation и allowlist OpenAI HTTPS hosts; временный URL не
 D1 или logs. После fetch общий Attachment repository снова проверяет magic,
 claim, pixels, checksum, idempotency и effective Editor role.
 
-Native comment bodies также не входят в bootstrap или Task detail. Activity
+Native и historical comment bodies не входят в bootstrap или Task detail. Activity
 отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,
 а comment mutations обновляют Task timestamp и производный `comment_count` в
-одной D1 batch transaction.
+одной D1 batch transaction. Historical source facts защищены D1 trigger от
+edit/delete/reparent; reply/reaction/resolve используют тот же ACL и thread
+contract, что native discussions.
 
 Частая команда изменения одной Task возвращает только подтверждённый
 `TaskRecord`, и client атомарно заменяет эту запись в текущем snapshot. Это не
@@ -497,7 +499,11 @@ optional/standalone Task semantics из ранних решений: кажда�
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of` с
   immutable ID, create-idempotency, optimistic version, semantic indexes и
   partial uniqueness одного `duplicate_of` target на source;
-- `comments` с task/user/self foreign keys, idempotency и keyset indexes;
+- `comments` с nullable User author для historical rows, source identities,
+  immutable historical facts, task/user/self foreign keys, idempotency и
+  keyset indexes;
+- `comment_migration_outcomes` с одной explicit migrated/exception row на
+  source position и raw operator evidence;
 - `comment_reactions` с composite primary key и cascade от comment;
 - `external_records` для owner-scoped provenance идемпотентного импорта;
 - `user_import_sessions` и `user_import_rows` для owner-scoped Project restore
@@ -524,10 +530,14 @@ Authenticated endpoint `/api/import/linear` принимает заранее
 выполняет deterministic upsert. Каждая imported Task обязана явно ссылаться на
 Project; canonical identifier строится из Project code и source sequence, а
 исходный identifier сохраняется как alias. Техническая страница
-`/import/linear` добавляет к workspace snapshot отдельно собранный archive
-комментариев. Импорт сохраняет timestamps, archive state, hierarchy, labels,
-relations, saved-view query/display и полный provider metadata в
-`external_records`.
+`/import/linear` добавляет к workspace snapshot отдельно собранный comments
+snapshot. Planner до записи валидирует identity/body/time, авторов и parent
+topology, детерминированно создаёт historical comments и явный reconciliation
+outcome для каждой source row. Nested replies нормализуются к root с
+сохранением source parent ID. Импорт также сохраняет timestamps, archive state,
+hierarchy, labels, relations, saved-view query/display и полный provider
+metadata в `external_records`; публичная provenance projection не повторяет
+comment bodies.
 
 ### Системный backup и restore
 
@@ -558,6 +568,10 @@ relations, saved-view query/display и полный provider metadata в
    key, optimistic version и updated timestamp. Legacy schema `2`–`4`
    проверяется по исходному checksum body, затем получает deterministic relation
    metadata до current restore.
+9. Schema `9` переносит historical comment facts и
+   `comment_migration_outcomes`. Validators schema `2`–`8` после проверки
+   исходного checksum нормализуют прежние comments как native и добавляют
+   пустой outcome set.
 
 ### Project backup и restore
 
@@ -575,9 +589,9 @@ relations, saved-view query/display и полный provider metadata в
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
-6. Current schema `5` сохраняет relation identity/concurrency metadata;
-   schema `2`–`4` получает deterministic metadata после проверки исходного
-   checksum и до записи staging rows.
+6. Current schema `9` сохраняет historical comments и reconciliation outcomes;
+   schema `2`–`8` получает deterministic legacy upgrades после проверки
+   исходного checksum и до записи staging rows.
 
 ## Надёжность и проверка
 
@@ -604,7 +618,8 @@ relations, saved-view query/display и полный provider metadata в
   routes, OAuth, keyset pagination и конкурентный create.
 - Comment tests покрывают identity, Viewer refusal, author/moderator rules,
   idempotent create/reaction, stale versions, one-level replies, tombstones,
-  stable pagination, Agent privacy projection и backup invariants.
+  stable pagination, historical no-impersonation/immutability, cutover
+  reconciliation, Agent privacy projection и backup invariants.
 - Workspace sync tests покрывают event ordering/coalescing, idempotent patch и
   invalidation, create/update/delete, ACL fan-out без outsider leak, revoke
   reset, cursor gap, 30-дневный retention, Task за пределами 2000-record window,
@@ -635,7 +650,7 @@ relations, saved-view query/display и полный provider metadata в
 - Project bundle остаётся чувствительным пользовательским content. Same-Site
   owner binding и no-store response обязательны; sharing descriptors не должны
   превращаться в implicit grants.
-- Если agent API не отделить от UI snapshot, рост descriptions/imported archive
+- Если agent API не отделить от UI snapshot, рост descriptions/comment history
   создаст большой token и privacy blast radius. Summary/detail boundary должна
   проверяться schema и integration tests, а не только дисциплиной клиента.
 - OAuth/token connector добавляет новую identity boundary. Нельзя считать

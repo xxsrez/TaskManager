@@ -142,7 +142,7 @@ Desktop-first shell повторяет композицию Linear:
 - Изменение label назначения пересылает authoritative task-scoped label context
   только затронутой Task и сразу согласует chips в list, board, Peek и details;
   полный owner catalog ради этого не загружается. Lazy relations, native
-  comments и imported external context не пересылаются в background patch.
+  comments и import provenance не пересылаются в background patch.
   Invalidation активной чистой details/Peek/activity поверхности запускает
   точечный refetch; закрытая поверхность только сохраняет stale marker до
   открытия. Dirty description или estimate draft не затирается и остаётся в
@@ -168,7 +168,8 @@ Desktop-first shell повторяет композицию Linear:
   `Workspace` ведут обратно на `/workspace`.
 - Summary rows содержат только название/identifier, status, counts, progress и
   project qualification. Description, labels, relations, comment bodies и
-  imported archive остаются lazy и не загружаются ради overview.
+  unified comment threads и import provenance остаются lazy и не загружаются
+  ради overview.
 - Shared counts учитывают только top-level shared Projects и global SavedViews,
   не дублируя унаследованные project children.
 - На mobile metrics и sections складываются в одну колонку, строки переносят
@@ -457,20 +458,26 @@ List повторяет плотную grouped-list модель Linear.
 - Gallery отмечает image, используемый в description, статусом
   `Used in description`; remove для такого image блокируется и предлагает
   сначала удалить token из description. Удаление token не удаляет Attachment.
-- После секции вложений располагается `Activity` с native
-  comment threads. Root composer и reply composer сохраняют local draft по
+- После секции вложений располагается единая `Activity` с native discussions и
+  импортированной историей. Root composer и reply composer сохраняют local draft по
   current User + Task, поддерживают `Cmd/Ctrl+Enter`, явный submit, retry без
   дублей и кнопки базового Markdown-like форматирования.
 - Root thread показывает author/avatar, timestamps, body, reactions,
   resolve/reopen и actions по permissions. Replies всегда одноуровневые;
   resolved thread свёрнут, permalink прокручивает и подсвечивает comment,
   длинный body раскрывается через `Show more`.
+- Historical comment имеет badge `Imported history`, snapshot исходного author,
+  исходные timestamps и optional quote. Для него нет edit/delete controls;
+  Editor+ по обычным правилам может reply/react/resolve. Nested imported reply
+  отображается одноуровневым под root без потери source parent metadata.
 - Loading, error/retry, pending и empty states являются частью Activity. Viewer
   видит threads без composer и mutation controls. На mobile controls имеют
   touch target не меньше 44px и не создают горизонтальный overflow.
-- Для импортированной задачи ниже native Activity остаётся отдельная сворачиваемая
-  read-only provenance section с исходными comments и attachment links без
-  write controls; импортированные записи не смешиваются с native threads.
+- Для импортированной задачи provenance section не повторяет comment bodies:
+  она показывает source link, attachment links и migrated/exception counts.
+  Exception count визуально предупреждает о необходимости operator
+  reconciliation; raw source доступен только через защищённый backup/D1
+  runbook, а не публичный Task UI.
 - Изменение title/description происходит inline, с явными saving/error states и
   version conflict handling. Focus, scroll, selection и открытие editor не
   создают dirty draft; dirty начинается только после фактического изменения

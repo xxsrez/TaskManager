@@ -26,6 +26,13 @@ commit компенсирует новые objects и не меняет live sta
 version и updated timestamp. Schema `2`–`4` остаются импортируемыми; validator
 детерминированно синтезирует metadata legacy relations до current restore.
 
+Дополнение 2026-08-18: unified imported comment history повышает
+`schemaVersion` до `9`. Snapshot переносит immutable historical facts и
+`comment_migration_outcomes`; schemas `2`–`8` после проверки исходного checksum
+нормализуются как native-only comments с пустым reconciliation set. Поскольку
+outcome — отдельная audit row для каждой source row, row guard повышен с 1000
+до 5000 при неизменных лимитах 10 MB на container и 1.5 MB на row.
+
 ## Контекст
 
 Task Manager хранит структурированное product state в Sites D1: Users,
@@ -48,7 +55,8 @@ admin boundary.
    навигации не показывается.
 2. В первой версии backup — версионированный logical JSON snapshot, а не raw
    SQLite/SQL dump. Он включает все product, identity, ownership, ACL,
-   provenance, native comments/reactions и archived records, но не
+   provenance, native/historical comments, reconciliation outcomes, reactions
+   и archived records, но не
    schema/migrations, hosted secrets,
    Sites audience/deployments/analytics, browser-local preferences и
    operational import staging и API credentials. Token hash является
@@ -69,7 +77,7 @@ admin boundary.
    `batch()`-транзакцией. Любой SQL failure откатывает весь replace. Успешный
    restore сохраняет operational import session как audit metadata, удаляет
    staged payload и требует полного reload UI.
-8. Payload ограничен 10 MB, 1000 application rows и 1.5 MB на одну JSON row.
+8. Payload ограничен 10 MB, 5000 application rows и 1.5 MB на одну JSON row.
    Более крупный state требует следующей версии с chunked upload/object storage,
    а не ослабления атомарности.
 9. API принимает только same-origin application requests с явным custom action

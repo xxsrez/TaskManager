@@ -72,8 +72,9 @@ labels, workflow statuses и views по умолчанию отделены от
   Editor/Viewer для standalone task или global saved view, отзыв доступа и
   экран `Shared with me`;
 - создание, редактирование, архивирование и восстановление задач;
-- native comments в карточке задачи: root threads, одноуровневые replies,
-  reactions, resolve/reopen и локальные drafts;
+- unified comments в карточке задачи: native discussions и immutable imported
+  history, root threads, одноуровневые replies, reactions, resolve/reopen и
+  локальные drafts;
 - настраиваемый workflow и системные категории статусов;
 - task metadata: приоритет, исполнитель, проект, релиз, labels, estimate,
   due date, parent/subtasks и связи между задачами;
@@ -85,7 +86,7 @@ labels, workflow statuses и views по умолчанию отделены от
 - фильтры, группировка, сортировка, видимые поля и сохранённые views;
 - базовый поиск по идентификатору, заголовку и описанию;
 - agent API для чтения проектов/релизов, compact task search, отдельного task
-  detail, создания/изменения задач и работы с native comment threads поверх
+  detail, создания/изменения задач и работы с unified comment threads поверх
   того же authorization scope;
 - native Task attachments в private object storage с ACL-scoped upload,
   thumbnail/preview/download и recoverable delete;

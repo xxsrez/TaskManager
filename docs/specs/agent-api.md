@@ -14,8 +14,8 @@ Task Manager предоставляет самостоятельный versioned
 - получить задачи проекта или релиза в компактной форме;
 - загрузить полный контекст одной выбранной задачи;
 - создать задачу и изменить status, project, release, priority, срок и archive;
-- читать native comment threads, добавлять/reply/edit/delete comments, менять
-  reaction и resolve/reopen state.
+- читать unified native/historical comment threads, добавлять/reply/edit/delete
+  native comments, менять reaction и resolve/reopen state;
 - отдельно перечислять, загружать, скачивать и удалять private native Task
   attachments; raster ref можно затем вставить в description через обычный
   versioned `update_task`.
@@ -54,8 +54,8 @@ flowchart LR
 - `ProjectSummary` не содержит description; `ReleaseSummary` не содержит ни
   description, ни release notes.
 - Полный `TaskDetail` читается только отдельным запросом.
-- Native comments, native attachment metadata и большой imported archive
-  читаются разными отдельными paginated endpoints; binary body возвращает
+- Unified comments, native attachment metadata и import provenance
+  читаются разными отдельными endpoints; binary body возвращает
   только отдельный bearer-protected content endpoint.
 - `fields=*` и `include=description` не поддерживаются и отклоняются.
 
@@ -203,7 +203,7 @@ protocol revisions).
 | `list_labels` | `api:read` | Найти active либо archived Label и canonical ref |
 | `list_tasks` | `api:read` | Все доступные Tasks или filters Project/Release/status/priority/assignee/search |
 | `get_task` | `api:read` | Полный контекст выбранной Task и актуальная version |
-| `get_task_external_context` | `api:read` | Отдельный paginated imported archive |
+| `get_task_external_context` | `api:read` | Import provenance, attachment links и reconciliation counts без comment bodies |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
 | `add_task_label`, `remove_task_label` | `api:write` | Задать желаемое состояние одного native Label идемпотентно |
@@ -212,9 +212,9 @@ protocol revisions).
 | `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |
 | `upload_task_attachment` | `api:write` | Принять native OpenAI file input и идемпотентно сохранить binary |
 | `delete_task_attachment` | `api:write` | Recoverable delete с optimistic version |
-| `list_task_comments`, `get_task_thread` | `api:read` | Читать native threads отдельно от Task detail |
+| `list_task_comments`, `get_task_thread` | `api:read` | Читать unified native/historical threads отдельно от Task detail |
 | `add_task_comment`, `reply_to_task_comment` | `api:write` | Создать root/reply идемпотентно |
-| `edit_task_comment`, `delete_task_comment` | `api:write` | Изменить собственный comment или создать разрешённый tombstone |
+| `edit_task_comment`, `delete_task_comment` | `api:write` | Изменить собственный native comment или создать разрешённый native tombstone; historical всегда immutable |
 | `set_comment_reaction` | `api:write` | Задать reaction `active=true|false` |
 | `resolve_task_thread` | `api:write` | Resolve/reopen root thread |
 
@@ -241,13 +241,13 @@ scope check и owner/ACL scope до обращения к repository.
 ### 5.2 Pagination и envelope
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
-External context и native attachments имеют maximum `100`; native comment
-roots — maximum `50` и до 100 replies на root. Cursor связан с Task, filters,
+Native attachments имеют maximum `100`; unified comment roots — maximum `50`
+и до 100 replies на root. Cursor связан с Task, filters,
 sort и limit;
 cursor другого query отклоняется. Collections используют keyset position из
 стабильного sort value и immutable `public_id`, поэтому вставка или удаление
 строки на уже прочитанной странице не сдвигает следующую страницу. Offset
-остаётся только внутри immutable imported external context.
+не используется для provenance summary.
 
 ```json
 {
@@ -301,8 +301,9 @@ owner catalogs, доступных через owned/shared Projects; `archived=t
 access role/canEdit, расширенный project/release context, parent, subtasks,
 relations и provenance counts. Native `commentCount` и `attachmentCount`
 присутствуют только как context hints; bodies/metadata читаются через
-`/comments` и `/attachments`. Imported comment bodies и attachment URLs
-остаются в `/external-context`. Detail также возвращает `availableStatuses`,
+`/comments` и `/attachments`. Historical bodies находятся в том же `/comments`,
+а `/external-context` возвращает source/attachment metadata и migrated/exception
+counts без дублирования bodies. Detail также возвращает `availableStatuses`,
 валидные для изменения именно этой Task.
 
 `ProjectSummary` возвращает name, code/lock/sequence, summary, lifecycle
@@ -497,8 +498,10 @@ Authorization invariants:
    анонимный `tools/call` получает `401` и не выполняет repository query.
 10. Native comment create retry не дублирует row; Viewer читает, но не пишет;
     reply открывает resolved thread; stale edit/delete/resolve получает conflict;
-    Agent author projection не содержит ID/email. Imported archive остаётся
-    отдельным read-only endpoint.
+    Agent author projection не содержит ID/email. Historical author имеет
+    `kind=historical`, `id=null`; source facts нельзя edit/delete, но Editor+
+    может reply/react/resolve. External context возвращает только
+    reconciliation counts и provenance, не raw comment bodies.
 11. Agent REST upload/list/get/range/delete повторяет Task ACL, не публикует
     internal IDs/R2 keys и сохраняет стабильную attachment pagination. MCP
     `tools/list` объявляет четыре attachment tools, а upload schema содержит

@@ -194,9 +194,21 @@ export type CommentReactionSummary = {
 export type CommentRecord = {
   id: string;
   taskId: string;
-  author: Pick<UserRecord, "id" | "displayName">;
+  author: {
+    id: string | null;
+    displayName: string;
+    kind: "user" | "historical";
+  };
   body: string;
-  source: "native";
+  source: "native" | "linear";
+  historical: {
+    sourceRecordId: string;
+    sourceCommentId: string;
+    sourceParentCommentId: string | null;
+    originalCreatedAt: string;
+    originalUpdatedAt: string;
+    quotedText: string | null;
+  } | null;
   parentCommentId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -238,16 +250,10 @@ export type ExternalSourceRecord = {
     url: string;
   }>;
   stateHistoryEntries: number;
-  commentEntries: number;
-  comments: Array<{
-    id: string;
-    body: string;
-    authorName: string;
-    createdAt: string;
-    updatedAt: string;
-    parentId: string | null;
-    quotedText: string | null;
-  }>;
+  commentMigration: {
+    migrated: number;
+    exceptions: number;
+  };
 };
 
 export type SavedViewRecord = {
@@ -410,6 +416,7 @@ export type SystemBackupCounts = Record<
   | "task_identifier_aliases"
   | "attachments"
   | "comments"
+  | "comment_migration_outcomes"
   | "comment_reactions"
   | "labels"
   | "task_labels"

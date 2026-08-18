@@ -771,10 +771,15 @@ export async function getTaskExternalSource(
   await loadAccessibleTask(currentUser.id, taskId);
   const row = await getD1()
     .prepare(
-      `SELECT target_type, target_id, source, source_id, source_url, metadata_json
-       FROM external_records
-       WHERE target_type = 'task' AND target_id = ? AND source = 'linear'
-       ORDER BY imported_at DESC
+      `SELECT er.target_type, er.target_id, er.source, er.source_id,
+              er.source_url, er.metadata_json,
+              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS comments_migrated,
+              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS comment_exceptions
+       FROM external_records er
+       WHERE er.target_type = 'task' AND er.target_id = ? AND er.source = 'linear'
+       ORDER BY er.imported_at DESC
        LIMIT 1`,
     )
     .bind(taskId)
@@ -3887,48 +3892,6 @@ function mapExternalSource(row: DbRow): ExternalSourceRecord {
             value !== null,
         )
     : [];
-  const comments = Array.isArray(metadata.comments)
-    ? metadata.comments
-        .map((value) => {
-          if (!value || typeof value !== "object" || Array.isArray(value)) {
-            return null;
-          }
-          const comment = value as Record<string, unknown>;
-          const author =
-            comment.author &&
-            typeof comment.author === "object" &&
-            !Array.isArray(comment.author)
-              ? (comment.author as Record<string, unknown>)
-              : {};
-          if (
-            typeof comment.id !== "string" ||
-            typeof comment.body !== "string" ||
-            typeof comment.createdAt !== "string" ||
-            typeof comment.updatedAt !== "string"
-          ) {
-            return null;
-          }
-          return {
-            id: comment.id,
-            body: comment.body,
-            authorName:
-              typeof author.name === "string" ? author.name : "Linear user",
-            createdAt: comment.createdAt,
-            updatedAt: comment.updatedAt,
-            parentId:
-              typeof comment.parentId === "string" ? comment.parentId : null,
-            quotedText:
-              typeof comment.quotedText === "string"
-                ? comment.quotedText
-                : null,
-          };
-        })
-        .filter(
-          (
-            value,
-          ): value is ExternalSourceRecord["comments"][number] => value !== null,
-        )
-    : [];
   return {
     targetType: String(
       row.target_type,
@@ -3945,8 +3908,10 @@ function mapExternalSource(row: DbRow): ExternalSourceRecord {
     stateHistoryEntries: Array.isArray(metadata.stateHistory)
       ? metadata.stateHistory.length
       : 0,
-    commentEntries: comments.length,
-    comments,
+    commentMigration: {
+      migrated: Number(row.comments_migrated ?? 0),
+      exceptions: Number(row.comment_exceptions ?? 0),
+    },
   };
 }
 

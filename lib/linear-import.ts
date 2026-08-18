@@ -1,5 +1,10 @@
 import type { UserRecord, ViewDisplay, ViewQuery } from "./types";
 import { optionalDate, ValidationError } from "./domain";
+import {
+  planImportedComments,
+  type PlannedCommentMigrationOutcome,
+  type PlannedHistoricalComment,
+} from "./imported-comments";
 import { validateViewQuery } from "./view-contract";
 
 type JsonObject = Record<string, unknown>;
@@ -33,6 +38,8 @@ export type LinearImportReport = {
   relations: number;
   views: number;
   externalRecords: number;
+  commentsMigrated: number;
+  commentExceptions: number;
 };
 
 type PlannedStatus = {
@@ -144,6 +151,8 @@ export type LinearImportPlan = {
   relations: PlannedRelation[];
   views: PlannedView[];
   externalRecords: PlannedExternalRecord[];
+  historicalComments: PlannedHistoricalComment[];
+  commentMigrationOutcomes: PlannedCommentMigrationOutcome[];
 };
 
 const STATUS_PRESENTATION: Record<
@@ -195,6 +204,8 @@ export function buildLinearImportPlan(
     "commentsByIssue",
   );
   const externalRecords: PlannedExternalRecord[] = [];
+  const historicalComments: PlannedHistoricalComment[] = [];
+  const commentMigrationOutcomes: PlannedCommentMigrationOutcome[] = [];
 
   const statuses = sourceStatuses.map((entry, index) => {
     const row = object(entry, `statuses[${index}]`);
@@ -404,16 +415,22 @@ export function buildLinearImportPlan(
       throw new ValidationError(`Duplicate Linear issue ${sourceId}`);
     }
     taskBySourceId.set(sourceId, task);
-    const comments = commentsByIssue[sourceId];
-    externalRecords.push(
-      externalRecord(ownerUserId, "task", task.id, sourceId, {
-        ...row,
-        comments:
-          comments === undefined
-            ? []
-            : array(comments, `commentsByIssue.${sourceId}`),
-      }),
-    );
+    const comments = commentsByIssue[sourceId] ?? [];
+    const sourceRecord = externalRecord(ownerUserId, "task", task.id, sourceId, {
+      ...row,
+      comments,
+    });
+    externalRecords.push(sourceRecord);
+    const commentPlan = planImportedComments({
+      ownerUserId,
+      taskId: task.id,
+      taskSourceId: sourceId,
+      sourceRecordId: sourceRecord.id,
+      comments,
+      reconciledAt: exportedAt,
+    });
+    historicalComments.push(...commentPlan.comments);
+    commentMigrationOutcomes.push(...commentPlan.outcomes);
     for (const labelName of stringArray(row.labels)) {
       const label = labelByName.get(labelName);
       if (!label) {
@@ -521,6 +538,8 @@ export function buildLinearImportPlan(
     relations,
     views,
     externalRecords,
+    historicalComments,
+    commentMigrationOutcomes,
   };
 }
 
@@ -841,6 +860,77 @@ export async function importLinearWorkspace(
     ),
   );
 
+  await runBatches(
+    plan.historicalComments.map((comment) =>
+      db.prepare(
+        `INSERT INTO comments
+          (id, task_id, author_user_id, body, source, source_record_id,
+           source_comment_id, source_parent_comment_id, historical_author_name,
+           historical_created_at, historical_updated_at, historical_quoted_text,
+           parent_comment_id, idempotency_key, created_at, updated_at, version)
+         VALUES (?, ?, NULL, ?, 'linear', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+         ON CONFLICT(task_id, source, source_comment_id)
+           WHERE source_comment_id IS NOT NULL DO NOTHING`,
+      ).bind(
+        comment.id,
+        comment.taskId,
+        comment.body,
+        comment.sourceRecordId,
+        comment.sourceCommentId,
+        comment.sourceParentCommentId,
+        comment.authorName,
+        comment.sourceCreatedAt,
+        comment.sourceUpdatedAt,
+        comment.quotedText,
+        comment.parentCommentId,
+        `linear:${comment.sourceCommentId}`,
+        comment.sourceCreatedAt,
+        comment.sourceUpdatedAt,
+      ),
+    ),
+  );
+
+  await runBatches(
+    plan.commentMigrationOutcomes.map((outcome) =>
+      db.prepare(
+        `INSERT INTO comment_migration_outcomes
+          (id, task_id, source, source_record_id, source_comment_id,
+           source_index, outcome, reason, comment_id, raw_json, reconciled_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_record_id, source_index) DO UPDATE SET
+           source_comment_id = excluded.source_comment_id,
+           outcome = excluded.outcome,
+           reason = excluded.reason,
+           comment_id = excluded.comment_id,
+           raw_json = excluded.raw_json,
+           reconciled_at = excluded.reconciled_at`,
+      ).bind(
+        outcome.id,
+        outcome.taskId,
+        outcome.source,
+        outcome.sourceRecordId,
+        outcome.sourceCommentId,
+        outcome.sourceIndex,
+        outcome.outcome,
+        outcome.reason,
+        outcome.commentId,
+        outcome.rawJson,
+        outcome.reconciledAt,
+      ),
+    ),
+  );
+
+  await runBatches(
+    [...new Set(plan.historicalComments.map((comment) => comment.taskId))].map((taskId) =>
+      db.prepare(
+        `UPDATE tasks SET comment_count = (
+           SELECT COUNT(*) FROM comments
+           WHERE task_id = ? AND deleted_at IS NULL
+         ) WHERE id = ?`,
+      ).bind(taskId, taskId),
+    ),
+  );
+
   await db.prepare("PRAGMA optimize").run();
   return {
     statuses: plan.statuses.length,
@@ -852,6 +942,10 @@ export async function importLinearWorkspace(
     relations: plan.relations.length,
     views: plan.views.length,
     externalRecords: plan.externalRecords.length,
+    commentsMigrated: plan.historicalComments.length,
+    commentExceptions: plan.commentMigrationOutcomes.filter(
+      (outcome) => outcome.outcome === "exception",
+    ).length,
   };
 }
 

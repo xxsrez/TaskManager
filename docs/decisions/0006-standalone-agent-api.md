@@ -17,12 +17,17 @@ create/update/delete commands. Они используют canonical Task refs, 
 relation ref, create-idempotency и требуют Editor+ на обеих Project Tasks;
 `duplicate_of` также требует Task version и атомарно меняет status.
 
+Дополнение 2026-08-18: imported comment bodies читаются через те же unified
+comment endpoints, что native discussions. External context оставляет только
+provenance, attachment links и reconciliation counts; historical author/source
+facts не выдаются за User identity и недоступны для edit/delete.
+
 ## Контекст
 
 Web UI использует Sites-authenticated JSON routes и полный
 authorization-scoped `AppSnapshot`. Для автономных clients эта модель не
 подходит: browser identity недоступна вне Sites session, snapshot загружает
-описания и imported archive всего workspace, а mutations возвращают UI state.
+описания и comment bodies всего workspace, а mutations возвращают UI state.
 
 Пользователь потребовал отдельный обычный API, работающий без Web UI. Он должен
 покрывать Projects/Releases, compact task search, полный Task detail и task
@@ -34,14 +39,15 @@ mutations/status transitions. Administration и другие управленч�
 1. Внешний data plane — REST под `/api/agent/v1` с OpenAPI 3.1.
    `/api/bootstrap` остаётся внутренним UI contract.
 2. Collections используют server-enforced compact projections. Entity bodies
-   доступны только detail endpoints; imported task archive вынесен отдельно.
+   доступны только detail endpoints; unified comments и import provenance
+   вынесены в разные lazy endpoints.
 3. Data plane аутентифицируется personal bearer token, а не Sites
    headers/cookie. D1 хранит только SHA-256 hash, prefix, owner, scopes и
    lifecycle metadata.
 4. Browser-authenticated User выдаёт/отзывает credentials через settings
    control plane. После выдачи data API не зависит от Web UI/session.
 5. Scopes — `api:read` и `api:write`. Write scope разрешает только создание и
-   изменение Tasks/native comments и не отменяет owner/ACL role.
+   изменение Tasks и разрешённые comment operations и не отменяет owner/ACL role.
 6. Project/Release доступны для чтения и task scope. Их mutations, sharing,
    ownership transfer, workflow configuration, Administration и backup/restore
    отсутствуют во внешнем API.

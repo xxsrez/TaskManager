@@ -6,6 +6,7 @@ import {
 } from "../app/api/tasks/[id]/comments/route";
 import {
   createAgentTaskComment,
+  getAgentTaskExternalContext,
   listAgentTaskComments,
 } from "../lib/agent-api-repository";
 import { configureActorResolverForTests } from "../lib/auth";
@@ -19,14 +20,16 @@ import {
   resolveCommentThread,
   setCommentReaction,
 } from "../lib/comments";
-import { ConflictError, PermissionError, ValidationError } from "../lib/domain";
+import { ConflictError, NotFoundError, PermissionError, ValidationError } from "../lib/domain";
 import {
   createProject,
   createTask,
   getOrCreateUser,
   getSnapshot,
   getTask,
+  getTaskExternalSource,
   grantAccess,
+  revokeAccess,
 } from "../lib/repository";
 import { createD1TestHarness } from "./helpers/d1";
 
@@ -207,6 +210,168 @@ test("root comment pagination uses a stable keyset while new rows are inserted",
     cursor: first.nextCursor,
   });
   assert.deepEqual(second.threads.map((thread) => thread.root.body), ["Gamma", "Delta"]);
+});
+
+test("migrated history joins native threads without impersonation or mutable audit facts", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const editor = await getOrCreateUser(editorActor);
+  const viewer = await getOrCreateUser(viewerActor);
+  await createProject(owner, { name: "Historical comment project", taskCode: "HC" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Historical comment project",
+  )!;
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: editor.email,
+    permission: "editor",
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: viewer.email,
+    permission: "viewer",
+  });
+  const task = await createTask(owner, {
+    title: "Migrated discussion",
+    projectId: project.id,
+  });
+  const sourceRecordId = "linear:external-task:history";
+  const rootId = "linear:comment:history-root";
+  const replyId = "linear:comment:history-reply";
+  await database.batch([
+    database.prepare(
+      `INSERT INTO external_records
+        (id, owner_user_id, target_type, target_id, source, source_id,
+         source_url, metadata_json, imported_at)
+       VALUES (?, ?, 'task', ?, 'linear', 'history-task',
+         'https://linear.example/history-task',
+         '{"comments":[{"id":"history-root"},{"id":"history-reply"},{"id":"orphan"}]}',
+         '2026-08-18T00:00:00.000Z')`,
+    ).bind(sourceRecordId, owner.id, task.id),
+    database.prepare(
+      `INSERT INTO comments
+        (id, task_id, author_user_id, body, source, source_record_id,
+         source_comment_id, historical_author_name, historical_created_at,
+         historical_updated_at, historical_quoted_text, idempotency_key,
+         created_at, updated_at, version)
+       VALUES (?, ?, NULL, ?, 'linear', ?, 'history-root', 'Historical Ada',
+         '2025-01-01T00:00:00.000Z', '2025-01-01T01:00:00.000Z',
+         'Quoted source', 'linear:history-root',
+         '2025-01-01T00:00:00.000Z', '2025-01-01T01:00:00.000Z', 1)`,
+    ).bind(rootId, task.id, "Immutable historical root", sourceRecordId),
+    database.prepare(
+      `INSERT INTO comments
+        (id, task_id, author_user_id, body, source, source_record_id,
+         source_comment_id, source_parent_comment_id, historical_author_name,
+         historical_created_at, historical_updated_at, parent_comment_id,
+         idempotency_key, created_at, updated_at, version)
+       VALUES (?, ?, NULL, ?, 'linear', ?, 'history-reply', 'history-root',
+         'Historical Grace', '2025-01-02T00:00:00.000Z',
+         '2025-01-02T00:00:00.000Z', ?, 'linear:history-reply',
+         '2025-01-02T00:00:00.000Z', '2025-01-02T00:00:00.000Z', 1)`,
+    ).bind(replyId, task.id, "Immutable historical reply", sourceRecordId, rootId),
+    database.prepare(
+      `UPDATE tasks SET comment_count = 2 WHERE id = ?`,
+    ).bind(task.id),
+    database.prepare(
+      `INSERT INTO comment_migration_outcomes
+        (id, task_id, source, source_record_id, source_comment_id, source_index,
+         outcome, reason, comment_id, raw_json, reconciled_at)
+       VALUES ('outcome-history-root', ?, 'linear', ?, 'history-root', 0,
+         'migrated', NULL, ?, '{"id":"history-root"}', '2026-08-18T00:00:00.000Z')`,
+    ).bind(task.id, sourceRecordId, rootId),
+    database.prepare(
+      `INSERT INTO comment_migration_outcomes
+        (id, task_id, source, source_record_id, source_comment_id, source_index,
+         outcome, reason, comment_id, raw_json, reconciled_at)
+       VALUES ('outcome-history-reply', ?, 'linear', ?, 'history-reply', 1,
+         'migrated', NULL, ?, '{"id":"history-reply"}', '2026-08-18T00:00:00.000Z')`,
+    ).bind(task.id, sourceRecordId, replyId),
+    database.prepare(
+      `INSERT INTO comment_migration_outcomes
+        (id, task_id, source, source_record_id, source_comment_id, source_index,
+         outcome, reason, comment_id, raw_json, reconciled_at)
+       VALUES ('outcome-history-orphan', ?, 'linear', ?, 'orphan', 2,
+         'exception', 'missing parent', NULL, '{"id":"orphan"}', '2026-08-18T00:00:00.000Z')`,
+    ).bind(task.id, sourceRecordId),
+  ]);
+
+  const viewerPage = await listTaskComments(viewer, task.id, { limit: 20 });
+  const historicalRoot = viewerPage.threads[0]!.root;
+  assert.equal(historicalRoot.author.id, null);
+  assert.equal(historicalRoot.author.kind, "historical");
+  assert.equal(historicalRoot.author.displayName, "Historical Ada");
+  assert.equal(historicalRoot.historical?.quotedText, "Quoted source");
+  assert.equal(historicalRoot.permissions.canEdit, false);
+  assert.equal(historicalRoot.permissions.canDelete, false);
+  assert.equal(historicalRoot.permissions.canReact, false);
+  assert.equal(viewerPage.threads[0]?.replies[0]?.parentCommentId, rootId);
+
+  await assert.rejects(
+    editComment(owner, task.id, rootId, { version: historicalRoot.version, body: "Changed" }),
+    PermissionError,
+  );
+  await assert.rejects(
+    deleteComment(owner, task.id, rootId, { version: historicalRoot.version }),
+    PermissionError,
+  );
+  await setCommentReaction(editor, task.id, rootId, { emoji: "🎉", active: true });
+  const resolved = await resolveCommentThread(editor, task.id, rootId, {
+    version: historicalRoot.version,
+    resolved: true,
+  });
+  assert.ok(resolved.resolvedAt);
+  const nativeReply = await createComment(editor, task.id, {
+    body: "Native continuation",
+    parentCommentId: rootId,
+    idempotencyKey: "historical-native-reply",
+  });
+  assert.equal(nativeReply.source, "native");
+  const reopened = await getCommentThread(owner, task.id, rootId);
+  assert.equal(reopened.root.resolvedAt, null);
+  assert.equal(reopened.replies.at(-1)?.body, "Native continuation");
+
+  const provenance = await getTaskExternalSource(owner, task.id);
+  assert.deepEqual(provenance?.commentMigration, { migrated: 2, exceptions: 1 });
+  const agentProvenance = await getAgentTaskExternalContext(owner, task.publicId, {
+    limit: 50,
+    offset: 0,
+    fingerprint: "history-provenance",
+  });
+  assert.deepEqual(agentProvenance.data.commentMigration, { migrated: 2, exceptions: 1 });
+  assert.equal(Object.hasOwn(agentProvenance.data, "comments"), false);
+
+  const facts = await database.prepare(
+    `SELECT body, author_user_id, historical_author_name, historical_created_at,
+       historical_updated_at, historical_quoted_text, created_at
+     FROM comments WHERE id = ?`,
+  ).bind(rootId).first<Record<string, unknown>>();
+  assert.deepEqual(facts, {
+    body: "Immutable historical root",
+    author_user_id: null,
+    historical_author_name: "Historical Ada",
+    historical_created_at: "2025-01-01T00:00:00.000Z",
+    historical_updated_at: "2025-01-01T01:00:00.000Z",
+    historical_quoted_text: "Quoted source",
+    created_at: "2025-01-01T00:00:00.000Z",
+  });
+  await assert.rejects(
+    database.prepare("UPDATE comments SET body = 'database mutation' WHERE id = ?")
+      .bind(rootId).run(),
+    /historical comment facts are immutable/,
+  );
+  await assert.rejects(
+    database.prepare("UPDATE comments SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(rootId).run(),
+    /historical comment facts are immutable/,
+  );
+
+  const viewerGrant = (await getSnapshot(owner)).collaborators.find(
+    (item) => item.resourceId === project.id && item.userId === viewer.id,
+  )!;
+  await revokeAccess(owner, viewerGrant.grantId);
+  await assert.rejects(listTaskComments(viewer, task.id), NotFoundError);
 });
 
 test("comment writes advance task recency monotonically after a concurrent task update", async () => {

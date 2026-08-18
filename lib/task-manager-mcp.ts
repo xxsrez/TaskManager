@@ -290,7 +290,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get imported task context",
       description:
-        "Gets paginated imported comments, attachments, source URL, and branch metadata when get_task reports external provenance.",
+        "Gets import provenance, source attachment links, source URL, branch metadata, and migrated/exception counts when get_task reports external provenance. Historical comment bodies are returned only by list_task_comments.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         limit: z.number().int().min(1).max(100).optional(),
@@ -654,7 +654,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "list_task_comments",
     {
       title: "List task comment threads",
-      description: "Lists bounded native comment threads after resolving an accessible task. Imported Linear comments remain in get_task_external_context.",
+      description: "Lists bounded unified comment threads after resolving an accessible task, including immutable migrated history and native replies/reactions/resolution.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         limit: z.number().int().min(1).max(50).optional(),
@@ -671,7 +671,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "get_task_thread",
     {
       title: "Get task comment thread",
-      description: "Gets one ACL-scoped native root thread with bounded replies.",
+      description: "Gets one ACL-scoped unified root thread with bounded native or migrated replies.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         commentRef: reference("Comment ref from list_task_comments."),

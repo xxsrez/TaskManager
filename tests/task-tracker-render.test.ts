@@ -1386,7 +1386,7 @@ test("comment drafts are isolated by authenticated user and task", () => {
   );
 });
 
-test("imported task details defer the heavy source archive until the panel opens", () => {
+test("imported task details defer provenance until the panel opens", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
       initialData: {
@@ -1405,7 +1405,7 @@ test("imported task details defer the heavy source archive until the panel opens
     }),
   );
 
-  assert.match(markup, /Loading imported context/);
+  assert.match(markup, /Loading import provenance/);
 });
 
 test("an administrator sees registration and activity statistics", () => {

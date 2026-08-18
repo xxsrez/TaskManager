@@ -528,7 +528,7 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/external-context": {
       get: {
         operationId: "getTaskExternalContext",
-        summary: "Read paginated imported comments and attachment links",
+        summary: "Read import provenance, source attachment links, and reconciliation counts",
         parameters: [
           referenceParameter(),
           {
@@ -550,14 +550,14 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/comments": {
       get: {
         operationId: "listTaskComments",
-        summary: "List bounded native comment threads for an accessible task",
+        summary: "List bounded native and migrated historical threads for an accessible task",
         parameters: [
           referenceParameter(),
           { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 50, default: 25 } },
           { name: "cursor", in: "query", schema: { type: "string" } },
         ],
         responses: {
-          "200": pagedResponse("Native comment threads", { type: "object", additionalProperties: true }),
+          "200": pagedResponse("Unified comment threads", { type: "object", additionalProperties: true }),
           ...errorResponses,
         },
       },
@@ -576,7 +576,7 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/comments/{commentRef}": {
       get: {
         operationId: "getTaskCommentThread",
-        summary: "Get one native root thread with bounded replies",
+        summary: "Get one unified root thread with bounded replies",
         parameters: [referenceParameter(), commentReferenceParameter()],
         responses: {
           "200": envelopeResponse("Native comment thread", { type: "object", additionalProperties: true }),
@@ -1090,12 +1090,14 @@ export const agentApiOpenApi = {
       },
       Comment: {
         type: "object",
-        required: ["ref", "author", "body", "createdAt", "updatedAt", "version", "reactions", "permissions"],
+        required: ["ref", "author", "body", "source", "historical", "createdAt", "updatedAt", "version", "reactions", "permissions"],
         properties: {
           ref: { type: "string" },
           parentCommentRef: { type: ["string", "null"] },
           author: { type: "object" },
           body: { type: "string" },
+          source: { enum: ["native", "linear"] },
+          historical: { type: ["object", "null"] },
           createdAt: { type: "string", format: "date-time" },
           updatedAt: { type: "string", format: "date-time" },
           deletedAt: { type: ["string", "null"] },

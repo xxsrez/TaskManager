@@ -165,7 +165,8 @@ session metadata остаётся как минимальный audit record.
 
 `ProjectBackup` — versioned logical envelope ровно одного Project. Он хранит
 immutable identity Project, current owner, его subtree, internal joins и
-relations, native comments/reactions, dependency snapshots используемых
+relations, native/historical comments, reconciliation outcomes/reactions,
+dependency snapshots используемых
 catalogs, active sharing
 descriptors, warnings и SHA-256. Это переносимая страховка владельца, но не
 отдельная live entity и не ACL capability.
@@ -268,7 +269,7 @@ journal rows старше 30 дней удаляются не чаще раза 
 | `completed_at` | instant | нет | Соответствует completed category |
 | `canceled_at` | instant | нет | Соответствует canceled category |
 | `archived_at` | instant | нет | Soft archive |
-| `comment_count` | integer | да | Производный count native comments без soft-deleted tombstones |
+| `comment_count` | integer | да | Производный count unified native/historical comments без soft-deleted tombstones |
 | `created_at` | instant | да | Серверное время создания |
 | `updated_at` | instant | да | Серверное время последнего изменения |
 | `version` | integer/token | да | Optimistic concurrency |
@@ -342,20 +343,28 @@ legacy statuses и для полного system restore восстанавлив
 updated timestamp TaskRelation; validators schema `2`–`4` детерминированно
 синтезируют их для legacy relations. Owner/project active-byte quotas вычисляются по
 текущему Project owner, а не историческому `tasks.owner_user_id`.
+Logical backup schema `9` переносит unified historical comments и
+`comment_migration_outcomes`; validators schema `2`–`8` трактуют прежние
+comments как native и добавляют пустой reconciliation set.
 
 ## Comment и CommentReaction
 
-`Comment` — native discussion record одной Task. Импортированный comment archive
-остаётся в `ExternalRecord.metadata_json` и не создаёт строки `Comment`.
+`Comment` — единая discussion/history record одной Task. Native comments и
+импортированная история читаются одной pagination и образуют общие threads.
 
 | Поле | Семантика |
 |---|---|
 | `id`, `task_id` | Immutable identity и Task, определяющая ACL/scope |
-| `author_user_id` | Server-verified author; client claim не принимается |
-| `body` | Непустой нормализованный Markdown-like text до 100 000 characters; у tombstone пустой |
-| `source` | В первой версии всегда `native` |
+| `author_user_id` | Server-verified author native comment; для historical всегда `NULL`, чтобы не impersonate User |
+| `body` | Непустой Markdown-like text; native tombstone может быть пустым, historical body immutable |
+| `source` | `native` или `linear` |
+| `source_record_id`, `source_comment_id` | Historical provenance и уникальная source identity; для native `NULL` |
+| `source_parent_comment_id` | Исходный parent ID до нормализации nested reply |
+| `historical_author_name` | Immutable display snapshot исходного автора, не User identity |
+| `historical_created_at`, `historical_updated_at` | Immutable timestamps исходной системы |
+| `historical_quoted_text` | Optional immutable quote исходного comment |
 | `parent_comment_id` | `NULL` для root либо ссылка непосредственно на root того же Task |
-| `idempotency_key` | Уникален в `(task_id, author_user_id)` и делает create retry-safe |
+| `idempotency_key` | Для native уникален в `(task_id, author_user_id)`; historical identity задаёт `(task_id, source, source_comment_id)` |
 | `created_at`, `updated_at`, `deleted_at` | Lifecycle и soft-delete metadata |
 | `resolved_at`, `resolved_by_user_id` | Состояние root thread и resolver |
 | `resolution_comment_id` | Optional root/reply того же thread, фиксирующий resolution |
@@ -367,10 +376,27 @@ updated timestamp TaskRelation; validators schema `2`–`4` детерминир
 `reactedByCurrentUser`, но не раскрывает список User/email.
 
 Любой User, видящий Task, читает threads. Comment mutation требует Editor или
-выше; edit разрешён только author, delete — author либо Project Owner/Manager.
-Удаление оставляет tombstone и сохраняет replies. Reply на reply нормализуется к
-root, а создание reply атомарно переоткрывает resolved thread. `Task.comment_count`
-атомарно равен числу native rows этой Task с `deleted_at IS NULL`.
+выше; edit native comment разрешён только author, delete — author либо Project
+Owner/Manager. Historical body, source/author/time/quote facts, topology и
+delete state неизменяемы, но Editor+ может reply/react/resolve. Reply на reply
+нормализуется к root, а создание reply атомарно переоткрывает resolved thread.
+`Task.comment_count` атомарно равен числу всех rows Task с
+`deleted_at IS NULL`.
+
+`CommentMigrationOutcome` хранит reconciliation каждой source row:
+
+| Поле | Семантика |
+|---|---|
+| `task_id`, `source_record_id`, `source_index` | Task, provenance record и стабильная позиция source row |
+| `source_comment_id` | Optional provider identity, если её удалось прочитать |
+| `outcome` | `migrated` либо `exception` |
+| `reason` | Machine-readable exception или migration warning |
+| `comment_id` | Historical Comment для `migrated`; `NULL` для exception |
+| `raw_json`, `reconciled_at` | Точная source row для operator reconciliation и время результата |
+
+Outcome не публикует raw body в Task/Agent provenance projection. UI и Agent
+получают только migrated/exception counts; raw row доступна через защищённый
+backup или operator D1 procedure.
 
 ### Project task code и sequence
 
@@ -516,10 +542,10 @@ Project и catalog owner могут различаться, но mutation тре
 | `imported_at` | Время последнего идемпотентного импорта |
 
 Для Linear snapshot сохраняются, среди прочего, branch name, история статусов,
-attachments metadata и комментарии. Импортированные комментарии доступны в
-Task details как read-only archive. Они не превращаются в native `Comment`, не
-получают edit/reply/reaction controls и не смешиваются с Activity threads;
-attachments также остаются import provenance.
+attachments metadata и исходный comments payload. Комментарии мигрируются в
+historical `Comment`, а reconciliation — в `CommentMigrationOutcome`; raw
+metadata остаётся приватным источником сверки, но Task/Agent provenance не
+возвращает comment bodies. Attachments остаются import provenance.
 
 ## SavedView
 

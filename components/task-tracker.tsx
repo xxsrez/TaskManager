@@ -2,6 +2,7 @@
 /* eslint-disable @next/next/no-html-link-for-pages */
 
 import {
+  AlertTriangle,
   Archive,
   ArchiveRestore,
   ArrowDown,
@@ -3759,15 +3760,16 @@ function CommentEntry({ comment, rootId, busy, onReply, onEdit, onDelete, onReac
   const isRoot = comment.parentCommentId === null;
   const permalink = `comment-${comment.id}`;
   return <div className="comment-entry" id={permalink} tabIndex={-1}>
-    <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(comment.author.id) } as React.CSSProperties}>{initials(comment.author.displayName)}</span>
+    <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(comment.author.id ?? comment.historical?.sourceCommentId ?? comment.id) } as React.CSSProperties}>{initials(comment.author.displayName)}</span>
     <div className="comment-content">
-      <header><b>{comment.author.displayName}</b><time dateTime={comment.createdAt} title={longDateTime(comment.createdAt)}>{relativeTime(comment.createdAt)}</time>{comment.updatedAt !== comment.createdAt && <small>edited</small>}
+      <header><b>{comment.author.displayName}</b>{comment.author.kind === "historical" && <small className="historical-comment-badge">Imported history</small>}<time dateTime={comment.createdAt} title={longDateTime(comment.createdAt)}>{relativeTime(comment.createdAt)}</time>{comment.source === "native" && comment.updatedAt !== comment.createdAt && <small>edited</small>}
         <details className="comment-menu"><summary aria-label="Comment actions"><MoreHorizontal size={14} /></summary><div>
           <button type="button" onClick={() => copyCommentPermalink(comment.id)}>Copy link</button>
           {comment.permissions.canEdit && <button type="button" onClick={() => setEditing(true)}>Edit</button>}
           {comment.permissions.canDelete && <button type="button" onClick={() => { if (window.confirm("Delete this comment?")) void onDelete(comment); }}>Delete</button>}
         </div></details>
       </header>
+      {comment.historical?.quotedText && <blockquote className="historical-comment-quote">{comment.historical.quotedText}</blockquote>}
       {comment.deletedAt ? <p className="comment-tombstone">Comment deleted</p> : editing ? <div className="comment-edit"><textarea value={editBody} onChange={(event) => setEditBody(event.target.value)} rows={4} autoFocus /><div><button className="button ghost" type="button" onClick={() => { setEditBody(comment.body); setEditing(false); }}>Cancel</button><button className="button primary" type="button" disabled={busy || !editBody.trim()} onClick={() => void onEdit(comment, editBody).then(() => setEditing(false))}>Save</button></div></div> : <><CommentMarkdown body={body} />{long && <button className="comment-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Show more"}</button>}</>}
       {!comment.deletedAt && <div className="comment-actions">
         {comment.reactions.map((reaction) => <button key={reaction.emoji} className={reaction.reactedByCurrentUser ? "active" : ""} type="button" disabled={!comment.permissions.canReact || busy} onClick={() => void onReact(comment, reaction.emoji, !reaction.reactedByCurrentUser)}>{reaction.emoji} <span>{reaction.count}</span></button>)}
@@ -4038,15 +4040,15 @@ function ImportedSourceDetails({ source, hasExternalSource, full = false }: {
 }) {
   if (!hasExternalSource) return null;
   if (source === undefined) {
-    return <DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><p className="inline-note">Loading imported context…</p></DetailsSection>;
+    return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><p className="inline-note">Loading import provenance…</p></DetailsSection>;
   }
   if (source === null) {
-    return <DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><p className="inline-note">Imported context is unavailable.</p></DetailsSection>;
+    return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><p className="inline-note">Import provenance is unavailable.</p></DetailsSection>;
   }
   if (!full) {
     return source.sourceUrl ? <DetailsSection title="Imported source" icon={<Link2 size={14} />}><a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record</a></DetailsSection> : null;
   }
-  return <><DetailsSection title="Imported from Linear" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open {source.sourceId} in Linear</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentEntries} archived comments</span><span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>{source.comments.length > 0 && <details className="details-section imported-comment-group"><summary><MessageSquare size={14} />Imported comments <span>{source.comments.length}</span></summary><div className="comment-archive">{source.comments.map((comment) => <article key={comment.id}><header><b>{comment.authorName}</b><time dateTime={comment.createdAt}>{longDateTime(comment.createdAt)}</time>{comment.parentId && <small>Reply</small>}</header>{comment.quotedText && <blockquote>{comment.quotedText}</blockquote>}<p>{comment.body}</p></article>)}</div></details>}</>;
+  return <DetailsSection title="Import provenance" icon={<Link2 size={14} />}><div className="source-metadata">{source.sourceUrl && <a href={source.sourceUrl} target="_blank" rel="noreferrer">Open source record {source.sourceId}</a>}{source.gitBranchName && <span><GitBranch size={13} /><code>{source.gitBranchName}</code></span>}<span><MessageSquare size={13} />{source.commentMigration.migrated} historical comments in Activity</span>{source.commentMigration.exceptions > 0 && <span className="source-reconciliation-warning"><AlertTriangle size={13} />{source.commentMigration.exceptions} source comment records require reconciliation</span>}<span><Boxes size={13} />{source.stateHistoryEntries} status-history entries</span>{source.attachments.map((attachment) => <a key={attachment.url} href={attachment.url} target="_blank" rel="noreferrer"><Paperclip size={13} />{attachment.title}</a>)}</div></DetailsSection>;
 }
 
 function PropertyValue({ label, value }: { label: string; value: string }) {

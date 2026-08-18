@@ -189,6 +189,9 @@ export async function editComment(
 ): Promise<CommentRecord> {
   const task = await editableTask(currentUser, taskReference);
   const comment = await loadCommentRow(task.id, commentId);
+  if (String(comment.source) !== "native") {
+    throw new PermissionError("Historical comments are immutable");
+  }
   if (String(comment.author_user_id) !== currentUser.id) {
     throw new PermissionError("Only the comment author can edit this comment");
   }
@@ -223,6 +226,9 @@ export async function deleteComment(
 ): Promise<CommentRecord> {
   const task = await editableTask(currentUser, taskReference);
   const comment = await loadCommentRow(task.id, commentId);
+  if (String(comment.source) !== "native") {
+    throw new PermissionError("Historical comments are immutable");
+  }
   const isAuthor = String(comment.author_user_id) === currentUser.id;
   const canModerate = task.accessRole === "owner" || task.accessRole === "manager";
   if (!isAuthor && !canModerate) {
@@ -368,14 +374,17 @@ async function hydrateComments(
   rows: DbRow[],
 ) {
   if (!rows.length) return [];
-  const authorIds = [...new Set(rows.map((row) => String(row.author_user_id)))];
-  const placeholders = authorIds.map(() => "?").join(", ");
-  const users = await getD1()
-    .prepare(
-      `SELECT id, display_name FROM users WHERE id IN (${placeholders})`,
-    )
-    .bind(...authorIds)
-    .all<DbRow>();
+  const authorIds = [...new Set(rows.flatMap((row) =>
+    row.author_user_id == null ? [] : [String(row.author_user_id)]
+  ))];
+  const users = authorIds.length
+    ? await getD1()
+      .prepare(
+        `SELECT id, display_name FROM users WHERE id IN (${authorIds.map(() => "?").join(", ")})`,
+      )
+      .bind(...authorIds)
+      .all<DbRow>()
+    : { results: [] as DbRow[] };
   const usersById = new Map(users.results.map((row) => [String(row.id), {
     id: String(row.id),
     displayName: String(row.display_name),
@@ -383,16 +392,34 @@ async function hydrateComments(
   const reactionMap = await loadReactionMap(rows.map((row) => String(row.id)), currentUser.id);
   const editable = canEditContent(task.accessRole);
   return rows.map((row): CommentRecord => {
-    const authorId = String(row.author_user_id);
-    const author = usersById.get(authorId);
-    if (!author) throw new Error("Comment author is missing");
+    const source = String(row.source) as CommentRecord["source"];
+    if (source !== "native" && source !== "linear") {
+      throw new Error("Comment source is unsupported");
+    }
+    const authorId = row.author_user_id == null ? null : String(row.author_user_id);
+    const nativeAuthor = authorId ? usersById.get(authorId) : null;
+    if (source === "native" && !nativeAuthor) throw new Error("Comment author is missing");
+    const historicalAuthorName = nullableString(row.historical_author_name);
+    if (source !== "native" && !historicalAuthorName) {
+      throw new Error("Historical comment author snapshot is missing");
+    }
     const deletedAt = nullableString(row.deleted_at);
     return {
       id: String(row.id),
       taskId: String(row.task_id),
-      author,
+      author: source === "native"
+        ? { ...nativeAuthor!, kind: "user" as const }
+        : { id: null, displayName: historicalAuthorName!, kind: "historical" as const },
       body: String(row.body),
-      source: "native",
+      source,
+      historical: source === "native" ? null : {
+        sourceRecordId: String(row.source_record_id),
+        sourceCommentId: String(row.source_comment_id),
+        sourceParentCommentId: nullableString(row.source_parent_comment_id),
+        originalCreatedAt: String(row.historical_created_at),
+        originalUpdatedAt: String(row.historical_updated_at),
+        quotedText: nullableString(row.historical_quoted_text),
+      },
       parentCommentId: nullableString(row.parent_comment_id),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
@@ -402,8 +429,8 @@ async function hydrateComments(
       version: Number(row.version),
       reactions: reactionMap.get(String(row.id)) ?? [],
       permissions: {
-        canEdit: editable && !deletedAt && authorId === currentUser.id,
-        canDelete: editable && !deletedAt && (
+        canEdit: source === "native" && editable && !deletedAt && authorId === currentUser.id,
+        canDelete: source === "native" && editable && !deletedAt && (
           authorId === currentUser.id || task.accessRole === "owner" || task.accessRole === "manager"
         ),
         canReact: editable && !deletedAt,

@@ -3,7 +3,6 @@ import { canEditContent } from "./access";
 import {
   AgentApiError,
   catalogReference,
-  encodeCursor,
   encodeKeysetCursor,
   type AgentAttachmentListQuery,
   type AgentKeysetPosition,
@@ -339,21 +338,23 @@ export async function getAgentTaskExternalContext(
   reference: string,
   input: { limit: number; offset: number; fingerprint: string },
 ) {
+  void input;
   const task = await loadAccessibleTaskRow(currentUser.id, reference);
   const row = await getD1()
     .prepare(
-      `SELECT source, source_url, metadata_json
-       FROM external_records
-       WHERE target_type = 'task' AND target_id = ? AND owner_user_id = ?
-       ORDER BY imported_at DESC LIMIT 1`,
+      `SELECT er.source, er.source_url, er.metadata_json,
+              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'migrated') AS comments_migrated,
+              (SELECT COUNT(*) FROM comment_migration_outcomes outcome
+               WHERE outcome.source_record_id = er.id AND outcome.outcome = 'exception') AS comment_exceptions
+       FROM external_records er
+       WHERE er.target_type = 'task' AND er.target_id = ? AND er.owner_user_id = ?
+       ORDER BY er.imported_at DESC LIMIT 1`,
     )
     .bind(task.id, task.owner_user_id)
     .first<DbRow>();
   if (!row) throw new NotFoundError("External context not found");
   const metadata = safeJson<Record<string, unknown>>(row.metadata_json, {});
-  const comments = externalComments(metadata.comments);
-  const page = comments.slice(input.offset, input.offset + input.limit);
-  const hasMore = input.offset + input.limit < comments.length;
   return {
     data: {
       source: String(row.source),
@@ -363,13 +364,14 @@ export async function getAgentTaskExternalContext(
           ? metadata.gitBranchName
           : null,
       attachments: externalAttachments(metadata.attachments),
-      comments: page,
+      commentMigration: {
+        migrated: Number(row.comments_migrated ?? 0),
+        exceptions: Number(row.comment_exceptions ?? 0),
+      },
     },
     page: {
-      hasMore,
-      nextCursor: hasMore
-        ? encodeCursor(input.offset + input.limit, input.fingerprint)
-        : null,
+      hasMore: false,
+      nextCursor: null,
     },
   };
 }
@@ -1603,9 +1605,12 @@ function agentComment(comment: import("./types").CommentRecord, currentUserId: s
     parentCommentRef: comment.parentCommentId,
     author: {
       displayName: comment.author.displayName,
-      isCurrentUser: comment.author.id === currentUserId,
+      kind: comment.author.kind,
+      isCurrentUser: comment.author.id !== null && comment.author.id === currentUserId,
     },
     body: comment.body,
+    source: comment.source,
+    historical: comment.historical,
     createdAt: comment.createdAt,
     updatedAt: comment.updatedAt,
     deletedAt: comment.deletedAt,
@@ -1844,35 +1849,6 @@ function externalAttachments(value: unknown) {
       title: item.title,
       subtitle: typeof item.subtitle === "string" ? item.subtitle : null,
       url: item.url,
-    }];
-  });
-}
-
-function externalComments(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-    const item = entry as Record<string, unknown>;
-    const author =
-      item.author && typeof item.author === "object" && !Array.isArray(item.author)
-        ? (item.author as Record<string, unknown>)
-        : {};
-    if (
-      typeof item.id !== "string" ||
-      typeof item.body !== "string" ||
-      typeof item.createdAt !== "string" ||
-      typeof item.updatedAt !== "string"
-    ) {
-      return [];
-    }
-    return [{
-      id: item.id,
-      body: item.body,
-      authorName: typeof author.name === "string" ? author.name : "Linear user",
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-      parentId: typeof item.parentId === "string" ? item.parentId : null,
-      quotedText: typeof item.quotedText === "string" ? item.quotedText : null,
     }];
   });
 }

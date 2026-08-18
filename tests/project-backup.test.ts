@@ -26,7 +26,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 8);
+  assert.equal(backup.schemaVersion, 9);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -35,12 +35,43 @@ test("project bundle validates one exact subtree without user identities", async
   assert.equal("users" in validated.tables, false);
 });
 
+test("project bundles preserve historical comments and reconciliation outcomes", async () => {
+  const tables = validProjectTables();
+  tables.tasks[0]!.comment_count = 2;
+  tables.comments.push({
+    id: "comment-history-1", task_id: "task-1", author_user_id: null,
+    body: "Imported decision", source: "linear", source_record_id: "external-1",
+    source_comment_id: "linear-comment-1", source_parent_comment_id: null,
+    historical_author_name: "Former teammate", historical_created_at: now,
+    historical_updated_at: now, historical_quoted_text: "Original context",
+    parent_comment_id: null, idempotency_key: "linear:linear-comment-1",
+    created_at: now, updated_at: now, deleted_at: null, resolved_at: null,
+    resolved_by_user_id: null, resolution_comment_id: null, version: 1,
+  });
+  tables.comment_migration_outcomes.push({
+    id: "outcome-1", task_id: "task-1", source: "linear",
+    source_record_id: "external-1", source_comment_id: "linear-comment-1",
+    source_index: 0, outcome: "migrated", reason: null,
+    comment_id: "comment-history-1", raw_json: '{"id":"linear-comment-1"}',
+    reconciled_at: now,
+  });
+  const backup = await createProjectBackup({
+    siteOrigin: "https://task-manager.example", tables, sharing: [],
+    externalRelationsOmitted: 0, exportedAt: now,
+  });
+  const validated = await validateProjectBackup(backup);
+  assert.equal(validated.tables.comments[1]?.author_user_id, null);
+  assert.equal(validated.tables.comments[1]?.historical_quoted_text, "Original context");
+  assert.equal(validated.tables.comment_migration_outcomes[0]?.outcome, "migrated");
+});
+
 test("a Project keeps its locked sequence after every current Task is gone", async () => {
   const tables = validProjectTables();
   tables.tasks = [];
   tables.task_identifier_aliases = [];
   tables.attachments = [];
   tables.comments = [];
+  tables.comment_migration_outcomes = [];
   tables.comment_reactions = [];
   tables.task_labels = [];
   tables.task_relations = [];
@@ -78,14 +109,15 @@ test("schema 2 project bundles without attachments remain importable", async () 
     exportedAt: now,
   });
   const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
+    Object.entries(current.tables).filter(([name]) => !["attachments", "task_identifier_aliases", "comment_migration_outcomes"].includes(name)),
   );
+  tables.comments = current.tables.comments.map(legacyCommentRow);
   tables.projects = current.tables.projects.map(legacyProjectRow);
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   tables.labels = current.tables.labels.map(legacyLabelRow);
   const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases"].includes(name)),
+    Object.entries(current.counts).filter(([name]) => !["attachments", "task_identifier_aliases", "comment_migration_outcomes"].includes(name)),
   );
   const body = {
     format: current.format,
@@ -118,16 +150,17 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
     exportedAt: now,
   });
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     workflow_statuses: current.tables.workflow_statuses.map(legacyWorkflowRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
     labels: current.tables.labels.map(legacyLabelRow),
+    comments: current.tables.comments.map(legacyCommentRow),
   };
   const body = {
     ...current,
     schemaVersion: 3,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     tables,
   };
   const unsigned = Object.fromEntries(
@@ -150,15 +183,16 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
     exportedAt: now,
   });
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "task_identifier_aliases")),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
     labels: current.tables.labels.map(legacyLabelRow),
+    comments: current.tables.comments.map(legacyCommentRow),
   };
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "task_identifier_aliases")),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["task_identifier_aliases", "comment_migration_outcomes"].includes(name))),
     tables,
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
@@ -182,9 +216,11 @@ test("schema 6 project bundles upgrade Label catalog metadata and keep assignmen
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 6,
     tables: {
-      ...current.tables,
+      ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => name !== "comment_migration_outcomes")),
       labels: current.tables.labels.map(legacyLabelRow),
+      comments: current.tables.comments.map(legacyCommentRow),
     },
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => name !== "comment_migration_outcomes")),
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
@@ -224,7 +260,7 @@ test("project bundle rejects hierarchy and relations outside the subtree", async
   );
 });
 
-test("project bundle rejects invalid native comment state before staging", async () => {
+test("project bundle rejects historical comment impersonation before staging", async () => {
   const tables = validProjectTables();
   tables.comments[0]!.source = "linear";
   await assert.rejects(
@@ -235,7 +271,7 @@ test("project bundle rejects invalid native comment state before staging", async
       externalRelationsOmitted: 0,
       exportedAt: now,
     }),
-    /non-native comment/i,
+    /cannot impersonate/i,
   );
 });
 
@@ -300,11 +336,15 @@ function validProjectTables(): ProjectBackupTables {
     attachments: [],
     comments: [{
       id: "comment-1", task_id: "task-1", author_user_id: "user-owner",
-      body: "Native project comment", source: "native", parent_comment_id: null,
+      body: "Native project comment", source: "native", source_record_id: null,
+      source_comment_id: null, source_parent_comment_id: null,
+      historical_author_name: null, historical_created_at: null,
+      historical_updated_at: null, historical_quoted_text: null, parent_comment_id: null,
       idempotency_key: "backup-comment-1", created_at: now, updated_at: now,
       deleted_at: null, resolved_at: null, resolved_by_user_id: null,
       resolution_comment_id: null, version: 1,
     }],
+    comment_migration_outcomes: [],
     comment_reactions: [{ comment_id: "comment-1", user_id: "user-owner", emoji: "👍", created_at: now }],
     labels: [{ id: "label-1", owner_user_id: "user-owner", name: "Backup", color: "#6b7280", description: "Keep for restore", archived_at: null, version: 1, created_at: now, updated_at: now }],
     task_labels: [{ task_id: "task-2", label_id: "label-1" }],
@@ -368,6 +408,16 @@ function legacyLabelRow(row: Record<string, string | number | null>) {
   );
 }
 
+function legacyCommentRow(row: Record<string, string | number | null>) {
+  return Object.fromEntries(
+    Object.entries(row).filter(([key]) => ![
+      "source_record_id", "source_comment_id", "source_parent_comment_id",
+      "historical_author_name", "historical_created_at",
+      "historical_updated_at", "historical_quoted_text",
+    ].includes(key)),
+  );
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -379,6 +429,7 @@ function migratedDatabase() {
     "0013_rapid_gravity.sql", "0014_puzzling_tana_nile.sql", "0015_attachments_sync.sql",
     "0016_abandoned_stellaris.sql", "0017_complex_epoch.sql",
     "0018_tearful_black_panther.sql", "0019_silky_drax.sql", "0020_giant_boom_boom.sql",
+    "0021_freezing_preak.sql", "0022_cheerful_sue_storm.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

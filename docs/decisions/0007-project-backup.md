@@ -20,6 +20,11 @@ R2 staging/new keys + D1 exact-replace saga и удаляет старые objec
 updated timestamp входят в точный subtree. Schema `2`–`4` остаются
 импортируемыми через deterministic metadata upgrade.
 
+Дополнение 2026-08-18: historical imported comments и их reconciliation
+outcomes повышают Project bundle `schemaVersion` до `9`. Schema `2`–`8`
+остаётся импортируемой как native-only comment state после проверки исходного
+checksum.
+
 ## Контекст
 
 Владельцу Project нужна доступная без application-admin роли страховка от
@@ -34,7 +39,8 @@ ADR-0004 для этого не подходит: он раскрывает со
    product API.
 2. Export создаёт versioned logical JSON bundle одного Project. Он включает сам
    Project, Tasks, Releases, project-scoped SavedViews, label assignments,
-   внутреннюю hierarchy/relations, native comments/reactions, provenance и
+   внутреннюю hierarchy/relations, native/historical comments,
+   reconciliation outcomes/reactions, provenance и
    snapshot используемых
    WorkflowStatuses/Labels. Users, UserIdentities, API credentials, hosted
    secrets, global SavedViews и данные других Projects не включаются.

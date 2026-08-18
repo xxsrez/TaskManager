@@ -108,8 +108,8 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   backlog Tasks, последние Tasks, Projects и их progress, Releases с Project
   context, SavedViews и верхнеуровневые ресурсы `Shared with me`.
 - Overview строится из того же server-authorized ACL-scoped snapshot. Он не
-  загружает task descriptions, labels, relations, native comments, imported
-  external context или admin aggregates и не вводит отдельный unscoped query.
+  загружает task descriptions, labels, relations, unified comments, import
+  provenance или admin aggregates и не вводит отдельный unscoped query.
 - Create actions показываются только там, где User может создать ресурс: Task
   и Release требуют редактируемый Project, а новый Project доступен
   авторизованному User.
@@ -194,12 +194,14 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - estimate и due date;
 - parent и subtasks;
 - relations: `blocks`, `related`, `duplicate_of`;
-- native comment threads, replies, reactions и resolved state;
+- unified comment threads: native discussions и импортированная история,
+  replies, reactions и resolved state;
 - native attachments с проверенным type/size/checksum и processing state;
 - created, updated, started, completed, canceled и archived timestamps.
-- для импортированной задачи — source provenance, включая read-only archive
-  исходных комментариев и ссылки на исходные attachments; этот archive отделён
-  от native comments и не получает write controls.
+- для импортированной задачи — source provenance, ссылки на исходные
+  attachments и reconciliation summary. Исходные комментарии мигрируются в
+  общую Activity как immutable historical comments, а не остаются отдельным
+  публичным archive.
 
 Assignee обязан быть владельцем Task либо пользователем с доступом к Task или
 её Project. Выбор пользователя без доступа отклоняется.
@@ -265,9 +267,9 @@ commands задают желаемое состояние идемпотентн
   только явным действием пользователя или Agent command.
 - Автоматическое закрытие parent по subtasks не входит в MVP.
 
-### 5.5 Native comments
+### 5.5 Comments и импортированная история
 
-- Любой User с доступом к Task читает её native comments. Создание, reply,
+- Любой User с доступом к Task читает её native и historical comments. Создание, reply,
   reaction и resolve/reopen требуют не ниже Editor; Viewer не выполняет ни одну
   comment mutation.
 - Author всегда выводится из server-verified current User. Client не может
@@ -285,6 +287,17 @@ commands задают желаемое состояние идемпотентн
 - Body хранится как ограниченный plain Markdown-like text. UI безопасно
   отрисовывает форматирование без raw HTML и разрешает ссылки только схем
   `http`, `https` и `mailto`.
+- Импортированный comment становится historical `Comment` той же Task с
+  snapshot имени автора и исходных timestamps/quote. Он не получает
+  `author_user_id`, не impersonates текущего User и сохраняет source identity.
+- Body, source identity, historical author/timestamps/quote и исходная
+  parent identity исторического comment неизменяемы. Editor+ может отвечать,
+  ставить reaction и resolve/reopen thread; edit/delete historical comment
+  запрещены всем ролям. Nested source replies нормализуются к одному root, но
+  исходный parent ID сохраняется.
+- Cutover и будущий Linear import дают каждому source row явный outcome
+  `migrated` или `exception`. Повторный импорт не дублирует Comment; counts,
+  backup/restore и lazy invalidation используют общий comment model.
 - Локальный draft изолирован ключом current User + Task + optional thread.
   Mentions, attachments именно к comment, notifications, subscriptions и общий
   activity feed не входят в этот срез.
@@ -391,7 +404,7 @@ commands задают желаемое состояние идемпотентн
   roles и application-admin capability сами по себе этого доступа не дают.
 - Export скачивает один versioned logical JSON bundle с Project, его Tasks,
   Releases, project-scoped SavedViews, labels, внутренней hierarchy/relations,
-  native comments/reactions, provenance и dependency snapshot используемых
+  native/historical comments, reactions, reconciliation outcomes, provenance и dependency snapshot используемых
   каталогов.
 - Bundle не содержит Users, identities, API credentials, глобальные views,
   чужие Projects или hosted configuration. Он привязан к исходным immutable
@@ -552,11 +565,11 @@ created/updated/started/completed/canceled dates и archived state.
 
 - Task Manager предоставляет agent API для workspace summary, Projects,
   Releases, compact task lists, одной полной Task, task create/update,
-  отдельных native comment threads и native Attachment metadata/binary.
+  unified native/historical comment threads и native Attachment metadata/binary.
 - List response не содержит task description, release notes, imported comments,
   native comment bodies, attachment metadata/bodies или полного provenance.
-  Imported archive, native comments и native attachments читаются отдельными
-  ACL-scoped запросами.
+  Unified comments, native attachments и import provenance читаются отдельными
+  ACL-scoped запросами; provenance не дублирует comment bodies.
 - Versioned HTTP API применяет те же server-side ownership/ACL rules и domain
   repository commands, что и product UI.
   `/api/bootstrap` остаётся внутренним UI snapshot и не является agent API.
@@ -687,8 +700,8 @@ created/updated/started/completed/canceled dates и archived state.
     выбранного release: ответы содержат identifiers, titles, statuses и
     небольшие metadata, но не descriptions, comment bodies или release notes.
 23. По canonical task reference загрузить одну Task с description, связями и
-    provenance summary; imported archive появляется только после отдельного
-    запроса. Недоступная Task возвращает тот же `not found`, что неизвестная.
+    provenance summary; comment bodies появляются только через unified comment
+    endpoint. Недоступная Task возвращает тот же `not found`, что неизвестная.
 24. Отозвать OAuth connection или API credential и Project grant: следующий API request
     немедленно теряет соответствующий доступ. Read-only credential не может
     вызвать task write или admin operation.
@@ -710,8 +723,11 @@ created/updated/started/completed/canceled dates и archived state.
 29. В Task Activity создать comment, повторить request с тем же idempotency key,
     ответить одним уровнем, поставить reaction, resolve/reopen, отредактировать
     с актуальной version и получить conflict со stale version. Viewer видит
-    thread, но все mutations получают отказ; imported archive остаётся отдельным
-    read-only provenance block. Те же операции доступны через Agent REST/MCP без
+    thread, но все mutations получают отказ. Импортированная история находится
+    в той же Activity с historical badge: её source facts и body нельзя
+    редактировать/удалить, но Editor+ отвечает, реагирует и resolve/reopen.
+    Malformed/ambiguous source row виден в reconciliation count без публикации
+    raw body через provenance. Те же операции доступны через Agent REST/MCP без
     user email и без comment bodies в task collections.
 30. Открыть одну account/workspace в двух sessions: создать, изменить,
     заархивировать и удалить Task, Project, Release и SavedView и увидеть

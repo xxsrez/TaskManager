@@ -4,6 +4,14 @@
 
 Дата: 2026-08-14
 
+Обновление 2026-08-18: утверждения ниже о separate read-only comment archive
+фиксируют состояние исходного production-переноса 2026-08-14. Current schema
+cutover `0022` мигрирует такие rows в unified historical comments и сохраняет
+`migrated`/`exception` outcomes; процедура описана в
+[runbook](../operations/imported-comments.md). Это обновление документа не
+означает production deploy: production migration по-прежнему требует отдельной
+явной команды.
+
 ## Результат
 
 Все 204 задачи workspace `Andrei Miasnikov` перенесены в owner-only production

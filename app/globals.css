@@ -688,13 +688,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .source-metadata a { color: var(--accent); }
 .source-metadata a:hover { text-decoration: underline; }
 .source-metadata code { overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
-.comment-archive { display: grid; gap: 8px; }
-.comment-archive article { display: grid; gap: 7px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
-.comment-archive article header { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; }
-.comment-archive article header b { color: var(--text-secondary); font-size: 11px; font-weight: 560; }
-.comment-archive article header small { margin-left: auto; }
-.comment-archive blockquote { margin: 0; padding: 5px 8px; border-left: 2px solid var(--border-strong); color: var(--muted); font-size: 11px; white-space: pre-wrap; }
-.comment-archive p { margin: 0; color: var(--text-secondary); line-height: 18px; white-space: pre-wrap; }
+.source-metadata > .source-reconciliation-warning { color: var(--danger); }
 .task-activity { gap: 14px; }
 .activity-header { display: flex; align-items: center; justify-content: space-between; }
 .activity-header > h2 { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--muted); font-size: 11px; font-weight: 560; text-transform: uppercase; letter-spacing: .04em; }
@@ -713,6 +707,8 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .comment-content > header { min-height: 26px; display: flex; align-items: center; gap: 7px; }
 .comment-content > header b { min-width: 0; overflow: hidden; font-size: 11px; font-weight: 570; text-overflow: ellipsis; white-space: nowrap; }
 .comment-content > header time, .comment-content > header small { color: var(--muted); font-size: 9px; }
+.historical-comment-badge { padding: 2px 5px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 11%, transparent); color: var(--accent) !important; white-space: nowrap; }
+.historical-comment-quote { margin: 3px 0 7px; padding: 5px 8px; border-left: 2px solid var(--border-strong); color: var(--muted); font-size: 11px; white-space: pre-wrap; }
 .comment-menu { position: relative; margin-left: auto; }
 .comment-menu > summary { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 5px; color: var(--muted); cursor: pointer; list-style: none; opacity: 0; }
 .comment-entry:hover .comment-menu > summary, .comment-menu[open] > summary, .comment-menu > summary:focus-visible { opacity: 1; background: var(--hover); }
