@@ -319,6 +319,9 @@ export function applyMutationResult(
     const replaced = new Set(result.taskIds);
     return {
       ...current,
+      tasks: current.tasks.map((task) =>
+        replaced.has(task.id) ? invalidateTaskActivity(task) : task,
+      ),
       labels: mergeUnique(result.labels, current.labels, (label) => label.id),
       taskLabels: [
         ...current.taskLabels.filter((item) => !replaced.has(item.taskId)),
@@ -345,6 +348,29 @@ export function applyMutationResult(
   };
 }
 
+export function nextTaskActivityInvalidationCursor(
+  retained: TaskRecord | undefined,
+  incoming: TaskRecord,
+): string | undefined {
+  if (
+    retained &&
+    (incoming.version !== retained.version || incoming.updatedAt !== retained.updatedAt)
+  ) {
+    return `local:${incoming.version}:${incoming.updatedAt}`;
+  }
+  return incoming.activityInvalidationCursor ?? retained?.activityInvalidationCursor;
+}
+
+function invalidateTaskActivity(
+  task: TaskRecord,
+  nonce = crypto.randomUUID(),
+): TaskRecord {
+  return {
+    ...task,
+    activityInvalidationCursor: `local:${task.version}:${task.updatedAt}:${nonce}`,
+  };
+}
+
 function mergeTaskMutation(
   retained: TaskRecord | undefined,
   incoming: TaskRecord,
@@ -368,8 +394,12 @@ function mergeTaskMutation(
   if (retained.commentInvalidationCursor !== undefined) {
     clientState.commentInvalidationCursor = retained.commentInvalidationCursor;
   }
-  if (retained.activityInvalidationCursor !== undefined) {
-    clientState.activityInvalidationCursor = retained.activityInvalidationCursor;
+  const activityInvalidationCursor = nextTaskActivityInvalidationCursor(
+    retained,
+    incoming,
+  );
+  if (activityInvalidationCursor !== undefined) {
+    clientState.activityInvalidationCursor = activityInvalidationCursor;
   }
   if (retained.attachmentInvalidationCursor !== undefined) {
     clientState.attachmentInvalidationCursor = retained.attachmentInvalidationCursor;
@@ -624,6 +654,10 @@ function mergeLoadedTask(
   incoming: TaskRecord,
 ): TaskRecord {
   if (retained && retained.version > incoming.version) return retained;
+  const activityInvalidationCursor = nextTaskActivityInvalidationCursor(
+    retained,
+    incoming,
+  );
   return {
     ...incoming,
     detailVersion: incoming.version,
@@ -634,8 +668,8 @@ function mergeLoadedTask(
     ...(retained?.commentInvalidationCursor !== undefined
       ? { commentInvalidationCursor: retained.commentInvalidationCursor }
       : {}),
-    ...(retained?.activityInvalidationCursor !== undefined
-      ? { activityInvalidationCursor: retained.activityInvalidationCursor }
+    ...(activityInvalidationCursor !== undefined
+      ? { activityInvalidationCursor }
       : {}),
     ...(retained?.externalSourceInvalidationCursor !== undefined
       ? {
@@ -1540,6 +1574,7 @@ export function TaskTracker({
         setTaskDetail((current) => current && replaced.has(current.task.id)
           ? {
               ...current,
+              task: invalidateTaskActivity(current.task),
               labels: value.labels.filter((label) =>
                 value.taskLabels.some((item) =>
                   item.taskId === current.task.id && item.labelId === label.id)),

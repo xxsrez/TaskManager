@@ -9,6 +9,7 @@ import {
   fetchTaskSnapshot,
   applyMutationResult,
   mergeDeferredSnapshot,
+  nextTaskActivityInvalidationCursor,
   mergeSearchTaskSummaries,
   pullRefreshDistance,
   reconcileTaskDetail,
@@ -122,6 +123,33 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+test("local Task changes invalidate an already loaded Activity projection", () => {
+  const retained = {
+    ...snapshot.tasks[0]!,
+    activityInvalidationCursor: "sync-1",
+  };
+
+  assert.equal(
+    nextTaskActivityInvalidationCursor(retained, {
+      ...retained,
+      version: retained.version + 1,
+      updatedAt: "2026-08-14T09:01:00.000Z",
+    }),
+    "local:2:2026-08-14T09:01:00.000Z",
+  );
+  assert.equal(
+    nextTaskActivityInvalidationCursor(retained, {
+      ...retained,
+      updatedAt: "2026-08-14T09:02:00.000Z",
+    }),
+    "local:1:2026-08-14T09:02:00.000Z",
+  );
+  assert.equal(
+    nextTaskActivityInvalidationCursor(retained, retained),
+    "sync-1",
+  );
+});
 
 test("Task move confirmation previews identity and requires explicit dependent effects", () => {
   const source = snapshot.projects[0]!;
@@ -399,7 +427,10 @@ test("a focused task mutation patches one record without replacing the snapshot"
   const updatedTask = { ...snapshot.tasks[0]!, title: "Updated", version: 2 };
   const result = applyMutationResult(snapshot, { task: updatedTask });
 
-  assert.equal(result.tasks[0], updatedTask);
+  assert.deepEqual(result.tasks[0], {
+    ...updatedTask,
+    activityInvalidationCursor: `local:2:${updatedTask.updatedAt}`,
+  });
   assert.equal(result.projects, snapshot.projects);
   assert.equal(result.releases, snapshot.releases);
 });
@@ -408,7 +439,10 @@ test("a bulk mutation patches only returned task records", () => {
   const updatedTask = { ...snapshot.tasks[0]!, priority: "high" as const, version: 2 };
   const result = applyMutationResult(snapshot, { taskUpdates: [updatedTask] });
 
-  assert.equal(result.tasks[0], updatedTask);
+  assert.deepEqual(result.tasks[0], {
+    ...updatedTask,
+    activityInvalidationCursor: `local:2:${updatedTask.updatedAt}`,
+  });
   assert.equal(result.projects, snapshot.projects);
   assert.equal(result.releases, snapshot.releases);
 });
