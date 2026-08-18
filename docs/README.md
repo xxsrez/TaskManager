@@ -52,6 +52,9 @@
     продуктовых заимствований и осознанных упрощений.
 22. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
+23. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+    — UAT mapping, backup, reconciliation, smoke и recovery boundary для
+    обязательных Project и Project-scoped identifiers.
 
 ## Статусы документов
 
@@ -113,4 +116,5 @@ Project, получает identifier из Project code/sequence, а прежни
 - `reference/` — стабильная справочная модель предметной области.
 - `decisions/` — принятые архитектурно значимые решения и их последствия.
 - `operations/` — проверяемые release, recovery и эксплуатационные процедуры.
-- `reports/` — датированные исследования; они не подменяют спецификацию.
+- `reports/` — датированные исследования и reconciliation reports; они не
+  подменяют спецификацию.
