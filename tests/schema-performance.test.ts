@@ -162,6 +162,52 @@ test("project-scoped identifier migration preserves legacy lookup and assigns st
   `), /NOT NULL/);
 });
 
+test("scoped SavedView grant migration revokes only active direct grants that no longer define access", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readdirSync(new URL("../drizzle", import.meta.url))
+    .filter((name) => name.endsWith(".sql") && name < "0025_revoke_scoped_view_grants.sql")
+    .sort();
+  for (const migration of migrations) database.exec(migrationSql(migration));
+  database.exec(`
+    INSERT INTO users (id, display_name, email)
+      VALUES
+      ('grant-owner', 'Owner', 'grant-owner@example.test'),
+      ('grant-recipient', 'Recipient', 'grant-recipient@example.test');
+    INSERT INTO projects
+      (id, public_id, owner_user_id, creator_user_id, name, task_code, status, version)
+      VALUES ('grant-project', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        'grant-owner', 'grant-owner', 'Grant Project', 'GP', 'active', 1);
+    INSERT INTO saved_views
+      (id, public_id, owner_user_id, name, scope_project_id, query_json, display_json, version)
+      VALUES
+      ('scoped-active', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'grant-owner',
+        'Scoped active', 'grant-project', '{}', '{}', 1),
+      ('scoped-revoked', 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', 'grant-owner',
+        'Scoped revoked', 'grant-project', '{}', '{}', 1),
+      ('global-active', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', 'grant-owner',
+        'Global active', NULL, '{}', '{}', 1);
+    INSERT INTO access_grants
+      (id, resource_type, resource_id, owner_user_id, grantee_user_id,
+       granted_by_user_id, permission, revoked_at)
+      VALUES
+      ('grant-scoped-active', 'saved_view', 'scoped-active', 'grant-owner',
+        'grant-recipient', 'grant-owner', 'editor', NULL),
+      ('grant-scoped-revoked', 'saved_view', 'scoped-revoked', 'grant-owner',
+        'grant-recipient', 'grant-owner', 'editor', '2026-01-01T00:00:00.000Z'),
+      ('grant-global-active', 'saved_view', 'global-active', 'grant-owner',
+        'grant-recipient', 'grant-owner', 'editor', NULL);
+  `);
+
+  database.exec(migrationSql("0025_revoke_scoped_view_grants.sql"));
+
+  const rows = database.prepare(
+    "SELECT id, revoked_at FROM access_grants ORDER BY id",
+  ).all();
+  assert.equal(rows.find((row) => row.id === "grant-scoped-active")?.revoked_at !== null, true);
+  assert.equal(rows.find((row) => row.id === "grant-scoped-revoked")?.revoked_at, "2026-01-01T00:00:00.000Z");
+  assert.equal(rows.find((row) => row.id === "grant-global-active")?.revoked_at, null);
+});
+
 test("project-scoped identifier migration preserves dependent rows in an atomic D1 batch", async () => {
   const harness = await createD1TestHarness({}, {
     migrationsBefore: "0018_tearful_black_panther.sql",
