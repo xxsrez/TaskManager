@@ -280,7 +280,8 @@ identifier строится из code Project и этого sequence. Прежн
 доступен для нескольких Tasks, API возвращает ambiguity и требует `public_id`.
 URL и API identity опираются на `public_id`; `id` остаётся ключом внутренних
 связей и идемпотентного импорта. Перенос выдаёт identifier целевого Project и
-сохраняет прежний как alias.
+сохраняет прежний как alias. Он не меняет `public_id`, content, comments,
+attachments, labels, relations или внутренние relation keys.
 
 ## Attachment
 
@@ -539,10 +540,14 @@ attachments также остаются import provenance.
    `release.project_id = task.project_id`.
 6. Create, import и restore Task без Project отклоняются; для legacy payload
    требуется явное Project mapping.
-7. Смена Project выполняется только явной атомарной операцией. Несовместимый
-   release либо отклоняется, либо в одной
-   подтверждённой операции очищает release; промежуточное неверное состояние не
-   сохраняется.
+7. Смена Project выполняется только явной атомарной операцией с актуальной Task
+   version и edit access к исходному и active target Project. Она резервирует
+   следующий непереиспользуемый target sequence, меняет Project/identifier,
+   сохраняет прежний identifier как alias и применяет согласованные
+   Release/Assignee changes в одной transaction. Несовместимые Release и
+   Assignee требуют явный replacement или `null`; hierarchy, archive, ACL,
+   conflict или collision откатывают всю операцию. Same-Project — no-op без
+   расхода sequence.
 8. Terminal timestamps выводятся из status category и обновляются в одной
    транзакции со status.
 9. Parent graph ацикличен; self-parent и self-relation запрещены. Relation

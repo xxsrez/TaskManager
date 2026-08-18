@@ -45,6 +45,7 @@ export type ProjectRecord = {
   startDate: string | null;
   targetDate: string | null;
   color: string;
+  archivedAt?: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;

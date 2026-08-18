@@ -28,6 +28,7 @@ import {
   taskRelationPresentations,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_MARKETPLACE_URL,
+  TaskMoveDialog,
   TaskTracker,
 } from "../components/task-tracker";
 import type { AppSnapshot } from "../lib/types";
@@ -116,6 +117,94 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+test("Task move confirmation previews identity and requires explicit dependent effects", () => {
+  const source = snapshot.projects[0]!;
+  const target = {
+    ...source,
+    id: "project-2",
+    publicId: "22222222-2222-4222-8222-222222222222",
+    name: "Mobile",
+    taskCode: "MD",
+    taskSequence: 226,
+  };
+  const assignee = {
+    id: "user-2",
+    displayName: "Source Member",
+    email: "member@example.test",
+    timezone: "UTC",
+  };
+  const task = {
+    ...snapshot.tasks[0]!,
+    releaseId: "release-source",
+    assigneeUserId: assignee.id,
+  };
+  const child = {
+    ...task,
+    id: "task-child",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    identifier: "TM-2",
+    sequenceNumber: 2,
+    title: "Child",
+    releaseId: null,
+    assigneeUserId: null,
+    parentTaskId: task.id,
+  };
+  const data: AppSnapshot = {
+    ...snapshot,
+    users: [assignee],
+    projects: [source, target],
+    tasks: [task, child],
+    releases: [{
+      id: "release-source",
+      publicId: "55555555-5555-4555-8555-555555555555",
+      projectId: source.id,
+      ownerUserId: source.ownerUserId,
+      creatorUserId: source.creatorUserId,
+      name: "Source 0.1",
+      description: "",
+      status: "planned",
+      targetDate: null,
+      releasedAt: null,
+      releaseNotes: "",
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+      accessRole: "owner",
+    }],
+    collaborators: [{
+      grantId: "grant-source-member",
+      resourceType: "project",
+      resourceId: source.id,
+      userId: assignee.id,
+      displayName: assignee.displayName,
+      email: assignee.email,
+      permission: "editor",
+    }],
+  };
+
+  const markup = renderToStaticMarkup(createElement(TaskMoveDialog, {
+    task,
+    sourceProject: source,
+    targetProject: target,
+    data,
+    subtasks: [child],
+    busy: false,
+    onClose: () => undefined,
+    onMove: async () => undefined,
+  }));
+
+  assert.match(markup, /Move task/);
+  assert.match(markup, /Task Manager/);
+  assert.match(markup, /Mobile/);
+  assert.match(markup, /TM-1/);
+  assert.match(markup, /MD-227 expected/);
+  assert.match(markup, /Choose how to replace Source 0.1/);
+  assert.match(markup, /Choose how to replace Source Member/);
+  assert.match(markup, /Detach or reparent 1 subtask/);
+  assert.match(markup, /final identifier is allocated only when the move commits/i);
+  assert.match(markup, /<button class="button primary" disabled="">Move task<\/button>/);
+});
 
 test("task relations are grouped by relative direction and resolved blockers move to Related", () => {
   const focused = { ...snapshot.tasks[0]!, projectId: "project-1" };

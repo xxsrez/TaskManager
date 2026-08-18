@@ -16,6 +16,7 @@ import {
   getSnapshot,
   getTaskDetail,
   grantAccess,
+  moveTask,
   revokeAccess,
   transferProjectOwnership,
   updateTask,
@@ -407,6 +408,74 @@ test("sync fan-out follows current project ACL without exposing unrelated change
   await revokeAccess(owner, grant.grantId);
   const revoked = await getWorkspaceSync(collaborator, beforeRevoke);
   assert.equal(revoked.resetRequired, true);
+});
+
+test("Task move sync removes the old audience and upserts one authoritative target identity", async () => {
+  const sourceOwner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-move-source-owner",
+    email: "sync-move-source-owner@example.test",
+  });
+  const targetOwner = await getOrCreateUser({
+    ...collaboratorActor,
+    providerAccountKey: "sync-move-target-owner",
+    email: "sync-move-target-owner@example.test",
+  });
+  const mover = await getOrCreateUser({
+    ...outsiderActor,
+    providerAccountKey: "sync-move-editor",
+    email: "sync-move-editor@example.test",
+  });
+  await createProject(sourceOwner, { name: "Sync move source", taskCode: "SX" });
+  await createProject(targetOwner, { name: "Sync move target", taskCode: "TX" });
+  const source = (await getSnapshot(sourceOwner)).projects.find(
+    (project) => project.name === "Sync move source",
+  )!;
+  const target = (await getSnapshot(targetOwner)).projects.find(
+    (project) => project.name === "Sync move target",
+  )!;
+  await grantAccess(targetOwner, {
+    resourceType: "project",
+    resourceId: target.id,
+    email: mover.email,
+    permission: "editor",
+  });
+  await grantAccess(sourceOwner, {
+    resourceType: "project",
+    resourceId: source.id,
+    email: mover.email,
+    permission: "editor",
+  });
+  await createTask(sourceOwner, {
+    title: "Move through sync",
+    projectId: source.id,
+  });
+  const sourceBefore = await getSnapshot(sourceOwner);
+  const targetBefore = await getSnapshot(targetOwner);
+  const task = sourceBefore.tasks.find((item) => item.title === "Move through sync")!;
+
+  const moved = await moveTask(mover, task.id, {
+    version: task.version,
+    targetProjectId: target.id,
+    releaseId: null,
+    assigneeUserId: null,
+  });
+  const [sourceChanges, targetChanges] = await Promise.all([
+    getWorkspaceSync(sourceOwner, sourceBefore.syncCursor!),
+    getWorkspaceSync(targetOwner, targetBefore.syncCursor!),
+  ]);
+
+  assert.deepEqual(sourceChanges.changes.tasks.remove, [task.id]);
+  assert.equal(
+    sourceChanges.changes.tasks.upsert.some((item) => item.id === task.id),
+    false,
+  );
+  const targetTask = targetChanges.changes.tasks.upsert.find(
+    (item) => item.id === task.id,
+  );
+  assert.equal(targetTask?.projectId, target.id);
+  assert.equal(targetTask?.identifier, moved.identifier);
+  assert.equal(targetTask?.version, task.version + 1);
 });
 
 test("moving a scoped view removes it from the previous project audience", async () => {

@@ -36,6 +36,7 @@ import {
   listAgentTasks,
   listAgentTaskAttachments,
   listAgentTaskComments,
+  moveAgentTask,
   resolveAgentTaskThread,
   setAgentCommentReaction,
   updateAgentTask,
@@ -280,6 +281,30 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, ...input }) =>
       writeToolCall(context, () => updateAgentTask(context.user, taskRef, defined(input))),
+  );
+
+  server.registerTool(
+    "move_task",
+    {
+      title: "Move task",
+      description:
+        "Atomically moves a task to another editable active Project. First resolve the task and target Project, then pass canonical refs and the current task version. If the current Release or assignee cannot remain valid, explicitly pass releaseRef or assigneeEmail as null, or choose a compatible value. The returned identifier is authoritative; the preview does not reserve a number.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical current or historical Task ref."),
+        version: z.number().int().positive(),
+        targetProjectRef: reference("Canonical target Project ref."),
+        releaseRef: reference("Canonical Release ref in the target Project.")
+          .nullable()
+          .optional(),
+        assigneeEmail: z.string().email().max(320).nullable().optional().describe(
+          "Verified email of a member of the target Project, or null to clear.",
+        ),
+      }),
+      annotations: writeAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, ...input }) =>
+      writeToolCall(context, () => moveAgentTask(context.user, taskRef, defined(input))),
   );
 
   server.registerTool(

@@ -22,7 +22,7 @@ import {
   type CreateAttachmentInput,
 } from "./attachments";
 import { NotFoundError, PermissionError, ValidationError } from "./domain";
-import { createTask, updateTask } from "./repository";
+import { createTask, moveTask, updateTask } from "./repository";
 import {
   createTaskRelation,
   deleteTaskRelation,
@@ -667,6 +667,62 @@ export async function updateAgentTask(
       : null;
   }
   await updateTask(currentUser, String(task.id), translated);
+  return getAgentTaskDetail(currentUser, String(task.public_id));
+}
+
+export async function moveAgentTask(
+  currentUser: UserRecord,
+  reference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, [
+    "version",
+    "targetProjectRef",
+    "releaseRef",
+    "assigneeEmail",
+  ]);
+  if (!input.targetProjectRef) {
+    throw new ValidationError("targetProjectRef is required");
+  }
+  const task = await loadAccessibleTaskRow(currentUser.id, reference);
+  const targetProject = await loadAccessibleProjectRow(
+    currentUser.id,
+    String(input.targetProjectRef),
+  );
+  const translated: Record<string, unknown> = {
+    version: input.version,
+    targetProjectId: String(targetProject.id),
+  };
+  if (Object.hasOwn(input, "releaseRef")) {
+    translated.releaseId = input.releaseRef
+      ? String(
+          (await loadAccessibleReleaseRow(
+            currentUser.id,
+            String(input.releaseRef),
+          )).id,
+        )
+      : null;
+  }
+  if (Object.hasOwn(input, "assigneeEmail")) {
+    if (input.assigneeEmail === null) {
+      translated.assigneeUserId = null;
+    } else if (typeof input.assigneeEmail === "string" && input.assigneeEmail) {
+      const matches = await getD1()
+        .prepare("SELECT id FROM users WHERE lower(email) = ? ORDER BY id LIMIT 2")
+        .bind(input.assigneeEmail.trim().toLowerCase())
+        .all<{ id: string }>();
+      if (matches.results.length === 0) {
+        throw new NotFoundError("Assignee not found");
+      }
+      if (matches.results.length > 1) {
+        throw new ValidationError("More than one account uses that email");
+      }
+      translated.assigneeUserId = matches.results[0]!.id;
+    } else {
+      throw new ValidationError("assigneeEmail is invalid");
+    }
+  }
+  await moveTask(currentUser, String(task.id), translated);
   return getAgentTaskDetail(currentUser, String(task.public_id));
 }
 

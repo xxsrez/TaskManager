@@ -1240,6 +1240,248 @@ export async function updateTask(
   return loadAccessibleTask(currentUser.id, taskId);
 }
 
+export async function moveTask(
+  currentUser: UserRecord,
+  taskId: string,
+  input: Record<string, unknown>,
+) {
+  const task = await loadAccessibleTask(currentUser.id, taskId);
+  requireContentEdit(task.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== task.version) {
+    throw new ConflictError("Task was changed in another session");
+  }
+  if (!input.targetProjectId) {
+    throw new ValidationError("Target Project is required");
+  }
+
+  const sourceProject = await loadAccessibleProject(currentUser.id, task.projectId);
+  requireContentEdit(sourceProject.accessRole);
+  const targetProject = await loadAccessibleProject(
+    currentUser.id,
+    String(input.targetProjectId),
+  );
+  requireContentEdit(targetProject.accessRole);
+  if (targetProject.id === sourceProject.id) return task;
+  if (targetProject.archivedAt) {
+    throw new ValidationError("Tasks cannot be moved to an archived Project");
+  }
+  if (targetProject.status === "canceled") {
+    throw new ValidationError("Tasks cannot be moved to a canceled Project");
+  }
+
+  let releaseId: string | null;
+  if (Object.hasOwn(input, "releaseId")) {
+    const release = input.releaseId
+      ? await loadAccessibleRelease(currentUser.id, String(input.releaseId))
+      : null;
+    if (release) requireContentEdit(release.accessRole);
+    assertReleaseProject(targetProject.id, release?.projectId ?? null);
+    releaseId = release?.id ?? null;
+  } else if (task.releaseId) {
+    throw new ValidationError(
+      "Choose a Release in the target Project or explicitly clear the current Release",
+    );
+  } else {
+    releaseId = null;
+  }
+
+  const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
+    ? requestedAssigneeUserId(input.assigneeUserId)
+    : task.assigneeUserId;
+  try {
+    await assertTaskAssigneeAccess(
+      assigneeUserId,
+      task.ownerUserId,
+      targetProject.id,
+      task.id,
+    );
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      throw new ValidationError(
+        "Choose an assignee with access to the target Project or explicitly clear the assignee",
+      );
+    }
+    throw error;
+  }
+
+  const hierarchy = await getD1()
+    .prepare(
+      `SELECT
+         EXISTS (SELECT 1 FROM tasks child WHERE child.parent_task_id = ?) AS has_children`,
+    )
+    .bind(task.id)
+    .first<{ has_children: number }>();
+  if (task.parentTaskId || Number(hierarchy?.has_children ?? 0) === 1) {
+    throw new ValidationError(
+      "Detach or reparent this Task hierarchy before moving it to another Project",
+    );
+  }
+
+  const now = new Date().toISOString();
+  const db = getD1();
+  const guardSql = `
+    SELECT 1
+    FROM tasks moving
+    JOIN projects source ON source.id = moving.project_id
+    JOIN projects target ON target.id = ?
+    WHERE moving.id = ? AND moving.version = ? AND moving.project_id = ?
+      AND target.archived_at IS NULL AND target.status <> 'canceled'
+      AND (
+        source.owner_user_id = ? OR EXISTS (
+          SELECT 1 FROM access_grants source_grant
+          WHERE source_grant.resource_type = 'project'
+            AND source_grant.resource_id = source.id
+            AND source_grant.grantee_user_id = ?
+            AND source_grant.revoked_at IS NULL
+            AND source_grant.permission IN ('editor', 'manager', 'full_access')
+        )
+      )
+      AND (
+        target.owner_user_id = ? OR EXISTS (
+          SELECT 1 FROM access_grants target_grant
+          WHERE target_grant.resource_type = 'project'
+            AND target_grant.resource_id = target.id
+            AND target_grant.grantee_user_id = ?
+            AND target_grant.revoked_at IS NULL
+            AND target_grant.permission IN ('editor', 'manager', 'full_access')
+        )
+      )
+      AND moving.parent_task_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks child WHERE child.parent_task_id = moving.id
+      )
+      AND (
+        ? IS NULL OR EXISTS (
+          SELECT 1 FROM releases selected_release
+          WHERE selected_release.id = ?
+            AND selected_release.project_id = target.id
+        )
+      )
+      AND (
+        ? IS NULL OR EXISTS (
+          SELECT 1 FROM users assignee
+          WHERE assignee.id = ? AND (
+            target.owner_user_id = assignee.id OR EXISTS (
+              SELECT 1 FROM access_grants assignee_grant
+              WHERE assignee_grant.resource_type = 'project'
+                AND assignee_grant.resource_id = target.id
+                AND assignee_grant.grantee_user_id = assignee.id
+                AND assignee_grant.revoked_at IS NULL
+            )
+          )
+        )
+      )`;
+  const guardBindings = [
+    targetProject.id,
+    task.id,
+    expectedVersion,
+    sourceProject.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    releaseId,
+    releaseId,
+    assigneeUserId,
+    assigneeUserId,
+  ];
+  const assertionId = `move_assert_${crypto.randomUUID()}`;
+  const aliasId = `alias_${crypto.randomUUID()}`;
+
+  try {
+    const results = await db.batch([
+      db
+        .prepare(
+          `WITH move_guard AS (${guardSql})
+           UPDATE projects SET
+             task_sequence = MAX(
+               task_sequence + 1,
+               (SELECT COALESCE(MAX(sequence_number), 0) + 1
+                FROM tasks WHERE project_id = projects.id)
+             ),
+             code_locked_at = COALESCE(code_locked_at, ?),
+             version = version + 1,
+             updated_at = ?
+           WHERE id = ? AND EXISTS (SELECT 1 FROM move_guard)`,
+        )
+        .bind(...guardBindings, now, now, targetProject.id),
+      moveBatchAssertion(db, assertionId, "allocator"),
+      db
+        .prepare(
+          `WITH move_guard AS (${guardSql})
+           UPDATE tasks SET
+             project_id = ?,
+             sequence_number = (
+               SELECT task_sequence FROM projects WHERE id = ?
+             ),
+             identifier = (
+               SELECT task_code || '-' || task_sequence
+               FROM projects WHERE id = ?
+             ),
+             release_id = ?,
+             assignee_user_id = ?,
+             version = version + 1,
+             updated_at = ?
+           WHERE id = ? AND version = ?
+             AND EXISTS (SELECT 1 FROM move_guard)`,
+        )
+        .bind(
+          ...guardBindings,
+          targetProject.id,
+          targetProject.id,
+          targetProject.id,
+          releaseId,
+          assigneeUserId,
+          now,
+          task.id,
+          expectedVersion,
+        ),
+      moveBatchAssertion(db, `${assertionId}_task`, "task"),
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO task_identifier_aliases
+             (id, task_id, identifier, created_at)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .bind(aliasId, task.id, task.identifier, now),
+    ]);
+    if (
+      (results[0]?.meta.changes ?? 0) < 1 ||
+      (results[2]?.meta.changes ?? 0) < 1
+    ) {
+      throw new ConflictError("Task move could not be committed atomically");
+    }
+  } catch (error) {
+    if (error instanceof ConflictError) throw error;
+    if (isConstraintError(error)) {
+      throw new ConflictError(
+        "Task, Project access, or target sequence changed before the move committed",
+      );
+    }
+    throw error;
+  }
+
+  return loadAccessibleTask(currentUser.id, task.id);
+}
+
+function moveBatchAssertion(
+  db: D1Database,
+  assertionId: string,
+  step: string,
+) {
+  return db
+    .prepare(
+      `INSERT INTO task_identifier_aliases (id, task_id, identifier)
+       SELECT ?, NULL, ? WHERE changes() = 0`,
+    )
+    .bind(assertionId, `move-assert-${step}`);
+}
+
+function isConstraintError(error: unknown) {
+  return error instanceof Error && /constraint|unique|not null/i.test(error.message);
+}
+
 export async function bulkUpdateTasks(
   currentUser: UserRecord,
   input: Record<string, unknown>,
@@ -2042,6 +2284,7 @@ function mapProject(row: DbRow): ProjectRecord {
     startDate: nullableString(row.start_date),
     targetDate: nullableString(row.target_date),
     color: String(row.color),
+    archivedAt: nullableString(row.archived_at),
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),

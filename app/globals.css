@@ -326,6 +326,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .modal { width: min(440px, calc(100vw - 28px)); border: 1px solid var(--border-strong); border-radius: 10px; background: var(--raised); box-shadow: var(--shadow); animation: modal-in 150ms ease-out; }
 .modal, .details-panel { position: relative; z-index: 1; }
 .modal.composer-modal { width: min(680px, calc(100vw - 28px)); }
+.modal.task-move-modal { width: min(520px, calc(100vw - 28px)); }
 @keyframes modal-in { from { opacity: 0; transform: translateY(5px) scale(.988); } }
 .modal-title-row, .dialog-header { height: 46px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); }
 .modal-title-row .muted { color: var(--muted); font-size: 12px; }
@@ -363,6 +364,12 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .view-summary span { padding: 3px 7px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 10px; }
 .role-guide { display: grid; gap: 4px; padding: 0 18px 12px; color: var(--muted); font-size: 10px; }
 .role-guide b { color: var(--text-secondary); font-weight: 600; }
+.task-move-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; padding: 18px; }
+.task-move-summary > span { min-width: 0; display: grid; gap: 3px; }
+.task-move-summary small { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.task-move-summary b { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.task-move-summary code { color: var(--accent); font-size: 10px; }
+.task-move-effects { padding-top: 8px; }
 .share-input { display: flex; gap: 7px; padding: 4px 18px 16px; }
 .share-input input { flex: 1; }
 .share-input select { width: 116px; }

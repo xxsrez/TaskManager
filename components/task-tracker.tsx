@@ -2134,7 +2134,7 @@ export function TaskTracker({
         <BulkBar count={selected.size} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes })} onMove={async (changes) => mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={createTaskForComposer} busy={busy} />}
       {dialog === "project" && <ProjectDialog onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
@@ -2566,7 +2566,7 @@ function RotateComposerIcon() {
   return <span aria-hidden="true">↻</span>;
 }
 
-function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
+function TaskDetails({ task, data, onClose, onOpenTask, onSave, onMove, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onMove: (input: Record<string, unknown>) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [editingDescription, setEditingDescription] = useState(false);
@@ -2582,6 +2582,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const cancelTitleSave = useRef(false);
   const [autoRebaseFailed, setAutoRebaseFailed] = useState(false);
+  const [moveTargetProjectId, setMoveTargetProjectId] = useState<string | null>(null);
   const source = useTaskExternalSource(task);
   const hasVersionConflict = taskNeedsDetailRefresh(task);
   const syncMode = taskDraftSyncMode(hasVersionConflict, dirty);
@@ -2643,6 +2644,14 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
       (!status.archivedAt || status.id === task.statusId),
   );
   const currentProject = data.projects.find((project) => project.id === task.projectId);
+  const moveTargets = data.projects.filter(
+    (project) => project.id !== task.projectId &&
+      project.status !== "canceled" &&
+      canEditContent(project.accessRole),
+  );
+  const moveTargetProject = moveTargetProjectId
+    ? moveTargets.find((project) => project.id === moveTargetProjectId)
+    : undefined;
   const assignees = taskAssigneeOptions(data, task.projectId, task.id);
   const taskMap = new Map(data.tasks.map((item) => [item.id, item]));
   const labels = data.taskLabels
@@ -2779,7 +2788,7 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
             <PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} disabled={hasVersionConflict} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} disabled={hasVersionConflict} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow>
             <PropertyRow label="Assignee" icon={<UsersRound size={14} />}><select value={task.assigneeUserId ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ assigneeUserId: event.target.value || null })}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</select></PropertyRow>
-            <PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId} disabled title="Use Move Task to change Project"><option value={task.projectId}>{currentProject?.taskCode} · {currentProject?.name}</option></select></PropertyRow>
+            <PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId} disabled={hasVersionConflict || busy || moveTargets.length === 0} title={moveTargets.length ? "Move this Task to another Project" : "No other editable active Project"} onChange={(event) => setMoveTargetProjectId(event.target.value)}><option value={task.projectId}>{currentProject?.taskCode} · {currentProject?.name}</option>{moveTargets.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={hasVersionConflict || !task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow>
             <PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => { const nextEstimate = event.target.value; setDirty((current) => ({ ...current, estimate: taskDraftValueChanged(nextEstimate, task.estimate?.toString() ?? "") })); setEstimate(nextEstimate); }} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (!hasVersionConflict && value !== task.estimate) void saveDraftField("estimate", { estimate: value }); }} /></PropertyRow>
@@ -2801,7 +2810,86 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onRebase, onShar
           <button className="button danger ghost archive-action" disabled={hasVersionConflict} onClick={() => { void onSave({ archived: !task.archivedAt }); onClose(); }}><Archive size={14} />{task.archivedAt ? "Restore task" : "Archive task"}</button>
         </div>
       </aside>
+      {moveTargetProject && currentProject && (
+        <TaskMoveDialog
+          task={task}
+          sourceProject={currentProject}
+          targetProject={moveTargetProject}
+          data={data}
+          parent={parent}
+          subtasks={subtasks}
+          busy={busy}
+          onClose={() => setMoveTargetProjectId(null)}
+          onMove={async (input) => {
+            const moved = await onMove(input);
+            if (moved === true) setMoveTargetProjectId(null);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+export function TaskMoveDialog({ task, sourceProject, targetProject, data, parent, subtasks, busy, onClose, onMove }: { task: TaskRecord; sourceProject: ProjectRecord; targetProject: ProjectRecord; data: AppSnapshot; parent?: TaskRecord; subtasks: TaskRecord[]; busy: boolean; onClose: () => void; onMove: (input: Record<string, unknown>) => Promise<void> }) {
+  const targetReleases = data.releases.filter(
+    (release) => release.projectId === targetProject.id && canEditContent(release.accessRole),
+  );
+  const targetAssignees = taskAssigneeOptions(data, targetProject.id, task.id);
+  const currentRelease = data.releases.find((release) => release.id === task.releaseId);
+  const currentAssignee = [...data.users, data.user].find(
+    (user) => user.id === task.assigneeUserId,
+  );
+  const currentAssigneeRemains = task.assigneeUserId === null || targetAssignees.some(
+    (assignee) => assignee.id === task.assigneeUserId,
+  );
+  const [releaseId, setReleaseId] = useState(task.releaseId ? "__required__" : "");
+  const [assigneeUserId, setAssigneeUserId] = useState(
+    currentAssigneeRemains ? (task.assigneeUserId ?? "") : "__required__",
+  );
+  const hierarchyBlocked = Boolean(parent || subtasks.length);
+  const choicesIncomplete = releaseId === "__required__" || assigneeUserId === "__required__";
+  const expectedIdentifier = `${targetProject.taskCode}-${targetProject.taskSequence + 1}`;
+
+  return (
+    <Modal onClose={() => !busy && onClose()} className="task-move-modal" ariaLabel={`Move ${task.identifier}`}>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        if (hierarchyBlocked || choicesIncomplete) return;
+        void onMove({
+          targetProjectId: targetProject.id,
+          releaseId: releaseId || null,
+          assigneeUserId: assigneeUserId || null,
+        });
+      }}>
+        <DialogHeader title="Move task" icon={<FolderKanban size={17} />} onClose={() => !busy && onClose()} />
+        <div className="task-move-summary">
+          <span><small>From</small><b>{sourceProject.name}</b><code>{task.identifier}</code></span>
+          <ArrowDown size={15} aria-hidden="true" />
+          <span><small>To</small><b>{targetProject.name}</b><code>{expectedIdentifier} expected</code></span>
+        </div>
+        <p className="dialog-copy">The final identifier is allocated only when the move commits. The response is authoritative; the old identifier remains searchable.</p>
+        <div className="form-stack task-move-effects">
+          <label>
+            <span>Release effect</span>
+            <select value={releaseId} onChange={(event) => setReleaseId(event.target.value)}>
+              {task.releaseId && <option value="__required__" disabled>Choose how to replace {currentRelease?.name ?? "the current Release"}</option>}
+              <option value="">Clear Release</option>
+              {targetReleases.map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Assignee effect</span>
+            <select value={assigneeUserId} onChange={(event) => setAssigneeUserId(event.target.value)}>
+              {!currentAssigneeRemains && <option value="__required__" disabled>Choose how to replace {currentAssignee?.displayName ?? "the current assignee"}</option>}
+              <option value="">No assignee</option>
+              {targetAssignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}
+            </select>
+          </label>
+        </div>
+        {hierarchyBlocked && <p className="dialog-error" role="alert">Detach or reparent {parent ? "the parent" : ""}{parent && subtasks.length ? " and " : ""}{subtasks.length ? `${subtasks.length} subtask${subtasks.length === 1 ? "" : "s"}` : ""} before moving this Task.</p>}
+        <DialogFooter busy={busy} label="Move task" disabled={hierarchyBlocked || choicesIncomplete} />
+      </form>
+    </Modal>
   );
 }
 

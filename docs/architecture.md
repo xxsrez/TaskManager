@@ -277,6 +277,24 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    `move_to_project_and_release` с подтверждением.
 4. Ни один промежуточный commit не нарушает инвариант.
 
+### Перенос Task между Projects
+
+1. UI, Web route, Agent REST и MCP вызывают отдельную move command; generic
+   Task patch не меняет Project.
+2. Repository до записи проверяет Task version, edit access к Task и обоим
+   Projects, active target, explicit Release/Assignee effect и отсутствие
+   parent/subtasks. Relations не участвуют в ACL и могут остаться cross-project.
+3. Одна D1 batch transaction обновляет monotonic allocator и version target
+   Project, переносит Task с новым sequence/identifier, повышает Task version и
+   `INSERT OR IGNORE` сохраняет прежний identifier как alias. Guard predicates
+   повторно проверяют ACL и invariants внутри transaction; constraint или
+   guard failure откатывает allocator вместе с Task.
+4. Project и Task triggers записывают compact sync events в той же transaction.
+   Прежний audience получает remove после current ACL projection, новый — один
+   coalesced Task upsert с согласованными Project и identifier.
+5. Same-Project command возвращает текущую Task до allocator. Commit response,
+   а не UI preview, задаёт authoritative identifier.
+
 ## API-принципы
 
 - Commands выражают доменное намерение, когда обычный PATCH может создать

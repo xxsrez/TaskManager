@@ -165,6 +165,18 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Project sequence монотонна, поэтому identifier не переиспользуется после
   архивирования, удаления или переноса Task. При переносе Task получает новый
   identifier целевого Project, а прежний сохраняется как alias.
+- Перенос — отдельная атомарная command, а не обычный Task patch. Она требует
+  актуальную Task version и edit access к Task, исходному и целевому Projects;
+  archived/canceled target отклоняется. Same-Project selection является no-op и
+  не расходует sequence.
+- Несовместимый Release и Assignee без доступа к target нельзя очистить молча:
+  command содержит явный compatible replacement либо `null`. Task с parent или
+  subtask сначала detach/reparent; обычные relations могут остаться
+  cross-project и не расширяют ACL.
+- В одной D1 transaction allocator целевого Project, новый
+  `project_id`/sequence/identifier, Release/Assignee и alias прежнего identifier
+  либо применяются вместе, либо полностью откатываются. `public_id`, content,
+  comments, attachments, labels, relations и внутренние keys не меняются.
 - Контекст создания предварительно заполняет metadata: проект, релиз, статус
   либо значение текущей группы.
 - Каждая Task требует Project и наследует его owner даже при создании

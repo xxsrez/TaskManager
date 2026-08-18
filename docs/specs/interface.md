@@ -408,6 +408,14 @@ List повторяет плотную grouped-list модель Linear.
   недоступный reference имеют локальный placeholder без публичного URL.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
+- Изменение Project открывает confirmation, а не отправляет generic patch.
+  Диалог показывает исходные Project/identifier, target Project и ожидаемый
+  `<target-code>-<next-sequence>`, явно отмечая preview как нерезервирующий.
+  Отдельные controls требуют выбрать compatible Release либо clear и сохранить
+  доступного target assignee либо явно change/clear. Parent/subtasks блокируют
+  submit с инструкцией detach/reparent. После commit details/list/board/search
+  используют authoritative identifier из server response; stale/conflict не
+  оставляет оптимистически показанный перенос.
 - Timestamps muted и доступны в нижней metadata section.
 - Relations располагаются отдельной секцией с группами `Blocked by`,
   `Blocking`, `Related`, `Duplicate of` и `Duplicates`. Terminal blocker

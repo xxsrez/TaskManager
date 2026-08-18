@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { configureActorResolverForTests } from "../lib/auth";
 import { AgentApiError, parseAgentTaskListQuery } from "../lib/agent-api-contract";
-import { getAgentTaskDetail, listAgentTasks } from "../lib/agent-api-repository";
+import {
+  getAgentTaskDetail,
+  listAgentTasks,
+  moveAgentTask,
+} from "../lib/agent-api-repository";
 import { ConflictError, PermissionError, ValidationError } from "../lib/domain";
 import {
   bulkUpdateTasks,
@@ -14,6 +18,7 @@ import {
   getTask,
   getTaskDetail,
   grantAccess,
+  moveTask,
   revokeAccess,
   searchTaskIds,
   searchTaskSummaries,
@@ -23,6 +28,7 @@ import {
 } from "../lib/repository";
 import { GET as searchTasksRoute, POST as createTaskRoute } from "../app/api/tasks/route";
 import { GET as getTaskRoute, PATCH as updateTaskRoute } from "../app/api/tasks/[id]/route";
+import { POST as moveTaskRoute } from "../app/api/tasks/[id]/move/route";
 import { createD1TestHarness } from "./helpers/d1";
 
 const ownerActor = {
@@ -191,6 +197,287 @@ test("generic Task patches cannot bypass the explicit Project move boundary", as
   task = (await getSnapshot(owner)).tasks.find((item) => item.id === task.id)!;
   assert.equal(task.projectId, source.id);
   assert.equal(task.releaseId, null);
+});
+
+test("explicit Task moves allocate atomically, preserve identity, and enforce dependent effects", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const collaborator = await getOrCreateUser(collaboratorActor);
+  const outsider = await getOrCreateUser(outsiderActor);
+  await createProject(owner, { name: "Move source project", taskCode: "MS" });
+  await createProject(owner, { name: "Move target project", taskCode: "MT" });
+  await createProject(owner, { name: "Move archived target", taskCode: "MA" });
+  const projects = (await getSnapshot(owner)).projects;
+  const source = projects.find((project) => project.name === "Move source project")!;
+  const target = projects.find((project) => project.name === "Move target project")!;
+  const archivedTarget = projects.find((project) => project.name === "Move archived target")!;
+  await database.prepare("UPDATE projects SET archived_at = ? WHERE id = ?")
+    .bind("2026-08-18T00:00:00.000Z", archivedTarget.id)
+    .run();
+  await createRelease(owner, { name: "Move source release", projectId: source.id });
+  await createRelease(owner, { name: "Move target release", projectId: target.id });
+  const releases = (await getSnapshot(owner)).releases;
+  const sourceRelease = releases.find((release) => release.name === "Move source release")!;
+  const targetRelease = releases.find((release) => release.name === "Move target release")!;
+
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: source.id,
+    email: collaborator.email,
+    permission: "editor",
+  });
+  await createTask(owner, {
+    title: "Existing target sequence",
+    projectId: target.id,
+  });
+  await createTask(owner, {
+    title: "Atomic move subject",
+    description: "Keep description and identity",
+    projectId: source.id,
+    releaseId: sourceRelease.id,
+    assigneeUserId: collaborator.id,
+  });
+  let task = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Atomic move subject",
+  )!;
+  const oldIdentifier = task.identifier;
+  const publicId = task.publicId;
+  await database.prepare(
+    `INSERT INTO comments
+       (id, task_id, author_user_id, body, idempotency_key)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).bind("comment-move-preserve", task.id, owner.id, "Keep comment", "move-preserve").run();
+
+  const initialTargetSequence = Number((await database.prepare(
+    "SELECT task_sequence FROM projects WHERE id = ?",
+  ).bind(target.id).first<{ task_sequence: number }>())!.task_sequence);
+  await assert.rejects(
+    moveTask(owner, task.id, {
+      version: task.version,
+      targetProjectId: target.id,
+    }),
+    /explicitly clear the current Release/,
+  );
+  assert.equal(
+    Number((await database.prepare("SELECT task_sequence FROM projects WHERE id = ?")
+      .bind(target.id).first<{ task_sequence: number }>())!.task_sequence),
+    initialTargetSequence,
+  );
+  await assert.rejects(
+    moveTask(owner, task.id, {
+      version: task.version,
+      targetProjectId: target.id,
+      releaseId: targetRelease.id,
+    }),
+    /explicitly clear the assignee/,
+  );
+
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: target.id,
+    email: collaborator.email,
+    permission: "viewer",
+  });
+  task = await moveTask(owner, task.id, {
+    version: task.version,
+    targetProjectId: target.id,
+    releaseId: targetRelease.id,
+  });
+  assert.equal(task.projectId, target.id);
+  assert.equal(task.identifier, "MT-2");
+  assert.equal(task.sequenceNumber, 2);
+  assert.equal(task.publicId, publicId);
+  assert.equal(task.title, "Atomic move subject");
+  assert.equal(task.description, "Keep description and identity");
+  assert.equal(task.releaseId, targetRelease.id);
+  assert.equal(task.assigneeUserId, collaborator.id);
+  assert.equal(
+    (await database.prepare("SELECT COUNT(*) AS count FROM comments WHERE task_id = ?")
+      .bind(task.id).first<{ count: number }>())!.count,
+    1,
+  );
+  assert.equal((await searchTaskIds(owner, oldIdentifier))[0], task.id);
+  assert.equal((await getAgentTaskDetail(owner, oldIdentifier)).ref, publicId);
+  const alias = await database.prepare(
+    "SELECT identifier FROM task_identifier_aliases WHERE task_id = ? AND identifier = ?",
+  ).bind(task.id, oldIdentifier).first<{ identifier: string }>();
+  assert.equal(alias?.identifier, oldIdentifier);
+
+  const sameProjectSequence = Number((await database.prepare(
+    "SELECT task_sequence FROM projects WHERE id = ?",
+  ).bind(target.id).first<{ task_sequence: number }>())!.task_sequence);
+  const sameProject = await moveTask(owner, task.id, {
+    version: task.version,
+    targetProjectId: target.id,
+  });
+  assert.deepEqual(sameProject, task);
+  assert.equal(
+    Number((await database.prepare("SELECT task_sequence FROM projects WHERE id = ?")
+      .bind(target.id).first<{ task_sequence: number }>())!.task_sequence),
+    sameProjectSequence,
+  );
+  await assert.rejects(
+    moveTask(owner, task.id, {
+      version: task.version - 1,
+      targetProjectId: source.id,
+      releaseId: null,
+      assigneeUserId: null,
+    }),
+    ConflictError,
+  );
+  await assert.rejects(
+    moveTask(outsider, task.id, {
+      version: task.version,
+      targetProjectId: source.id,
+      releaseId: null,
+      assigneeUserId: null,
+    }),
+    /not found/i,
+  );
+
+  await createTask(owner, { title: "Move hierarchy child", projectId: target.id });
+  const child = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Move hierarchy child",
+  )!;
+  await database.prepare("UPDATE tasks SET parent_task_id = ? WHERE id = ?")
+    .bind(task.id, child.id)
+    .run();
+  await assert.rejects(
+    moveTask(owner, task.id, {
+      version: task.version,
+      targetProjectId: source.id,
+      releaseId: null,
+      assigneeUserId: null,
+    }),
+    /Detach or reparent/,
+  );
+  await database.prepare("UPDATE tasks SET parent_task_id = NULL WHERE id = ?")
+    .bind(child.id)
+    .run();
+  await database.prepare(
+    `INSERT INTO task_relations
+       (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key)
+     VALUES (?, ?, ?, 'related', ?, ?)`,
+  ).bind("relation-move-preserve", task.id, child.id, owner.id, "move-preserve").run();
+  await database.prepare(
+    "INSERT INTO labels (id, owner_user_id, name) VALUES (?, ?, ?)",
+  ).bind("label-move-preserve", owner.id, "Move preserved").run();
+  await database.prepare(
+    "INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)",
+  ).bind(task.id, "label-move-preserve").run();
+  task = await moveTask(owner, task.id, {
+    version: task.version,
+    targetProjectId: source.id,
+    releaseId: null,
+    assigneeUserId: null,
+  });
+  assert.equal(task.projectId, source.id);
+  assert.equal(task.releaseId, null);
+  assert.equal(task.assigneeUserId, null);
+  assert.equal(
+    (await database.prepare("SELECT COUNT(*) AS count FROM task_relations WHERE id = ?")
+      .bind("relation-move-preserve").first<{ count: number }>())!.count,
+    1,
+  );
+  assert.equal(
+    (await database.prepare("SELECT COUNT(*) AS count FROM task_labels WHERE task_id = ?")
+      .bind(task.id).first<{ count: number }>())!.count,
+    1,
+  );
+
+  await createTask(owner, { title: "Archived target subject", projectId: source.id });
+  const archivedSubject = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Archived target subject",
+  )!;
+  await assert.rejects(
+    moveTask(owner, archivedSubject.id, {
+      version: archivedSubject.version,
+      targetProjectId: archivedTarget.id,
+      releaseId: null,
+    }),
+    /archived Project/,
+  );
+
+  configureActorResolverForTests(async () => ownerActor);
+  const response = await moveTaskRoute(
+    new Request(`https://example.test/api/tasks/${archivedSubject.id}/move`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: archivedSubject.version,
+        targetProjectId: target.id,
+        releaseId: null,
+      }),
+    }),
+    { params: Promise.resolve({ id: archivedSubject.id }) },
+  );
+  assert.equal(response.status, 200);
+  const movedByRoute = await response.json() as { task: { publicId: string; identifier: string } };
+  assert.equal(movedByRoute.task.publicId, archivedSubject.publicId);
+  assert.match(movedByRoute.task.identifier, /^MT-\d+$/);
+
+  await createTask(owner, { title: "Forced rollback subject", projectId: source.id });
+  const rollbackSubject = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Forced rollback subject",
+  )!;
+  const sequenceBeforeRollback = Number((await database.prepare(
+    "SELECT task_sequence FROM projects WHERE id = ?",
+  ).bind(target.id).first<{ task_sequence: number }>())!.task_sequence);
+  await database.prepare(
+    `CREATE TRIGGER force_move_alias_rollback
+     BEFORE INSERT ON task_identifier_aliases
+     WHEN NEW.task_id IS NOT NULL
+     BEGIN
+       SELECT RAISE(ABORT, 'forced move rollback');
+     END`,
+  ).run();
+  await assert.rejects(moveTask(owner, rollbackSubject.id, {
+    version: rollbackSubject.version,
+    targetProjectId: target.id,
+    releaseId: null,
+  }));
+  await database.prepare("DROP TRIGGER force_move_alias_rollback").run();
+  const afterRollback = await getTask(owner, rollbackSubject.id);
+  assert.equal(afterRollback.projectId, source.id);
+  assert.equal(afterRollback.identifier, rollbackSubject.identifier);
+  assert.equal(afterRollback.version, rollbackSubject.version);
+  assert.equal(
+    Number((await database.prepare("SELECT task_sequence FROM projects WHERE id = ?")
+      .bind(target.id).first<{ task_sequence: number }>())!.task_sequence),
+    sequenceBeforeRollback,
+  );
+
+  await createTask(owner, { title: "Agent move subject", projectId: source.id });
+  const agentSubject = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Agent move subject",
+  )!;
+  const agentMoved = await moveAgentTask(owner, agentSubject.publicId, {
+    version: agentSubject.version,
+    targetProjectRef: target.publicId,
+    releaseRef: null,
+  });
+  assert.equal(agentMoved.ref, agentSubject.publicId);
+  assert.ok(agentMoved.project);
+  assert.equal(agentMoved.project.ref, target.publicId);
+
+  const concurrentIds: string[] = [];
+  for (let index = 0; index < 6; index += 1) {
+    const created = await createTask(owner, {
+      title: `Concurrent move ${index}`,
+      projectId: source.id,
+    });
+    concurrentIds.push(created.id);
+  }
+  const concurrentTasks = (await getSnapshot(owner)).tasks.filter(
+    (item) => concurrentIds.includes(item.id),
+  );
+  const concurrentlyMoved = await Promise.all(concurrentTasks.map((item) =>
+    moveTask(owner, item.id, {
+      version: item.version,
+      targetProjectId: target.id,
+      releaseId: null,
+    })));
+  assert.equal(new Set(concurrentlyMoved.map((item) => item.identifier)).size, 6);
+  assert.equal(new Set(concurrentlyMoved.map((item) => item.sequenceNumber)).size, 6);
 });
 
 test("status drag mutation preserves unrelated fields, lifecycle rules, ACL, and conflicts", async () => {

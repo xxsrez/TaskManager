@@ -201,12 +201,27 @@ export const agentApiOpenApi = {
       },
       patch: {
         operationId: "updateTask",
-        summary: "Update or move a task with optimistic version checking",
+        summary: "Update a task without changing its Project",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter()],
         requestBody: jsonRequest("#/components/schemas/TaskUpdate"),
         responses: {
           "200": envelopeResponse("Updated task", {
+            $ref: "#/components/schemas/TaskDetail",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/tasks/{ref}/move": {
+      post: {
+        operationId: "moveTask",
+        summary: "Atomically move a task to another Project and allocate its identifier",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [referenceParameter()],
+        requestBody: jsonRequest("#/components/schemas/TaskMove"),
+        responses: {
+          "200": envelopeResponse("Moved task with its authoritative identifier", {
             $ref: "#/components/schemas/TaskDetail",
           }),
           ...errorResponses,
@@ -719,6 +734,21 @@ export const agentApiOpenApi = {
           dueDate: { type: ["string", "null"], format: "date" },
           rank: { type: "number" },
           archived: { type: "boolean" },
+        },
+        additionalProperties: false,
+      },
+      TaskMove: {
+        type: "object",
+        required: ["version", "targetProjectRef"],
+        properties: {
+          version: { type: "integer", minimum: 1 },
+          targetProjectRef: { type: "string", minLength: 1 },
+          releaseRef: { type: ["string", "null"] },
+          assigneeEmail: {
+            type: ["string", "null"],
+            format: "email",
+            maxLength: 320,
+          },
         },
         additionalProperties: false,
       },

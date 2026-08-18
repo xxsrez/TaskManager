@@ -22,6 +22,7 @@ test("tools/list responses expose top-level OAuth security schemes", async () =>
           { name: "list_tasks", inputSchema: { type: "object" } },
           { name: "create_task", inputSchema: { type: "object" } },
           { name: "update_task", inputSchema: { type: "object" } },
+          { name: "move_task", inputSchema: { type: "object" } },
           { name: "add_task_comment", inputSchema: { type: "object" } },
         ],
       },
@@ -40,6 +41,9 @@ test("tools/list responses expose top-level OAuth security schemes", async () =>
     { type: "oauth2", scopes: ["api:write"] },
   ]);
   assert.deepEqual(body.result.tools[3]?.securitySchemes, [
+    { type: "oauth2", scopes: ["api:write"] },
+  ]);
+  assert.deepEqual(body.result.tools[4]?.securitySchemes, [
     { type: "oauth2", scopes: ["api:write"] },
   ]);
 });
@@ -241,9 +245,20 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     "create_task_relation",
     "update_task_relation",
     "delete_task_relation",
+    "move_task",
   ]) {
     assert.ok(listBody.result.tools.some((tool) => tool.name === name), name);
   }
+  const moveTool = listBody.result.tools.find(
+    (tool) => tool.name === "move_task",
+  ) as { inputSchema?: { required?: string[]; properties?: Record<string, unknown> } } | undefined;
+  assert.deepEqual(moveTool?.inputSchema?.required, [
+    "taskRef",
+    "version",
+    "targetProjectRef",
+  ]);
+  assert.ok(moveTool?.inputSchema?.properties?.releaseRef);
+  assert.ok(moveTool?.inputSchema?.properties?.assigneeEmail);
   const uploadTool = listBody.result.tools.find(
     (tool) => tool.name === "upload_task_attachment",
   ) as {

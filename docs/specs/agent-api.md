@@ -158,6 +158,7 @@ restore атомарно отзывает все authentication capabilities, ч
 | `POST /tasks` | `api:write` | Создать Task и вернуть `TaskDetail` |
 | `GET /tasks/{ref}` | `api:read` | Один `TaskDetail` |
 | `PATCH /tasks/{ref}` | `api:write` | Изменить Task с optimistic version |
+| `POST /tasks/{ref}/move` | `api:write` | Атомарно перенести Task и вернуть authoritative identifier |
 | `POST /tasks/{ref}/relations` | `api:write` | Создать relation идемпотентно |
 | `PATCH /tasks/{ref}/relations/{relationRef}` | `api:write` | Изменить type/direction с relation version |
 | `DELETE /tasks/{ref}/relations/{relationRef}` | `api:write` | Удалить relation с relation version |
@@ -300,6 +301,16 @@ canonical `projectRef`; release не заменяет явный Project.
 `description`, `statusRef`, `priority`, `projectRef`, `releaseRef`,
 `estimate`, `dueDate`, `rank`, `archived`. Generic patch не очищает и не меняет
 Project; отдельный атомарный move contract меняет Project и identifier вместе.
+
+`POST /tasks/{ref}/move` требует `version` и canonical `targetProjectRef`.
+Optional `releaseRef` и write-only `assigneeEmail` принимают compatible value
+либо явный `null`; если текущие значения несовместимы, отсутствие поля является
+validation error. Server проверяет edit access к обеим сторонам, active target
+и hierarchy, затем в одной transaction резервирует target sequence, меняет
+Project/identifier, записывает alias и применяет dependent changes. Same-Project
+возвращает неизменённую Task. Ответный `TaskDetail.identifier` authoritative;
+preview номера не является reservation. MCP tool `move_task` вызывает тот же
+command service и использует те же canonical refs/version.
 
 `description` может содержать native raster reference только в формате
 `![alt](attachment:v1:<public-ref> "optional caption")`. Сначала image должен
