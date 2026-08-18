@@ -307,19 +307,24 @@ release notes. Project/Release detail возвращают `workflowStatuses`, �
 ## 7. Task commands
 
 `POST /tasks` принимает `title`, `description`, `statusRef`, `priority`,
-`projectRef`, `releaseRef`, `estimate`, `dueDate`. Обязательны `title` и
+`projectRef`, `releaseRef`, `estimate`, `dueDate` и optional
+`confirmReleasedComposition`. Обязательны `title` и
 canonical `projectRef`; release не заменяет явный Project.
 Несовместимые project/release и status другого owner scope отклоняются до записи.
 
 `PATCH /tasks/{ref}` требует актуальный `version` и принимает `title`,
 `description`, `statusRef`, `priority`, `projectRef`, `releaseRef`,
-`estimate`, `dueDate`, `rank`, `archived`. Generic patch не очищает и не меняет
+`estimate`, `dueDate`, `rank`, `archived`, `confirmReleasedComposition`.
+Generic patch не очищает и не меняет
 Project; отдельный атомарный move contract меняет Project и identifier вместе.
 
 `POST /tasks/{ref}/move` требует `version` и canonical `targetProjectRef`.
 Optional `releaseRef` и write-only `assigneeEmail` принимают compatible value
 либо явный `null`; если текущие значения несовместимы, отсутствие поля является
-validation error. Server проверяет edit access к обеим сторонам, active target
+validation error. Если операция добавляет Task в выпущенный Release либо
+удаляет её оттуда, caller обязан явно передать
+`confirmReleasedComposition=true`; тот же флаг доступен create/subtask
+contracts и MCP schemas. Server проверяет edit access к обеим сторонам, active target
 и hierarchy, затем в одной transaction резервирует target sequence, меняет
 Project/identifier, записывает alias и применяет dependent changes. Same-Project
 возвращает неизменённую Task. Ответный `TaskDetail.identifier` authoritative;

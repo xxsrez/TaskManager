@@ -19,6 +19,8 @@ import {
   PriorityIcon,
   ProjectDialog,
   ProjectOverview,
+  ReleaseDialog,
+  ReleaseOverview,
   resolveArchiveBulkAction,
   runSingleFlight,
   shouldTriggerPullRefresh,
@@ -1904,4 +1906,50 @@ test("Project edit dialog exposes every lifecycle field and reversible archive",
   assert.match(markup, /readOnly=""/);
   assert.match(markup, /Restore project/);
   assert.match(markup, /Markdown description/);
+});
+
+test("Release overview and edit dialog expose native lifecycle metadata", () => {
+  const project = snapshot.projects[0]!;
+  const release = {
+    id: "release-1",
+    publicId: "22222222-2222-4222-8222-222222222222",
+    projectId: project.id,
+    ownerUserId: snapshot.user.id,
+    creatorUserId: snapshot.user.id,
+    name: "1.0",
+    description: "## Outcome\n\nNative release scope.",
+    status: "released" as const,
+    targetDate: "2026-09-01",
+    releasedAt: now,
+    releaseNotes: "## Changes\n\nPublished notes.",
+    version: 2,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const overview = renderToStaticMarkup(createElement(ReleaseOverview, {
+    release,
+    project,
+    tasks: snapshot.tasks,
+    statuses: new Map(snapshot.statuses.map((status) => [status.id, status])),
+    onEdit: () => undefined,
+  }));
+  assert.match(overview, /release-overview/);
+  assert.match(overview, /Released/);
+  assert.match(overview, /Release notes/);
+  assert.match(overview, /Published notes/);
+
+  const dialog = renderToStaticMarkup(createElement(ReleaseDialog, {
+    release,
+    projects: [project],
+    initialProjectId: project.id,
+    openTaskCount: 1,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+    busy: false,
+  }));
+  for (const name of ["name", "projectId", "status", "targetDate", "description", "releaseNotes"]) {
+    assert.match(dialog, new RegExp(`name="${name}"`));
+  }
+  assert.match(dialog, /Save changes/);
 });

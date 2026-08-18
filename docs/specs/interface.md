@@ -548,11 +548,17 @@ List повторяет плотную grouped-list модель Linear.
   progress, target/released date и task count.
 - Release details содержит description, release notes, status/dates, progress и
   общий task list/board в release scope.
+- `Edit release` использует единый create/edit dialog для name/version,
+  Markdown description, status, target date и release notes. Project в edit
+  read-only. Переход в `released` с открытыми Tasks показывает count и required
+  checkbox; уход из `released` предупреждает об очистке server timestamp.
 - Заголовок release surface и metadata используют единое полное имя
   `<project name> <release name>`; длинное имя сокращается визуально, сохраняя
   полный текст доступным и не вытесняя actions.
 - Перевод в `released` и изменение выпущенного состава используют explicit
-  confirmation, как требует MVP.
+  confirmation, как требует MVP. Добавление/удаление Task через details,
+  composer, drag-and-drop или Project move использует одно и то же предупреждение
+  и не отправляет confirm flag до подтверждения User.
 
 ## 10. Views, filters и display options
 

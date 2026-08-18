@@ -368,6 +368,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .project-form-stack .read-only-control { color: var(--muted); cursor: not-allowed; }
 .project-terminal-warning { grid-template-columns: 18px minmax(0, 1fr); align-items: start; padding: 10px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--danger) 7%, transparent); color: var(--text-secondary) !important; line-height: 17px; }
 .project-terminal-warning input { width: 16px; height: 16px; margin-top: 1px; }
+.release-transition-note { margin: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); color: var(--muted); font-size: 10px; line-height: 16px; }
 .project-dialog-footer { min-height: 54px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 14px; border-top: 1px solid var(--border); }
 .project-dialog-footer > div { display: flex; gap: 7px; }
 .inline-note, .dialog-copy { margin: 0; padding: 0 18px 12px; color: var(--muted); font-size: 11px; }
@@ -805,12 +806,15 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .project-overview.archived { border-style: dashed; }
 .project-overview-heading { min-width: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: start; gap: 11px; }
 .project-overview-icon { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 9px; }
+.release-overview-icon { background: color-mix(in srgb, var(--accent) 13%, var(--raised)); color: var(--accent); }
 .project-overview-heading h2 { margin: 1px 0 0; font-size: 17px; font-weight: 590; }
 .project-overview-heading p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
 .project-code { color: var(--accent); font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .08em; }
 .project-overview-actions { display: flex; align-items: center; gap: 6px; }
 .project-overview-metadata { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 10px; }
 .project-overview-metadata b { color: var(--text-secondary); font-weight: 560; }
+.release-notes { display: grid; gap: 7px; padding-top: 11px; border-top: 1px solid var(--border); }
+.release-notes h3 { margin: 0; color: var(--muted); font-size: 10px; font-weight: 620; text-transform: uppercase; letter-spacing: .05em; }
 .project-description-markdown { max-height: 112px; padding-top: 10px; overflow: auto; border-top: 1px solid var(--border); color: var(--text-secondary); font-size: 11px; line-height: 17px; }
 .project-description-markdown > :first-child { margin-top: 0; }
 .project-description-markdown > :last-child { margin-bottom: 0; }

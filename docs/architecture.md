@@ -333,6 +333,25 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    version, lifecycle, icon/color, lead и releases; отдельный remote mutation
    потребует нового документированного OAuth scope.
 
+### Release lifecycle
+
+1. Browser `PATCH /api/releases/{id}` вызывает versioned repository command для
+   name/version, Markdown description, status, target date и release notes;
+   Project identity и inherited ACL не меняются.
+2. Первый переход в `released` считает открытые Tasks и без
+   `confirmOpenTasks` отклоняется. Atomic UPDATE повторяет version, current
+   Project Editor+ ACL и open-Task predicate, назначает server `released_at` и
+   не меняет Task statuses. Reopen/cancel очищает timestamp; metadata edit уже
+   выпущенного Release сохраняет его.
+3. Любая Task mutation, меняющая membership выпущенного Release, требует
+   `confirmReleasedComposition`. Repository проверяет current и target Release;
+   Task update и Project move повторяют released-status guard в SQL, поэтому
+   concurrent lifecycle transition не создаёт скрытую смену состава.
+4. Release update trigger публикует compact upsert в общий sync journal; sidebar,
+   qualified names, list, filters и открытый overview принимают один
+   authoritative record без reload. Agent Project/Release detail остаётся
+   read-only и возвращает актуальные lifecycle fields/version.
+
 ## API-принципы
 
 - Commands выражают доменное намерение, когда обычный PATCH может создать
@@ -591,7 +610,8 @@ relations, saved-view query/display и полный provider metadata в
 - Manual rank сложен при параллельных перемещениях; version conflict должен быть
   предусмотрен до оптимистичного DnD.
 - Одновременная редактируемость released scope ослабляет доверие к истории;
-  безопасный первый вариант — запрещать её.
+  explicit confirmation защищает от скрытой правки, но полноценный audit log
+  состава остаётся отдельной будущей capability.
 - Одна забытая unscoped query может раскрыть чужие данные; owner/ACL scope
   должен быть частью repository API, schema indexes и integration tests.
 - Admin query намеренно cross-user и поэтому должен оставаться отдельным,

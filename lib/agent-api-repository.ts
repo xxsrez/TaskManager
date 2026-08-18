@@ -608,6 +608,7 @@ export async function createAgentTask(
     "priority",
     "projectRef",
     "releaseRef",
+    "confirmReleasedComposition",
     "estimate",
     "dueDate",
   ]);
@@ -648,6 +649,7 @@ export async function updateAgentTask(
     "priority",
     "projectRef",
     "releaseRef",
+    "confirmReleasedComposition",
     "estimate",
     "dueDate",
     "rank",
@@ -697,6 +699,7 @@ export async function moveAgentTask(
     "version",
     "targetProjectRef",
     "releaseRef",
+    "confirmReleasedComposition",
     "assigneeEmail",
   ]);
   if (!input.targetProjectRef) {
@@ -720,6 +723,9 @@ export async function moveAgentTask(
           )).id,
         )
       : null;
+  }
+  if (input.confirmReleasedComposition === true) {
+    translated.confirmReleasedComposition = true;
   }
   if (Object.hasOwn(input, "assigneeEmail")) {
     if (input.assigneeEmail === null) {
@@ -778,6 +784,7 @@ export async function createAgentSubtask(
     "statusRef",
     "priority",
     "releaseRef",
+    "confirmReleasedComposition",
     "estimate",
     "dueDate",
   ]);

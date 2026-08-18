@@ -38,6 +38,7 @@ import type {
   ProjectRecord,
   ProjectStatus,
   ReleaseRecord,
+  ReleaseStatus,
   SavedViewRecord,
   StatusCategory,
   TaskLabelAssignment,
@@ -1040,6 +1041,7 @@ export async function createTask(
     : null;
   if (release) requireContentEdit(release.accessRole);
   assertReleaseProject(project.id, release?.projectId ?? null);
+  assertReleasedCompositionChange(null, release, input);
   const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
     ? requestedAssigneeUserId(input.assigneeUserId)
     : currentUser.id;
@@ -1160,6 +1162,7 @@ export async function createSubtask(
     : null;
   if (release) requireContentEdit(release.accessRole);
   assertReleaseProject(project.id, release?.projectId ?? null);
+  assertReleasedCompositionChange(null, release, input);
   const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
     ? requestedAssigneeUserId(input.assigneeUserId)
     : currentUser.id;
@@ -1452,13 +1455,18 @@ export async function updateTask(
   }
 
   let releaseId = task.releaseId;
+  let selectedRelease: ReleaseRecord | null = null;
   if (Object.hasOwn(input, "releaseId")) {
-    const release = input.releaseId
+    selectedRelease = input.releaseId
       ? await loadAccessibleRelease(currentUser.id, String(input.releaseId))
       : null;
-    if (release) requireContentEdit(release.accessRole);
-    assertReleaseProject(projectId, release?.projectId ?? null);
-    releaseId = release?.id ?? null;
+    if (selectedRelease) requireContentEdit(selectedRelease.accessRole);
+    assertReleaseProject(projectId, selectedRelease?.projectId ?? null);
+    const currentRelease = task.releaseId
+      ? await loadAccessibleRelease(currentUser.id, task.releaseId)
+      : null;
+    assertReleasedCompositionChange(currentRelease, selectedRelease, input);
+    releaseId = selectedRelease?.id ?? null;
   }
 
   const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
@@ -1532,6 +1540,13 @@ export async function updateTask(
                AND ag.permission IN ('editor', 'full_access')
            )
          ))
+       )
+       AND (
+         ? = 1 OR release_id IS ? OR NOT EXISTS (
+           SELECT 1 FROM releases locked_release
+           WHERE locked_release.id IN (tasks.release_id, ?)
+             AND locked_release.status = 'released'
+         )
        )`,
     )
     .bind(
@@ -1557,6 +1572,9 @@ export async function updateTask(
       currentUser.id,
       currentUser.id,
       currentUser.id,
+      input.confirmReleasedComposition === true ? 1 : 0,
+      releaseId,
+      releaseId,
     )
     .run();
   if ((result.meta.changes ?? 0) < 1) {
@@ -1595,14 +1613,18 @@ export async function moveTask(
     throw new ValidationError("Tasks cannot be moved to a canceled Project");
   }
 
+  const currentRelease = task.releaseId
+    ? await loadAccessibleRelease(currentUser.id, task.releaseId)
+    : null;
   let releaseId: string | null;
+  let selectedRelease: ReleaseRecord | null = null;
   if (Object.hasOwn(input, "releaseId")) {
-    const release = input.releaseId
+    selectedRelease = input.releaseId
       ? await loadAccessibleRelease(currentUser.id, String(input.releaseId))
       : null;
-    if (release) requireContentEdit(release.accessRole);
-    assertReleaseProject(targetProject.id, release?.projectId ?? null);
-    releaseId = release?.id ?? null;
+    if (selectedRelease) requireContentEdit(selectedRelease.accessRole);
+    assertReleaseProject(targetProject.id, selectedRelease?.projectId ?? null);
+    releaseId = selectedRelease?.id ?? null;
   } else if (task.releaseId) {
     throw new ValidationError(
       "Choose a Release in the target Project or explicitly clear the current Release",
@@ -1610,6 +1632,7 @@ export async function moveTask(
   } else {
     releaseId = null;
   }
+  assertReleasedCompositionChange(currentRelease, selectedRelease, input);
 
   const assigneeUserId = Object.hasOwn(input, "assigneeUserId")
     ? requestedAssigneeUserId(input.assigneeUserId)
@@ -1696,6 +1719,13 @@ export async function moveTask(
             )
           )
         )
+      )
+      AND (
+        ? = 1 OR NOT EXISTS (
+          SELECT 1 FROM releases locked_release
+          WHERE locked_release.id IN (moving.release_id, ?)
+            AND locked_release.status = 'released'
+        )
       )`;
   const guardBindings = [
     targetProject.id,
@@ -1710,6 +1740,8 @@ export async function moveTask(
     releaseId,
     assigneeUserId,
     assigneeUserId,
+    input.confirmReleasedComposition === true ? 1 : 0,
+    releaseId,
   ];
   const assertionId = `move_assert_${crypto.randomUUID()}`;
   const aliasId = `alias_${crypto.randomUUID()}`;
@@ -2493,35 +2525,131 @@ export async function updateProject(
 export async function createRelease(
   currentUser: UserRecord,
   input: Record<string, unknown>,
-) {
+): Promise<ReleaseRecord> {
   if (!input.projectId) throw new ValidationError("Project is required");
   const project = await loadAccessibleProject(
     currentUser.id,
     String(input.projectId),
   );
   requireContentEdit(project.accessRole);
+  if (project.archivedAt || project.status === "canceled") {
+    throw new ValidationError("Releases require an active Project");
+  }
   const now = new Date().toISOString();
+  const id = `release_${crypto.randomUUID()}`;
+  const status = releaseStatus(input.status ?? "planned");
   await getD1()
     .prepare(
       `INSERT INTO releases
         (id, public_id, project_id, owner_user_id, creator_user_id, name, description,
-         status, target_date, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         status, target_date, released_at, release_notes, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
-      `release_${crypto.randomUUID()}`,
+      id,
       crypto.randomUUID(),
       project.id,
       project.ownerUserId,
       currentUser.id,
       requireTitle(input.name),
       optionalText(input.description),
-      "planned",
+      status,
       optionalDate(input.targetDate),
+      status === "released" ? now : null,
+      optionalText(input.releaseNotes),
       now,
       now,
     )
     .run();
+  return loadAccessibleRelease(currentUser.id, id);
+}
+
+export async function updateRelease(
+  currentUser: UserRecord,
+  releaseId: string,
+  input: Record<string, unknown>,
+): Promise<ReleaseRecord> {
+  const release = await loadAccessibleRelease(currentUser.id, releaseId);
+  requireContentEdit(release.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== release.version) {
+    throw new ConflictError("Release was changed in another session");
+  }
+
+  const name = Object.hasOwn(input, "name")
+    ? requireTitle(input.name)
+    : release.name;
+  const description = Object.hasOwn(input, "description")
+    ? optionalText(input.description)
+    : release.description;
+  const status = Object.hasOwn(input, "status")
+    ? releaseStatus(input.status)
+    : release.status;
+  const targetDate = Object.hasOwn(input, "targetDate")
+    ? optionalDate(input.targetDate)
+    : release.targetDate;
+  const releaseNotes = Object.hasOwn(input, "releaseNotes")
+    ? optionalText(input.releaseNotes)
+    : release.releaseNotes;
+  const enteringReleased = status === "released" && release.status !== "released";
+  if (enteringReleased && input.confirmOpenTasks !== true) {
+    const open = await getD1().prepare(
+      `SELECT COUNT(*) AS count
+       FROM tasks t JOIN workflow_statuses s ON s.id = t.status_id
+       WHERE t.release_id = ? AND t.archived_at IS NULL
+         AND s.category NOT IN ('completed', 'canceled')`,
+    ).bind(release.id).first<{ count: number }>();
+    if (Number(open?.count ?? 0) > 0) {
+      throw new ValidationError("Confirm the terminal transition while the Release has open Tasks");
+    }
+  }
+
+  const now = new Date().toISOString();
+  const releasedAt = status === "released"
+    ? release.releasedAt ?? now
+    : null;
+  const confirmedOpenTasks = input.confirmOpenTasks === true ? 1 : 0;
+  const result = await getD1().prepare(
+    `UPDATE releases SET
+       name = ?, description = ?, status = ?, target_date = ?, released_at = ?,
+       release_notes = ?, version = version + 1, updated_at = ?
+     WHERE id = ? AND version = ?
+       AND (
+         ? = 0 OR ? = 1 OR status = 'released' OR NOT EXISTS (
+           SELECT 1 FROM tasks t JOIN workflow_statuses s ON s.id = t.status_id
+           WHERE t.release_id = releases.id AND t.archived_at IS NULL
+             AND s.category NOT IN ('completed', 'canceled')
+         )
+       )
+       AND EXISTS (
+         SELECT 1 FROM projects p WHERE p.id = releases.project_id AND (
+           p.owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               AND ag.permission IN ('editor', 'manager', 'full_access')
+           )
+         )
+       )`,
+  ).bind(
+    name,
+    description,
+    status,
+    targetDate,
+    releasedAt,
+    releaseNotes,
+    now,
+    release.id,
+    expectedVersion,
+    enteringReleased ? 1 : 0,
+    confirmedOpenTasks,
+    currentUser.id,
+    currentUser.id,
+  ).run();
+  if ((result.meta.changes ?? 0) < 1) {
+    throw new ConflictError("Release access, open Tasks, or version changed before the update committed");
+  }
+  return loadAccessibleRelease(currentUser.id, release.id);
 }
 
 export async function createSavedView(
@@ -2924,6 +3052,20 @@ async function loadAccessibleView(userId: string, viewId: string) {
 function requireContentEdit(role: AccessRole) {
   if (!canEditContent(role)) {
     throw new PermissionError("Editor access is required");
+  }
+}
+
+function assertReleasedCompositionChange(
+  currentRelease: ReleaseRecord | null,
+  nextRelease: ReleaseRecord | null,
+  input: Record<string, unknown>,
+) {
+  if (currentRelease?.id === nextRelease?.id) return;
+  if (
+    (currentRelease?.status === "released" || nextRelease?.status === "released")
+    && input.confirmReleasedComposition !== true
+  ) {
+    throw new ValidationError("Confirm changing the composition of a released Release");
   }
 }
 
@@ -3409,6 +3551,18 @@ function projectStatus(value: unknown): ProjectStatus {
     && value !== "canceled"
   ) {
     throw new ValidationError("Unknown Project status");
+  }
+  return value;
+}
+
+function releaseStatus(value: unknown): ReleaseStatus {
+  if (
+    value !== "planned"
+    && value !== "active"
+    && value !== "released"
+    && value !== "canceled"
+  ) {
+    throw new ValidationError("Unknown Release status");
   }
   return value;
 }

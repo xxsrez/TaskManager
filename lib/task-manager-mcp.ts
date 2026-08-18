@@ -69,6 +69,9 @@ const taskFields = {
   priority: z.enum(["none", "low", "medium", "high", "urgent"]).optional(),
   projectRef: z.string().min(1).max(200).optional(),
   releaseRef: z.string().min(1).max(200).nullable().optional(),
+  confirmReleasedComposition: z.boolean().optional().describe(
+    "Explicitly confirms adding to or removing from a released Release.",
+  ),
   estimate: z.number().finite().nonnegative().nullable().optional(),
   dueDate: z.string().nullable().optional().describe("ISO 8601 calendar date or null."),
 };
@@ -315,6 +318,9 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
         releaseRef: reference("Canonical Release ref in the target Project.")
           .nullable()
           .optional(),
+        confirmReleasedComposition: z.boolean().optional().describe(
+          "Explicitly confirms removing from or adding to a released Release.",
+        ),
         assigneeEmail: z.string().email().max(320).nullable().optional().describe(
           "Verified email of a member of the target Project, or null to clear.",
         ),
@@ -365,6 +371,9 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
         releaseRef: reference("Canonical Release ref in the same Project.")
           .nullable()
           .optional(),
+        confirmReleasedComposition: z.boolean().optional().describe(
+          "Explicitly confirms adding the subtask to a released Release.",
+        ),
         estimate: z.number().finite().nonnegative().nullable().optional(),
         dueDate: z.string().nullable().optional(),
       }),

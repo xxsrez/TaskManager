@@ -331,4 +331,7 @@ test("Project lifecycle surfaces remain bounded and touchable on mobile", () => 
   );
   assert.match(taskTracker, /Locked after.*allocated Task number/);
   assert.match(taskTracker, /Confirm the terminal transition/);
+  assert.match(declarations(".release-notes"), /border-top:\s*1px\s+solid\s+var\(--border\)/);
+  assert.match(taskTracker, /This changes the Task composition of a released Release/);
+  assert.match(taskTracker, /Leaving Released clears the server release timestamp/);
 });

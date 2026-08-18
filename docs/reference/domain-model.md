@@ -457,6 +457,14 @@ Project version. Terminal status не меняет Tasks, а при наличи
 поставки Linear release. Pipeline, environment, commit SHA и автоматическое
 наполнение из CI/CD не моделируются.
 
+Release mutation требует current `version` и effective Project role `editor`
+или выше. Первый переход в `released` атомарно назначает server `released_at`;
+последующие metadata edits сохраняют timestamp, а reopen/cancel очищает его.
+При открытых Tasks terminal transition требует `confirmOpenTasks`. Изменение
+`release_id` Task, затрагивающее выпущенный Release, требует отдельный
+`confirmReleasedComposition`; Project/Release compatibility и current status
+повторно проверяются server-side, а Task status автоматически не меняется.
+
 ## Label
 
 | Поле | Семантика |

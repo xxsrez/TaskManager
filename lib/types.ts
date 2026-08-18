@@ -59,6 +59,8 @@ export type ProjectRecord = {
   accessRole: AccessRole;
 };
 
+export type ReleaseStatus = "planned" | "active" | "released" | "canceled";
+
 export type ReleaseRecord = {
   id: string;
   publicId: string;
@@ -67,7 +69,7 @@ export type ReleaseRecord = {
   creatorUserId: string;
   name: string;
   description: string;
-  status: "planned" | "active" | "released" | "canceled";
+  status: ReleaseStatus;
   targetDate: string | null;
   releasedAt: string | null;
   releaseNotes: string;
