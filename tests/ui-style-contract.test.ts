@@ -153,6 +153,31 @@ test("mobile task rows use a two-line title and wrapping metadata without horizo
   assert.match(taskTracker, /aria-label="Open task details"[\s\S]*?onClick=\{\(event\) => \{ event\.stopPropagation\(\); onOpen\(\); \}\}/);
 });
 
+test("list status controls keep compact desktop placement and touch-safe mobile geometry", () => {
+  const statusControl = declarations(".task-status-control");
+  assert.match(statusControl, /width:\s*28px\s*;/);
+  assert.match(statusControl, /height:\s*28px\s*;/);
+  assert.match(statusControl, /overflow:\s*visible\s*;/);
+  assert.match(declarations(".task-status-control select"), /position:\s*absolute\s*;/);
+  assert.match(declarations(".task-status-control:focus-within"), /outline:/);
+  assert.match(
+    css,
+    /\.task-row\.show-status\s*\{[^}]*grid-template-columns:\s*25px\s+22px\s+58px\s+28px\s+minmax\(180px,\s*1fr\)\s+auto\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-row\.show-status\s*\{[^}]*grid-template-columns:\s*25px\s+20px\s+52px\s+40px\s+minmax\(0,\s*1fr\)\s*;[^}]*grid-template-areas:\s*"check priority identity status title"\s*"\. \. metadata metadata metadata"\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-status-control\s*\{[^}]*width:\s*40px\s*;[^}]*height:\s*40px\s*;/,
+  );
+  assert.match(
+    taskTracker,
+    /onStatusChange=\{\(task, statusId\) => mutate\(`\/api\/tasks\/\$\{task\.id\}`,[\s\S]{0,180}version: taskMutationVersion\(task\), statusId/,
+  );
+});
+
 test("Label controls remain searchable and stack without mobile overflow", () => {
   assert.match(
     taskTracker,

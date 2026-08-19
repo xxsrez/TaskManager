@@ -1426,6 +1426,116 @@ test("editable status-grouped list rows expose the same drag affordance as board
   assert.match(boardMarkup, /class="task-card editable[^>]*draggable="true"/);
 });
 
+function listViewSnapshot(
+  groupBy: "status" | "priority" | "assignee" | "project" | "release" | "none",
+  accessRole: "owner" | "viewer" = "owner",
+): AppSnapshot {
+  return {
+    ...snapshot,
+    projects: snapshot.projects.map((project) => ({ ...project, accessRole })),
+    tasks: snapshot.tasks.map((task) => ({ ...task, accessRole })),
+    views: [{
+      id: `view-${groupBy}`,
+      publicId: "99999999-9999-4999-8999-999999999999",
+      ownerUserId: "user-1",
+      name: `Grouped by ${groupBy}`,
+      scopeProjectId: null,
+      query: {},
+      display: {
+        layout: "list",
+        groupBy,
+        orderBy: "updated",
+        direction: "desc",
+        showEmptyGroups: false,
+        visibleFields: ["priority", "project", "release", "dueDate", "assignee"],
+      },
+      version: 1,
+      accessRole,
+    }],
+  };
+}
+
+function renderListView(data: AppSnapshot, groupBy: string) {
+  return renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: data,
+      initialNavigation: {
+        surface: `view:view-${groupBy}`,
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+}
+
+test("list rows show status between identifier and title except when grouped by status", () => {
+  for (const groupBy of ["none", "priority", "assignee", "project", "release"] as const) {
+    const markup = renderListView(listViewSnapshot(groupBy), groupBy);
+    const identityIndex = markup.indexOf('class="task-identity"');
+    const statusIndex = markup.indexOf('class="task-status-control editable"');
+    const titleIndex = markup.indexOf('class="task-title"');
+
+    assert.ok(identityIndex >= 0, `${groupBy} list renders the Task identifier`);
+    assert.ok(statusIndex > identityIndex, `${groupBy} list places status after the identifier`);
+    assert.ok(titleIndex > statusIndex, `${groupBy} list places status before the title`);
+    assert.match(markup, /class="task-row show-status/);
+    assert.match(markup, /aria-label="Status: Todo"/);
+    assert.match(markup, /title="Todo"/);
+  }
+
+  const statusGroupedMarkup = renderListView(listViewSnapshot("status"), "status");
+  assert.doesNotMatch(statusGroupedMarkup, /task-status-control/);
+  assert.doesNotMatch(statusGroupedMarkup, /task-row show-status/);
+});
+
+test("list status control is editable for Editors and read-only for Viewers", () => {
+  const editableMarkup = renderListView(listViewSnapshot("none"), "none");
+  assert.match(editableMarkup, /class="task-status-control editable"/);
+  assert.match(editableMarkup, /<select[^>]*aria-label="Status: Todo"[^>]*>/);
+  assert.match(editableMarkup, /<option value="todo" selected="">Todo<\/option>/);
+
+  const viewerMarkup = renderListView(listViewSnapshot("none", "viewer"), "none");
+  assert.match(viewerMarkup, /class="task-status-control read-only"/);
+  assert.match(viewerMarkup, /role="img" aria-label="Status: Todo"/);
+  assert.doesNotMatch(viewerMarkup, /<select[^>]*aria-label="Status: Todo"/);
+});
+
+test("current workflow statuses have non-color-only icon variants", () => {
+  const statusDefinitions: AppSnapshot["statuses"] = [
+    { ...snapshot.statuses[0]!, id: "backlog", name: "Backlog", category: "backlog", position: 0, isDefault: false },
+    { ...snapshot.statuses[0]!, id: "todo", name: "Todo", category: "unstarted", position: 1, isDefault: true },
+    { ...snapshot.statuses[0]!, id: "progress", name: "In Progress", category: "started", position: 2, isDefault: false },
+    { ...snapshot.statuses[0]!, id: "review", name: "In Review", category: "started", position: 3, isDefault: false },
+    { ...snapshot.statuses[0]!, id: "done", name: "Done", category: "completed", position: 4, isDefault: false },
+    { ...snapshot.statuses[0]!, id: "canceled", name: "Canceled", category: "canceled", position: 5, isDefault: false },
+    { ...snapshot.statuses[0]!, id: "duplicate", name: "Duplicate", category: "canceled", position: 6, isDefault: false, systemRole: "duplicate" },
+  ];
+  const variantSnapshot = listViewSnapshot("none");
+  variantSnapshot.statuses = statusDefinitions;
+  variantSnapshot.tasks = statusDefinitions.map((status, index) => ({
+    ...snapshot.tasks[0]!,
+    id: `task-${index}`,
+    publicId: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${index}`,
+    identifier: `TM-${index + 1}`,
+    sequenceNumber: index + 1,
+    title: status.name,
+    statusId: status.id,
+  }));
+
+  const markup = renderListView(variantSnapshot, "none");
+  for (const variant of ["backlog", "todo", "started", "completed", "canceled", "duplicate"]) {
+    assert.match(markup, new RegExp(`data-status-variant="${variant}"`));
+  }
+  const progressValues = [...markup.matchAll(/data-status-variant="started"[^>]*data-status-progress="(\d+)"/g)]
+    .map((match) => match[1]);
+  assert.equal(progressValues.length, 2);
+  assert.notEqual(progressValues[0], progressValues[1]);
+  for (const status of statusDefinitions) {
+    assert.match(markup, new RegExp(`aria-label="Status: ${status.name}"`));
+  }
+});
+
 test("non-manual ordering disables pointer and keyboard reordering in list and board", () => {
   const sortedSnapshot: AppSnapshot = {
     ...snapshot,

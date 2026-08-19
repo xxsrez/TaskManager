@@ -286,12 +286,17 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .group-title small { color: var(--muted); font-size: 11px; }
 .group-title svg.rotated { transform: rotate(-90deg); }
 .status-icon { --status-color: #8b8b93; width: 14px; height: 14px; display: inline-grid; flex: 0 0 14px; place-items: center; border: 1.5px solid var(--status-color); border-radius: 50%; color: white; }
-.status-started { border-style: solid; background: conic-gradient(var(--status-color) 0 33%, transparent 33% 100%); }
+.status-started { border-style: solid; background: conic-gradient(var(--status-color) 0 var(--status-progress, 120deg), transparent var(--status-progress, 120deg) 360deg); }
 .status-completed { border-color: var(--status-color); background: var(--status-color); }
-.status-canceled { position: relative; border-color: var(--status-color); opacity: .75; }
-.status-canceled::after { width: 8px; height: 1.5px; position: absolute; content: ""; transform: rotate(-40deg); background: var(--status-color); }
+.status-canceled { position: relative; border-color: var(--status-color); color: var(--status-color); }
+.status-variant-duplicate { border-radius: 3px; }
 .status-backlog { border-style: dashed; opacity: .75; }
+@media (forced-colors: active) {
+  .status-icon { --status-color: CanvasText !important; }
+  .status-completed { color: Canvas; }
+}
 .task-row { position: relative; min-height: var(--task-row-height); display: grid; grid-template-columns: 25px 22px 58px minmax(180px, 1fr) auto; align-items: center; padding: 0 10px 0 8px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.task-row.show-status { grid-template-columns: 25px 22px 58px 28px minmax(180px, 1fr) auto; }
 .task-row:hover, .task-row.highlighted { background: var(--hover); }
 .task-row.selected { background: var(--selected); }
 .task-row.drop-before { box-shadow: inset 0 2px var(--accent); }
@@ -316,6 +321,10 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .task-identity, .task-title { min-width: 0; height: calc(var(--task-row-height) - 1px); display: flex; align-items: center; padding: 0; overflow: hidden; border-radius: 0; background: transparent; color: var(--muted); cursor: pointer; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .task-identity { padding-right: 8px; font-size: 11px; font-variant-numeric: tabular-nums; }
 .task-title { color: var(--text); }
+.task-status-control { position: relative; width: 28px; height: 28px; display: inline-grid; place-items: center; overflow: visible; border-radius: 5px; }
+.task-status-control.editable { cursor: pointer; }
+.task-status-control select { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; border: 0; opacity: 0; cursor: pointer; }
+.task-status-control:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
 .row-metadata { display: flex; align-items: center; gap: 6px; margin-left: 12px; }
 .metadata-chip { max-width: 140px; height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 6px; overflow: hidden; border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .metadata-chip.overdue { border-color: color-mix(in srgb, var(--danger) 25%, var(--border)); color: var(--danger); }
@@ -1007,9 +1016,14 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
     padding-right: max(8px, env(safe-area-inset-right));
     overflow: hidden;
   }
+  .task-row.show-status {
+    grid-template-columns: 25px 20px 52px 40px minmax(0, 1fr);
+    grid-template-areas: "check priority identity status title" ". . metadata metadata metadata";
+  }
   .task-row > .row-check, .task-row > .row-check-spacer { grid-area: check; }
   .task-row > .priority-icon { grid-area: priority; }
   .task-identity { grid-area: identity; height: 44px; }
+  .task-status-control { grid-area: status; width: 40px; height: 40px; }
   .task-title {
     grid-area: title;
     height: auto;
