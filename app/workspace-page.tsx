@@ -18,9 +18,14 @@ import {
   getOrCreateUser,
   getSnapshot,
   getTask,
+  loadAccessibleProject,
+  loadAccessibleRelease,
+  loadAccessibleView,
   INITIAL_UI_SNAPSHOT_TASKS,
 } from "@/lib/repository";
 import type { AppSnapshot } from "@/lib/types";
+import { RECENT_NAVIGATION_LIMIT } from "@/lib/recent-navigation";
+import { NotFoundError } from "@/lib/domain";
 
 const loadWorkspaceSnapshot = cache(async (includeAdminOverview: boolean) => {
   const actor = await getCurrentActor();
@@ -29,6 +34,7 @@ const loadWorkspaceSnapshot = cache(async (includeAdminOverview: boolean) => {
   return getSnapshot(user, {
     includeAdminOverview,
     taskLimit: INITIAL_UI_SNAPSHOT_TASKS,
+    navigationLimit: RECENT_NAVIGATION_LIMIT,
   });
 });
 
@@ -39,7 +45,8 @@ export async function WorkspacePage({ pathname }: { pathname: string }) {
   const baseSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!baseSnapshot) return <SignInPage returnTo={pathname} />;
 
-  const addressableSnapshot = await withAddressedTaskDetail(baseSnapshot, target);
+  const contextSnapshot = await withAddressedEntityContext(baseSnapshot, target);
+  const addressableSnapshot = await withAddressedTaskDetail(contextSnapshot, target);
   const navigation = resolveNavigationTarget(target, addressableSnapshot);
   if (!navigation) notFound();
   const redirectTo = legacyRedirectPath(target, addressableSnapshot);
@@ -61,11 +68,58 @@ export async function workspaceMetadata(pathname: string): Promise<Metadata> {
 
   const baseSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!baseSnapshot) return signedOutMetadata();
-  const addressableSnapshot = await withAddressedTaskDetail(baseSnapshot, target);
+  const contextSnapshot = await withAddressedEntityContext(baseSnapshot, target);
+  const addressableSnapshot = await withAddressedTaskDetail(contextSnapshot, target);
   const navigation = resolveNavigationTarget(target, addressableSnapshot);
   if (!navigation) return notFoundMetadata();
   const snapshot = await withSelectedTaskDetail(addressableSnapshot, navigation);
   return metadataForNavigation(navigation, snapshot);
+}
+
+async function withAddressedEntityContext(
+  snapshot: AppSnapshot,
+  target: ReturnType<typeof parseNavigationPath>,
+): Promise<AppSnapshot> {
+  if (!target) return snapshot;
+  try {
+    if (target.kind === "view") {
+      const view = await loadAccessibleView(snapshot.user.id, target.id);
+      return { ...snapshot, views: prependUnique(view, snapshot.views) };
+    }
+    if (target.kind === "project" || target.kind === "projectReleases") {
+      const reference = target.kind === "project" ? target.id : target.projectId;
+      const project = await loadAccessibleProject(snapshot.user.id, reference);
+      return { ...snapshot, projects: prependUnique(project, snapshot.projects) };
+    }
+    if (target.kind === "projectRelease") {
+      const [project, release] = await Promise.all([
+        loadAccessibleProject(snapshot.user.id, target.projectId),
+        loadAccessibleRelease(snapshot.user.id, target.releaseId),
+      ]);
+      return {
+        ...snapshot,
+        projects: prependUnique(project, snapshot.projects),
+        releases: prependUnique(release, snapshot.releases),
+      };
+    }
+    if (target.kind === "legacyRelease") {
+      const release = await loadAccessibleRelease(snapshot.user.id, target.id);
+      const project = await loadAccessibleProject(snapshot.user.id, release.projectId);
+      return {
+        ...snapshot,
+        projects: prependUnique(project, snapshot.projects),
+        releases: prependUnique(release, snapshot.releases),
+      };
+    }
+  } catch (error) {
+    if (error instanceof NotFoundError) return snapshot;
+    throw error;
+  }
+  return snapshot;
+}
+
+function prependUnique<T extends { id: string }>(record: T, records: T[]) {
+  return [record, ...records.filter((item) => item.id !== record.id)];
 }
 
 async function withAddressedTaskDetail(

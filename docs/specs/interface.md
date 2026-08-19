@@ -61,6 +61,12 @@ Desktop-first shell повторяет композицию Linear:
   dropdown появляется только вместе с реально реализованным workspace menu.
 - Основная навигация: `My tasks`, `Shared with me`, `Views`, `Projects`,
   `Releases`. Исключённые функции Linear не показываются даже disabled.
+- `Views`, `Projects` и `Releases` всегда начинаются с канонической collection
+  link (`All views`, `All projects`, `All releases`), после которой показывают
+  не более трёх доступных неархивных записей. Общий порядок recent —
+  `updatedAt DESC, id DESC`; открытый direct-route record ставится первым, не
+  увеличивая лимит. Встроенные task views остаются постоянными shortcuts и в
+  лимит Saved Views не входят.
 - Sections можно сворачивать; chevron и overflow появляются на hover, если
   действие относится ко всей section.
 - Активный пункт использует мягкую заливку и более яркий text/icon без тяжёлой
@@ -121,6 +127,9 @@ Desktop-first shell повторяет композицию Linear:
   sidebar.
 - Навигационные items и ссылки на records остаются настоящими anchors: их
   можно копировать, открыть в новой вкладке или активировать modifier-click.
+- Collection surfaces `/views`, `/projects` и `/releases` не ограничены
+  sidebar shortlist: они выполняют ACL-scoped search и догружают следующие
+  deterministic keyset pages через явный `Load more`.
 - Copy-link action копирует текущий абсолютный deep link.
 - Legacy links `/tasks/{internal-id}`, `/releases/{internal-id}` и прежние
   `/views/{internal-id}`/`/projects/{internal-id}` разрешаются только после ACL

@@ -394,6 +394,14 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
 `taskWindow.truncated=true`, а UI показывает границу вместо молчаливой иллюзии
 полного workspace. Команды создания/изменения Task, Project, Release, SavedView
 и AccessGrant остаются отдельными route handlers.
+Server render и `/api/bootstrap` возвращают только три active recent summaries
+для Projects, Releases и SavedViews (`updated_at DESC, id DESC`) вместе с
+ACL-scoped total/`hasMore`. Direct route отдельно добавляет только адресованный
+record после повторной ACL-проверки. Полные каталоги запрашиваются лениво через
+`/api/catalog` с server-side search и keyset continuation; Release page также
+возвращает bounded Project summaries, необходимые для qualified labels и
+canonical anchors. Incremental entity change запускает bounded refill этих
+shortlists, не перестраивая полный workspace snapshot.
 SavedView создаётся через `POST /api/views`, а rename/query/display/scope и
 reversible archive/restore — через versioned `PATCH /api/views/{id}`. Одна
 команда сохраняет query и полный Display JSON; D1 update trigger публикует

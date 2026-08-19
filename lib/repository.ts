@@ -49,6 +49,8 @@ import type {
   ViewFilterCondition,
   ViewQuery,
   WorkflowStatusRecord,
+  WorkspaceCatalogKind,
+  WorkspaceCatalogPage,
 } from "./types";
 import {
   parseStoredViewDisplay,
@@ -64,6 +66,11 @@ import {
 import { getD1 } from "@/db";
 import { getRuntimeEnvironment } from "./runtime-environment";
 import { encodeWorkspaceSyncCursor } from "./workspace-sync-cursor";
+import {
+  decodeKeysetCursor,
+  digestReference,
+  encodeKeysetCursor,
+} from "./agent-api-contract";
 import {
   taskDescriptionAttachmentPredicate,
   validateTaskDescriptionAttachments,
@@ -244,13 +251,22 @@ export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
 
 export async function getSnapshot(
   user: UserRecord,
-  options: { includeAdminOverview?: boolean; taskLimit?: number } = {},
+  options: {
+    includeAdminOverview?: boolean;
+    taskLimit?: number;
+    navigationLimit?: number;
+  } = {},
 ): Promise<AppSnapshot> {
   const db = getD1();
   const requestedTaskLimit = Number(options.taskLimit ?? MAX_UI_SNAPSHOT_TASKS);
   const taskLimit = Number.isSafeInteger(requestedTaskLimit)
     ? Math.min(MAX_UI_SNAPSHOT_TASKS, Math.max(1, requestedTaskLimit))
     : MAX_UI_SNAPSHOT_TASKS;
+  const navigationLimit = options.navigationLimit === undefined
+    ? null
+    : Math.max(1, Math.trunc(options.navigationLimit));
+  const navigationOnly = navigationLimit !== null;
+  const navigationQueryLimit = navigationLimit === null ? -1 : navigationLimit + 1;
   const configuredAdminEmails = adminEmailsFromEnvironment();
   const isAdmin = isAdminEmail(user.email, configuredAdminEmails);
   const [snapshotResults, admin] = await Promise.all([
@@ -303,7 +319,15 @@ export async function getSnapshot(
         .bind(user.id, user.id, user.id, user.id, taskLimit + 1),
       db
         .prepare(
-          `WITH scoped AS (
+          `WITH visible_task_project_ids AS (
+             SELECT DISTINCT project_id AS id FROM (
+               SELECT t.project_id, t.updated_at, t.id
+               FROM tasks t
+               WHERE t.project_id IS NOT NULL AND ${accessibleTaskWhere("t")}
+               ORDER BY t.updated_at DESC, t.id DESC
+               LIMIT ?
+             )
+           ), scoped AS (
              SELECT p.*,
                CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
                  SELECT CASE ag.permission
@@ -318,14 +342,47 @@ export async function getSnapshot(
                  LIMIT 1
                ) END AS access_role
              FROM projects p
+           ), recent_ids AS (
+             SELECT id FROM scoped
+             WHERE access_role IS NOT NULL AND archived_at IS NULL
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?
            )
-           SELECT * FROM scoped WHERE access_role IS NOT NULL
-           ORDER BY updated_at DESC`,
+           SELECT scoped.*,
+             (SELECT COUNT(*) FROM scoped counted
+              WHERE counted.access_role IS NOT NULL
+                AND (? = 0 OR counted.archived_at IS NULL)) AS total_count
+           FROM scoped
+           WHERE access_role IS NOT NULL AND (
+             ? = 0 OR id IN (SELECT id FROM recent_ids)
+               OR id IN (SELECT id FROM visible_task_project_ids)
+           )
+           ORDER BY updated_at DESC, id DESC
+          `,
         )
-        .bind(user.id, user.id),
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          taskLimit,
+          user.id,
+          user.id,
+          navigationLimit ?? -1,
+          navigationOnly ? 1 : 0,
+          navigationOnly ? 1 : 0,
+        ),
       db
         .prepare(
-          `WITH scoped AS (
+          `WITH visible_task_release_ids AS (
+             SELECT DISTINCT release_id AS id FROM (
+               SELECT t.release_id, t.updated_at, t.id
+               FROM tasks t
+               WHERE t.release_id IS NOT NULL AND ${accessibleTaskWhere("t")}
+               ORDER BY t.updated_at DESC, t.id DESC
+               LIMIT ?
+             )
+           ), scoped AS (
              SELECT r.*,
                CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
                  SELECT CASE ag.permission
@@ -341,11 +398,32 @@ export async function getSnapshot(
                  LIMIT 1
                ) END AS access_role
              FROM releases r JOIN projects p ON p.id = r.project_id
+           ), recent_ids AS (
+             SELECT id FROM scoped WHERE access_role IS NOT NULL
+             ORDER BY updated_at DESC, id DESC
+             LIMIT ?
            )
-           SELECT * FROM scoped WHERE access_role IS NOT NULL
-           ORDER BY created_at DESC`,
+           SELECT scoped.*,
+             (SELECT COUNT(*) FROM scoped counted
+              WHERE counted.access_role IS NOT NULL) AS total_count
+           FROM scoped WHERE access_role IS NOT NULL AND (
+             ? = 0 OR id IN (SELECT id FROM recent_ids)
+               OR id IN (SELECT id FROM visible_task_release_ids)
+           )
+           ORDER BY updated_at DESC, id DESC
+          `,
         )
-        .bind(user.id, user.id),
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          taskLimit,
+          user.id,
+          user.id,
+          navigationLimit ?? -1,
+          navigationOnly ? 1 : 0,
+        ),
       db
         .prepare(
           `WITH scoped AS (
@@ -381,10 +459,20 @@ export async function getSnapshot(
              FROM saved_views v
              LEFT JOIN projects p ON p.id = v.scope_project_id
            )
-           SELECT * FROM scoped WHERE access_role IS NOT NULL
-           ORDER BY updated_at DESC`,
+           SELECT *, COUNT(*) OVER() AS total_count
+           FROM scoped
+           WHERE access_role IS NOT NULL AND (? = 0 OR archived_at IS NULL)
+           ORDER BY updated_at DESC, id DESC
+           LIMIT ?`,
         )
-        .bind(user.id, user.id, user.id, user.id),
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          navigationOnly ? 1 : 0,
+          navigationQueryLimit,
+        ),
       db
         .prepare(
           `SELECT s.* FROM workflow_statuses s
@@ -590,11 +678,198 @@ export async function getSnapshot(
     relations: relations.results
       .filter((row) => boundedTaskIds.has(String(row.source_task_id)) && boundedTaskIds.has(String(row.target_task_id)))
       .map(mapRelation),
-    views: views.results.map(mapView),
+    views: collectionRows(views.results, navigationLimit).map(mapView),
+    navigationCollections: {
+      projects: navigationCollectionState(projects.results, navigationLimit),
+      releases: navigationCollectionState(releases.results, navigationLimit),
+      views: navigationCollectionState(views.results, navigationLimit),
+    },
     collaborators: collaborators.results.map(mapCollaborator),
     syncCursor: encodeWorkspaceSyncCursor(
       Number((syncState.results[0] as DbRow | undefined)?.last_sequence ?? 0),
     ),
+  };
+}
+
+export async function getWorkspaceCatalogPage(
+  currentUser: UserRecord,
+  input: {
+    kind: WorkspaceCatalogKind;
+    search?: string | null;
+    cursor?: string | null;
+    limit?: number;
+    activeOnly?: boolean;
+    order?: "updated" | "name";
+    direction?: "asc" | "desc";
+  },
+): Promise<WorkspaceCatalogPage> {
+  const kind = input.kind;
+  const limit = Math.min(50, Math.max(1, Math.trunc(input.limit ?? 30)));
+  const search = String(input.search ?? "").trim().toLocaleLowerCase();
+  const order = input.order ?? "updated";
+  const direction = input.direction ?? (order === "name" ? "asc" : "desc");
+  if (search.length > 200) throw new ValidationError("Catalog search is too long");
+  const fingerprint = await digestReference(
+    "catalog",
+    JSON.stringify({
+      kind,
+      search,
+      limit,
+      activeOnly: input.activeOnly === true,
+      order,
+      direction,
+    }),
+  );
+  const after = decodeKeysetCursor(input.cursor ?? null, fingerprint);
+  if (after && (
+    after.values.length !== 1 || typeof after.values[0] !== "string"
+  )) {
+    throw new ValidationError("Catalog cursor is invalid");
+  }
+  const afterValue = after ? String(after.values[0]) : null;
+  const orderExpression = order === "name" ? "lower(name)" : "updated_at";
+  const predicates = ["access_role IS NOT NULL"];
+  if (input.activeOnly && kind !== "releases") {
+    predicates.push("archived_at IS NULL");
+  }
+  const trailing: unknown[] = [];
+  if (search) {
+    predicates.push(kind === "projects"
+      ? "(instr(lower(name), ?) > 0 OR instr(lower(summary), ?) > 0)"
+      : "instr(lower(name), ?) > 0");
+    trailing.push(search, ...(kind === "projects" ? [search] : []));
+  }
+  if (afterValue) {
+    const comparison = direction === "asc" ? ">" : "<";
+    predicates.push(
+      `(${orderExpression} ${comparison} ? OR ` +
+      `(${orderExpression} = ? AND id ${comparison} ?))`,
+    );
+    trailing.push(afterValue, afterValue, after!.id);
+  }
+  trailing.push(limit + 1);
+
+  const scope = kind === "projects"
+    ? `WITH scoped AS (
+         SELECT p.*,
+           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+             SELECT CASE ag.permission
+               WHEN 'full_access' THEN 'manager'
+               WHEN 'manager' THEN 'manager'
+               WHEN 'editor' THEN 'editor'
+               WHEN 'viewer' THEN 'viewer'
+             END
+             FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             LIMIT 1
+           ) END AS access_role
+         FROM projects p
+       )`
+    : kind === "releases"
+      ? `WITH scoped AS (
+           SELECT r.*,
+             CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+               SELECT CASE ag.permission
+                 WHEN 'full_access' THEN 'manager'
+                 WHEN 'manager' THEN 'manager'
+                 WHEN 'editor' THEN 'editor'
+                 WHEN 'viewer' THEN 'viewer'
+               END
+               FROM access_grants ag
+               WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
+                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+               LIMIT 1
+             ) END AS access_role
+           FROM releases r JOIN projects p ON p.id = r.project_id
+         )`
+      : `WITH scoped AS (
+           SELECT v.*,
+             CASE
+               WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+               WHEN v.scope_project_id IS NOT NULL THEN (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'manager'
+                   WHEN 'manager' THEN 'manager'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'project'
+                   AND ag.resource_id = v.scope_project_id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               )
+               WHEN v.owner_user_id = ? THEN 'owner'
+               ELSE (
+                 SELECT CASE ag.permission
+                   WHEN 'full_access' THEN 'editor'
+                   WHEN 'editor' THEN 'editor'
+                   WHEN 'viewer' THEN 'viewer'
+                 END
+                 FROM access_grants ag
+                 WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+                 LIMIT 1
+               )
+             END AS access_role
+           FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
+         )`;
+  const principalParameters = kind === "views"
+    ? [currentUser.id, currentUser.id, currentUser.id, currentUser.id]
+    : [currentUser.id, currentUser.id];
+  const rows = await getD1().prepare(
+    `${scope}
+     SELECT *, COUNT(*) OVER() AS total_count,
+       ${orderExpression} AS cursor_value
+     FROM scoped
+     WHERE ${predicates.join(" AND ")}
+     ORDER BY ${orderExpression} ${direction.toUpperCase()}, id ${direction.toUpperCase()}
+     LIMIT ?`,
+  ).bind(...principalParameters, ...trailing).all<DbRow>();
+  const visible = rows.results.slice(0, limit);
+  const last = visible.at(-1);
+  const hasMore = rows.results.length > limit;
+  let releaseProjects: ProjectRecord[] = [];
+  if (kind === "releases" && visible.length) {
+    const projectIds = [...new Set(visible.map((row) => String(row.project_id)))];
+    const projectRows = await getD1().prepare(
+      `WITH scoped AS (
+         SELECT p.*,
+           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+             SELECT CASE ag.permission
+               WHEN 'full_access' THEN 'manager'
+               WHEN 'manager' THEN 'manager'
+               WHEN 'editor' THEN 'editor'
+               WHEN 'viewer' THEN 'viewer'
+             END
+             FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             LIMIT 1
+           ) END AS access_role
+         FROM projects p
+         WHERE p.id IN (${sqlPlaceholders(projectIds)})
+       )
+       SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+    ).bind(currentUser.id, currentUser.id, ...projectIds).all<DbRow>();
+    releaseProjects = projectRows.results.map(mapProject);
+  }
+  return {
+    kind,
+    projects: kind === "projects" ? visible.map(mapProject) : releaseProjects,
+    releases: kind === "releases" ? visible.map(mapRelease) : [],
+    views: kind === "views" ? visible.map(mapView) : [],
+    page: {
+      hasMore,
+      nextCursor: hasMore && last
+        ? encodeKeysetCursor(
+            { values: [String(last.cursor_value)], id: String(last.id) },
+            fingerprint,
+          )
+        : null,
+    },
+    total: Number(rows.results[0]?.total_count ?? 0),
   };
 }
 
@@ -4296,21 +4571,21 @@ async function validateSavedViewReferences(
   if (scopeProject && projectIds.some((projectId) => projectId !== scopeProject.id)) {
     throw new ValidationError("A project-scoped Saved View cannot filter outside its Project");
   }
-  if (projectIds.some(
-    (projectId) => !snapshot.projects.some((project) => project.id === projectId),
-  )) {
-    throw new ValidationError("Saved View project filter is inaccessible");
-  }
-  const releases = releaseIds.map((releaseId) =>
-    snapshot.releases.find((item) => item.id === releaseId));
-  if (releases.some((release) => !release)) {
-    throw new ValidationError("Saved View release filter is inaccessible");
+  let projects: ProjectRecord[];
+  let releases: ReleaseRecord[];
+  try {
+    [projects, releases] = await Promise.all([
+      Promise.all(projectIds.map((id) => loadAccessibleProject(currentUser.id, id))),
+      Promise.all(releaseIds.map((id) => loadAccessibleRelease(currentUser.id, id))),
+    ]);
+  } catch {
+    throw new ValidationError("Saved View project or release filter is inaccessible");
   }
   if (scopeProject && releases.some((release) => release?.projectId !== scopeProject.id)) {
     throw new ValidationError("Saved View release must belong to its scoped Project");
   }
-  if (projectIds.length === 1 && releases.some(
-    (release) => release?.projectId !== projectIds[0],
+  if (projects.length === 1 && releases.some(
+    (release) => release.projectId !== projects[0]!.id,
   )) {
     throw new ValidationError("Saved View release does not belong to its Project filter");
   }
@@ -4757,7 +5032,7 @@ async function loadAccessibleTask(userId: string, taskId: string) {
   return task!;
 }
 
-async function loadAccessibleProject(userId: string, projectId: string) {
+export async function loadAccessibleProject(userId: string, projectId: string) {
   const row = await getD1()
     .prepare(
       `WITH scoped AS (
@@ -4773,16 +5048,16 @@ async function loadAccessibleProject(userId: string, projectId: string) {
              WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
                AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
            ) END AS access_role
-         FROM projects p WHERE p.id = ?
+         FROM projects p WHERE p.id = ? OR p.public_id = ?
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(userId, userId, projectId)
+    .bind(userId, userId, projectId, projectId)
     .first<DbRow>();
   if (!row) throw new NotFoundError("Project not found");
   return mapProject(row);
 }
 
-async function loadAccessibleRelease(userId: string, releaseId: string) {
+export async function loadAccessibleRelease(userId: string, releaseId: string) {
   const row = await getD1()
     .prepare(
       `WITH scoped AS (
@@ -4799,16 +5074,16 @@ async function loadAccessibleRelease(userId: string, releaseId: string) {
                AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
            ) END AS access_role
          FROM releases r JOIN projects p ON p.id = r.project_id
-         WHERE r.id = ?
+         WHERE r.id = ? OR r.public_id = ?
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(userId, userId, releaseId)
+    .bind(userId, userId, releaseId, releaseId)
     .first<DbRow>();
   if (!row) throw new NotFoundError("Release not found");
   return mapRelease(row);
 }
 
-async function loadAccessibleView(userId: string, viewId: string) {
+export async function loadAccessibleView(userId: string, viewId: string) {
   const row = await getD1()
     .prepare(
       `WITH scoped AS (
@@ -4840,10 +5115,10 @@ async function loadAccessibleView(userId: string, viewId: string) {
              )
            END AS access_role
          FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
-         WHERE v.id = ?
+         WHERE v.id = ? OR v.public_id = ?
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
-    .bind(userId, userId, userId, userId, viewId)
+    .bind(userId, userId, userId, userId, viewId, viewId)
     .first<DbRow>();
   if (!row) throw new NotFoundError("View not found");
   return mapView(row);
@@ -5067,6 +5342,18 @@ function adminEmailsFromEnvironment(): string {
 
 function snapshotTaskScopeParameters(userId: string, taskLimit: number) {
   return [userId, userId, userId, userId, taskLimit + 1];
+}
+
+function collectionRows(rows: DbRow[], limit: number | null) {
+  return limit === null ? rows : rows.slice(0, limit);
+}
+
+function navigationCollectionState(rows: DbRow[], limit: number | null) {
+  const total = Number(rows[0]?.total_count ?? 0);
+  return {
+    total,
+    hasMore: limit !== null && total > limit,
+  };
 }
 
 function mapStatus(row: DbRow): WorkflowStatusRecord {

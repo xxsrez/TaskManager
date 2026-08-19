@@ -94,6 +94,7 @@ import {
   type GlobalSearchResult,
 } from "@/lib/global-search";
 import { formatReleaseName } from "@/lib/release-presentation";
+import { selectRecentNavigation } from "@/lib/recent-navigation";
 import { defaultViewDisplay, emptyViewQuery } from "@/lib/view-contract";
 import {
   canonicalViewQuery,
@@ -174,6 +175,8 @@ import type {
   ViewQuery,
   WorkflowStatusRecord,
   WorkspaceSyncResponse,
+  WorkspaceCatalogKind,
+  WorkspaceCatalogPage,
 } from "@/lib/types";
 
 type ShareTarget = {
@@ -916,6 +919,18 @@ function mergeUnique<T>(incoming: T[], current: T[], key: (item: T) => string): 
   return [...incoming, ...current.filter((item) => !seen.has(key(item)))];
 }
 
+export function mergeWorkspaceCatalogPage(
+  current: AppSnapshot,
+  page: WorkspaceCatalogPage,
+): AppSnapshot {
+  return {
+    ...current,
+    projects: mergeUnique(page.projects, current.projects, (item) => item.id),
+    releases: mergeUnique(page.releases, current.releases, (item) => item.id),
+    views: mergeUnique(page.views, current.views, (item) => item.id),
+  };
+}
+
 const builtInViews = [
   { id: "mine", label: "My tasks" },
   { id: "all", label: "All tasks" },
@@ -988,6 +1003,14 @@ export function TaskTracker({
   const pullRefreshFlight = useRef<Promise<AppSnapshot> | null>(null);
   const [systemBackupBusy, setSystemBackupBusy] = useState(false);
   const [error, setError] = useState("");
+  const [catalogPages, setCatalogPages] = useState<Partial<Record<
+    WorkspaceCatalogKind,
+    WorkspaceCatalogPage
+  >>>({});
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogEpoch, setCatalogEpoch] = useState(0);
+  const [catalogOrder, setCatalogOrder] = useState<"updated" | "name">("updated");
+  const [catalogDirection, setCatalogDirection] = useState<"asc" | "desc">("desc");
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
@@ -1051,6 +1074,13 @@ export function TaskTracker({
       setTaskSearch((current) => reconcileTaskSearch(current, response.changes));
       setRefreshEpoch((current) => current + 1);
     }
+    if (
+      response.changes.projects.upsert.length || removedProjectIds.size ||
+      response.changes.releases.upsert.length || removedReleaseIds.size ||
+      response.changes.views.upsert.length || removedViewIds.size
+    ) {
+      setCatalogEpoch((current) => current + 1);
+    }
     const activeTaskWasRemoved = activeTaskId !== null && removedTaskIds.has(activeTaskId);
     const surfaceWasRemoved =
       (surface.startsWith("project:") && removedProjectIds.has(surface.slice(8))) ||
@@ -1086,6 +1116,7 @@ export function TaskTracker({
       : current);
     setTaskWindowLoading(false);
     setRefreshEpoch((current) => current + 1);
+    setCatalogEpoch((current) => current + 1);
     if (activeTaskId !== null) setForcedTaskDetailId(activeTaskId);
     const surfaceWasRemoved =
       (surface.startsWith("project:") &&
@@ -1126,6 +1157,19 @@ export function TaskTracker({
     () => new Map(data.releases.map((release) => [release.id, release])),
     [data.releases],
   );
+  const sidebarViews = useMemo(() => selectRecentNavigation(data.views, {
+    activeId: surface.startsWith("view:") ? surface.slice(5) : null,
+  }), [data.views, surface]);
+  const sidebarProjects = useMemo(() => selectRecentNavigation(data.projects, {
+    activeId: surface.startsWith("project:")
+      ? surface.slice(8)
+      : surface.startsWith("project-releases:")
+        ? surface.slice("project-releases:".length)
+        : null,
+  }), [data.projects, surface]);
+  const sidebarReleases = useMemo(() => selectRecentNavigation(data.releases, {
+    activeId: surface.startsWith("release:") ? surface.slice(8) : null,
+  }), [data.releases, surface]);
   const userMap = useMemo(
     () => new Map([...data.users, data.user].map((user) => [user.id, user])),
     [data.user, data.users],
@@ -1134,6 +1178,83 @@ export function TaskTracker({
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    const kind = surface === "projects" || surface === "releases" || surface === "views"
+      ? surface
+      : null;
+    if (!kind) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setCatalogLoading(true);
+      const parameters = new URLSearchParams({ kind, limit: "30" });
+      parameters.set("order", catalogOrder);
+      parameters.set("direction", catalogDirection);
+      if (search.trim()) parameters.set("search", search.trim());
+      void fetch(`/api/catalog?${parameters}`, {
+        cache: "no-store",
+        signal: controller.signal,
+      })
+        .then(async (response) => {
+          const value = await response.json() as WorkspaceCatalogPage | { error: string };
+          if (!response.ok || "error" in value) {
+            throw new Error("error" in value ? value.error : "Catalog could not be loaded");
+          }
+          setCatalogPages((current) => ({ ...current, [kind]: value }));
+          setData((current) => mergeWorkspaceCatalogPage(current, value));
+        })
+        .catch((requestError: unknown) => {
+          if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+          setError(requestError instanceof Error ? requestError.message : "Catalog could not be loaded");
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setCatalogLoading(false);
+        });
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [catalogDirection, catalogEpoch, catalogOrder, search, surface]);
+
+  useEffect(() => {
+    if (catalogEpoch === 0) return;
+    const controller = new AbortController();
+    void Promise.all(
+      (["projects", "releases", "views"] as const).map(async (kind) => {
+        const response = await fetch(`/api/catalog?kind=${kind}&limit=3&active_only=1`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const value = await response.json() as WorkspaceCatalogPage | { error: string };
+        if (!response.ok || "error" in value) {
+          throw new Error("error" in value ? value.error : "Navigation could not be refreshed");
+        }
+        return value;
+      }),
+    )
+      .then((pages) => {
+        setData((current) => pages.reduce(
+          (next, page) => ({
+            ...mergeWorkspaceCatalogPage(next, page),
+            navigationCollections: {
+              ...(next.navigationCollections ?? {
+                projects: { total: 0, hasMore: false },
+                releases: { total: 0, hasMore: false },
+                views: { total: 0, hasMore: false },
+              }),
+              [page.kind]: { total: page.total, hasMore: page.page.hasMore },
+            },
+          }),
+          current,
+        ));
+      })
+      .catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+        setError(requestError instanceof Error ? requestError.message : "Navigation could not be refreshed");
+      });
+    return () => controller.abort();
+  }, [catalogEpoch]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("tm-theme");
@@ -1583,9 +1704,15 @@ export function TaskTracker({
     : data.releases;
   const surfaceCount = surface === "workspace"
     ? data.tasks.filter((task) => !task.archivedAt).length +
-      data.projects.length + data.releases.length + data.views.length
+      (data.navigationCollections?.projects.total ?? data.projects.length) +
+      (data.navigationCollections?.releases.total ?? data.releases.length) +
+      (data.navigationCollections?.views.total ?? data.views.length)
     : surface === "views"
-    ? builtInViews.length + data.views.length
+    ? builtInViews.length + (catalogPages.views?.total ?? data.navigationCollections?.views.total ?? data.views.length)
+    : surface === "projects"
+      ? catalogPages.projects?.total ?? data.navigationCollections?.projects.total ?? data.projects.length
+    : surface === "releases"
+      ? catalogPages.releases?.total ?? data.navigationCollections?.releases.total ?? data.releases.length
     : surface === "admin" && data.admin
       ? data.admin.registeredUserCount
     : projectReleaseSurfaceId
@@ -1664,6 +1791,13 @@ export function TaskTracker({
       ? canEditContent(activeSavedView.accessRole)
       : true;
   const sidebarCompact = sidebarCollapsed && !mobileSidebarOpen;
+  const searchLabel = surface === "projects"
+    ? "Search projects"
+    : surface === "releases"
+      ? "Search releases"
+      : surface === "views"
+        ? "Search views"
+        : "Search tasks";
   const hasViewChanges = activeSavedView
     ? JSON.stringify(currentViewQuery) !== JSON.stringify(activeSavedView.query) ||
       JSON.stringify(currentDisplay) !== JSON.stringify(activeSavedView.display)
@@ -1742,6 +1876,41 @@ export function TaskTracker({
       return false;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function loadMoreCatalog(kind: WorkspaceCatalogKind) {
+    const currentPage = catalogPages[kind];
+    if (!currentPage?.page.hasMore || !currentPage.page.nextCursor) return;
+    setCatalogLoading(true);
+    setError("");
+    try {
+      const parameters = new URLSearchParams({
+        kind,
+        limit: "30",
+        cursor: currentPage.page.nextCursor,
+        order: catalogOrder,
+        direction: catalogDirection,
+      });
+      if (search.trim()) parameters.set("search", search.trim());
+      const response = await fetch(`/api/catalog?${parameters}`, { cache: "no-store" });
+      const value = await response.json() as WorkspaceCatalogPage | { error: string };
+      if (!response.ok || "error" in value) {
+        throw new Error("error" in value ? value.error : "Catalog could not be loaded");
+      }
+      const merged: WorkspaceCatalogPage = {
+        ...value,
+        projects: mergeUnique(value.projects, currentPage.projects, (item) => item.id),
+        releases: mergeUnique(value.releases, currentPage.releases, (item) => item.id),
+        views: mergeUnique(value.views, currentPage.views, (item) => item.id),
+        total: currentPage.total,
+      };
+      setCatalogPages((current) => ({ ...current, [kind]: merged }));
+      setData((current) => mergeWorkspaceCatalogPage(current, value));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Catalog could not be loaded");
+    } finally {
+      setCatalogLoading(false);
     }
   }
 
@@ -2709,19 +2878,19 @@ export function TaskTracker({
                 {builtInViews.filter((view) => view.id !== "mine").map((view) => (
                   <NavItem key={view.id} compact={false} icon={<Circle size={9} />} label={view.label} active={surface === view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(view.id, "list")} count={taskCountForView(view.id, data, statusMap)} />
                 ))}
-                {data.views.filter((view) => !view.archivedAt).map((view) => (
+                {sidebarViews.map((view) => (
                   <NavItem key={view.id} compact={false} icon={<Zap size={13} />} label={view.name} active={surface === `view:${view.id}`} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onNavigate={() => navigateSurface(`view:${view.id}`, view.display.layout)} />
                 ))}
               </SidebarSection>
               <SidebarSection title="Projects" action={() => setDialog("project")}>
                 <NavItem compact={false} icon={<Boxes size={13} />} label="All projects" active={surface === "projects"} href="/projects" onNavigate={() => navigateSurface("projects", "list")} />
-                {data.projects.filter((project) => !project.archivedAt).map((project) => (
+                {sidebarProjects.map((project) => (
                   <NavItem key={project.id} compact={false} icon={<span className="project-dot" style={{ background: project.color }} />} label={project.name} active={surface === `project:${project.id}`} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`project:${project.id}`, "list")} />
                 ))}
               </SidebarSection>
               <SidebarSection title="Releases" action={() => setDialog("release")}>
                 <NavItem compact={false} icon={<Rocket size={13} />} label="All releases" active={surface === "releases"} href="/releases" onNavigate={() => navigateSurface("releases", "list")} />
-                {data.releases.slice(0, 6).map((release) => (
+                {sidebarReleases.map((release) => (
                   <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={formatReleaseName(projectMap.get(release.projectId)?.name, release.name)} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
                 ))}
               </SidebarSection>
@@ -2910,7 +3079,7 @@ export function TaskTracker({
                 <div className="desktop-view-controls">
                   <div className="search-control">
                     <Search size={13} />
-                    <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks…" aria-label="Search tasks" />
+                    <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`${searchLabel}…`} aria-label={searchLabel} />
                     {search && <button onClick={() => setSearch("")}><X size={12} /></button>}
                   </div>
                   <div className="popover-anchor">
@@ -2964,7 +3133,7 @@ export function TaskTracker({
                     </header>
                     <label className="mobile-search-control">
                       <Search size={15} />
-                      <input ref={mobileSearchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tasks…" aria-label="Search tasks on mobile" />
+                      <input ref={mobileSearchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`${searchLabel}…`} aria-label={`${searchLabel} on mobile`} />
                       {search && <button type="button" aria-label="Clear search" onClick={() => setSearch("")}><X size={13} /></button>}
                     </label>
                     <section className="mobile-control-section">
@@ -2997,6 +3166,42 @@ export function TaskTracker({
           )}
         </header>
 
+        {(surface === "projects" || surface === "releases" || surface === "views") && (
+          <div className="toolbar-row catalog-toolbar" aria-label={`${surface} catalog controls`}>
+            <div className="toolbar-left">
+              <div className="search-control">
+                <Search size={13} />
+                <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`${searchLabel}…`} aria-label={searchLabel} />
+                {search && <button type="button" aria-label="Clear catalog search" onClick={() => setSearch("")}><X size={12} /></button>}
+              </div>
+              <label className="catalog-sort">
+                <span>Sort</span>
+                <select
+                  aria-label="Sort catalog"
+                  value={catalogOrder}
+                  onChange={(event) => {
+                    const order = event.target.value as "updated" | "name";
+                    setCatalogOrder(order);
+                    setCatalogDirection(order === "name" ? "asc" : "desc");
+                  }}
+                >
+                  <option value="updated">Recently updated</option>
+                  <option value="name">Name</option>
+                </select>
+              </label>
+              <button
+                className="button ghost compact"
+                type="button"
+                aria-label={catalogDirection === "asc" ? "Sort descending" : "Sort ascending"}
+                onClick={() => setCatalogDirection((current) => current === "asc" ? "desc" : "asc")}
+              >
+                {catalogDirection === "asc" ? <ArrowUp size={13} /> : <ArrowDown size={13} />}
+                {catalogDirection === "asc" ? "Ascending" : "Descending"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")}><X size={14} /></button></div>}
         {data.taskWindow?.truncated && !taskWindowLoading && !searchNeedle && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
         {(busy || taskWindowLoading) && <div className="progress-line" aria-label={busy ? "Saving" : "Loading remaining tasks"} />}
@@ -3017,11 +3222,11 @@ export function TaskTracker({
         ) : surface === "admin" && data.admin ? (
           <AdminSurface overview={data.admin} timeZone={data.user.timezone} />
         ) : surface === "views" ? (
-          <ViewsSurface data={data} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} onContextActions={(view, x, y, focus) => openContextualActions({ entities: [viewContextualEntity(view)] }, x, y, focus)} onRestore={(view) => mutate(`/api/views/${view.id}`, "PATCH", { version: view.version, archived: false })} busy={busy} />
+          <><ViewsSurface data={{ ...data, views: catalogPages.views?.views ?? data.views }} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} onContextActions={(view, x, y, focus) => openContextualActions({ entities: [viewContextualEntity(view)] }, x, y, focus)} onRestore={(view) => mutate(`/api/views/${view.id}`, "PATCH", { version: view.version, archived: false })} busy={busy} />{catalogPages.views?.page.hasMore && <CatalogPagination busy={catalogLoading} onMore={() => void loadMoreCatalog("views")} />}</>
         ) : surface === "projects" ? (
-          <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} users={userMap} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onContextActions={(project, x, y, focus) => openContextualActions({ entities: [projectContextualEntity(project)] }, x, y, focus)} onCreate={() => setDialog("project")} />
+          <><ProjectsSurface projects={catalogPages.projects?.projects ?? data.projects} tasks={data.tasks} statuses={data.statuses} users={userMap} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onContextActions={(project, x, y, focus) => openContextualActions({ entities: [projectContextualEntity(project)] }, x, y, focus)} onCreate={() => setDialog("project")} />{catalogPages.projects?.page.hasMore && <CatalogPagination busy={catalogLoading} onMore={() => void loadMoreCatalog("projects")} />}</>
         ) : surface === "releases" || projectReleaseSurfaceId ? (
-          <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onContextActions={(release, x, y, focus) => openContextualActions({ entities: [releaseContextualEntity(release)] }, x, y, focus)} onCreate={() => canCreateTask && setDialog("release")} />
+          <><ReleasesSurface releases={surface === "releases" ? (catalogPages.releases?.releases ?? data.releases) : scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onContextActions={(release, x, y, focus) => openContextualActions({ entities: [releaseContextualEntity(release)] }, x, y, focus)} onCreate={() => canCreateTask && setDialog("release")} />{surface === "releases" && catalogPages.releases?.page.hasMore && <CatalogPagination busy={catalogLoading} onMore={() => void loadMoreCatalog("releases")} />}</>
         ) : taskSearchStatus ? (
           <TaskSearchNotice status={taskSearchStatus} />
         ) : layout === "board" ? (
@@ -6186,13 +6391,9 @@ function WorkspaceOverviewSurface({
   const recentTasks = [...openTasks]
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 5);
-  const recentProjects = data.projects.filter((project) => !project.archivedAt)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, 4);
-  const recentReleases = [...data.releases]
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-    .slice(0, 4);
-  const recentViews = data.views.slice(0, 4);
+  const recentProjects = selectRecentNavigation(data.projects);
+  const recentReleases = selectRecentNavigation(data.releases);
+  const recentViews = selectRecentNavigation(data.views);
   const sharedProjects = data.projects.filter((project) => project.accessRole !== "owner");
   const sharedTasks = openTasks.filter(
     (task) => task.projectId === null && task.accessRole !== "owner",
@@ -6203,9 +6404,9 @@ function WorkspaceOverviewSurface({
   const sharedCount = sharedProjects.length + sharedTasks.length + sharedViews.length;
   const isEmpty =
     openTasks.length === 0 &&
-    data.projects.length === 0 &&
-    data.releases.length === 0 &&
-    data.views.length === 0;
+    (data.navigationCollections?.projects.total ?? data.projects.length) === 0 &&
+    (data.navigationCollections?.releases.total ?? data.releases.length) === 0 &&
+    (data.navigationCollections?.views.total ?? data.views.length) === 0;
   const canCreateRelease = data.projects.some((project) => canEditContent(project.accessRole));
 
   return (
@@ -6236,7 +6437,7 @@ function WorkspaceOverviewSurface({
         <div className="workspace-metrics">
           <WorkspaceMetric href="/issues/active" label="Active" value={activeCount} icon={<Zap size={16} />} onOpen={() => onOpen("active")} />
           <WorkspaceMetric href="/issues/backlog" label="Backlog" value={backlogCount} icon={<Inbox size={16} />} onOpen={() => onOpen("backlog")} />
-          <WorkspaceMetric href="/projects" label="Projects" value={data.projects.length} icon={<FolderKanban size={16} />} onOpen={() => onOpen("projects")} />
+          <WorkspaceMetric href="/projects" label="Projects" value={data.navigationCollections?.projects.total ?? data.projects.length} icon={<FolderKanban size={16} />} onOpen={() => onOpen("projects")} />
           <WorkspaceMetric href="/shared" label="Shared with me" value={sharedCount} icon={<UsersRound size={16} />} onOpen={() => onOpen("shared")} />
         </div>
         <div className="workspace-panel workspace-recent-panel">
@@ -6500,6 +6701,7 @@ function formatAttachmentBytes(value: number) { if (value < 1024) return `${valu
 function EmptyState({ entity = "task", onCreate }: { entity?: "task" | "project" | "release"; onCreate?: () => void }) { const labels = { task: ["No tasks here", "There is no work in this view yet."], project: ["No projects yet", "Create a project to group work around an outcome."], release: ["No releases yet", "There are no releases in this scope yet."] }; return <div className="empty-state"><div className="empty-illustration"><span /><span /><span /></div><h2>{labels[entity][0]}</h2><p>{labels[entity][1]}</p>{onCreate && <button className="button primary" onClick={onCreate}><Plus size={14} />Create {entity}</button>}</div>; }
 function TaskSearchNotice({ status }: { status: "loading" | "error" }) { return <div className="empty-state" role="status"><Search size={22} /><h2>{status === "loading" ? "Searching tasks…" : "Search unavailable"}</h2><p>{status === "loading" ? "Looking across every task you can access." : "The search request failed. Change the query or try again."}</p></div>; }
 function TaskQueryPagination({ busy, onMore }: { busy: boolean; onMore: () => void }) { return <div className="task-query-pagination" role="status"><span>More matching tasks are available.</span><button className="button ghost" type="button" disabled={busy} onClick={onMore}>{busy ? "Loading…" : "Load more"}</button></div>; }
+function CatalogPagination({ busy, onMore }: { busy: boolean; onMore: () => void }) { return <div className="task-query-pagination" role="status"><span>More records are available.</span><button className="button ghost" type="button" disabled={busy} onClick={onMore}>{busy ? "Loading…" : "Load more"}</button></div>; }
 type TaskHierarchySummary = {
   parent?: TaskRecord;
   subtaskCount: number;

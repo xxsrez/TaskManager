@@ -484,9 +484,25 @@ export type AppSnapshot = {
   taskLabels: TaskLabelAssignment[];
   relations: TaskRelationRecord[];
   views: SavedViewRecord[];
+  navigationCollections?: {
+    projects: { total: number; hasMore: boolean };
+    releases: { total: number; hasMore: boolean };
+    views: { total: number; hasMore: boolean };
+  };
   collaborators: CollaboratorRecord[];
   /** Opaque checkpoint for the authenticated principal's incremental UI feed. */
   syncCursor?: string;
+};
+
+export type WorkspaceCatalogKind = "projects" | "releases" | "views";
+
+export type WorkspaceCatalogPage = {
+  kind: WorkspaceCatalogKind;
+  projects: ProjectRecord[];
+  releases: ReleaseRecord[];
+  views: SavedViewRecord[];
+  page: { hasMore: boolean; nextCursor: string | null };
+  total: number;
 };
 
 export type WorkspaceSyncCollection<T> = {

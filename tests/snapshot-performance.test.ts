@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { configureRuntimeEnvironment } from "../lib/runtime-environment";
-import { getOrCreateUser, getSnapshot } from "../lib/repository";
+import {
+  createProject,
+  createRelease,
+  createSavedView,
+  createTask,
+  getOrCreateUser,
+  getSnapshot,
+  getWorkspaceCatalogPage,
+} from "../lib/repository";
+import { defaultViewDisplay, emptyViewQuery } from "../lib/view-contract";
 import { createD1TestHarness } from "./helpers/d1";
 
 let dispose: (() => Promise<void>) | undefined;
@@ -32,6 +41,122 @@ test("workspace snapshot collection reads use one D1 batch round trip", async ()
 
   assert.equal(directCollectionReads, 0);
   assert.equal(batchCalls, 1);
+});
+
+test("workspace bootstrap bounds navigation catalogs and reports accessible totals", async () => {
+  const user = await getOrCreateUser({
+    provider: "chatgpt",
+    providerAccountKey: "bounded-navigation-user",
+    displayName: "Bounded Navigation",
+    email: "bounded-navigation@example.test",
+  });
+  for (let index = 0; index < 6; index += 1) {
+    await createProject(user, {
+      name: `Project ${index}`,
+      taskCode: `P${String.fromCharCode(65 + index)}`,
+    });
+    const project = (await getSnapshot(user)).projects[0]!;
+    await createRelease(user, { projectId: project.id, name: `Release ${index}` });
+    await createSavedView(user, {
+      name: `View ${index}`,
+      query: emptyViewQuery(),
+      display: defaultViewDisplay(),
+    });
+  }
+
+  const result = await getSnapshot(user, { taskLimit: 40, navigationLimit: 3 });
+  assert.equal(result.projects.length, 3);
+  assert.equal(result.releases.length, 3);
+  assert.equal(result.views.length, 3);
+  assert.deepEqual(result.navigationCollections, {
+    projects: { total: 6, hasMore: true },
+    releases: { total: 6, hasMore: true },
+    views: { total: 6, hasMore: true },
+  });
+
+  const all = await getSnapshot(user);
+  const recentProjectIds = new Set(result.projects.map((project) => project.id));
+  const outsideProject = all.projects.find((project) => !recentProjectIds.has(project.id))!;
+  const outsideRelease = all.releases.find(
+    (release) => release.projectId === outsideProject.id,
+  )!;
+  await createTask(user, {
+    projectId: outsideProject.id,
+    releaseId: outsideRelease.id,
+    title: "Task requiring bounded catalog context",
+  });
+  const withTaskContext = await getSnapshot(user, {
+    taskLimit: 40,
+    navigationLimit: 3,
+  });
+  assert.ok(withTaskContext.projects.some((project) => project.id === outsideProject.id));
+  assert.ok(withTaskContext.releases.some((release) => release.id === outsideRelease.id));
+});
+
+test("workspace catalog uses ACL-scoped keyset pages without duplicates", async () => {
+  const owner = await getOrCreateUser({
+    provider: "chatgpt",
+    providerAccountKey: "bounded-navigation-user",
+    displayName: "Bounded Navigation",
+    email: "bounded-navigation@example.test",
+  });
+  const outsider = await getOrCreateUser({
+    provider: "chatgpt",
+    providerAccountKey: "bounded-navigation-outsider",
+    displayName: "Catalog Outsider",
+    email: "catalog-outsider@example.test",
+  });
+  const first = await getWorkspaceCatalogPage(owner, {
+    kind: "projects",
+    limit: 2,
+  });
+  const second = await getWorkspaceCatalogPage(owner, {
+    kind: "projects",
+    limit: 2,
+    cursor: first.page.nextCursor,
+  });
+
+  assert.equal(first.projects.length, 2);
+  assert.equal(second.projects.length, 2);
+  assert.equal(
+    new Set([...first.projects, ...second.projects].map((project) => project.id)).size,
+    4,
+  );
+  const search = await getWorkspaceCatalogPage(owner, {
+    kind: "projects",
+    search: "Project 5",
+  });
+  assert.deepEqual(search.projects.map((project) => project.name), ["Project 5"]);
+  const byName = await getWorkspaceCatalogPage(owner, {
+    kind: "projects",
+    order: "name",
+    direction: "asc",
+    limit: 3,
+  });
+  assert.deepEqual(
+    byName.projects.map((project) => project.name),
+    ["Project 0", "Project 1", "Project 2"],
+  );
+  const byNameNext = await getWorkspaceCatalogPage(owner, {
+    kind: "projects",
+    order: "name",
+    direction: "asc",
+    limit: 3,
+    cursor: byName.page.nextCursor,
+  });
+  assert.deepEqual(
+    byNameNext.projects.map((project) => project.name),
+    ["Project 3", "Project 4", "Project 5"],
+  );
+  const hidden = await getWorkspaceCatalogPage(outsider, { kind: "projects" });
+  assert.equal(hidden.total, 0);
+  assert.deepEqual(hidden.projects, []);
+  const releases = await getWorkspaceCatalogPage(owner, {
+    kind: "releases",
+    limit: 2,
+  });
+  assert.ok(releases.releases.every((release) =>
+    releases.projects.some((project) => project.id === release.projectId)));
 });
 
 function instrumentDatabase(database: D1Database): D1Database {

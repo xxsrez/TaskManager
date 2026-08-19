@@ -2195,6 +2195,89 @@ test("the account identity is not the sign-out target", () => {
   assert.equal(markup.match(/href="\/sign-out"/g)?.length, 1);
 });
 
+test("sidebar keeps collection links and at most three recent records with active injection", () => {
+  const projects = Array.from({ length: 100 }, (_, index) => ({
+    ...snapshot.projects[0]!,
+    id: `project-${index}`,
+    publicId: `${String(index).padStart(8, "0")}-1111-4111-8111-111111111111`,
+    name: `Project ${index}`,
+    updatedAt: `2026-08-19T${String(index % 24).padStart(2, "0")}:00:00.000Z`,
+  }));
+  const releases = projects.map((project, index) => ({
+    id: `release-${index}`,
+    publicId: `${String(index).padStart(8, "0")}-2222-4222-8222-222222222222`,
+    projectId: project.id,
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: `Release ${index}`,
+    description: "",
+    status: "planned" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: `2026-08-19T${String(index % 24).padStart(2, "0")}:00:00.000Z`,
+    accessRole: "owner" as const,
+  }));
+  const views = projects.map((_, index) => ({
+    id: `view-${index}`,
+    publicId: `${String(index).padStart(8, "0")}-3333-4333-8333-333333333333`,
+    ownerUserId: "user-1",
+    name: `Saved view ${index}`,
+    scopeProjectId: null,
+    query: {},
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "manual" as const,
+      direction: "asc" as const,
+      showEmptyGroups: true,
+      visibleFields: [],
+    },
+    archivedAt: null,
+    version: 1,
+    createdAt: now,
+    updatedAt: `2026-08-19T${String(index % 24).padStart(2, "0")}:00:00.000Z`,
+    accessRole: "owner" as const,
+  }));
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: { ...snapshot, projects, releases, views },
+      initialNavigation: {
+        surface: "project:project-0",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+  const navigation = markup.match(/<nav class="nav-scroll"[\s\S]*?<\/nav>/)?.[0] ?? "";
+
+  assert.match(navigation, /aria-label="All views"/);
+  assert.match(navigation, /aria-label="All projects"/);
+  assert.match(navigation, /aria-label="All releases"/);
+  assert.equal(navigation.match(/aria-label="Saved view \d+"/g)?.length, 3);
+  assert.equal(navigation.match(/aria-label="Project \d+"/g)?.length, 3);
+  assert.equal(navigation.match(/aria-label="Project \d+ Release \d+"/g)?.length, 3);
+  assert.match(navigation, /aria-current="page"[^>]*aria-label="Project 0"/);
+});
+
+test("full collection surfaces expose search and deterministic sort controls", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: { surface: "projects", layout: "list", taskId: null },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /aria-label="Search projects"/);
+  assert.match(markup, /aria-label="Sort catalog"/);
+  assert.match(markup, />Recently updated</);
+  assert.match(markup, /aria-label="Sort ascending"/);
+});
+
 test("Codex Desktop setup separates install stages and exposes bounded recovery", () => {
   assert.equal(TASK_MANAGER_MARKETPLACE_URL, "https://github.com/xxsrez/marketplace");
 
