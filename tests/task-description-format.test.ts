@@ -13,6 +13,7 @@ import {
   parseTaskFileReferences,
   parseTaskImageLine,
   parseTaskImageReferences,
+  parseTaskMarkdownLines,
   taskDescriptionUsesAttachment,
 } from "../lib/task-description-format";
 
@@ -60,6 +61,41 @@ test("native Task file links round-trip opaque refs and ignore literal code exam
   assert.deepEqual(parseTaskAttachmentReferences(literals), []);
   assert.equal(hasMalformedTaskAttachmentReference(literals), false);
   assert.equal(taskDescriptionUsesAttachment(literals, ref), false);
+});
+
+test("Task Markdown fences and escapes have one executable-reference contract", () => {
+  const ref = "4d9701e5-fdb5-41f2-9538-fc5e43256ec9";
+  const token = buildTaskFileLink(ref, "fenced.pdf");
+  const literals = [
+    "~~~md",
+    token,
+    "~~~~",
+    "   ```md",
+    token,
+    "   ```",
+    `\\${token}`,
+    `\\![diagram](attachment:v1:${ref})`,
+  ].join("\n");
+
+  assert.deepEqual(parseTaskAttachmentReferences(literals), []);
+  assert.equal(hasMalformedTaskAttachmentReference(literals), false);
+  assert.equal(taskDescriptionUsesAttachment(literals, ref), false);
+  assert.deepEqual(
+    parseTaskMarkdownLines(literals).map((line) => line.kind),
+    ["fence", "code", "fence", "fence", "code", "fence", "text", "text"],
+  );
+
+  const evenEscape = `\\\\${token}`;
+  assert.equal(parseTaskFileReferences(evenEscape).length, 1);
+  assert.equal(taskDescriptionUsesAttachment(evenEscape, ref), true);
+  assert.equal(
+    hasMalformedTaskAttachmentReference("\\[literal](attachment:v1:short)"),
+    false,
+  );
+  assert.equal(
+    hasMalformedTaskAttachmentReference("\\\\[active](attachment:v1:short)"),
+    true,
+  );
 });
 
 test("native Task file links require a bounded label and exact versioned syntax", () => {

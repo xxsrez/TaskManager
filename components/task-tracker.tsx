@@ -109,9 +109,11 @@ import {
 } from "@/components/task-attachments";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
 import {
+  isTaskMarkdownEscaped,
   parseTaskAttachmentReferences,
   parseTaskFileToken,
   parseTaskImageLine,
+  parseTaskMarkdownLines,
 } from "@/lib/task-description-format";
 import type {
   AdminOverview,
@@ -4068,12 +4070,13 @@ function CommentEntry({ comment, rootId, busy, onReply, onEdit, onDelete, onReac
 }
 
 function CommentMarkdown({ body }: { body: string }) {
-  const lines = body.split("\n");
+  const lines = parseTaskMarkdownLines(body);
   const blocks: React.ReactNode[] = [];
   let code: string[] | null = null;
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (line.startsWith("```")) {
+    const markdownLine = lines[index]!;
+    const line = markdownLine.text;
+    if (markdownLine.kind === "fence") {
       if (code) {
         blocks.push(<pre key={`code-${index}`}><code>{code.join("\n")}</code></pre>);
         code = null;
@@ -4155,7 +4158,7 @@ function MarkdownBody({
   taskId?: string;
   attachments?: Map<string, PublicAttachmentRecord> | null;
 }) {
-  const lines = body.split("\n");
+  const lines = parseTaskMarkdownLines(body);
   const blocks: React.ReactNode[] = [];
   let code: string[] | null = null;
   let list: { ordered: boolean; items: React.ReactNode[]; key: number } | null = null;
@@ -4178,8 +4181,9 @@ function MarkdownBody({
   }
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (line.startsWith("```")) {
+    const markdownLine = lines[index]!;
+    const line = markdownLine.text;
+    if (markdownLine.kind === "fence") {
       if (code) {
         blocks.push(<pre key={`code-${index}`}><code>{code.join("\n")}</code></pre>);
         code = null;
@@ -4189,7 +4193,8 @@ function MarkdownBody({
       }
       continue;
     }
-    if (code) {
+    if (markdownLine.kind === "code") {
+      if (!code) code = [];
       code.push(line);
       continue;
     }
@@ -4250,7 +4255,9 @@ function renderMarkdownInline(
     const token = match[0];
     const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (link) {
-      const nativeFile = taskId ? parseTaskFileToken(token) : null;
+      const escaped = isTaskMarkdownEscaped(value, match.index) ||
+        (match.index > 0 && value[match.index - 1] === "!");
+      const nativeFile = taskId && !escaped ? parseTaskFileToken(token) : null;
       if (nativeFile) {
         nodes.push(
           <TaskDescriptionFileLink
@@ -4262,10 +4269,10 @@ function renderMarkdownInline(
             label={nativeFile.label}
           />,
         );
-      } else {
+      } else if (!escaped) {
         const href = safeMarkdownHref(link[2]);
         nodes.push(href ? <a key={match.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : token);
-      }
+      } else nodes.push(token);
     } else if (token.startsWith("`")) nodes.push(<code key={match.index}>{token.slice(1, -1)}</code>);
     else if (token.startsWith("**")) nodes.push(<strong key={match.index}>{token.slice(2, -2)}</strong>);
     else nodes.push(<em key={match.index}>{token.slice(1, -1)}</em>);

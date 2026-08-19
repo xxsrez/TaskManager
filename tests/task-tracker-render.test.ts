@@ -1715,6 +1715,38 @@ test("editable task details render the full Markdown description before editing"
   assert.doesNotMatch(markup, />Save description</);
 });
 
+test("Task description renderer keeps fenced and escaped native refs literal", () => {
+  const ref = "4d9701e5-fdb5-41f2-9538-fc5e43256ec9";
+  const token = `[fenced.pdf](attachment:v1:${ref})`;
+  const description = [
+    "~~~md",
+    token,
+    "~~~~",
+    "   ```md",
+    token,
+    "   ```",
+    `\\${token}`,
+  ].join("\n");
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        tasks: snapshot.tasks.map((task) => ({ ...task, description })),
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: "task-1",
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.equal((markup.match(/<pre><code>/g) ?? []).length, 2);
+  assert.doesNotMatch(markup, /Loading fenced\.pdf/);
+  assert.doesNotMatch(markup, /class="task-description-file-link/);
+});
+
 test("task detail timestamps render in the authenticated user timezone", () => {
   const originalTimeZone = process.env.TZ;
   process.env.TZ = "UTC";

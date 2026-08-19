@@ -490,7 +490,7 @@ export async function deleteAttachment(
            SELECT 1 FROM tasks current_task
            WHERE current_task.id = attachments.task_id
              AND current_task.version = ?
-             AND current_task.description = ?
+             AND COALESCE(current_task.description, '') = ?
          )
        RETURNING *`,
     )

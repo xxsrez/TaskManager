@@ -448,6 +448,9 @@ Attachment delete применяет обратный guard по точной cu
 version/description. Renderer отдельно разрешает image block и compact inline
 file link, лениво читает ACL-scoped metadata и строит private content route уже
 после server authorization; stale reference становится placeholder.
+Validator и renderer используют один Task Markdown fence scanner для backtick/
+tilde fences с 0–3 leading spaces; escaped native syntax остаётся literal в
+обоих путях и не создаёт Attachment edge.
 
 Agent REST повторяет эту boundary через `/api/agent/v1/tasks/{ref}/attachments`:
 metadata использует Task-bound keyset cursor, upload читает raw body только после

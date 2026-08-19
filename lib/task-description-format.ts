@@ -23,6 +23,13 @@ export type TaskAttachmentReference =
   | (TaskImageReference & { kind: "image" })
   | (TaskFileReference & { kind: "file" });
 
+export type TaskMarkdownLine = {
+  text: string;
+  kind: "text" | "fence" | "code";
+  start: number;
+  end: number;
+};
+
 const attachmentRef = "([A-Za-z0-9_-]{8,128})";
 const nativeImagePattern = new RegExp(
   `!\\[([^\\]\\n]{1,${TASK_ATTACHMENT_LABEL_MAX_LENGTH}})\\]\\(attachment:v1:${attachmentRef}(?:\\s+"([^"\\n]*)")?\\)`,
@@ -98,6 +105,41 @@ export function parseTaskFileToken(token: string) {
     : null;
 }
 
+export function parseTaskMarkdownLines(description: string): TaskMarkdownLine[] {
+  const lines = description.split("\n");
+  const result: TaskMarkdownLine[] = [];
+  let offset = 0;
+  let fence: { marker: string; length: number } | null = null;
+  for (const text of lines) {
+    const start = offset;
+    const end = start + text.length;
+    const marker = text.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      const closes = marker &&
+        marker[1]![0] === fence.marker &&
+        marker[1]!.length >= fence.length &&
+        marker[2]!.trim() === "";
+      result.push({ text, kind: closes ? "fence" : "code", start, end });
+      if (closes) fence = null;
+    } else if (marker) {
+      fence = { marker: marker[1]![0]!, length: marker[1]!.length };
+      result.push({ text, kind: "fence", start, end });
+    } else {
+      result.push({ text, kind: "text", start, end });
+    }
+    offset = end + 1;
+  }
+  return result;
+}
+
+export function isTaskMarkdownEscaped(value: string, index: number) {
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && value[cursor] === "\\"; cursor -= 1) {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+
 export function hasMalformedTaskAttachmentReference(description: string) {
   if (!description.includes(TASK_ATTACHMENT_REFERENCE_SCHEME)) return false;
   const executable = executableMarkdown(description);
@@ -164,32 +206,25 @@ function normalizeTokenText(value: string) {
 
 function executableMarkdown(description: string) {
   const characters = description.split("");
-  let lineStart = 0;
-  let fence: { marker: string; length: number } | null = null;
-  while (lineStart <= description.length) {
-    const newline = description.indexOf("\n", lineStart);
-    const lineEnd = newline === -1 ? description.length : newline;
-    const line = description.slice(lineStart, lineEnd);
-    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
-    if (fence) {
-      mask(characters, lineStart, lineEnd);
-      if (
-        marker &&
-        marker[1]![0] === fence.marker &&
-        marker[1]!.length >= fence.length
-      ) {
-        fence = null;
-      }
-    } else if (marker) {
-      fence = { marker: marker[1]![0]!, length: marker[1]!.length };
-      mask(characters, lineStart, lineEnd);
+  for (const line of parseTaskMarkdownLines(description)) {
+    if (line.kind !== "text") {
+      mask(characters, line.start, line.end);
     } else {
-      maskInlineCode(characters, description, lineStart, lineEnd);
+      maskInlineCode(characters, description, line.start, line.end);
     }
-    if (newline === -1) break;
-    lineStart = newline + 1;
   }
+  maskEscapedAttachmentSyntax(characters);
   return characters.join("");
+}
+
+function maskEscapedAttachmentSyntax(characters: string[]) {
+  const markdown = characters.join("");
+  const candidate = /!?\[[^\]\n]*\]\([^\n)]*attachment:v1:[^\n)]*\)/g;
+  for (const match of markdown.matchAll(candidate)) {
+    if (isTaskMarkdownEscaped(markdown, match.index)) {
+      mask(characters, match.index, match.index + match[0].length);
+    }
+  }
 }
 
 function maskInlineCode(

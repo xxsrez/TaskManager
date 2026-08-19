@@ -317,6 +317,30 @@ test("deletion is recoverable during grace and garbage collection removes object
   );
 });
 
+test("an unreferenced attachment can be deleted while the Task description is SQL NULL", async () => {
+  const { owner, task } = await setupSharedTask("Null description delete guard");
+  const attachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\nnull description\n%%EOF"),
+    filename: "null-description.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "null-description-delete",
+  });
+  const nullSnapshot = await database
+    .prepare("SELECT COALESCE(CAST(NULL AS TEXT), '') = ? AS matches")
+    .bind("")
+    .first<{ matches: number }>();
+  assert.equal(nullSnapshot?.matches, 1);
+  assert.equal((await getTask(owner, task.id)).description, "");
+
+  const deleted = await deleteAttachment(
+    owner,
+    task.id,
+    attachment.publicId,
+    attachment.version,
+  );
+  assert.equal(deleted.state, "deleted");
+});
+
 test("attachment mutations emit a bounded lazy invalidation for other sessions", async () => {
   const { owner, viewer, task } = await setupSharedTask("Attachment sync");
   const baseline = await getSnapshot(viewer);
