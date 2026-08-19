@@ -4,6 +4,7 @@ import {
   listTaskAttachments,
   publicAttachment,
   readBoundedAttachmentBody,
+  resolveTaskAttachments,
 } from "@/lib/attachments";
 import { ValidationError } from "@/lib/domain";
 import { withUser, withUserResponse } from "@/lib/http";
@@ -15,6 +16,11 @@ export async function GET(
   const { id } = await context.params;
   const url = new URL(request.url);
   return withUser(async (user) => {
+    const refs = url.searchParams.getAll("refs");
+    if (refs.length > 0) {
+      const attachments = await resolveTaskAttachments(user, id, refs);
+      return { attachments: attachments.map(publicAttachment) };
+    }
     const page = await listTaskAttachments(user, id, {
       includeDeleted: url.searchParams.get("includeDeleted") === "true",
       limit: url.searchParams.has("limit")

@@ -125,6 +125,10 @@ import {
 } from "@/components/task-attachments";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
 import { CommentAttachmentAuthoring } from "@/components/comment-attachment-authoring";
+import {
+  CommentAttachmentMetadataProvider,
+  useCommentAttachmentMetadata,
+} from "@/components/comment-attachment-metadata";
 import { ContextualActionMenu } from "@/components/contextual-action-menu";
 import { ProjectBackupManager } from "@/components/project-backup-manager";
 import {
@@ -135,6 +139,7 @@ import {
   parseTaskMarkdownInlineTokens,
   parseTaskMarkdownLines,
 } from "@/lib/task-description-format";
+import { commentBodyPreview } from "@/lib/comment-rendering";
 import {
   dispatchTaskKeyboardIntegrationCommand,
   keyboardCommandFor,
@@ -5078,22 +5083,24 @@ function TaskActivity({ task, currentUser, canWrite }: {
     {loading && !page && <p className="inline-note" role="status">Loading comments…</p>}
     {error && <div className="comment-error" role="alert"><span>{error}</span><button type="button" onClick={() => void loadComments()}>Retry</button></div>}
     {page && page.threads.length === 0 && <p className="activity-empty">No comments yet.</p>}
-    <div className="comment-threads">
-      {page?.threads.map((thread) => <CommentThread
-        key={`${thread.root.id}:${thread.root.resolvedAt ?? "open"}`}
-        taskId={task.id}
-        thread={thread}
-        busy={busy}
-        onReply={(rootId) => {
-          switchComposer(rootId);
-          window.setTimeout(() => composerRef.current?.focus(), 0);
-        }}
-        onEdit={(comment, body) => mutateComment(commentPath(comment.id), "PATCH", { version: comment.version, body })}
-        onDelete={(comment) => mutateComment(commentPath(comment.id), "DELETE", { version: comment.version })}
-        onReact={(comment, emoji, active) => mutateComment(commentPath(comment.id, "/reactions"), "PUT", { emoji, active })}
-        onResolve={(comment, resolved) => mutateComment(commentPath(comment.id, "/resolution"), "PUT", { version: comment.version, resolved })}
-      />)}
-    </div>
+    <CommentAttachmentMetadataProvider task={task}>
+      <div className="comment-threads">
+        {page?.threads.map((thread) => <CommentThread
+          key={`${thread.root.id}:${thread.root.resolvedAt ?? "open"}`}
+          taskId={task.id}
+          thread={thread}
+          busy={busy}
+          onReply={(rootId) => {
+            switchComposer(rootId);
+            window.setTimeout(() => composerRef.current?.focus(), 0);
+          }}
+          onEdit={(comment, body) => mutateComment(commentPath(comment.id), "PATCH", { version: comment.version, body })}
+          onDelete={(comment) => mutateComment(commentPath(comment.id), "DELETE", { version: comment.version })}
+          onReact={(comment, emoji, active) => mutateComment(commentPath(comment.id, "/reactions"), "PUT", { emoji, active })}
+          onResolve={(comment, resolved) => mutateComment(commentPath(comment.id, "/resolution"), "PUT", { version: comment.version, resolved })}
+        />)}
+      </div>
+    </CommentAttachmentMetadataProvider>
     {page?.hasMore && <button className="button ghost load-comments" type="button" disabled={loading} onClick={() => void loadComments(page.nextCursor, true)}>{loading ? "Loading…" : "Load older threads"}</button>}
     {canWrite && <div className="comment-composer">
       <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(currentUser.id) } as React.CSSProperties}>{initials(currentUser.displayName)}</span>
@@ -5217,6 +5224,25 @@ function CommentThread({ taskId, thread, busy, onReply, onEdit, onDelete, onReac
   onResolve: (comment: CommentRecord, resolved: boolean) => Promise<boolean>;
 }) {
   const [collapsed, setCollapsed] = useState(Boolean(thread.root.resolvedAt));
+  useEffect(() => {
+    const targetId = window.location.hash.slice(1);
+    if (!targetId || ![thread.root, ...thread.replies].some(
+      (comment) => `comment-${comment.id}` === targetId,
+    )) return;
+    let focusFrame = 0;
+    const openFrame = window.requestAnimationFrame(() => {
+      setCollapsed(false);
+      focusFrame = window.requestAnimationFrame(() => {
+        const target = document.getElementById(targetId);
+        target?.focus({ preventScroll: true });
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(openFrame);
+      window.cancelAnimationFrame(focusFrame);
+    };
+  }, [thread]);
   return <article className={`comment-thread ${thread.root.resolvedAt ? "resolved" : ""}`}>
     {thread.root.resolvedAt && <button className="resolved-thread-toggle" type="button" aria-expanded={!collapsed} onClick={() => setCollapsed((value) => !value)}><Check size={13} />Resolved thread · {thread.replies.length + 1} messages</button>}
     {!collapsed && <>
@@ -5242,8 +5268,9 @@ function CommentEntry({ taskId, comment, rootId, busy, onReply, onEdit, onDelete
   const [editUploadBlocked, setEditUploadBlocked] = useState(false);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const [expanded, setExpanded] = useState(false);
-  const long = comment.body.length > 1_200;
-  const body = long && !expanded ? `${comment.body.slice(0, 1_200)}…` : comment.body;
+  const preview = commentBodyPreview(comment.body);
+  const long = preview.truncated;
+  const body = long && !expanded ? preview.body : comment.body;
   const isRoot = comment.parentCommentId === null;
   const permalink = `comment-${comment.id}`;
   return <div className="comment-entry" id={permalink} tabIndex={-1}>
@@ -5257,7 +5284,7 @@ function CommentEntry({ taskId, comment, rootId, busy, onReply, onEdit, onDelete
         </div></details>
       </header>
       {comment.historical?.quotedText && <blockquote className="historical-comment-quote">{comment.historical.quotedText}</blockquote>}
-      {comment.deletedAt ? <p className="comment-tombstone">Comment deleted</p> : editing ? <div className="comment-edit"><CommentAttachmentAuthoring taskId={taskId} value={editBody} onChange={setEditBody} textareaRef={editRef} disabled={busy} onBlockingChange={setEditUploadBlocked}><textarea ref={editRef} value={editBody} onChange={(event) => setEditBody(event.target.value)} rows={4} autoFocus /></CommentAttachmentAuthoring><div><button className="button ghost" type="button" onClick={() => { setEditBody(comment.body); setEditing(false); }}>Cancel</button><button className="button primary" type="button" disabled={busy || editUploadBlocked || !editBody.trim()} onClick={() => void onEdit(comment, editBody).then((saved) => { if (saved) setEditing(false); })}>{editUploadBlocked ? "Upload pending" : "Save"}</button></div></div> : <><CommentMarkdown body={body} />{long && <button className="comment-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Show more"}</button>}</>}
+      {comment.deletedAt ? <p className="comment-tombstone">Comment deleted</p> : editing ? <div className="comment-edit"><CommentAttachmentAuthoring taskId={taskId} value={editBody} onChange={setEditBody} textareaRef={editRef} disabled={busy} onBlockingChange={setEditUploadBlocked}><textarea ref={editRef} value={editBody} onChange={(event) => setEditBody(event.target.value)} rows={4} autoFocus /></CommentAttachmentAuthoring><div><button className="button ghost" type="button" onClick={() => { setEditBody(comment.body); setEditing(false); }}>Cancel</button><button className="button primary" type="button" disabled={busy || editUploadBlocked || !editBody.trim()} onClick={() => void onEdit(comment, editBody).then((saved) => { if (saved) setEditing(false); })}>{editUploadBlocked ? "Upload pending" : "Save"}</button></div></div> : <><CommentMarkdown taskId={taskId} body={body} />{long && <button className="comment-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Show more"}</button>}</>}
       {!comment.deletedAt && <div className="comment-actions">
         {comment.reactions.map((reaction) => <button key={reaction.emoji} className={reaction.reactedByCurrentUser ? "active" : ""} type="button" disabled={!comment.permissions.canReact || busy} onClick={() => void onReact(comment, reaction.emoji, !reaction.reactedByCurrentUser)}>{reaction.emoji} <span>{reaction.count}</span></button>)}
         {comment.permissions.canReact && ["👍", "❤️", "🎉"].filter((emoji) => !comment.reactions.some((reaction) => reaction.emoji === emoji)).map((emoji) => <button className="reaction-add" key={emoji} type="button" disabled={busy} aria-label={`React ${emoji}`} onClick={() => void onReact(comment, emoji, true)}>{emoji}</button>)}
@@ -5268,30 +5295,9 @@ function CommentEntry({ taskId, comment, rootId, busy, onReply, onEdit, onDelete
   </div>;
 }
 
-function CommentMarkdown({ body }: { body: string }) {
-  const lines = parseTaskMarkdownLines(body);
-  const blocks: React.ReactNode[] = [];
-  let code: string[] | null = null;
-  for (let index = 0; index < lines.length; index += 1) {
-    const markdownLine = lines[index]!;
-    const line = markdownLine.text;
-    if (markdownLine.kind === "fence") {
-      if (code) {
-        blocks.push(<pre key={`code-${index}`}><code>{code.join("\n")}</code></pre>);
-        code = null;
-      } else code = [];
-      continue;
-    }
-    if (code) {
-      code.push(line);
-      continue;
-    }
-    if (line.startsWith("> ")) blocks.push(<blockquote key={index}>{renderMarkdownInline(line.slice(2))}</blockquote>);
-    else if (/^[-*] /.test(line)) blocks.push(<div className="comment-list-item" key={index}>• <span>{renderMarkdownInline(line.slice(2))}</span></div>);
-    else blocks.push(<p key={index}>{renderMarkdownInline(line) || <br />}</p>);
-  }
-  if (code) blocks.push(<pre key="code-final"><code>{code.join("\n")}</code></pre>);
-  return <div className="comment-body">{blocks}</div>;
+function CommentMarkdown({ taskId, body }: { taskId: string; body: string }) {
+  const attachments = useCommentAttachmentMetadata(body);
+  return <MarkdownBody body={body} className="comment-body" taskId={taskId} attachments={attachments} />;
 }
 
 function TaskDescriptionMarkdown({

@@ -337,8 +337,14 @@ immutable ID и может группировать Tasks по значения�
   attachment idempotency не позволяют отправить Comment, пока связанный upload
   не готов либо не удалён из draft. Ready refs сохраняются в изолированном
   draft current User + Task + optional root thread; незавершённый upload после
-  reload не объявляется ready. Browser renderer поставляется отдельным
-  UI-срезом и до него не считается реализованным.
+  reload не объявляется ready.
+- Browser renderer разрешает metadata только для executable refs в смонтированных
+  Comment bodies текущей видимой page. Скрытая часть `Show more`, свёрнутый
+  thread и tombstone не инициируют lookup. Raster использует тот же private
+  preview с focus trap и `Esc`, что Task Attachment; file — ACL-scoped safe
+  download. Missing, deleted, forbidden и guessed refs дают одинаковый локальный
+  placeholder без filename или existence leak. Renderer invalidation не
+  сбрасывает root/reply/edit draft.
 - Импортированный comment становится historical `Comment` той же Task с
   snapshot имени автора и исходных timestamps/quote. Он не получает
   `author_user_id`, не impersonates текущего User и сохраняет source identity.

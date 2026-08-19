@@ -510,6 +510,15 @@ List повторяет плотную grouped-list модель Linear.
   resolve/reopen и actions по permissions. Replies всегда одноуровневые;
   resolved thread свёрнут, permalink прокручивает и подсвечивает comment,
   длинный body раскрывается через `Show more`.
+- Native attachment refs в видимой части comment body используют renderer Task
+  Attachments: raster остаётся inline, открывает private full preview с focus
+  trap/`Esc` и восстанавливает focus; generic file остаётся переносимой
+  keyboard-focusable safe-download ссылкой. Metadata запрашиваются одним
+  exact-ref batch только для смонтированных comments текущей page; collapsed,
+  скрытая часть `Show more` и tombstone не загружают ref. Missing/deleted/
+  forbidden/guessed ref выглядит одинаковым локальным placeholder без filename
+  и existence leak. Attachment invalidation обновляет renderer, не сбрасывая
+  root/reply draft.
 - Historical comment имеет badge `Imported history`, snapshot исходного author,
   исходные timestamps и optional quote. Для него нет edit/delete controls;
   Editor+ по обычным правилам может reply/react/resolve. Nested imported reply
@@ -917,7 +926,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
-| Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates и mentions; Comment authoring использует существующие Task attachments, browser rendering поставляется отдельным UI-срезом; Task-file upload после create имеет честный partial result |
+| Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates и mentions; Comment authoring и renderer переиспользуют существующие Task attachments; Task-file upload после create имеет честный partial result |
 | Issue relations | Grouped blocking/related/duplicate links и explicit add/edit/remove | Берём ядро | Без auto-related из description/comments в первом writable slice |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |

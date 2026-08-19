@@ -521,8 +521,17 @@ stable attachment idempotency key, вставляет opaque image/file token т
 после ready response и сохраняет в `localStorage` только body через ключ current
 User + Task + optional root thread. Поэтому reload не повышает pending upload до
 ready, switch thread отменяет только текущую upload-сессию, а готовый удалённый
-из body token оставляет Attachment видимым в Task gallery. Browser read renderer
-остаётся отдельным срезом.
+из body token оставляет Attachment видимым в Task gallery.
+
+Browser Comment renderer агрегирует только executable refs из смонтированных
+bodies текущей comment page и передаёт их повторяемыми `refs` в
+`GET /api/tasks/{id}/attachments`. Exact-ref branch сначала повторяет Task ACL,
+возвращает только найденные ready same-Task metadata и одинаково опускает
+guessed, foreign, deleted и недоступные refs. Collapsed threads, скрытая часть
+`Show more` и tombstones не монтируют consumer. Cache хранит metadata, но не
+body/object key/content URL; `task_attachments` invalidation перечитывает
+только видимые refs и не затрагивает comment drafts. Image/file presentation
+переиспользует private Task Attachment preview/download components.
 
 Append-only change history запрашивается независимо через
 `/api/tasks/{id}/activity`. Repository сначала разрешает текущую Task ACL, затем

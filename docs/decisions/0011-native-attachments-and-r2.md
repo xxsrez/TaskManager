@@ -23,6 +23,12 @@ Markdown file links. Canonical body по-прежнему хранит толь�
 Дополнение 2026-08-19: live native Comments используют тот же Markdown contract
 и normalized `comment_attachment_refs`; backup schema `13` переносит index.
 
+Дополнение 2026-08-19: browser Comment renderer разрешает одним exact-ref batch
+только refs смонтированных bodies текущей page. Он переиспользует private Task
+Attachment preview/download, не сохраняет content URL и одинаково показывает
+локальный placeholder для missing/deleted/forbidden/guessed refs; composer и
+upload остаются отдельным решением.
+
 ## Контекст
 
 D1 хранит структурированные данные, но binary body не должен попадать в D1,

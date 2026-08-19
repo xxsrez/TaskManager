@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { GET as listAttachmentsRoute } from "../app/api/tasks/[id]/attachments/route";
 import { POST as mcpPost } from "../app/api/mcp/route";
 import { issueApiCredential } from "../lib/api-credentials";
 import { reconcileAttachmentStorage } from "../lib/attachment-operations";
@@ -7,7 +8,11 @@ import {
   createAgentTaskComment,
   listAgentTaskComments,
 } from "../lib/agent-api-repository";
-import { createAttachment, deleteAttachment } from "../lib/attachments";
+import {
+  createAttachment,
+  deleteAttachment,
+  resolveTaskAttachments,
+} from "../lib/attachments";
 import { exportProjectBackup } from "../lib/project-backup";
 import { exportSystemBackup } from "../lib/system-backup";
 import {
@@ -17,6 +22,7 @@ import {
   getCommentThread,
 } from "../lib/comments";
 import { ConflictError, ValidationError } from "../lib/domain";
+import { configureActorResolverForTests } from "../lib/auth";
 import {
   createProject,
   createTask,
@@ -203,6 +209,62 @@ test("comment refs reject guessed, cross-task, unavailable, and incompatible att
       body: buildTaskFileLink(local.publicId, "pending"),
       idempotencyKey: "pending",
     }),
+    ValidationError,
+  );
+});
+
+test("comment attachment metadata resolves only requested same-Task refs", async () => {
+  const { owner, project, task } = await setup("Comment refs R");
+  const other = await createTask(owner, { title: "Other metadata task", projectId: project.id });
+  const visible = await readyFile(owner, task.id, "visible-comment-file");
+  const hiddenSameTask = await readyFile(owner, task.id, "hidden-comment-file");
+  const foreign = await readyFile(owner, other.id, "foreign-comment-file");
+
+  const resolved = await resolveTaskAttachments(owner, task.id, [
+    visible.publicId,
+    "guessed-reference",
+    foreign.publicId,
+    visible.publicId,
+  ]);
+
+  assert.deepEqual(resolved.map((attachment) => attachment.publicId), [visible.publicId]);
+  assert.ok(!resolved.some((attachment) => attachment.publicId === hiddenSameTask.publicId));
+  assert.ok(!resolved.some((attachment) => attachment.publicId === foreign.publicId));
+
+  await createComment(owner, task.id, {
+    body: buildTaskFileLink(visible.publicId, "Visible comment file"),
+    idempotencyKey: "metadata-bootstrap-boundary",
+  });
+  const bootstrap = JSON.stringify(await getSnapshot(owner));
+  assert.doesNotMatch(bootstrap, new RegExp(visible.publicId));
+  assert.doesNotMatch(bootstrap, /visible-comment-file|attachment:v1:/);
+
+  configureActorResolverForTests(async () => ownerActor);
+  try {
+    const query = new URLSearchParams();
+    query.append("refs", visible.publicId);
+    query.append("refs", foreign.publicId);
+    query.append("refs", "guessed-reference");
+    const response = await listAttachmentsRoute(
+      new Request(`https://example.test/api/tasks/${task.id}/attachments?${query}`),
+      { params: Promise.resolve({ id: task.id }) },
+    );
+    assert.equal(response.status, 200);
+    const payload = await response.json() as {
+      attachments: Array<{ ref: string }>;
+    };
+    assert.deepEqual(payload.attachments.map((attachment) => attachment.ref), [
+      visible.publicId,
+    ]);
+    const serialized = JSON.stringify(payload);
+    assert.doesNotMatch(serialized, /objectKey|"url"|"body"/);
+    assert.doesNotMatch(serialized, /hidden-comment-file|foreign-comment-file/);
+  } finally {
+    configureActorResolverForTests(null);
+  }
+
+  await assert.rejects(
+    resolveTaskAttachments(owner, task.id, Array.from({ length: 101 }, (_, index) => `ref-${index}`)),
     ValidationError,
   );
 });

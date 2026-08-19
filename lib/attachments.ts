@@ -368,6 +368,37 @@ export async function listTaskAttachments(
   };
 }
 
+export async function resolveTaskAttachments(
+  currentUser: UserRecord,
+  taskId: string,
+  refs: string[],
+): Promise<AttachmentRecord[]> {
+  const task = await getTask(currentUser, taskId);
+  if (refs.length > 100) {
+    throw new ValidationError("At most 100 attachment references can be resolved");
+  }
+  const requested = [...new Set(refs)].filter((ref) =>
+    /^[A-Za-z0-9_-]{8,128}$/.test(ref)
+  );
+  if (!requested.length) return [];
+  const rows = await getD1()
+    .prepare(
+      `SELECT * FROM attachments
+       WHERE task_id = ? AND state = 'ready'
+         AND public_id IN (${requested.map(() => "?").join(", ")})`,
+    )
+    .bind(task.id, ...requested)
+    .all<DbRow>();
+  const byRef = new Map((rows.results as DbRow[]).map((row) => {
+    const attachment = mapAttachment(row);
+    return [attachment.publicId, attachment] as const;
+  }));
+  return requested.flatMap((ref) => {
+    const attachment = byRef.get(ref);
+    return attachment ? [attachment] : [];
+  });
+}
+
 export async function getTaskAttachment(
   currentUser: UserRecord,
   taskId: string,

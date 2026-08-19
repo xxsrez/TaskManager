@@ -15,6 +15,10 @@ const taskDescriptionEditor = readFileSync(
   new URL("../components/task-description-editor.tsx", import.meta.url),
   "utf8",
 );
+const commentAttachmentMetadata = readFileSync(
+  new URL("../components/comment-attachment-metadata.tsx", import.meta.url),
+  "utf8",
+);
 
 function declarations(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -430,6 +434,22 @@ test("native description attachments use private refs, cursor upload, and respon
   assert.match(
     css,
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-description-upload \.icon-button\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;/,
+  );
+});
+
+test("comment attachments resolve mounted refs only and reuse the private renderer", () => {
+  assert.match(taskTracker, /CommentAttachmentMetadataProvider/);
+  assert.match(taskTracker, /useCommentAttachmentMetadata\(body\)/);
+  assert.match(taskTracker, /<MarkdownBody body=\{body\} className="comment-body" taskId=\{taskId\} attachments=\{attachments\}/);
+  assert.match(taskTracker, /commentBodyPreview\(comment\.body/);
+  assert.match(commentAttachmentMetadata, /searchParams\.append\("refs", ref\)/);
+  assert.match(commentAttachmentMetadata, /task\.attachmentInvalidationCursor/);
+  assert.match(commentAttachmentMetadata, /task-manager:attachment-changed/);
+  assert.doesNotMatch(commentAttachmentMetadata, /\/attachments[`"']\s*,/);
+  assert.match(declarations(".comment-body .task-description-image"), /max-width:\s*100%\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.comment-body \.task-description-image > button\s*\{[^}]*min-height:\s*44px\s*;/,
   );
 });
 
