@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-17
+Последнее обновление: 2026-08-19
 
 ## 1. Назначение
 
@@ -697,12 +697,30 @@ Linear, но они обязаны использовать тот же visual l
   поддерживают restore. Ошибка optimistic version остаётся в modal и допускает
   повтор после актуального reload.
 - `Codex setup` открывает modal с переключаемыми режимами `Codex Desktop` и
-  `Codex CLI`. Desktop flow показывает добавление `Srez Marketplace`, в котором
-  сейчас опубликован `Task Manager`, его установку и OAuth `Authenticate`/`Connect`;
-  CLI flow показывает копируемые команды `codex plugin marketplace add`,
-  `codex plugin add` и последующий OAuth flow. Ни один режим не требует ручного
-  ввода MCP URL, client ID, secret или API token; copy controls и текущая
-  выбранная вкладка имеют accessible labels/states.
+  `Codex CLI`. До tabs на mobile сразу показан handoff: установка продолжается
+  в ChatGPT/Codex Desktop либо CLI, а mobile ChatGPT используется после
+  установки plugin на тот же account. Flow визуально разделяет пять стадий:
+  `Add Srez Marketplace`, `Install Task Manager plugin`, OAuth
+  `Authenticate / Connect`, возврат в Codex с проверкой `Installed` и новый
+  task с read-only smoke `Show my tasks in Task Manager.` Для каждой стадии
+  указаны поверхность, точные UI labels, действие и success state.
+- Desktop path использует `Plugins → Add → Add a marketplace → Source`, затем
+  `Personal → Srez Marketplace → Task Manager → Install`, browser consent и
+  `Plugins → Installed`. Текст объясняет разницу `Personal` и `Installed`,
+  требует тот же ChatGPT account/workspace и новый task/chat для свежего plugin
+  snapshot. Developer mode, manual MCP URL, client ID, secret и personal API
+  token для обычного подключения не требуются.
+- CLI path сохраняет копируемые команды `codex plugin marketplace add
+  xxsrez/marketplace`, `codex plugin add task-manager@srez-marketplace` и
+  `codex`, затем ведёт через `/plugins → Task Manager → Authenticate`, `/new`
+  и тот же read smoke. CLI доступен и как fallback из Desktop troubleshooting.
+- Если `Install` перенаправил в web ChatGPT, но plugin не появился, bounded
+  troubleshooting запрещает повторные слепые attempts, проверяет одинаковый
+  account/workspace, `Personal`/`Installed`, один restart Desktop и CLI
+  fallback. Копируемый diagnostic prompt собирает OS/client versions, вывод
+  `codex plugin marketplace list` и `codex plugin list`, redirect domain без
+  query/tokens, видимые сообщения и screenshots `Personal`/`Installed`.
+  Onboarding явно не объявляет этот platform install-баг исправленным.
 - Sign out запускается только отдельной icon button справа от account trigger.
   Она имеет явные tooltip и accessible name; вся строка профиля не может быть
   logout hit target.
@@ -795,6 +813,9 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
   другую сущность; touch drag имеет альтернативу через property picker.
 - Минимальная responsive-приёмка включает геометрии `390×844` и `844×390`,
   safe-area insets и повторную проверку после смены ориентации.
+- `Codex setup` в обеих mobile-геометриях показывает handoff до flow, сохраняет
+  пять стадий, troubleshooting и copy actions без horizontal overflow; code и
+  diagnostic prompt переносятся внутри modal, touch controls не меньше `40px`.
 - Отдельные native mobile applications не входят в MVP.
 
 ## 15. Accessibility и content rules

@@ -244,6 +244,29 @@ test("workspace overview collapses to one column without horizontal overflow", (
   );
 });
 
+test("Codex setup hands mobile users to Desktop or CLI without horizontal overflow", () => {
+  assert.match(declarations(".codex-setup-body"), /overflow-x:\s*hidden\s*;/);
+  assert.match(declarations(".codex-mobile-handoff"), /display:\s*none\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.codex-mobile-handoff\s*\{[^}]*display:\s*grid\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.codex-copy-block button\s*\{[^}]*min-width:\s*44px\s*;[^}]*height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.modal\.codex-setup-modal\s*\{[^}]*width:\s*100vw\s*;[^}]*max-width:\s*100vw\s*;[^}]*min-height:\s*100dvh\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.codex-copy-block > code, \.codex-copy-block pre code\s*\{[^}]*white-space:\s*pre-wrap\s*;[^}]*overflow-wrap:\s*anywhere\s*;/,
+  );
+  assert.match(taskTracker, /Installing from a phone\?/);
+  assert.match(taskTracker, /These checks do not fix the platform install redirect bug/);
+});
+
 test("task rows do not attach a hidden double-click action", () => {
   assert.doesNotMatch(taskTracker, /onDoubleClick=\{onPeek\}/);
 });

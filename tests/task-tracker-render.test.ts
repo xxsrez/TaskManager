@@ -37,6 +37,7 @@ import {
   taskMatchesSearch,
   taskRelationPresentations,
   TASK_MANAGER_CLI_SETUP,
+  TASK_MANAGER_DIAGNOSTIC_PROMPT,
   TASK_MANAGER_MARKETPLACE_URL,
   TaskMoveDialog,
   TaskTracker,
@@ -1919,7 +1920,7 @@ test("the account identity is not the sign-out target", () => {
   assert.equal(markup.match(/href="\/sign-out"/g)?.length, 1);
 });
 
-test("Codex Desktop setup uses the marketplace and standard OAuth flow", () => {
+test("Codex Desktop setup separates install stages and exposes bounded recovery", () => {
   assert.equal(TASK_MANAGER_MARKETPLACE_URL, "https://github.com/xxsrez/marketplace");
 
   const markup = renderToStaticMarkup(
@@ -1929,12 +1930,33 @@ test("Codex Desktop setup uses the marketplace and standard OAuth flow", () => {
   assert.match(markup, /aria-label="Connect Task Manager to Codex"/);
   assert.match(markup, /role="tablist"/);
   assert.match(markup, /Codex Desktop/);
-  assert.match(markup, /Add → Add a marketplace/);
+  assert.equal(markup.match(/data-setup-stage="[1-5]"/g)?.length, 5);
+  assert.match(markup, /Installing from a phone/);
+  assert.match(markup, /ChatGPT\/Codex Desktop or with Codex CLI/);
+  assert.match(markup, /Add Srez Marketplace/);
+  assert.match(markup, /Install Task Manager plugin/);
+  assert.match(markup, /Authenticate \/ Connect Task Manager account/);
+  assert.match(markup, /Return to Codex and open Installed/);
+  assert.match(markup, /Start a new task and run smoke/);
+  assert.match(markup, /Plugins → Add → Add a marketplace/);
   assert.match(markup, new RegExp(TASK_MANAGER_MARKETPLACE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(markup, />Install</);
-  assert.match(markup, />Authenticate</);
-  assert.match(markup, />Connect</);
-  assert.match(markup, /No MCP URL, client ID, secret, or API token is required/);
+  assert.match(markup, /Plugins → Personal/);
+  assert.match(markup, /Plugins → Installed/);
+  assert.match(markup, /same ChatGPT account and workspace as Desktop/);
+  assert.match(markup, /new plugin snapshot/);
+  assert.match(markup, /Show my tasks in Task Manager/);
+  assert.match(markup, /Do not start a bulk migration or write flow/);
+  assert.match(markup, /Stop after one failed Install attempt/);
+  assert.match(markup, /Restart Desktop once/);
+  assert.match(markup, /Open CLI fallback/);
+  assert.match(markup, /Copy diagnostic prompt/);
+  assert.match(markup, /do not fix the platform install redirect bug/);
+  assert.match(markup, /Developer mode, a manual MCP URL, client ID, secret, and personal API token are not required/);
+
+  assert.match(TASK_MANAGER_DIAGNOSTIC_PROMPT, /codex plugin marketplace list/);
+  assert.match(TASK_MANAGER_DIAGNOSTIC_PROMPT, /codex plugin list/);
+  assert.match(TASK_MANAGER_DIAGNOSTIC_PROMPT, /query parameters and fragments removed/);
+  assert.match(TASK_MANAGER_DIAGNOSTIC_PROMPT, /Do not claim the platform install bug is fixed/);
 });
 
 test("Codex CLI setup exposes verified plugin commands and recovery steps", () => {
@@ -1949,9 +1971,17 @@ test("Codex CLI setup exposes verified plugin commands and recovery steps", () =
   for (const command of TASK_MANAGER_CLI_SETUP.split("\n")) {
     assert.match(markup, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+  assert.equal(markup.match(/data-setup-stage="[1-5]"/g)?.length, 5);
+  assert.match(markup, /Add Srez Marketplace/);
+  assert.match(markup, /Install Task Manager plugin/);
+  assert.match(markup, /Authenticate \/ Connect Task Manager account/);
+  assert.match(markup, /Return to Codex and start a new task/);
+  assert.match(markup, /Run the read smoke/);
   assert.match(markup, /\/plugins/);
   assert.match(markup, /\/new/);
   assert.match(markup, /Show my tasks in Task Manager/);
+  assert.match(markup, /without making a write/);
+  assert.match(markup, /do not begin with a bulk migration/);
 });
 
 test("workspace controls navigate to the overview without a false dropdown affordance", () => {

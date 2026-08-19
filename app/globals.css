@@ -447,7 +447,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .property-row.read-only b { color: var(--text); font-size: 12px; font-weight: 500; }
 .details-no-share .details-panel > header .button.ghost { display: none; }
 .modal.system-import-modal { width: min(540px, calc(100vw - 28px)); }
-.modal.codex-setup-modal { width: min(620px, calc(100vw - 28px)); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; }
+.modal.codex-setup-modal { width: min(720px, calc(100vw - 28px)); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; }
 .modal.workflow-settings-modal { width: min(760px, calc(100vw - 28px)); max-height: calc(100dvh - 40px); display: flex; flex-direction: column; overflow: hidden; }
 .workflow-settings-modal > .dialog-copy { padding-top: 14px; }
 .dialog-error { margin: 0 18px 12px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--danger) 24%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--danger) 7%, transparent); color: var(--danger); font-size: 10px; }
@@ -470,7 +470,9 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .workflow-archived { border-top: 1px solid var(--border); }
 .workflow-archived summary { padding: 10px 14px; color: var(--muted); cursor: pointer; font-size: 10px; }
 .workflow-archived .workflow-status-list { max-height: 180px; }
-.codex-setup-body { min-height: 0; padding: 16px 18px 18px; overflow: auto; }
+.codex-setup-body { min-width: 0; min-height: 0; padding: 16px 18px 18px; overflow-x: hidden; overflow-y: auto; }
+.codex-mobile-handoff { display: none; }
+.codex-setup-intro { margin: 0 0 13px; color: var(--text-secondary); font-size: 11px; line-height: 17px; }
 .codex-setup-tabs { height: 34px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
 .codex-setup-tabs button { min-width: 0; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; font-size: 11px; }
 .codex-setup-tabs button:hover { color: var(--text-secondary); }
@@ -479,14 +481,26 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .codex-setup-steps > li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; align-items: start; }
 .codex-step-number { width: 23px; height: 23px; display: inline-grid; place-items: center; border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border)); border-radius: 50%; background: var(--active); color: var(--accent); font-size: 10px; font-weight: 650; }
 .codex-setup-steps strong { display: block; margin: 0 0 2px; font-size: 12px; font-weight: 570; }
+.codex-step-location { display: inline-block; margin: 1px 0 5px; color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: .02em; }
 .codex-step-content { color: var(--text-secondary); font-size: 11px; line-height: 17px; }
 .codex-step-content > code { padding: 1px 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); color: var(--text); font: 10px/16px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.codex-step-success { display: flex; align-items: flex-start; gap: 5px; margin: 6px 0 0; color: #25865a; font-size: 10px; line-height: 15px; }
+.codex-step-success svg { flex: 0 0 auto; margin-top: 1px; }
+.codex-step-success b { color: inherit; font-size: inherit; font-weight: 650; }
 .codex-copy-block { min-width: 0; display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 7px 7px 7px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
 .codex-copy-block > code { min-width: 0; flex: 1; overflow: auto; color: var(--text); font: 10px/16px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .codex-copy-block pre { min-width: 0; flex: 1; margin: 0; overflow: auto; }
 .codex-copy-block pre code { color: var(--text); font: 10px/17px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
 .codex-copy-block button { min-width: 64px; height: 28px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: 5px; background: var(--raised); color: var(--text-secondary); cursor: pointer; font-size: 10px; }
 .codex-copy-block button:hover { border-color: var(--border-strong); color: var(--text); }
+.codex-cli-copy-intro { margin: 16px 0 0; color: var(--text-secondary); font-size: 11px; line-height: 17px; }
+.codex-setup-troubleshooting { margin: 18px 0 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
+.codex-setup-troubleshooting > summary { padding: 10px 12px; color: var(--text); cursor: pointer; font-size: 11px; font-weight: 570; }
+.codex-setup-troubleshooting > div { display: grid; gap: 9px; padding: 0 12px 12px; color: var(--text-secondary); font-size: 10px; line-height: 16px; }
+.codex-setup-troubleshooting p { margin: 0; }
+.codex-setup-troubleshooting ol { display: grid; gap: 5px; margin: 0; padding-left: 20px; list-style: decimal; }
+.codex-cli-fallback { justify-self: start; }
+.codex-install-bug-boundary { padding: 9px 10px; border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 6%, var(--raised)); color: var(--muted); }
 .codex-setup-note { margin: 17px 0 0; padding: 10px 11px; border: 1px solid var(--border); border-radius: 7px; background: color-mix(in srgb, var(--accent) 5%, var(--raised)); color: var(--muted); font-size: 10px; line-height: 16px; }
 .system-import-body { display: grid; gap: 15px; padding: 18px; }
 .system-import-body > p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 18px; }
@@ -1091,6 +1105,14 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .workspace-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .workspace-record-list a { min-height: 52px; }
   .admin-metrics { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+  .codex-mobile-handoff { display: grid; gap: 3px; margin: 0 0 12px; padding: 10px 11px; border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--accent) 7%, var(--raised)); }
+  .codex-mobile-handoff b { font-size: 11px; font-weight: 650; }
+  .codex-mobile-handoff span { color: var(--text-secondary); font-size: 10px; line-height: 16px; }
+  .codex-setup-tabs { height: 44px; }
+  .codex-setup-tabs button { min-height: 40px; }
+  .codex-setup-troubleshooting > summary { min-height: 44px; display: flex; align-items: center; }
+  .codex-cli-fallback { min-height: 44px; }
+  .codex-copy-block button { min-width: 44px; height: 44px; }
 }
 
 @media (max-width: 640px) {
@@ -1149,9 +1171,17 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .release-row { grid-template-columns: 28px minmax(130px, 1fr) 68px; }
   .release-progress, .release-date { display: none; }
   .modal-backdrop { padding: 8vh 14px 14px; }
-  .codex-setup-body { padding: 14px; }
-  .codex-copy-block.multiline { align-items: flex-start; }
-  .codex-copy-block.multiline button { min-width: 30px; width: 30px; padding: 0; }
+  .modal-backdrop:has(.codex-setup-modal) { padding: 0; }
+  .modal.codex-setup-modal { width: 100vw; max-width: 100vw; min-height: 100dvh; max-height: 100dvh; border: 0; border-radius: 0; }
+  .codex-setup-modal > .dialog-header { min-height: calc(52px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
+  .codex-setup-modal > .dialog-header .icon-button { width: 44px; height: 44px; flex: 0 0 44px; }
+  .codex-setup-body { padding: 14px max(14px, env(safe-area-inset-right)) calc(18px + env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  .codex-setup-steps { gap: 17px; }
+  .codex-copy-block { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; overflow: hidden; }
+  .codex-copy-block > code, .codex-copy-block pre code { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
+  .codex-copy-block pre { overflow: visible; }
+  .codex-copy-block.multiline { align-items: start; }
+  .codex-copy-block.multiline button { min-width: 44px; width: 44px; padding: 0; }
   .codex-copy-block.multiline button span { display: none; }
   .system-import-counts { grid-template-columns: repeat(2, 1fr); }
   .admin-surface { padding: 10px; }

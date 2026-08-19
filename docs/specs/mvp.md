@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-17
+Последнее обновление: 2026-08-19
 
 ## 1. Цель
 
@@ -632,6 +632,11 @@ created/updated/started/completed/canceled dates и archived state.
   consent без ручной передачи API secret. Он умеет получать все доступные
   Tasks, фильтровать их по Project/Release и загружать detail только после
   выбора.
+- Onboarding connector разделяет добавление marketplace, установку plugin,
+  OAuth connection, возврат в `Installed` и fresh-task read smoke. На mobile
+  установка сразу передаётся в Desktop/CLI. Redirect в web ChatGPT без
+  установленного plugin получает bounded diagnostic path, а не повторные
+  install attempts; onboarding не считается исправлением platform install-багa.
 
 Точные representations, routes, OpenAPI contract, authentication и acceptance
 описаны в [спецификации agent API](agent-api.md).
@@ -761,9 +766,17 @@ created/updated/started/completed/canceled dates и archived state.
 27. Повреждённый Project bundle, owner mismatch, collision или отсутствующий
     catalog dependency отклоняется до mutation. Ошибка apply откатывает весь
     subtree; sharing без opt-in не восстанавливается.
-28. Из account menu открыть `Codex setup`, переключиться между `Codex Desktop`
-    и `Codex CLI`, скопировать marketplace source или CLI-команды и завершить
-    штатный OAuth flow без ручного MCP URL, client ID, secret или API token.
+28. Из account menu открыть `Codex setup`, на `390×844` и `844×390` сразу
+    увидеть Desktop/CLI handoff без horizontal overflow, затем пройти отдельно
+    marketplace, plugin installation, OAuth, возврат в `Installed` и новый
+    task/chat. В Desktop проверить `Personal`, тот же ChatGPT account/workspace
+    и success state каждого этапа; в CLI скопировать актуальные команды и
+    пройти `/plugins → Task Manager → Authenticate`, затем `/new`. Первым
+    выполнить read-only `Show my tasks in Task Manager.` без bulk migration или
+    write. Из clean external-user profile воспроизвести redirect failure и
+    убедиться, что bounded troubleshooting предлагает один restart, CLI
+    fallback и безопасный diagnostic prompt без credentials, не выдавая
+    platform install-баг за исправленный.
 29. В Task Activity создать comment, повторить request с тем же idempotency key,
     ответить одним уровнем, поставить reaction, resolve/reopen, отредактировать
     с актуальной version и получить conflict со stale version. Viewer видит
