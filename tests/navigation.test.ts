@@ -66,9 +66,45 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(parseNavigationPath("/views"), { kind: "views" });
   assert.deepEqual(parseNavigationPath("/projects"), { kind: "projects" });
   assert.deepEqual(parseNavigationPath("/releases"), { kind: "releases" });
+  assert.deepEqual(parseNavigationPath("/settings"), {
+    kind: "settings",
+    section: "profile",
+    canonical: false,
+  });
+  assert.deepEqual(parseNavigationPath("/settings/appearance"), {
+    kind: "settings",
+    section: "appearance",
+    canonical: true,
+  });
   assert.deepEqual(
     parseNavigationPath(`/projects/${projectPublicId}/releases`),
     { kind: "projectReleases", projectId: projectPublicId },
+  );
+});
+
+test("settings sections keep canonical direct URLs and reject unknown sections", () => {
+  for (const section of [
+    "profile",
+    "appearance",
+    "workflow-statuses",
+    "labels",
+    "integrations",
+    "project-backup",
+  ] as const) {
+    const target = parseNavigationPath(`/settings/${section}`);
+    assert.ok(target);
+    const resolved = resolveNavigationTarget(target, snapshot);
+    assert.deepEqual(resolved, {
+      surface: `settings:${section}`,
+      layout: "list",
+      taskId: null,
+    });
+    assert.equal(navigationPath(resolved, snapshot), `/settings/${section}`);
+  }
+  assert.equal(parseNavigationPath("/settings/security"), null);
+  assert.equal(
+    legacyRedirectPath(parseNavigationPath("/settings")!, snapshot),
+    "/settings/profile",
   );
 });
 

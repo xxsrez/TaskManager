@@ -67,8 +67,16 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Google sign-in является обязательным external provider. Реализация должна
   проверить Sites-compatible OAuth/OIDC flow и валидировать provider response
   server-side до создания session.
-- В профиле доступны display name, verified email, timezone, список связанных
-  providers и sign out. Пароли Task Manager не хранит.
+- Каноническая Settings surface доступна по section routes
+  `/settings/profile`, `/settings/appearance`, `/settings/workflow-statuses`,
+  `/settings/labels`, `/settings/integrations` и `/settings/project-backup`;
+  direct URL, reload и browser history сохраняют выбранный раздел.
+- В профиле доступны versioned display name, verified email, IANA timezone,
+  server-projected список связанных providers и sign out. Email и provider
+  identities нельзя подменить client payload; stale version и invalid timezone
+  не оставляют частично сохранённую форму. Пароли Task Manager не хранит.
+- Theme `system`/`light`/`dark` и default sidebar state принадлежат User, а не
+  общей browser key, поэтому второй account не наследует чужие preferences.
 
 ### 3.1 Администрирование
 
@@ -349,8 +357,10 @@ immutable ID и может группировать Tasks по значения�
   Каждая source row получает `migrated`/`exception`; offline повторный прогон не
   дублирует events. Raw evidence остаётся только в reconciliation/backup до
   отдельно разрешённого durable-data cleanup.
-- Project/system backup schema `12` сохраняет LabelGroup topology, events, attachment migration
-  outcomes и reconciliation evidence.
+- Project/system backup schema `12` сохраняет LabelGroup topology, events,
+  attachment migration outcomes и reconciliation evidence. System backup
+  дополнительно сохраняет versioned profile preferences; schema `11` получает
+  deterministic defaults для новых User fields и пустого LabelGroup catalog.
   Activity хранится до удаления Task; отдельного retention deletion нет.
   Logical export ограничен 5 000 rows на таблицу и общим размером package,
   поэтому превышение останавливает export явно, а не обрезает историю.
@@ -912,3 +922,5 @@ created/updated/started/completed/canceled dates и archived state.
 21. Legacy attachment reconciliation: resumable admin inventory/apply,
     allowlisted bounded download, native D1/R2 verification, explicit
     non-binary/skipped/blocked outcomes и backup/restore schema `12`.
+22. Versioned Profile/Settings, User-scoped appearance/sidebar preferences и
+    system backup/restore schema `12`.

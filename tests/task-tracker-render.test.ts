@@ -50,6 +50,7 @@ import {
   TASK_MANAGER_MARKETPLACE_URL,
   TaskMoveDialog,
   TaskTracker,
+  SettingsSurface,
 } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
 import type { AppSnapshot } from "../lib/types";
@@ -162,6 +163,43 @@ test("task ordering uses priority by default with rank and immutable id tie-brea
     showEmptyGroups: false,
     visibleFields: [],
   }).map((task) => task.id), ["high-b", "urgent", "none", "high-a"]);
+});
+
+test("Settings profile is a first-class surface with server-projected identity", () => {
+  const profile = {
+    user: {
+      ...snapshot.user,
+      version: 3,
+      theme: "dark" as const,
+      sidebarPreference: "collapsed" as const,
+    },
+    identities: [{
+      provider: "chatgpt" as const,
+      verifiedEmail: snapshot.user.email,
+    }],
+  };
+  const markup = renderToStaticMarkup(createElement(SettingsSurface, {
+    section: "profile",
+    data: { ...snapshot, user: profile.user, userProfile: profile },
+    theme: "dark",
+    sidebarCollapsed: true,
+    signOutPath: "/auth/signout",
+    onNavigate: () => undefined,
+    onProfile: () => undefined,
+    onAppearance: () => undefined,
+    onStatuses: () => undefined,
+    onLabels: () => undefined,
+  }));
+
+  assert.match(markup, /Settings sections/);
+  assert.match(markup, /href="\/settings\/appearance"/);
+  assert.match(markup, /Verified email/);
+  assert.match(markup, /test@example.com/);
+  assert.match(markup, /Linked providers/);
+  assert.match(markup, /ChatGPT/);
+  assert.match(markup, /Save profile/);
+  assert.match(markup, /href="\/auth\/signout"/);
+  assert.doesNotMatch(markup, /Administration/);
 });
 
 test("local Task changes invalidate an already loaded Activity projection", () => {

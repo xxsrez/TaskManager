@@ -2,11 +2,21 @@ import type { AppSnapshot } from "./types";
 
 export type Layout = "list" | "board";
 export type IssueFilter = "mine" | "all" | "active" | "backlog" | "archived";
+export const settingsSections = [
+  "profile",
+  "appearance",
+  "workflow-statuses",
+  "labels",
+  "integrations",
+  "project-backup",
+] as const;
+export type SettingsSection = (typeof settingsSections)[number];
 
 export type NavigationTarget =
   | { kind: "root" }
   | { kind: "workspace" }
   | { kind: "admin" }
+  | { kind: "settings"; section: SettingsSection; canonical: boolean }
   | { kind: "shared" }
   | { kind: "issues"; filter: IssueFilter; layout: Layout }
   | { kind: "issue"; id: string }
@@ -61,6 +71,7 @@ export function parseNavigationSegments(
   if (segments.length === 1 && segments[0] === "admin") {
     return { kind: "admin" };
   }
+  if (segments[0] === "settings") return parseSettingsSegments(segments);
   if (segments.length === 1 && segments[0] === "shared") {
     return { kind: "shared" };
   }
@@ -98,6 +109,9 @@ export function resolveNavigationTarget(
     return data.isAdmin
       ? { surface: "admin", layout: "list", taskId: null }
       : null;
+  }
+  if (target.kind === "settings") {
+    return { surface: `settings:${target.section}`, layout: "list", taskId: null };
   }
   if (target.kind === "shared") {
     return { surface: "shared", layout: "list", taskId: null };
@@ -194,6 +208,10 @@ export function navigationPath(
   const { surface, layout } = navigation;
   if (surface === "workspace") return "/workspace";
   if (surface === "admin") return "/admin";
+  if (surface.startsWith("settings:")) {
+    const section = surface.slice("settings:".length) as SettingsSection;
+    return settingsSections.includes(section) ? `/settings/${section}` : "/settings/profile";
+  }
   if (surface === "views" || surface === "projects" || surface === "releases") {
     return `/${surface}`;
   }
@@ -266,6 +284,7 @@ export function legacyRedirectPath(
 
   if (
     target.kind === "root" ||
+    (target.kind === "settings" && !target.canonical) ||
     target.kind === "legacyTask" ||
     target.kind === "legacyRelease" ||
     target.kind === "legacyBuiltInView"
@@ -301,6 +320,17 @@ export function legacyRedirectPath(
         (item) => item.id === target.id && item.publicId !== target.id,
       ));
   return usesInternalId ? canonical : null;
+}
+
+function parseSettingsSegments(segments: string[]): NavigationTarget | null {
+  if (segments.length === 1) {
+    return { kind: "settings", section: "profile", canonical: false };
+  }
+  if (segments.length !== 2) return null;
+  const section = segments[1] as SettingsSection;
+  return settingsSections.includes(section)
+    ? { kind: "settings", section, canonical: true }
+    : null;
 }
 
 export function navigationHistoryState(navigation: ResolvedNavigation) {

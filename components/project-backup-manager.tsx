@@ -4,8 +4,14 @@
 import { ChangeEvent, useEffect, useState } from "react";
 import type { AppliedProjectBackup, AppSnapshot, ProjectBackupPreview, ProjectRecord } from "@/lib/types";
 
-export function ProjectBackupManager() {
-  const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
+export function ProjectBackupManager({
+  initialSnapshot = null,
+  embedded = false,
+}: {
+  initialSnapshot?: AppSnapshot | null;
+  embedded?: boolean;
+} = {}) {
+  const [snapshot, setSnapshot] = useState<AppSnapshot | null>(initialSnapshot);
   const [preview, setPreview] = useState<ProjectBackupPreview | null>(null);
   const [applied, setApplied] = useState<AppliedProjectBackup | null>(null);
   const [downloaded, setDownloaded] = useState(false);
@@ -15,12 +21,13 @@ export function ProjectBackupManager() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    if (initialSnapshot) return;
     void fetch("/api/bootstrap").then(async (response) => {
       const value = await response.json() as AppSnapshot | { error: string };
       if (!response.ok || "error" in value) throw new Error("error" in value ? value.error : "Could not load projects");
       setSnapshot(value);
     }).catch((cause) => setError(cause instanceof Error ? cause.message : "Could not load projects"));
-  }, []);
+  }, [initialSnapshot]);
 
   async function download(project: ProjectRecord) {
     setBusy(true); setError("");
@@ -73,8 +80,7 @@ export function ProjectBackupManager() {
 
   const owned = snapshot?.projects.filter((project) => project.accessRole === "owner") ?? [];
   const currentProject = preview ? owned.find((project) => project.id === preview.projectId) : null;
-  return (
-    <main className="import-shell"><section className="import-card portability-card">
+  const content = <section className={`import-card portability-card ${embedded ? "embedded" : ""}`}>
       <div><span className="eyebrow">PROJECT PORTABILITY</span><h1>Project backup</h1><p>Download an owner-only bundle or restore the exact project on this Site.</p></div>
       <section className="import-step"><h2>Export</h2>{!snapshot ? <p>Loading projects…</p> : owned.length ? <div className="project-backup-list">{owned.map((project) => <div key={project.id}><span><b>{project.name}</b><small>{project.id}</small></span><button className="button secondary" disabled={busy} onClick={() => void download(project)}>Download</button></div>)}</div> : <p>You do not currently own a project.</p>}</section>
       <section className="import-step"><h2>Restore</h2><label className="file-drop"><span>Select project bundle</span><input type="file" accept="application/json,.json" onChange={(event) => void selectFile(event)} disabled={busy} /></label></section>
@@ -90,9 +96,9 @@ export function ProjectBackupManager() {
         <button className="button danger" disabled={busy || confirmation !== preview.projectName || (preview.projectExists && !downloaded)} onClick={() => void apply()}>{busy ? "Restoring…" : "Restore project"}</button>
       </section>}
       {applied && <section className="import-report"><h2>Project restored</h2><p>{applied.projectName} was applied atomically.</p><a className="button primary" href="/projects">Open Task Manager</a></section>}
-      <a className="button ghost" href="/">Back to Task Manager</a>
-    </section></main>
-  );
+      {!embedded && <a className="button ghost" href="/">Back to Task Manager</a>}
+    </section>;
+  return embedded ? content : <main className="import-shell">{content}</main>;
 }
 
 async function responseError(response: Response, fallback: string) {

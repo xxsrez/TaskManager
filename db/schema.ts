@@ -16,6 +16,9 @@ export const users = sqliteTable("users", {
   displayName: text("display_name").notNull(),
   email: text("email").notNull(),
   timezone: text("timezone").notNull().default("UTC"),
+  theme: text("theme").notNull().default("system"),
+  sidebarPreference: text("sidebar_preference").notNull().default("expanded"),
+  version: integer("version").notNull().default(1),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });

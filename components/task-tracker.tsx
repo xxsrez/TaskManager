@@ -17,6 +17,7 @@ import {
   CircleDot,
   Columns3,
   Copy,
+  Database,
   Download,
   FolderKanban,
   Inbox,
@@ -31,16 +32,19 @@ import {
   Paperclip,
   PanelLeftClose,
   PanelLeftOpen,
+  Palette,
   Plus,
   Rocket,
   Save,
   Search,
   Share2,
   ShieldCheck,
+  Settings2,
   SlidersHorizontal,
   Sun,
   Tag,
   Upload,
+  UserRound,
   UsersRound,
   X,
   Zap,
@@ -82,6 +86,7 @@ import {
   taskPath,
   type Layout,
   type ResolvedNavigation,
+  type SettingsSection,
 } from "@/lib/navigation";
 import {
   emptyGlobalSearchResponse,
@@ -120,6 +125,7 @@ import {
 } from "@/components/task-attachments";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
 import { ContextualActionMenu } from "@/components/contextual-action-menu";
+import { ProjectBackupManager } from "@/components/project-backup-manager";
 import {
   isTaskMarkdownEscaped,
   parseTaskAttachmentReferences,
@@ -169,6 +175,7 @@ import type {
   TaskDetailRecord,
   TaskRelationRecord,
   UserRecord,
+  UserProfile,
   ViewFilterCondition,
   ViewFilterField,
   ViewFilterLabelGroupValue,
@@ -1065,7 +1072,9 @@ export function TaskTracker({
   const [contextualMenu, setContextualMenu] = useState<ContextualMenuState | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    initialData.user.sidebarPreference === "collapsed",
+  );
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -1093,7 +1102,9 @@ export function TaskTracker({
     WorkspaceCatalogKind,
     Promise<WorkspaceCatalogPage>
   >>>({});
-  const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
+  const [theme, setTheme] = useState<"system" | "light" | "dark">(
+    initialData.user.theme ?? "system",
+  );
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
   const mobileSearchRef = useRef<HTMLInputElement>(null);
@@ -1426,27 +1437,16 @@ export function TaskTracker({
   }, [catalogEpoch]);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("tm-theme");
-    if (saved === "light" || saved === "dark" || saved === "system") {
-      // Local storage is the external source for this device preference.
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setTheme(saved);
-    }
-    const sidebar = window.localStorage.getItem("tm-sidebar");
-    setSidebarCollapsed(sidebar === "collapsed");
-  }, []);
-
-  useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem("tm-theme", theme);
-  }, [theme]);
+    window.localStorage.setItem(`tm-theme:${data.user.id}`, theme);
+  }, [data.user.id, theme]);
 
   useEffect(() => {
     window.localStorage.setItem(
-      "tm-sidebar",
+      `tm-sidebar:${data.user.id}`,
       sidebarCollapsed ? "collapsed" : "expanded",
     );
-  }, [sidebarCollapsed]);
+  }, [data.user.id, sidebarCollapsed]);
 
   useEffect(() => {
     if (!accountMenuOpen) return;
@@ -1894,6 +1894,8 @@ export function TaskTracker({
       ? catalogPages.releases?.total ?? data.navigationCollections?.releases.total ?? data.releases.length
     : surface === "admin" && data.admin
       ? data.admin.registeredUserCount
+    : surface.startsWith("settings:")
+      ? ""
     : projectReleaseSurfaceId
       ? scopedReleases.length
       : visibleTasks.length;
@@ -2474,6 +2476,53 @@ export function TaskTracker({
     await navigator.clipboard.writeText(window.location.href);
   }
 
+  function applyUserProfile(profile: UserProfile) {
+    dataRef.current = {
+      ...dataRef.current,
+      user: profile.user,
+      userProfile: profile,
+    };
+    setData((current) => ({ ...current, user: profile.user, userProfile: profile }));
+    setTheme(profile.user.theme);
+    setSidebarCollapsed(profile.user.sidebarPreference === "collapsed");
+  }
+
+  async function saveUserPreferences(changes: {
+    theme?: "system" | "light" | "dark";
+    sidebarPreference?: "expanded" | "collapsed";
+  }) {
+    const previous = dataRef.current.user;
+    if (changes.theme) setTheme(changes.theme);
+    if (changes.sidebarPreference) {
+      setSidebarCollapsed(changes.sidebarPreference === "collapsed");
+    }
+    try {
+      const response = await fetch("/api/settings/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: previous.version ?? 1, ...changes }),
+      });
+      const value = await response.json() as UserProfile | { error: string };
+      if (!response.ok || "error" in value) {
+        if (response.status === 409) {
+          const refreshed = await fetch("/api/settings/profile", { cache: "no-store" });
+          const latest = await refreshed.json() as UserProfile | { error: string };
+          if (refreshed.ok && !("error" in latest)) {
+            applyUserProfile(latest);
+            setError("Preferences changed in another session; the latest values were loaded.");
+            return;
+          }
+        }
+        throw new Error("error" in value ? value.error : "Preference could not be saved");
+      }
+      applyUserProfile(value);
+    } catch (requestError) {
+      setTheme(previous.theme ?? "system");
+      setSidebarCollapsed(previous.sidebarPreference === "collapsed");
+      setError(requestError instanceof Error ? requestError.message : "Preference could not be saved");
+    }
+  }
+
   async function openCreate(defaults: TaskCreateDefaults = {}) {
     if (!canCreateTask) return;
     setMobileSidebarOpen(false);
@@ -3049,7 +3098,7 @@ export function TaskTracker({
   }, [highlightedTaskId, keyboardTaskIdsKey, selectableTaskIdsKey, selected]);
 
   return (
-    <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
+    <main data-theme={theme} className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
       {globalSearchOpen && (
         <GlobalSearchOverlay
           onClose={closeGlobalSearch}
@@ -3149,6 +3198,18 @@ export function TaskTracker({
                 <div className="account-menu-separator" role="separator" />
                 <a
                   className="account-menu-item"
+                  href="/settings/profile"
+                  role="menuitem"
+                  onClick={(event) => handleLocalLink(event, () => {
+                    navigateSurface("settings:profile", "list");
+                    setAccountMenuOpen(false);
+                  })}
+                >
+                  <Settings2 size={14} />
+                  <span>Settings</span>
+                </a>
+                <a
+                  className="account-menu-item"
                   href={navigationPath({ surface: "mine", layout: "list", taskId: null }, data)}
                   role="menuitem"
                   onClick={(event) => handleLocalLink(event, () => {
@@ -3225,9 +3286,9 @@ export function TaskTracker({
                 <div className="account-theme" role="group" aria-label="Appearance">
                   <span>Appearance</span>
                   <div>
-                    <button role="menuitemradio" aria-checked={theme === "system"} className={theme === "system" ? "active" : ""} onClick={() => setTheme("system")} title="Use system theme"><Monitor size={13} /></button>
-                    <button role="menuitemradio" aria-checked={theme === "light"} className={theme === "light" ? "active" : ""} onClick={() => setTheme("light")} title="Use light theme"><Sun size={13} /></button>
-                    <button role="menuitemradio" aria-checked={theme === "dark"} className={theme === "dark" ? "active" : ""} onClick={() => setTheme("dark")} title="Use dark theme"><Moon size={13} /></button>
+                    <button role="menuitemradio" aria-checked={theme === "system"} className={theme === "system" ? "active" : ""} onClick={() => void saveUserPreferences({ theme: "system" })} title="Use system theme"><Monitor size={13} /></button>
+                    <button role="menuitemradio" aria-checked={theme === "light"} className={theme === "light" ? "active" : ""} onClick={() => void saveUserPreferences({ theme: "light" })} title="Use light theme"><Sun size={13} /></button>
+                    <button role="menuitemradio" aria-checked={theme === "dark"} className={theme === "dark" ? "active" : ""} onClick={() => void saveUserPreferences({ theme: "dark" })} title="Use dark theme"><Moon size={13} /></button>
                   </div>
                 </div>
               </div>
@@ -3264,7 +3325,7 @@ export function TaskTracker({
                 aria-controls="workspace-sidebar"
                 aria-expanded={!sidebarCollapsed}
                 aria-label={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"}
-                onClick={() => setSidebarCollapsed((value) => !value)}
+                onClick={() => void saveUserPreferences({ sidebarPreference: sidebarCollapsed ? "expanded" : "collapsed" })}
                 title="Toggle navigation"
               >
                 {sidebarCollapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}
@@ -3456,7 +3517,20 @@ export function TaskTracker({
 
         {surface.startsWith("project:") && contextProjectRecord && <ProjectOverview project={contextProjectRecord} lead={contextProjectRecord.leadUserId ? userMap.get(contextProjectRecord.leadUserId) : undefined} tasks={data.tasks.filter((task) => task.projectId === contextProjectRecord.id && !task.archivedAt)} statuses={statusMap} onEdit={canEditContent(contextProjectRecord.accessRole) ? () => setDialog("projectEdit") : undefined} />}
         {contextReleaseRecord && <ReleaseOverview release={contextReleaseRecord} project={projectMap.get(contextReleaseRecord.projectId)} tasks={data.tasks.filter((task) => task.releaseId === contextReleaseRecord.id && !task.archivedAt)} statuses={statusMap} onEdit={canEditContent(contextReleaseRecord.accessRole) ? () => setDialog("releaseEdit") : undefined} />}
-        {surface === "workspace" ? (
+        {surface.startsWith("settings:") ? (
+          <SettingsSurface
+            section={surface.slice("settings:".length)}
+            data={data}
+            theme={theme}
+            sidebarCollapsed={sidebarCollapsed}
+            signOutPath={signOutPath}
+            onNavigate={(section) => navigateSurface(`settings:${section}`, "list")}
+            onProfile={applyUserProfile}
+            onAppearance={(changes) => void saveUserPreferences(changes)}
+            onStatuses={(statuses) => setData((current) => ({ ...current, statuses: [...current.statuses.filter((status) => status.ownerUserId !== current.user.id), ...statuses] }))}
+            onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))}
+          />
+        ) : surface === "workspace" ? (
           <WorkspaceOverviewSurface
             data={data}
             statusMap={statusMap}
@@ -5676,10 +5750,12 @@ function WorkflowSettingsDialog({
   initialStatuses,
   onClose,
   onStatuses,
+  embedded = false,
 }: {
   initialStatuses: WorkflowStatusRecord[];
   onClose: () => void;
   onStatuses: (statuses: WorkflowStatusRecord[]) => void;
+  embedded?: boolean;
 }) {
   const [statuses, setStatuses] = useState<WorkflowSettingsStatus[]>(
     initialStatuses.map((status) => ({ ...status, taskCount: 0, savedViewCount: 0 })),
@@ -5809,9 +5885,8 @@ function WorkflowSettingsDialog({
     );
   }
 
-  return (
-    <Modal onClose={() => busyId === null && onClose()} className="workflow-settings-modal" ariaLabel="Workflow status settings">
-      <DialogHeader title="Workflow statuses" icon={<SlidersHorizontal size={17} />} onClose={() => busyId === null && onClose()} />
+  const body = <>
+      {!embedded && <DialogHeader title="Workflow statuses" icon={<SlidersHorizontal size={17} />} onClose={() => busyId === null && onClose()} />}
       <p className="dialog-copy">Statuses belong to your workflow. Their category is permanent because it controls task lifecycle timestamps.</p>
       {error && <p className="dialog-error" role="alert">{error}</p>}
       {loading ? <p className="dialog-copy">Loading workflow…</p> : <div className="workflow-status-list">{active.map(renderStatus)}</div>}
@@ -5822,8 +5897,10 @@ function WorkflowSettingsDialog({
         <button className="button primary" disabled={busyId !== null}><Plus size={14} />Add</button>
       </form>
       {archived.length > 0 && <details className="workflow-archived"><summary>Archived statuses ({archived.length})</summary><div className="workflow-status-list">{archived.map(renderStatus)}</div></details>}
-    </Modal>
-  );
+    </>;
+  return embedded
+    ? <section className="settings-catalog" aria-label="Workflow status settings">{body}</section>
+    : <Modal onClose={() => busyId === null && onClose()} className="workflow-settings-modal" ariaLabel="Workflow status settings">{body}</Modal>;
 }
 
 type LabelSettingsRecord = LabelRecord & { taskCount: number };
@@ -5929,10 +6006,12 @@ function LabelSettingsDialog({
   onClose,
   onLabels,
   onGroups,
+  embedded = false,
 }: {
   onClose: () => void;
   onLabels: (labels: LabelRecord[]) => void;
-  onGroups: (groups: LabelGroupRecord[]) => void;
+  onGroups?: (groups: LabelGroupRecord[]) => void;
+  embedded?: boolean;
 }) {
   const [labels, setLabels] = useState<LabelSettingsRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -6007,7 +6086,175 @@ function LabelSettingsDialog({
 
   const active = labels.filter((label) => !label.archivedAt);
   const archived = labels.filter((label) => label.archivedAt);
-  return <Modal onClose={() => busyId === null && onClose()} className="workflow-settings-modal" ariaLabel="Label settings"><DialogHeader title="Labels" icon={<Tag size={17} />} onClose={() => busyId === null && onClose()} /><p className="dialog-copy">Labels belong to your catalog. Archiving blocks new assignments while preserving existing Task history.</p>{error && <p className="dialog-error" role="alert">{error}</p>}{loading ? <p className="dialog-copy">Loading labels…</p> : <div className="label-settings-list">{active.map(row)}</div>}<form className="label-settings-create" onSubmit={create}><input className="workflow-color" type="color" name="color" defaultValue="#6b7280" aria-label="New Label color" disabled={busyId !== null} /><input name="name" required maxLength={80} placeholder="New label" aria-label="New Label name" disabled={busyId !== null} /><input name="description" maxLength={2000} placeholder="Usage guidance" aria-label="New Label description" disabled={busyId !== null} /><button className="button primary" disabled={busyId !== null}><Plus size={14} />Add</button></form>{archived.length > 0 && <details className="workflow-archived"><summary>Archived labels ({archived.length})</summary><div className="label-settings-list">{archived.map(row)}</div></details>}</Modal>;
+  const body = <>{!embedded && <DialogHeader title="Labels" icon={<Tag size={17} />} onClose={() => busyId === null && onClose()} />}<p className="dialog-copy">Labels belong to your catalog. Archiving blocks new assignments while preserving existing Task history.</p>{error && <p className="dialog-error" role="alert">{error}</p>}{loading ? <p className="dialog-copy">Loading labels…</p> : <div className="label-settings-list">{active.map(row)}</div>}<form className="label-settings-create" onSubmit={create}><input className="workflow-color" type="color" name="color" defaultValue="#6b7280" aria-label="New Label color" disabled={busyId !== null} /><input name="name" required maxLength={80} placeholder="New label" aria-label="New Label name" disabled={busyId !== null} /><input name="description" maxLength={2000} placeholder="Usage guidance" aria-label="New Label description" disabled={busyId !== null} /><button className="button primary" disabled={busyId !== null}><Plus size={14} />Add</button></form>{archived.length > 0 && <details className="workflow-archived"><summary>Archived labels ({archived.length})</summary><div className="label-settings-list">{archived.map(row)}</div></details>}</>;
+  return embedded
+    ? <section className="settings-catalog" aria-label="Label settings">{body}</section>
+    : <Modal onClose={() => busyId === null && onClose()} className="workflow-settings-modal" ariaLabel="Label settings">{body}</Modal>;
+}
+
+const settingsNavigation: Array<{
+  group: string;
+  items: Array<{ section: SettingsSection; label: string; icon: React.ReactNode }>;
+}> = [
+  { group: "Personal", items: [
+    { section: "profile", label: "Profile", icon: <UserRound size={15} /> },
+    { section: "appearance", label: "Appearance", icon: <Palette size={15} /> },
+  ] },
+  { group: "Workspace", items: [
+    { section: "workflow-statuses", label: "Workflow statuses", icon: <SlidersHorizontal size={15} /> },
+    { section: "labels", label: "Labels", icon: <Tag size={15} /> },
+  ] },
+  { group: "Integrations", items: [
+    { section: "integrations", label: "Codex setup", icon: <CircleHelp size={15} /> },
+  ] },
+  { group: "Data & backups", items: [
+    { section: "project-backup", label: "Project backup", icon: <Database size={15} /> },
+  ] },
+];
+
+export function SettingsSurface({
+  section,
+  data,
+  theme,
+  sidebarCollapsed,
+  signOutPath,
+  onNavigate,
+  onProfile,
+  onAppearance,
+  onStatuses,
+  onLabels,
+}: {
+  section: string;
+  data: AppSnapshot;
+  theme: "system" | "light" | "dark";
+  sidebarCollapsed: boolean;
+  signOutPath: string;
+  onNavigate: (section: SettingsSection) => void;
+  onProfile: (profile: UserProfile) => void;
+  onAppearance: (changes: { theme?: "system" | "light" | "dark"; sidebarPreference?: "expanded" | "collapsed" }) => void;
+  onStatuses: (statuses: WorkflowStatusRecord[]) => void;
+  onLabels: (labels: LabelRecord[]) => void;
+}) {
+  const active = settingsNavigation.flatMap((group) => group.items)
+    .find((item) => item.section === section)?.section ?? "profile";
+  const profile = data.userProfile ?? {
+    user: {
+      ...data.user,
+      version: data.user.version ?? 1,
+      theme: data.user.theme ?? "system",
+      sidebarPreference: data.user.sidebarPreference ?? "expanded",
+    },
+    identities: [{ provider: "chatgpt" as const, verifiedEmail: data.user.email }],
+  };
+
+  return <div className="settings-surface">
+    <nav className="settings-navigation" aria-label="Settings sections">
+      {settingsNavigation.map((group) => <section key={group.group}>
+        <h2>{group.group}</h2>
+        {group.items.map((item) => <a
+          key={item.section}
+          className={active === item.section ? "active" : ""}
+          href={`/settings/${item.section}`}
+          aria-current={active === item.section ? "page" : undefined}
+          onClick={(event) => handleLocalLink(event, () => onNavigate(item.section))}
+        >{item.icon}<span>{item.label}</span></a>)}
+      </section>)}
+    </nav>
+    <article className="settings-content">
+      {active === "profile" && <SettingsSectionHeader title="Profile" description="Your verified identity and personal date semantics." />}
+      {active === "appearance" && <SettingsSectionHeader title="Appearance" description="Choose how Task Manager looks and how its navigation opens." />}
+      {active === "workflow-statuses" && <SettingsSectionHeader title="Workflow statuses" description="Manage your account-owned workflow catalog." />}
+      {active === "labels" && <SettingsSectionHeader title="Labels" description="Manage labels without losing archived assignments or history." />}
+      {active === "integrations" && <SettingsSectionHeader title="Codex setup" description="Connect through the published plugin and OAuth-safe flow." />}
+      {active === "project-backup" && <SettingsSectionHeader title="Project backup" description="Export or atomically restore Projects that you currently own." />}
+
+      {active === "profile" && <ProfileSettingsPanel key={profile.user.version} profile={profile} signOutPath={signOutPath} onProfile={onProfile} />}
+      {active === "appearance" && <AppearanceSettingsPanel theme={theme} sidebarCollapsed={sidebarCollapsed} onChange={onAppearance} />}
+      {active === "workflow-statuses" && <WorkflowSettingsDialog embedded initialStatuses={data.statuses.filter((status) => status.ownerUserId === data.user.id)} onClose={() => undefined} onStatuses={onStatuses} />}
+      {active === "labels" && <LabelSettingsDialog embedded onClose={() => undefined} onLabels={onLabels} />}
+      {active === "integrations" && <CodexSetupDialog embedded onClose={() => undefined} />}
+      {active === "project-backup" && <ProjectBackupManager embedded initialSnapshot={data} />}
+    </article>
+  </div>;
+}
+
+function SettingsSectionHeader({ title, description }: { title: string; description: string }) {
+  return <header className="settings-section-header"><h1>{title}</h1><p>{description}</p></header>;
+}
+
+function ProfileSettingsPanel({
+  profile,
+  signOutPath,
+  onProfile,
+}: {
+  profile: UserProfile;
+  signOutPath: string;
+  onProfile: (profile: UserProfile) => void;
+}) {
+  const [displayName, setDisplayName] = useState(profile.user.displayName);
+  const [timezone, setTimezone] = useState(profile.user.timezone);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const timezones = supportedTimeZones(profile.user.timezone);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true); setError(""); setSaved(false);
+    try {
+      const response = await fetch("/api/settings/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: profile.user.version, displayName, timezone }),
+      });
+      const value = await response.json() as UserProfile | { error: string };
+      if (!response.ok || "error" in value) {
+        if (response.status === 409) {
+          const refreshed = await fetch("/api/settings/profile", { cache: "no-store" });
+          const latest = await refreshed.json() as UserProfile | { error: string };
+          if (refreshed.ok && !("error" in latest)) onProfile(latest);
+        }
+        throw new Error("error" in value ? value.error : "Profile could not be saved");
+      }
+      onProfile(value);
+      setSaved(true);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Profile could not be saved");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <form className="settings-form" onSubmit={save}>
+    <div className="settings-form-row"><span><label htmlFor="settings-display-name">Display name</label><small>Shown on your tasks, comments, and shared resources.</small></span><input id="settings-display-name" required maxLength={120} value={displayName} onChange={(event) => { setDisplayName(event.target.value); setSaved(false); }} /></div>
+    <div className="settings-form-row"><span><label htmlFor="settings-verified-email">Verified email</label><small>Managed by the authenticated provider.</small></span><input id="settings-verified-email" readOnly value={profile.user.email} aria-readonly="true" /></div>
+    <div className="settings-form-row"><span><label htmlFor="settings-timezone">Timezone</label><small>Used for calendar dates, filters, and displayed timestamps.</small></span><select id="settings-timezone" value={timezone} onChange={(event) => { setTimezone(event.target.value); setSaved(false); }}>{timezones.map((zone) => <option key={zone} value={zone}>{zone}</option>)}</select></div>
+    <section className="settings-provider-list" aria-labelledby="linked-provider-heading"><div><h2 id="linked-provider-heading">Linked providers</h2><p>Provider identity is projected by the server and cannot be changed by this form.</p></div>{profile.identities.map((identity) => <div className="settings-provider-row" key={`${identity.provider}:${identity.verifiedEmail}`}><span className="avatar small">{identity.provider === "chatgpt" ? "C" : "G"}</span><span><b>{identity.provider === "chatgpt" ? "ChatGPT" : "Google"}</b><small>{identity.verifiedEmail}</small></span><strong>Verified</strong></div>)}</section>
+    {error && <p className="dialog-error" role="alert">{error}</p>}
+    <div className="settings-form-actions"><span role="status">{saved ? "Saved" : ""}</span><button className="button primary" disabled={busy || !displayName.trim()}>{busy ? "Saving…" : "Save profile"}</button></div>
+    <div className="settings-signout"><span><b>Session</b><small>Sign out through the Sites-managed session.</small></span><a className="button secondary" href={signOutPath}><LogOut size={14} />Sign out</a></div>
+  </form>;
+}
+
+function AppearanceSettingsPanel({
+  theme,
+  sidebarCollapsed,
+  onChange,
+}: {
+  theme: "system" | "light" | "dark";
+  sidebarCollapsed: boolean;
+  onChange: (changes: { theme?: "system" | "light" | "dark"; sidebarPreference?: "expanded" | "collapsed" }) => void;
+}) {
+  return <div className="settings-form">
+    <section className="settings-choice-row"><div className="settings-choice-label"><b>Theme</b><small>Synced to your Task Manager account.</small></div><div role="group" aria-label="Theme preference">{(["system", "light", "dark"] as const).map((value) => <button key={value} type="button" className={theme === value ? "active" : ""} aria-pressed={theme === value} onClick={() => onChange({ theme: value })}>{value === "system" ? <Monitor size={15} /> : value === "light" ? <Sun size={15} /> : <Moon size={15} />}{displayLabel(value)}</button>)}</div></section>
+    <section className="settings-choice-row"><div className="settings-choice-label"><b>Sidebar</b><small>Choose the default navigation state for this account.</small></div><div role="group" aria-label="Sidebar preference"><button type="button" className={!sidebarCollapsed ? "active" : ""} aria-pressed={!sidebarCollapsed} onClick={() => onChange({ sidebarPreference: "expanded" })}><PanelLeftOpen size={15} />Expanded</button><button type="button" className={sidebarCollapsed ? "active" : ""} aria-pressed={sidebarCollapsed} onClick={() => onChange({ sidebarPreference: "collapsed" })}><PanelLeftClose size={15} />Collapsed</button></div></section>
+  </div>;
+}
+
+function supportedTimeZones(current: string): string[] {
+  const values = (Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] })
+    .supportedValuesOf?.("timeZone") ?? [];
+  return [...new Set(["UTC", current, ...values])].sort((left, right) => left.localeCompare(right));
 }
 
 export function ProjectDialog({ project, currentUser, leadOptions, openTaskCount, onClose, onSubmit, onArchive, busy }: { project?: ProjectRecord; currentUser: UserRecord; leadOptions: UserRecord[]; openTaskCount: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; onArchive?: () => Promise<void>; busy: boolean }) {
@@ -6225,7 +6472,7 @@ function SystemImportDialog({
   );
 }
 
-export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose: () => void; initialMode?: CodexSetupMode }) {
+export function CodexSetupDialog({ onClose, initialMode = "desktop", embedded = false }: { onClose: () => void; initialMode?: CodexSetupMode; embedded?: boolean }) {
   const [mode, setMode] = useState<CodexSetupMode>(initialMode);
   const [copied, setCopied] = useState<"marketplace" | "commands" | "diagnostic" | null>(null);
 
@@ -6248,9 +6495,8 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
     }
   }
 
-  return (
-    <Modal onClose={onClose} className="codex-setup-modal" ariaLabel="Connect Task Manager to Codex">
-      <DialogHeader title="Connect Task Manager to Codex" icon={<CircleHelp size={17} />} onClose={onClose} />
+  const body = <>
+      {!embedded && <DialogHeader title="Connect Task Manager to Codex" icon={<CircleHelp size={17} />} onClose={onClose} />}
       <div className="codex-setup-body">
         <aside className="codex-mobile-handoff">
           <b>Installing from a phone?</b>
@@ -6420,8 +6666,10 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
           Developer mode, a manual MCP URL, client ID, secret, and personal API token are not required for normal setup.
         </p>
       </div>
-    </Modal>
-  );
+    </>;
+  return embedded
+    ? <section className="settings-integration" aria-label="Connect Task Manager to Codex">{body}</section>
+    : <Modal onClose={onClose} className="codex-setup-modal" ariaLabel="Connect Task Manager to Codex">{body}</Modal>;
 }
 
 function SetupStep({ number, title, location, success, children }: { number: number; title: string; location: string; success: string; children: React.ReactNode }) {
@@ -7320,6 +7568,12 @@ function surfaceBreadcrumbs(
 
   if (surface === "workspace") return [current("Workspace")];
   if (surface === "admin") return [workspace, current("Administration")];
+  if (surface.startsWith("settings:")) {
+    const section = surface.slice("settings:".length) as SettingsSection;
+    const label = settingsNavigation.flatMap((group) => group.items)
+      .find((item) => item.section === section)?.label ?? "Profile";
+    return [workspace, ancestor("Settings", "settings:profile"), current(label)];
+  }
   if (surface === "views") return [workspace, current("Views")];
   if (surface === "projects") return [workspace, current("Projects")];
   if (surface === "releases") return [workspace, current("Releases")];
@@ -7375,7 +7629,7 @@ function surfaceBreadcrumbs(
   const builtIn = builtInViews.find((item) => item.id === surface);
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
-function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
+function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
 function taskContextualEntity(task: TaskRecord): ContextualActionEntity {
   return { kind: "task", id: task.id, label: task.identifier, accessRole: task.accessRole, archivedAt: task.archivedAt, version: taskMutationVersion(task) };
 }

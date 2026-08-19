@@ -57,6 +57,9 @@ erDiagram
 | `primary_email` | Verified contact/login email, normalized для поиска sharing |
 | `display_name` | Отображаемое имя, optional |
 | `timezone`, `locale` | Пользовательские настройки представления |
+| `theme` | `system`, `light` или `dark`; User-scoped appearance preference |
+| `sidebar_preference` | `expanded` или `collapsed`; default shell state User |
+| `version` | Optimistic concurrency Profile/Settings mutations |
 | `created_at` | Время регистрации внутреннего User |
 | `updated_at` | В первом срезе — последний успешный authenticated request и обновление profile projection |
 | `disabled_at` | Блокировка входа без удаления данных |
@@ -363,6 +366,10 @@ validators schema `2`–`9` нормализуют их как пустые, н�
 Schema `11` добавляет `attachment_migration_outcomes`; schema `2`–`10` после
 проверки исходного checksum получает пустой набор, не объявляя legacy links
 перенесёнными.
+System backup schema `12` добавляет versioned `theme`, `sidebar_preference` и
+User `version`; schema `2`–`11` получает `system`, `expanded` и version `1`
+после проверки исходного checksum. Project backup остаётся на schema `11`,
+поскольку User records в Project bundle не входят.
 
 ### AttachmentMigrationOutcome
 

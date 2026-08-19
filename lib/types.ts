@@ -8,6 +8,8 @@ export type StatusCategory =
 export type Priority = "urgent" | "high" | "medium" | "low" | "none";
 export type AccessRole = "owner" | "manager" | "editor" | "viewer";
 export type GrantRole = Exclude<AccessRole, "owner">;
+export type ThemePreference = "system" | "light" | "dark";
+export type SidebarPreference = "expanded" | "collapsed";
 export type ProjectStatus =
   | "planned"
   | "active"
@@ -20,6 +22,19 @@ export type UserRecord = {
   displayName: string;
   email: string;
   timezone: string;
+  version?: number;
+  theme?: ThemePreference;
+  sidebarPreference?: SidebarPreference;
+};
+
+export type UserIdentityRecord = {
+  provider: "chatgpt" | "google";
+  verifiedEmail: string;
+};
+
+export type UserProfile = {
+  user: UserRecord & Required<Pick<UserRecord, "version" | "theme" | "sidebarPreference">>;
+  identities: UserIdentityRecord[];
 };
 
 export type WorkflowStatusRecord = {
@@ -497,6 +512,7 @@ export type AppliedProjectBackup = {
 
 export type AppSnapshot = {
   user: UserRecord;
+  userProfile?: UserProfile;
   isAdmin: boolean;
   admin: AdminOverview | null;
   users: UserRecord[];

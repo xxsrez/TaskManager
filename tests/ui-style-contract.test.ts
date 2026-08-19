@@ -451,3 +451,11 @@ test("Project lifecycle surfaces remain bounded and touchable on mobile", () => 
   assert.match(taskTracker, /This changes the Task composition of a released Release/);
   assert.match(taskTracker, /Leaving Released clears the server release timestamp/);
 });
+
+test("Settings navigation and forms collapse without mobile horizontal overflow", () => {
+  assert.match(css, /\.settings-surface\s*\{[^}]*grid-template-columns:\s*220px\s+minmax\(0,\s*1fr\)/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.settings-surface\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.settings-navigation\s*\{[^}]*overflow-x:\s*auto;/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.settings-form-row[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+  assert.match(css, /@media\s*\(max-height:\s*480px\)\s*and\s*\(orientation:\s*landscape\)/);
+});

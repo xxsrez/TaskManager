@@ -66,7 +66,7 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 | Releases | Release lifecycle, состав и project consistency |
 | Views | Filter AST, query compilation, grouping, ordering, display config |
 | Search | Identifier lookup и text search поверх разрешённого scope |
-| Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User |
+| Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User и versioned Profile/Settings |
 | Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
 | Administration | Server allowlist, content-free overview и explicit full-state backup/restore |
 | Portability | Owner Project bundles, validation/preview и atomic exact restore |
@@ -597,8 +597,9 @@ provider context: `inventory` строит bounded source-position plan, а `app
 boundary и фиксирует outcome лишь после D1/R2 read-back. HTML остаётся явной
 non-binary mapping, а blocked row запрещает cutover. Source URL никогда не
 попадает в operational result/error; raw row сохраняется только в outcome и
-logical backup schema `12` (schema `11` остаётся legacy-compatible и
-обновляется пустым LabelGroup catalog).
+system/project backup schema `12`. Schema `11` остаётся legacy-compatible:
+получает пустой LabelGroup catalog, а system backup также получает default
+User preferences.
 
 ### Системный backup и restore
 
@@ -639,6 +640,10 @@ logical backup schema `12` (schema `11` остаётся legacy-compatible и
 11. Schema `11` переносит `attachment_migration_outcomes`. Validators schema
     `2`–`10` после исходного checksum добавляют пустую таблицу, поэтому legacy
     backup не может ошибочно подтвердить attachment cutover.
+12. Schema `12` переносит LabelGroup topology, а в system backup также
+    versioned User `theme`, `sidebar_preference` и `version`; schema `2`–`11`
+    получает пустой LabelGroup catalog, deterministic `system`/`expanded`
+    preferences и User version `1` после проверки исходного checksum.
 
 ### Project backup и restore
 

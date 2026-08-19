@@ -714,25 +714,37 @@ Linear, но они обязаны использовать тот же visual l
 - Revoke требует подтверждения только когда последствия могут оборвать текущую
   работу; результат обновляется после server response.
 
-### 12.3 Shared with me и profile
+### 12.3 Shared with me, Profile и Settings
 
 - `Shared with me` — grouped list Projects и SavedViews с
   owner avatar/name и обычными entity controls.
-- Profile/settings использует left settings navigation и compact form rows.
-- Доступны display name, verified email, timezone, linked providers, theme,
-  sidebar preference и sign out.
+- Settings — отдельная responsive surface с общей left settings navigation.
+  На mobile navigation становится горизонтальной scrollable section bar без
+  horizontal overflow content. Канонические разделы: `Profile`, `Appearance`,
+  `Workflow statuses`, `Labels`, `Codex setup` и `Project backup`.
+- Каждый раздел имеет собственный `/settings/<section>` URL. Обычная ссылка,
+  modifier-click, reload, back и forward сохраняют выбранный раздел.
+- `Profile` использует compact form rows для versioned display name, read-only
+  verified email, IANA timezone и server-projected linked providers. Invalid
+  timezone, conflict и server error остаются в форме без partial save.
+- `Appearance` содержит `system`/`light`/`dark` theme и expanded/collapsed
+  sidebar preference. Initial server projection применяется к application
+  shell без общей для accounts browser key.
 - Нажатие на avatar, display name или email в нижней части sidebar открывает
   компактное account menu и не запускает sign out. Первый menu slice показывает
   verified identity, рабочие переходы в `My tasks`, `Workflow statuses`,
   `Project backup`, доступную администратору `Administration` и общий для всех
   пункт `Codex setup`, а также выбор `system`/`light`/`dark` theme.
-- `Workflow statuses` открывает responsive modal owner-каталога. Active rows
+- `Workflow statuses` размещает responsive owner-каталог внутри Settings. Active rows
   дают rename, color, reorder внутри immutable category, выбор default и
   archive; используемый/default status требует replacement той же категории.
   `Duplicate` помечен как Reserved, а archived rows раскрываются отдельно и
   поддерживают restore. Ошибка optimistic version остаётся в modal и допускает
   повтор после актуального reload.
-- `Codex setup` открывает modal с переключаемыми режимами `Codex Desktop` и
+- `Labels` размещает owner-каталог внутри Settings без потери create, edit,
+  archive, restore, usage counts и существующих Task assignments.
+- `Codex setup` размещает flow внутри Integrations с переключаемыми режимами
+  `Codex Desktop` и
   `Codex CLI`. До tabs на mobile сразу показан handoff: установка продолжается
   в ChatGPT/Codex Desktop либо CLI, а mobile ChatGPT используется после
   установки plugin на тот же account. Flow визуально разделяет пять стадий:
@@ -760,6 +772,9 @@ Linear, но они обязаны использовать тот же visual l
 - Sign out запускается только отдельной icon button справа от account trigger.
   Она имеет явные tooltip и accessible name; вся строка профиля не может быть
   logout hit target.
+- `Administration` не является Settings section и остаётся отдельной
+  server-gated surface. Прежние прямые account-menu shortcuts могут жить только
+  как переходный слой до TM-265; canonical destination utility — Settings.
 
 ### 12.4 Administration
 
@@ -788,8 +803,8 @@ Linear, но они обязаны использовать тот же visual l
 
 ### 12.5 Project backup
 
-- Отдельная utility surface открывается из account menu, а не занимает место в
-  primary product navigation.
+- Utility встроена в `Settings → Project backup` и не занимает место в primary
+  product navigation.
 - Project backup показывает только Projects, где current User — Owner. Для
   каждого доступен download; ниже находится dropzone restore-файла.
 - После выбора bundle UI сначала показывает verified preview: имя/ID Project,

@@ -80,6 +80,11 @@ export function metadataForNavigation(
   } else if (navigation.surface === "admin") {
     title = "Administration – Task Manager";
     description = "Registration and activity overview for Task Manager administrators.";
+  } else if (navigation.surface.startsWith("settings:")) {
+    const section = navigation.surface.slice("settings:".length)
+      .replaceAll("-", " ");
+    title = `${section[0]?.toUpperCase() ?? "S"}${section.slice(1)} settings – Task Manager`;
+    description = "Personal preferences, workspace catalogs, integrations, and project backups in Task Manager.";
   }
 
   return {

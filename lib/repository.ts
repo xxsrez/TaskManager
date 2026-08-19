@@ -45,6 +45,10 @@ import type {
   TaskDetailRecord,
   TaskRelationRecord,
   TaskRecord,
+  ThemePreference,
+  SidebarPreference,
+  UserIdentityRecord,
+  UserProfile,
   UserRecord,
   ViewDisplay,
   ViewFilterCondition,
@@ -191,22 +195,31 @@ export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
   const existing = await db
     .prepare(
       `UPDATE users
-       SET display_name = ?, email = ?, updated_at = CURRENT_TIMESTAMP
+       SET email = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = (
          SELECT user_id FROM user_identities
          WHERE provider = ? AND provider_account_key = ?
        )
-       RETURNING id, display_name, email, timezone`,
+       RETURNING id, display_name, email, timezone, theme,
+                 sidebar_preference, version`,
     )
     .bind(
-      actor.displayName,
       actor.email,
       actor.provider,
       actor.providerAccountKey,
     )
     .first<DbRow>();
 
-  if (existing) return mapUser(existing);
+  if (existing) {
+    await db
+      .prepare(
+        `UPDATE user_identities SET verified_email = ?
+         WHERE provider = ? AND provider_account_key = ?`,
+      )
+      .bind(actor.email, actor.provider, actor.providerAccountKey)
+      .run();
+    return mapUser(existing);
+  }
 
   const userId = `usr_${crypto.randomUUID()}`;
   await db.batch([
@@ -247,7 +260,121 @@ export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
     displayName: actor.displayName,
     email: actor.email,
     timezone: "UTC",
+    theme: "system",
+    sidebarPreference: "expanded",
+    version: 1,
   };
+}
+
+export async function getUserProfile(currentUser: UserRecord): Promise<UserProfile> {
+  const db = getD1();
+  const [user, identities] = await Promise.all([
+    db.prepare(
+      `SELECT id, display_name, email, timezone, theme,
+              sidebar_preference, version
+       FROM users WHERE id = ?`,
+    ).bind(currentUser.id).first<DbRow>(),
+    db.prepare(
+      `SELECT provider, verified_email
+       FROM user_identities WHERE user_id = ?
+       ORDER BY provider, provider_account_key`,
+    ).bind(currentUser.id).all<DbRow>(),
+  ]);
+  if (!user) throw new NotFoundError("User profile was not found");
+  return {
+    user: mapUser(user),
+    identities: identities.results.map(mapUserIdentity),
+  };
+}
+
+export async function updateUserProfile(
+  currentUser: UserRecord,
+  input: Record<string, unknown>,
+): Promise<UserProfile> {
+  const allowed = new Set([
+    "version",
+    "displayName",
+    "timezone",
+    "theme",
+    "sidebarPreference",
+  ]);
+  const unsupported = Object.keys(input).find((key) => !allowed.has(key));
+  if (unsupported) throw new ValidationError(`Profile field ${unsupported} cannot be changed`);
+  if (!Number.isInteger(input.version) || Number(input.version) < 1) {
+    throw new ValidationError("Profile version is required");
+  }
+
+  const current = await getUserProfile(currentUser);
+  const displayName = input.displayName === undefined
+    ? current.user.displayName
+    : validateDisplayName(input.displayName);
+  const timezone = input.timezone === undefined
+    ? current.user.timezone
+    : validateTimeZone(input.timezone);
+  const theme = input.theme === undefined
+    ? current.user.theme
+    : validateTheme(input.theme);
+  const sidebarPreference = input.sidebarPreference === undefined
+    ? current.user.sidebarPreference
+    : validateSidebarPreference(input.sidebarPreference);
+
+  const updated = await getD1().prepare(
+    `UPDATE users
+     SET display_name = ?, timezone = ?, theme = ?, sidebar_preference = ?,
+         version = version + 1, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND version = ?
+     RETURNING id, display_name, email, timezone, theme,
+               sidebar_preference, version`,
+  ).bind(
+    displayName,
+    timezone,
+    theme,
+    sidebarPreference,
+    currentUser.id,
+    input.version,
+  ).first<DbRow>();
+  if (!updated) throw new ConflictError("Profile changed in another session; reload and try again");
+  return {
+    user: mapUser(updated),
+    identities: current.identities,
+  };
+}
+
+function validateDisplayName(value: unknown): string {
+  if (typeof value !== "string") throw new ValidationError("Display name is required");
+  const normalized = value.trim();
+  if (!normalized) throw new ValidationError("Display name is required");
+  if (normalized.length > 120) throw new ValidationError("Display name must be 120 characters or fewer");
+  return normalized;
+}
+
+function validateTimeZone(value: unknown): string {
+  if (typeof value !== "string" || !value || value.length > 100) {
+    throw new ValidationError("Timezone must be a valid IANA identifier");
+  }
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: value }).format(0);
+  } catch {
+    throw new ValidationError("Timezone must be a valid IANA identifier");
+  }
+  if (value !== "UTC" && !value.includes("/")) {
+    throw new ValidationError("Timezone must be a valid IANA identifier");
+  }
+  return value;
+}
+
+function validateTheme(value: unknown): ThemePreference {
+  if (value !== "system" && value !== "light" && value !== "dark") {
+    throw new ValidationError("Theme must be system, light, or dark");
+  }
+  return value;
+}
+
+function validateSidebarPreference(value: unknown): SidebarPreference {
+  if (value !== "expanded" && value !== "collapsed") {
+    throw new ValidationError("Sidebar preference must be expanded or collapsed");
+  }
+  return value;
 }
 
 export async function getSnapshot(
@@ -521,7 +648,8 @@ export async function getSnapshot(
         ),
       db
         .prepare(
-          `SELECT DISTINCT u.id, u.display_name, u.email, u.timezone
+          `SELECT DISTINCT u.id, u.display_name, u.email, u.timezone,
+                  u.theme, u.sidebar_preference, u.version
            FROM users u
            WHERE u.id = ? OR EXISTS (
              SELECT 1 FROM projects p
@@ -648,6 +776,13 @@ export async function getSnapshot(
              ON target_visible.id = tr.target_task_id`,
         )
         .bind(...snapshotTaskScopeParameters(user.id, taskLimit)),
+      db
+        .prepare(
+          `SELECT provider, verified_email
+           FROM user_identities WHERE user_id = ?
+           ORDER BY provider, provider_account_key`,
+        )
+        .bind(user.id),
     ]),
     isAdmin && options.includeAdminOverview
       ? getAdminOverview(user, configuredAdminEmails)
@@ -667,6 +802,7 @@ export async function getSnapshot(
     labelGroups,
     taskLabels,
     relations,
+    identities,
   ] = snapshotResults;
 
   const boundedTaskRows = tasks.results.slice(0, taskLimit);
@@ -684,6 +820,10 @@ export async function getSnapshot(
 
   return {
     user,
+    userProfile: {
+      user: user as UserProfile["user"],
+      identities: identities.results.map(mapUserIdentity),
+    },
     isAdmin,
     admin,
     users: users.results.map(mapUser),
@@ -5811,12 +5951,26 @@ function finiteNumber(value: unknown, label: string): number {
   return number;
 }
 
-function mapUser(row: DbRow): UserRecord {
+function mapUser(row: DbRow): UserProfile["user"] {
   return {
     id: String(row.id),
     displayName: String(row.display_name),
     email: String(row.email),
     timezone: String(row.timezone),
+    theme: String(row.theme ?? "system") as ThemePreference,
+    sidebarPreference: String(row.sidebar_preference ?? "expanded") as SidebarPreference,
+    version: Number(row.version ?? 1),
+  };
+}
+
+function mapUserIdentity(row: DbRow): UserIdentityRecord {
+  const provider = String(row.provider);
+  if (provider !== "chatgpt" && provider !== "google") {
+    throw new ValidationError("Unknown identity provider");
+  }
+  return {
+    provider,
+    verifiedEmail: String(row.verified_email),
   };
 }
 

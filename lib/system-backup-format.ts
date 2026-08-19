@@ -91,7 +91,9 @@ export const backupTableNames = [
 ] as const;
 
 export const tableDefinitions = [
-  definition("users", ["id", "display_name", "email", "timezone", "created_at", "updated_at"], "id"),
+  definition("users", ["id", "display_name", "email", "timezone", "theme", "sidebar_preference", "version", "created_at", "updated_at"], "id", {
+    version: { number: true, integer: true },
+  }),
   definition("user_identities", ["user_id", "provider", "provider_account_key", "verified_email", "created_at"], "provider, provider_account_key"),
   definition("workflow_statuses", ["id", "owner_user_id", "name", "category", "color", "position", "is_default", "system_role", "archived_at", "version", "created_at", "updated_at"], "id", {
     position: { number: true, integer: true },
@@ -189,6 +191,12 @@ const legacyWorkflowStatusDefinition = definition(
     position: { number: true, integer: true },
     is_default: { number: true, integer: true },
   },
+);
+
+const legacyUserDefinition = definition(
+  "users",
+  ["id", "display_name", "email", "timezone", "created_at", "updated_at"],
+  "id",
 );
 
 const legacyTaskRelationDefinition = definition(
@@ -334,7 +342,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const legacyActivity = typeof schemaVersion === "number" && schemaVersion <= 9;
   const legacyAttachmentMigration = typeof schemaVersion === "number" && schemaVersion <= 10;
   const legacyLabelGroups = typeof schemaVersion === "number" && schemaVersion <= 11;
-  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8 || schemaVersion === 9 || schemaVersion === 10 || schemaVersion === 11 || schemaVersion === systemBackupSchemaVersion;
+  const legacyUserSettings = typeof schemaVersion === "number" && schemaVersion <= 11;
+  const supported = typeof schemaVersion === "number" && schemaVersion >= 2 && schemaVersion <= systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
     withoutAttachments
@@ -371,7 +380,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
     if (totalRows > maxSystemBackupRows) throw new ValidationError(`Backup contains more than ${maxSystemBackupRows} rows`);
-    const sourceDefinition = legacyIdentifiers && table.name === "projects"
+    const sourceDefinition = legacyUserSettings && table.name === "users" &&
+        !sourceRows.some((row) => Object.hasOwn(object(row, "user"), "theme"))
+      ? legacyUserDefinition
+      : legacyIdentifiers && table.name === "projects"
       ? legacyProjectDefinition
       : legacyIdentifiers && table.name === "tasks"
         ? legacyTaskDefinition
@@ -409,6 +421,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   if (legacyLabelGroups) tables = upgradeLegacySystemLabelGroups(tables);
   if (legacySavedViews) tables = upgradeLegacySystemSavedViews(tables);
   if (legacyHistoricalComments) tables = upgradeLegacySystemComments(tables);
+  if (legacyUserSettings) tables = upgradeLegacySystemUsers(tables);
   const counts = countTables(tables);
   validateRelationships(tables);
   const objects = withoutAttachments
@@ -429,10 +442,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         }
       : {}),
     exportedAt,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings
       ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
       : sourceCounts,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings
       ? Object.fromEntries(
           sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
         )
@@ -1159,6 +1172,18 @@ function upgradeLegacySystemWorkflow(source: BackupTables): BackupTables {
     }
   }
   return { ...source, workflow_statuses: statuses };
+}
+
+function upgradeLegacySystemUsers(source: BackupTables): BackupTables {
+  return {
+    ...source,
+    users: source.users.map((user): BackupRow => ({
+      ...user,
+      theme: user.theme ?? "system",
+      sidebar_preference: user.sidebar_preference ?? "expanded",
+      version: user.version ?? 1,
+    })),
+  };
 }
 
 function upgradeLegacySystemRelations(source: BackupTables): BackupTables {
