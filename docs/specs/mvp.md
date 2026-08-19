@@ -343,8 +343,12 @@ immutable ID и может группировать Tasks по значения�
   thread и tombstone не инициируют lookup. Raster использует тот же private
   preview с focus trap и `Esc`, что Task Attachment; file — ACL-scoped safe
   download. Missing, deleted, forbidden и guessed refs дают одинаковый локальный
-  placeholder без filename или existence leak. Renderer invalidation не
-  сбрасывает root/reply/edit draft.
+  placeholder без filename или existence leak. Lookup делится на deterministic
+  batches максимум по 100 refs с не более чем двумя одновременными запросами.
+  Transient failure сохраняет успешные chunks и уже известную metadata, не
+  превращает failed refs в authoritative missing и допускает один automatic и
+  явный manual retry. Renderer invalidation/retry не сбрасывает
+  root/reply/edit draft.
 - Импортированный comment становится historical `Comment` той же Task с
   snapshot имени автора и исходных timestamps/quote. Он не получает
   `author_user_id`, не impersonates текущего User и сохраняет source identity.

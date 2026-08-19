@@ -513,12 +513,14 @@ List повторяет плотную grouped-list модель Linear.
 - Native attachment refs в видимой части comment body используют renderer Task
   Attachments: raster остаётся inline, открывает private full preview с focus
   trap/`Esc` и восстанавливает focus; generic file остаётся переносимой
-  keyboard-focusable safe-download ссылкой. Metadata запрашиваются одним
-  exact-ref batch только для смонтированных comments текущей page; collapsed,
-  скрытая часть `Show more` и tombstone не загружают ref. Missing/deleted/
+  keyboard-focusable safe-download ссылкой. Metadata запрашиваются
+  deterministic exact-ref batches максимум по 100 с не более чем двумя
+  одновременными запросами только для смонтированных comments текущей page;
+  collapsed, скрытая часть `Show more` и tombstone не загружают ref. Missing/deleted/
   forbidden/guessed ref выглядит одинаковым локальным placeholder без filename
-  и existence leak. Attachment invalidation обновляет renderer, не сбрасывая
-  root/reply draft.
+  и existence leak. Transient chunk failure сохраняет успешные результаты,
+  выполняет один bounded automatic retry и оставляет общий manual `Retry`;
+  attachment invalidation/retry не сбрасывает root/reply draft.
 - Historical comment имеет badge `Imported history`, snapshot исходного author,
   исходные timestamps и optional quote. Для него нет edit/delete controls;
   Editor+ по обычным правилам может reply/react/resolve. Nested imported reply

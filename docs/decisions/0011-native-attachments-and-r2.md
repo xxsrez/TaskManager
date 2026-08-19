@@ -23,11 +23,14 @@ Markdown file links. Canonical body по-прежнему хранит толь�
 Дополнение 2026-08-19: live native Comments используют тот же Markdown contract
 и normalized `comment_attachment_refs`; backup schema `13` переносит index.
 
-Дополнение 2026-08-19: browser Comment renderer разрешает одним exact-ref batch
-только refs смонтированных bodies текущей page. Он переиспользует private Task
-Attachment preview/download, не сохраняет content URL и одинаково показывает
-локальный placeholder для missing/deleted/forbidden/guessed refs; composer и
-upload остаются отдельным решением.
+Дополнение 2026-08-19: browser Comment renderer разрешает deterministic
+exact-ref chunks максимум по 100 только для refs смонтированных bodies текущей
+page, не более двух chunks одновременно. Он сохраняет успешные chunks и
+известную metadata при transient failure, даёт bounded automatic/manual retry,
+переиспользует private Task Attachment preview/download, не сохраняет content
+URL и одинаково показывает локальный placeholder только после authoritative
+missing/deleted/forbidden/guessed outcome; composer и upload остаются отдельным
+решением.
 
 ## Контекст
 

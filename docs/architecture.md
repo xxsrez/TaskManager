@@ -524,14 +524,19 @@ ready, switch thread отменяет только текущую upload-сес�
 из body token оставляет Attachment видимым в Task gallery.
 
 Browser Comment renderer агрегирует только executable refs из смонтированных
-bodies текущей comment page и передаёт их повторяемыми `refs` в
-`GET /api/tasks/{id}/attachments`. Exact-ref branch сначала повторяет Task ACL,
-возвращает только найденные ready same-Task metadata и одинаково опускает
-guessed, foreign, deleted и недоступные refs. Collapsed threads, скрытая часть
-`Show more` и tombstones не монтируют consumer. Cache хранит metadata, но не
-body/object key/content URL; `task_attachments` invalidation перечитывает
-только видимые refs и не затрагивает comment drafts. Image/file presentation
-переиспользует private Task Attachment preview/download components.
+bodies текущей comment page и deterministic chunks максимум по 100 передаёт их
+повторяемыми `refs` в `GET /api/tasks/{id}/attachments`, выполняя не более двух
+запросов одновременно. Exact-ref branch сначала повторяет Task ACL, возвращает
+только найденные ready same-Task metadata и одинаково опускает guessed,
+foreign, deleted и недоступные refs. Успешный response authoritative для всех
+refs своего chunk; transient failure не помечает их missing, сохраняет уже
+известную metadata и успешные chunks, затем допускает один automatic и
+явный manual retry при одном active loader. Collapsed threads, скрытая часть
+`Show more` и tombstones не монтируют consumer. Cache
+хранит metadata, но не body/object key/content URL; `task_attachments`
+invalidation перечитывает только видимые refs и не затрагивает comment drafts.
+Image/file presentation переиспользует private Task Attachment preview/download
+components.
 
 Append-only change history запрашивается независимо через
 `/api/tasks/{id}/activity`. Repository сначала разрешает текущую Task ACL, затем

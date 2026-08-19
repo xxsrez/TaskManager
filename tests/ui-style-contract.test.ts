@@ -445,6 +445,10 @@ test("comment attachments resolve mounted refs only and reuse the private render
   assert.match(commentAttachmentMetadata, /searchParams\.append\("refs", ref\)/);
   assert.match(commentAttachmentMetadata, /task\.attachmentInvalidationCursor/);
   assert.match(commentAttachmentMetadata, /task-manager:attachment-changed/);
+  assert.match(commentAttachmentMetadata, /Some comment attachments could not be loaded/);
+  assert.match(commentAttachmentMetadata, /Retry/);
+  assert.match(commentAttachmentMetadata, /setRetryNonce/);
+  assert.doesNotMatch(commentAttachmentMetadata, /localStorage|commentDraft|setDraft/);
   assert.doesNotMatch(commentAttachmentMetadata, /\/attachments[`"']\s*,/);
   assert.match(declarations(".comment-body .task-description-image"), /max-width:\s*100%\s*;/);
   assert.match(
