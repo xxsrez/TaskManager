@@ -514,7 +514,7 @@ List повторяет плотную grouped-list модель Linear.
 
 ### 8.2.1 Управление каталогом labels
 
-- Account menu `Labels` открывает owner-only dialog с name, color, description,
+- `Settings → Labels` содержит owner-only управление name, color, description,
   archive и restore. Active имя уникально в owner catalog без учёта регистра;
   edit использует current label version и показывает conflict без
   last-write-wins.
@@ -523,9 +523,9 @@ List повторяет плотную grouped-list модель Linear.
 - Bulk bar загружает совместимый catalog выбранных Tasks по требованию и даёт
   отдельные `Add label`/`Remove label`. Одна command либо применяет желаемое
   состояние ко всему набору, либо не меняет ни одну Task.
-- Dialog и picker складываются в одну колонку на mobile, сохраняют все actions
-  в portrait и landscape и не создают horizontal overflow.
-- Account menu `Label groups` открывает owner-only управление name,
+- Settings panel и picker складываются в одну колонку на mobile, сохраняют все
+  actions в portrait и landscape и не создают horizontal overflow.
+- `Settings → Labels` также содержит управление Label groups: name,
   description, position, archive/restore и membership Labels. Grouped Labels
   представлены single-select по каждой группе; выбор нового значения атомарно
   заменяет старое, `Clear` снимает значение. Ungrouped секция остаётся

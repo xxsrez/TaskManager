@@ -79,3 +79,15 @@ test("account menu remains overflow-safe and touch-sized in both phone orientati
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.mobile-sidebar-open \.account-menu-item,\s*\.mobile-sidebar-open \.account-menu-identity\s*\{[^}]*min-height:\s*44px\s*;/,
   );
 });
+
+test("canonical interface docs keep Labels and Label groups inside Settings", () => {
+  const specification = readFileSync(
+    new URL("../docs/specs/interface.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(specification, /`Settings → Labels` содержит owner-only/);
+  assert.match(specification, /`Settings → Labels` также содержит управление Label groups/);
+  assert.doesNotMatch(specification, /Account menu `Labels`/);
+  assert.doesNotMatch(specification, /Account menu `Label groups`/);
+});
