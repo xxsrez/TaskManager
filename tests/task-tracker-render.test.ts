@@ -24,6 +24,7 @@ import {
   PriorityIcon,
   ProjectDialog,
   ProjectOverview,
+  projectGroupMovePreview,
   ReleaseDialog,
   ReleaseOverview,
   resolveArchiveBulkAction,
@@ -37,6 +38,7 @@ import {
   taskDraftSyncMode,
   taskDraftValueChanged,
   taskMatchesSearch,
+  taskKeyboardReorderDirection,
   taskRelationPresentations,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_DIAGNOSTIC_PROMPT,
@@ -44,6 +46,7 @@ import {
   TaskMoveDialog,
   TaskTracker,
 } from "../components/task-tracker";
+import { buildTaskGroups } from "../lib/task-groups";
 import type { AppSnapshot } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
@@ -248,6 +251,19 @@ test("Task move confirmation previews identity and requires explicit dependent e
     }],
   };
 
+  const projectGroup = buildTaskGroups({
+    tasks: [task],
+    statuses: data.statuses,
+    projects: data.projects,
+    releases: data.releases,
+    groupBy: "project",
+    showEmptyGroups: true,
+  }).find((group) => group.value === target.id)!;
+  assert.deepEqual(projectGroupMovePreview(task, projectGroup), {
+    taskId: task.id,
+    targetProjectId: target.id,
+  });
+
   const markup = renderToStaticMarkup(createElement(TaskMoveDialog, {
     task,
     sourceProject: source,
@@ -269,6 +285,27 @@ test("Task move confirmation previews identity and requires explicit dependent e
   assert.match(markup, /Detach or reparent 1 subtask/);
   assert.match(markup, /final identifier is allocated only when the move commits/i);
   assert.match(markup, /<button class="button primary" disabled="">Move task<\/button>/);
+});
+
+test("Alt+Arrow only performs a vertical move in manual ordering", () => {
+  assert.equal(taskKeyboardReorderDirection({
+    draggable: true,
+    reorderEnabled: false,
+    altKey: true,
+    key: "ArrowUp",
+  }), null);
+  assert.equal(taskKeyboardReorderDirection({
+    draggable: true,
+    reorderEnabled: true,
+    altKey: true,
+    key: "ArrowDown",
+  }), "down");
+  assert.equal(taskKeyboardReorderDirection({
+    draggable: true,
+    reorderEnabled: true,
+    altKey: false,
+    key: "ArrowDown",
+  }), null);
 });
 
 test("task relations are grouped by relative direction and resolved blockers move to Related", () => {
