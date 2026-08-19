@@ -126,7 +126,7 @@ import {
   parseTaskMarkdownLines,
 } from "@/lib/task-description-format";
 import {
-  TASK_KEYBOARD_COMMAND_EVENT,
+  dispatchTaskKeyboardIntegrationCommand,
   keyboardCommandFor,
   moveTaskHighlight,
   reconcileTaskInteraction,
@@ -2272,18 +2272,12 @@ export function TaskTracker({
         return;
       }
       if (command === "global-search") {
-        const claimed = !window.dispatchEvent(new CustomEvent<TaskKeyboardIntegrationDetail>(
-          TASK_KEYBOARD_COMMAND_EVENT,
-          {
-            cancelable: true,
-            detail: {
-              command,
-              taskId: highlightedTaskId ?? keyboardTaskIds[0] ?? null,
-              selectedTaskIds: [...selected],
-              surface,
-            },
-          },
-        ));
+        const claimed = dispatchTaskKeyboardIntegrationCommand(window, {
+          command,
+          taskId: highlightedTaskId ?? keyboardTaskIds[0] ?? null,
+          selectedTaskIds: [...selected],
+          surface,
+        });
         event.preventDefault();
         if (!claimed) openGlobalSearch();
         return;
@@ -2300,18 +2294,12 @@ export function TaskTracker({
       if (!taskSurface) return;
       const integrationTaskId = highlightedTaskId ?? keyboardTaskIds[0] ?? null;
       if (command === "contextual-actions") {
-        const claimed = !window.dispatchEvent(new CustomEvent<TaskKeyboardIntegrationDetail>(
-          TASK_KEYBOARD_COMMAND_EVENT,
-          {
-            cancelable: true,
-            detail: {
-              command,
-              taskId: integrationTaskId,
-              selectedTaskIds: [...selected],
-              surface,
-            },
-          },
-        ));
+        const claimed = dispatchTaskKeyboardIntegrationCommand(window, {
+          command,
+          taskId: integrationTaskId,
+          selectedTaskIds: [...selected],
+          surface,
+        });
         if (claimed) event.preventDefault();
       } else if (command === "filter") {
         event.preventDefault();

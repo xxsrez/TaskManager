@@ -23,6 +23,16 @@ export type TaskKeyboardIntegrationDetail = {
   surface: string;
 };
 
+export function dispatchTaskKeyboardIntegrationCommand(
+  target: Pick<EventTarget, "dispatchEvent">,
+  detail: TaskKeyboardIntegrationDetail,
+): boolean {
+  return !target.dispatchEvent(new CustomEvent<TaskKeyboardIntegrationDetail>(
+    TASK_KEYBOARD_COMMAND_EVENT,
+    { cancelable: true, detail },
+  ));
+}
+
 export type KeyboardEventLike = {
   key: string;
   target?: EventTarget | null;

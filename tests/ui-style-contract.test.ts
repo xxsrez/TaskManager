@@ -148,7 +148,10 @@ test("list and board expose the same keyboard highlight and selection semantics"
   assert.match(taskTracker, /aria-pressed=\{selected\}/);
   assert.match(taskTracker, /aria-current=\{highlighted \? "true" : undefined\}/);
   assert.match(taskTracker, /onSelect\(event\.shiftKey\)/);
-  assert.match(taskTracker, /TASK_KEYBOARD_COMMAND_EVENT/);
+  assert.match(taskTracker, /dispatchTaskKeyboardIntegrationCommand/);
+  assert.match(taskTracker, /else if \(command === "global-search"\)[\s\S]*?focusSearch\(\)/);
+  assert.match(taskTracker, /if \(event\.key === "Enter"\)[\s\S]*?onOpen\(\)/);
+  assert.doesNotMatch(taskTracker, /event\.key === "Enter" \|\| event\.key === " "/);
   assert.match(taskTracker, /addEventListener\("keydown", handleKey\)/);
   assert.match(taskTracker, /previousFocus\?\.isConnected/);
   assert.match(taskTracker, /closest\("\[role='dialog'\]\[aria-modal='true'\]"\)/);

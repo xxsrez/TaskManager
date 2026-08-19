@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  TASK_KEYBOARD_COMMAND_EVENT,
+  dispatchTaskKeyboardIntegrationCommand,
   keyboardCommandFor,
   reconcileTaskInteraction,
   selectTaskRange,
@@ -37,6 +39,35 @@ test("keeps global shortcuts out of editors, composing input, and owned layers",
   assert.equal(keyboardCommandFor(event("Escape", { defaultPrevented: true })), null);
   assert.equal(keyboardCommandFor(event("j"), { layerOwnsKeyboard: true }), null);
   assert.equal(keyboardCommandFor(event("Escape"), { layerOwnsKeyboard: true }), "escape");
+});
+
+test("integration bridge distinguishes claimed commands from merge-safe fallback", () => {
+  const unclaimedTarget = new EventTarget();
+  assert.equal(dispatchTaskKeyboardIntegrationCommand(unclaimedTarget, {
+    command: "global-search",
+    taskId: "task-1",
+    selectedTaskIds: [],
+    surface: "all",
+  }), false);
+
+  const claimedTarget = new EventTarget();
+  let receivedDetail: unknown;
+  claimedTarget.addEventListener(TASK_KEYBOARD_COMMAND_EVENT, (event) => {
+    receivedDetail = (event as CustomEvent).detail;
+    event.preventDefault();
+  });
+  assert.equal(dispatchTaskKeyboardIntegrationCommand(claimedTarget, {
+    command: "contextual-actions",
+    taskId: "task-2",
+    selectedTaskIds: ["task-2"],
+    surface: "project:1",
+  }), true);
+  assert.deepEqual(receivedDetail, {
+    command: "contextual-actions",
+    taskId: "task-2",
+    selectedTaskIds: ["task-2"],
+    surface: "project:1",
+  });
 });
 
 test("distinguishes highlight, toggle selection, and stable-anchor range selection", () => {
