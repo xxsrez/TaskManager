@@ -555,18 +555,11 @@ export function mergeDeferredSnapshot(
   const projectCoverage = incoming.catalogCoverage?.projects ?? "complete";
   const releaseCoverage = incoming.catalogCoverage?.releases ?? "complete";
   const viewCoverage = incoming.catalogCoverage?.views ?? "complete";
-  const preserveCurrentProfile = current.user.id === incoming.user.id &&
-    Number(current.userProfile?.user.version ?? current.user.version ?? 0) >=
-      Number(incoming.userProfile?.user.version ?? incoming.user.version ?? 0);
+  const mergedUserState = mergeDeferredUserState(current, incoming);
 
   return {
     ...incoming,
-    user: preserveCurrentProfile ? current.user : incoming.user,
-    userProfile: preserveCurrentProfile
-      ? current.userProfile ?? (incoming.userProfile
-        ? { ...incoming.userProfile, user: current.user as UserProfile["user"] }
-        : undefined)
-      : incoming.userProfile,
+    ...mergedUserState,
     admin: incoming.isAdmin ? incoming.admin ?? current.admin : null,
     tasks: mergedTasks,
     projects: mergeResetCollection(
@@ -611,6 +604,45 @@ export function snapshotProvesCollectionAbsence(
   kind: WorkspaceCatalogKind,
 ) {
   return (snapshot.catalogCoverage?.[kind] ?? "complete") === "complete";
+}
+
+function mergeDeferredUserState(
+  current: AppSnapshot,
+  incoming: AppSnapshot,
+): Pick<AppSnapshot, "user" | "userProfile"> {
+  if (current.user.id !== incoming.user.id) {
+    return { user: incoming.user, userProfile: incoming.userProfile };
+  }
+
+  const currentVersion = Number(
+    current.userProfile?.user.version ?? current.user.version ?? 0,
+  );
+  const incomingVersion = Number(
+    incoming.userProfile?.user.version ?? incoming.user.version ?? 0,
+  );
+  const currentVersionedUser = current.userProfile?.user ?? current.user;
+
+  if (currentVersion > incomingVersion) {
+    return {
+      user: currentVersionedUser,
+      userProfile: current.userProfile ?? (incoming.userProfile
+        ? { ...incoming.userProfile, user: currentVersionedUser as UserProfile["user"] }
+        : undefined),
+    };
+  }
+  if (incomingVersion > currentVersion) {
+    return { user: incoming.user, userProfile: incoming.userProfile };
+  }
+
+  const verifiedEmail = incoming.userProfile?.user.email ?? incoming.user.email;
+  const user = { ...currentVersionedUser, email: verifiedEmail };
+  const identities = incoming.userProfile?.identities ?? current.userProfile?.identities;
+  return {
+    user,
+    userProfile: identities
+      ? { user: user as UserProfile["user"], identities }
+      : undefined,
+  };
 }
 
 class ProfileRequestError extends Error {

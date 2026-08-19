@@ -882,6 +882,49 @@ test("an older deferred snapshot cannot regress a saved profile or preferences",
   assert.equal(advanced.userProfile, newerProfile);
 });
 
+test("a same-version deferred snapshot refreshes server-managed identity only", () => {
+  const currentProfile = {
+    user: {
+      ...snapshot.user,
+      displayName: "Saved display name",
+      email: "old@example.test",
+      timezone: "Atlantic/Madeira",
+      theme: "dark" as const,
+      sidebarPreference: "collapsed" as const,
+      version: 4,
+    },
+    identities: [{ provider: "chatgpt" as const, verifiedEmail: "old@example.test" }],
+  };
+  const refreshedIdentity = {
+    user: {
+      ...currentProfile.user,
+      displayName: "Stale server display name",
+      email: "new@example.test",
+      timezone: "UTC",
+      theme: "light" as const,
+      sidebarPreference: "expanded" as const,
+    },
+    identities: [
+      { provider: "chatgpt" as const, verifiedEmail: "new@example.test" },
+      { provider: "google" as const, verifiedEmail: "linked@example.test" },
+    ],
+  };
+
+  const merged = mergeDeferredSnapshot(
+    { ...snapshot, user: currentProfile.user, userProfile: currentProfile },
+    { ...snapshot, user: refreshedIdentity.user, userProfile: refreshedIdentity },
+  );
+
+  assert.deepEqual(merged.user, {
+    ...currentProfile.user,
+    email: "new@example.test",
+  });
+  assert.deepEqual(merged.userProfile, {
+    user: { ...currentProfile.user, email: "new@example.test" },
+    identities: refreshedIdentity.identities,
+  });
+});
+
 test("a newer deferred summary keeps loaded content without masking its optimistic version", () => {
   const loadedTask = {
     ...snapshot.tasks[0]!,
