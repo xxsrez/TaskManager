@@ -1119,6 +1119,95 @@ type ContextualMenuState = {
   restoreFocus: HTMLElement | null;
 };
 
+export function nextAccountMenuFocusIndex(
+  key: string,
+  currentIndex: number,
+  itemCount: number,
+): number | null {
+  if (itemCount <= 0) return null;
+  if (key === "Home") return 0;
+  if (key === "End") return itemCount - 1;
+  if (key === "ArrowDown") return currentIndex < 0 ? 0 : (currentIndex + 1) % itemCount;
+  if (key === "ArrowUp") return currentIndex < 0 ? itemCount - 1 : (currentIndex - 1 + itemCount) % itemCount;
+  return null;
+}
+
+export function AccountMenu({
+  user,
+  isAdmin,
+  onNavigate,
+}: {
+  user: UserRecord;
+  isAdmin: boolean;
+  onNavigate: (event: ReactMouseEvent<HTMLAnchorElement>, surface: string) => void;
+}) {
+  const accountMenuFirstItemRef = useRef<HTMLAnchorElement>(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => accountMenuFirstItemRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const items = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+    const currentIndex = items.indexOf(document.activeElement as HTMLElement);
+    const nextIndex = nextAccountMenuFocusIndex(event.key, currentIndex, items.length);
+    if (nextIndex === null) return;
+    event.preventDefault();
+    items[nextIndex]?.focus();
+  }
+
+  return (
+    <div className="account-menu" role="menu" aria-label="Account menu" tabIndex={-1} onKeyDown={handleKeyDown}>
+      <a
+        className="account-menu-user account-menu-identity"
+        href="/settings/profile"
+        role="menuitem"
+        ref={accountMenuFirstItemRef}
+        aria-label={`Open profile settings for ${user.displayName}, ${user.email}`}
+        onClick={(event) => onNavigate(event, "settings:profile")}
+      >
+        <span className="avatar">{initials(user.displayName)}</span>
+        <span>
+          <b>{user.displayName}</b>
+          <small>{user.email}</small>
+          <small className="account-provider">Signed in with ChatGPT</small>
+        </span>
+      </a>
+      <div className="account-menu-separator" role="separator" />
+      <a
+        className="account-menu-item"
+        href="/workspace"
+        role="menuitem"
+        onClick={(event) => onNavigate(event, "workspace")}
+      >
+        <Boxes size={14} />
+        <span>Workspace</span>
+      </a>
+      <a
+        className="account-menu-item"
+        href="/settings/profile"
+        role="menuitem"
+        onClick={(event) => onNavigate(event, "settings:profile")}
+      >
+        <Settings2 size={14} />
+        <span>Settings</span>
+      </a>
+      {isAdmin && (
+        <a
+          className="account-menu-item"
+          href="/admin"
+          role="menuitem"
+          onClick={(event) => onNavigate(event, "admin")}
+        >
+          <ShieldCheck size={14} />
+          <span>Administration</span>
+        </a>
+      )}
+    </div>
+  );
+}
+
 export function TaskTracker({
   initialData,
   initialNavigation,
@@ -3276,112 +3365,14 @@ export function TaskTracker({
         <div className="sidebar-foot">
           <div className="account-control" ref={accountMenuRef}>
             {accountMenuOpen && (
-              <div className="account-menu" role="menu" aria-label="Account menu">
-                <div className="account-menu-user">
-                  <span className="avatar">{initials(data.user.displayName)}</span>
-                  <span>
-                    <b>{data.user.displayName}</b>
-                    <small>{data.user.email}</small>
-                  </span>
-                </div>
-                <p className="account-provider">Signed in with ChatGPT</p>
-                <div className="account-menu-separator" role="separator" />
-                <a
-                  className="account-menu-item"
-                  href="/settings/profile"
-                  role="menuitem"
-                  onClick={(event) => handleLocalLink(event, () => {
-                    navigateSurface("settings:profile", "list");
-                    setAccountMenuOpen(false);
-                  })}
-                >
-                  <Settings2 size={14} />
-                  <span>Settings</span>
-                </a>
-                <a
-                  className="account-menu-item"
-                  href={navigationPath({ surface: "mine", layout: "list", taskId: null }, data)}
-                  role="menuitem"
-                  onClick={(event) => handleLocalLink(event, () => {
-                    navigateSurface("mine", "list");
-                    setAccountMenuOpen(false);
-                  })}
-                >
-                  <Inbox size={14} />
-                  <span>My tasks</span>
-                </a>
-                <button
-                  className="account-menu-item"
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    setDialog("codexSetup");
-                  }}
-                >
-                  <CircleHelp size={14} />
-                  <span>Codex setup</span>
-                </button>
-                <button
-                  className="account-menu-item"
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    setDialog("workflowSettings");
-                  }}
-                >
-                  <SlidersHorizontal size={14} />
-                  <span>Workflow statuses</span>
-                </button>
-                <button
-                  className="account-menu-item"
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    setDialog("labelSettings");
-                  }}
-                >
-                  <Tag size={14} />
-                  <span>Labels</span>
-                </button>
-                <button
-                  className="account-menu-item"
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setAccountMenuOpen(false);
-                    setDialog("labelGroupSettings");
-                  }}
-                >
-                  <Tag size={14} />
-                  <span>Label groups</span>
-                </button>
-                <a className="account-menu-item" href="/import/project" role="menuitem">
-                  <Download size={14} />
-                  <span>Project backup</span>
-                </a>
-                {data.isAdmin && (
-                  <a
-                    className="account-menu-item"
-                    href={navigationPath({ surface: "admin", layout: "list", taskId: null }, data)}
-                    role="menuitem"
-                  >
-                    <ShieldCheck size={14} />
-                    <span>Administration</span>
-                  </a>
-                )}
-                <div className="account-menu-separator" role="separator" />
-                <div className="account-theme" role="group" aria-label="Appearance">
-                  <span>Appearance</span>
-                  <div>
-                    <button role="menuitemradio" aria-checked={theme === "system"} className={theme === "system" ? "active" : ""} onClick={() => void saveUserPreferences({ theme: "system" })} title="Use system theme"><Monitor size={13} /></button>
-                    <button role="menuitemradio" aria-checked={theme === "light"} className={theme === "light" ? "active" : ""} onClick={() => void saveUserPreferences({ theme: "light" })} title="Use light theme"><Sun size={13} /></button>
-                    <button role="menuitemradio" aria-checked={theme === "dark"} className={theme === "dark" ? "active" : ""} onClick={() => void saveUserPreferences({ theme: "dark" })} title="Use dark theme"><Moon size={13} /></button>
-                  </div>
-                </div>
-              </div>
+              <AccountMenu
+                user={data.user}
+                isAdmin={data.isAdmin}
+                onNavigate={(event, nextSurface) => handleLocalLink(event, () => {
+                  navigateSurface(nextSurface, "list");
+                  setAccountMenuOpen(false);
+                })}
+              />
             )}
             <div className="profile-row">
               <button

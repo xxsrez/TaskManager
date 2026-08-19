@@ -77,6 +77,12 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   не оставляют частично сохранённую форму. Пароли Task Manager не хранит.
 - Theme `system`/`light`/`dark` и default sidebar state принадлежат User, а не
   общей browser key, поэтому второй account не наследует чужие preferences.
+- Account menu показывает интерактивный identity block с переходом в
+  `/settings/profile`, `Workspace` с canonical anchor `/workspace`, единый
+  `Settings` и только для server-authorized администратора `Administration`.
+  Детальные каталоги, интеграции, backup и appearance доступны внутри Settings,
+  но не дублируются прямыми пунктами account menu. Sign out остаётся отдельным
+  action и не объединяется с account trigger или identity block.
 
 ### 3.1 Администрирование
 
@@ -822,8 +828,15 @@ created/updated/started/completed/canceled dates и archived state.
 27. Повреждённый Project bundle, owner mismatch, collision или отсутствующий
     catalog dependency отклоняется до mutation. Ошибка apply откатывает весь
     subtree; sharing без opt-in не восстанавливается.
-28. Из account menu открыть `Codex setup`, на `390×844` и `844×390` сразу
-    увидеть Desktop/CLI handoff без horizontal overflow, затем пройти отдельно
+28. Открыть account menu обычным User и увидеть identity, `Workspace` и
+    `Settings`, а администратором — дополнительный `Administration`; проверить
+    canonical anchors, modifier-click, Back/Forward, keyboard focus и `Esc` в
+    desktop, collapsed sidebar, `390×844` и `844×390`. Убедиться, что прямых
+    `My tasks`, `Codex setup`, `Workflow statuses`, `Labels`, `Label groups`,
+    `Project backup` и inline `Appearance` в меню нет, а sign out остаётся
+    отдельным action.
+    Затем открыть `Settings → Codex setup`, сразу увидеть Desktop/CLI handoff
+    без horizontal overflow и пройти отдельно
     marketplace, plugin installation, OAuth, возврат в `Installed` и новый
     task/chat. В Desktop проверить `Personal`, тот же ChatGPT account/workspace
     и success state каждого этапа; в CLI скопировать актуальные команды и

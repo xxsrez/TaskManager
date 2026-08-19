@@ -206,21 +206,18 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .profile-label small { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; }
 .profile-chevron { margin-left: auto; transition: transform 140ms ease; }
 .profile-chevron.open { transform: rotate(180deg); }
-.account-menu { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 70; width: 224px; max-height: calc(100dvh - 88px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); padding: 6px; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--raised); box-shadow: var(--shadow); }
-.account-menu-user { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 7px 3px; }
+.account-menu { position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 70; width: 224px; max-height: calc(100dvh - 88px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); padding: 6px; overflow-x: hidden; overflow-y: auto; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--raised); box-shadow: var(--shadow); }
+.account-menu-user { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px; }
+.account-menu-identity { width: 100%; border-radius: 6px; color: var(--text-secondary); }
+.account-menu-identity:hover, .account-menu-identity:focus-visible { background: var(--hover); color: var(--text); }
 .account-menu-user > span:last-child { min-width: 0; display: grid; line-height: 16px; }
 .account-menu-user b, .account-menu-user small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .account-menu-user b { font-size: 12px; font-weight: 560; }
 .account-menu-user small { color: var(--muted); font-size: 10px; }
-.account-provider { margin: 0; padding: 0 7px 6px 38px; color: var(--muted); font-size: 10px; line-height: 15px; }
+.account-provider { color: var(--muted); font-size: 10px; line-height: 15px; }
 .account-menu-separator { height: 1px; margin: 5px 2px; background: var(--border); }
 .account-menu-item { width: 100%; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 7px; border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; text-align: left; }
-.account-menu-item:hover { background: var(--hover); color: var(--text); }
-.account-theme { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 4px 2px 7px; color: var(--text-secondary); font-size: 11px; }
-.account-theme > div { display: flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); }
-.account-theme button { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
-.account-theme button:hover { color: var(--text); }
-.account-theme button.active { background: var(--raised); color: var(--accent); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.account-menu-item:hover, .account-menu-item:focus-visible { background: var(--hover); color: var(--text); }
 .avatar { width: 22px; height: 22px; display: inline-grid; flex: 0 0 22px; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: linear-gradient(145deg, #6b657c, #3f3b4c); color: #fff; font-size: 8px; font-style: normal; font-weight: 650; }
 .avatar.small { width: 21px; height: 21px; flex-basis: 21px; }
 .avatar.group-avatar { width: 18px; height: 18px; flex-basis: 18px; font-size: 7px; }
@@ -1101,6 +1098,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .mobile-sidebar-open .section-label { min-height: 36px; }
   .mobile-sidebar-open .section-label button { width: 40px; height: 40px; opacity: 1; }
   .mobile-sidebar-open .account-menu { left: 0; width: min(288px, calc(100vw - 64px)); }
+  .mobile-sidebar-open .account-menu-item, .mobile-sidebar-open .account-menu-identity { min-height: 44px; }
   .title-row { height: 48px; padding-left: max(8px, env(safe-area-inset-left)); padding-right: max(8px, env(safe-area-inset-right)); }
   .desktop-sidebar-toggle { display: none; }
   .mobile-menu { display: inline-grid; }

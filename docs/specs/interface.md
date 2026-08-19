@@ -731,10 +731,13 @@ Linear, но они обязаны использовать тот же visual l
   sidebar preference. Initial server projection применяется к application
   shell без общей для accounts browser key.
 - Нажатие на avatar, display name или email в нижней части sidebar открывает
-  компактное account menu и не запускает sign out. Первый menu slice показывает
-  verified identity, рабочие переходы в `My tasks`, `Workflow statuses`,
-  `Project backup`, доступную администратору `Administration` и общий для всех
-  пункт `Codex setup`, а также выбор `system`/`light`/`dark` theme.
+  компактное account menu и не запускает sign out. Интерактивный identity block
+  является canonical anchor `/settings/profile`; ниже остаются только
+  `Workspace` (`/workspace`), единый `Settings` (`/settings/profile`) и
+  доступный server-authorized администратору `Administration` (`/admin`).
+  `My tasks`, `Codex setup`, `Workflow statuses`, `Labels`, `Label groups`,
+  `Project backup` и inline `Appearance` в account menu не дублируются: их
+  рабочие destinations остаются внутри Settings.
 - `Workflow statuses` размещает responsive owner-каталог внутри Settings. Active rows
   дают rename, color, reorder внутри immutable category, выбор default и
   archive; используемый/default status требует replacement той же категории.
@@ -773,8 +776,8 @@ Linear, но они обязаны использовать тот же visual l
   Она имеет явные tooltip и accessible name; вся строка профиля не может быть
   logout hit target.
 - `Administration` не является Settings section и остаётся отдельной
-  server-gated surface. Прежние прямые account-menu shortcuts могут жить только
-  как переходный слой до TM-265; canonical destination utility — Settings.
+  server-gated surface. Условное отображение пункта не заменяет fail-closed
+  server authorization прямого `/admin` route.
 
 ### 12.4 Administration
 
@@ -848,8 +851,9 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
   landscape.
 - Mobile drawer содержит полный разрешённый набор навигации и действий:
   `My tasks`, `Shared with me`, `Views`, `Projects`, `Releases`, search, create
-  controls и profile/sign out. Administration остаётся в доступном из drawer
-  account menu, а не дублируется как primary navigation item.
+  controls и отдельные account trigger/sign out. Account menu сохраняет
+  identity, `Workspace`, `Settings` и условный `Administration` в portrait и
+  landscape; Administration не дублируется как primary navigation item.
   Section actions не зависят от hover. Выбор route, backdrop и `Esc` закрывают
   drawer, не меняя desktop preference.
 - При ширине `900px` и меньше secondary view controls объединяются в доступный
