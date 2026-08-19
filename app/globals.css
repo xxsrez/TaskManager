@@ -349,6 +349,18 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .task-card h3 { margin: 0 0 20px; font-size: 13px; font-weight: 480; line-height: 18px; }
 .task-card.editable .card-meta::after { width: 28px; flex: 0 0 28px; content: ""; }
 .task-card > .card-check { position: absolute; right: 9px; bottom: 9px; }
+.card-more { position: absolute; top: 6px; right: 6px; z-index: 2; width: 28px; height: 28px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; opacity: 0; }
+.task-card:hover .card-more, .task-card:focus-within .card-more { opacity: 1; }
+.contextual-action-menu { position: fixed; z-index: 120; width: 240px; max-height: min(360px, calc(100dvh - 16px)); overflow-y: auto; padding: 5px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--raised); box-shadow: var(--shadow); }
+.contextual-action-menu[role="menu"] > button { width: 100%; min-height: 34px; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 6px 8px; border-radius: 5px; background: transparent; color: var(--text-secondary); text-align: left; cursor: pointer; }
+.contextual-action-menu[role="menu"] > button:hover, .contextual-action-menu[role="menu"] > button:focus-visible { outline: 0; background: var(--surface-subtle); color: var(--text); }
+.contextual-action-menu[role="menu"] > button.danger { color: var(--danger); }
+.contextual-action-menu[role="menu"] > button[aria-disabled="true"] { color: var(--muted); cursor: not-allowed; }
+.contextual-action-menu[role="menu"] > button small { grid-column: 2 / -1; font-size: 9px; line-height: 12px; }
+.contextual-action-menu kbd { color: var(--muted); font: inherit; font-size: 9px; }
+.contextual-action-confirmation { display: grid; gap: 12px; padding: 7px; }
+.contextual-action-confirmation p { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 17px; }
+.contextual-action-confirmation > div { display: flex; justify-content: flex-end; gap: 6px; }
 .card-meta { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; color: var(--muted); font-size: 10px; }
 .card-identifier { flex: 0 0 auto; white-space: nowrap; }
 .card-meta .metadata-chip { max-width: 112px; height: 19px; border: 0; padding: 0; }
@@ -1104,6 +1116,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .task-card > .card-check { right: 12px; bottom: 12px; }
   .task-card.editable .card-meta::after { width: 40px; flex-basis: 40px; }
   .row-more { width: 40px; height: 40px; opacity: 1; }
+  .card-more { width: 40px; height: 40px; opacity: 1; }
   .properties-grid { grid-template-columns: 1fr; }
   .hierarchy-controls > label, .hierarchy-controls form { grid-template-columns: 1fr; }
   .hierarchy-controls select, .hierarchy-controls input, .hierarchy-controls form .button { min-height: 44px; }

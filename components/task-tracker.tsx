@@ -118,6 +118,7 @@ import {
   TaskDescriptionImage,
 } from "@/components/task-attachments";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
+import { ContextualActionMenu } from "@/components/contextual-action-menu";
 import {
   isTaskMarkdownEscaped,
   parseTaskAttachmentReferences,
@@ -133,6 +134,13 @@ import {
   selectTaskRange,
   toggleTaskSelection,
 } from "@/lib/task-keyboard";
+import {
+  buildTaskArchiveCommand,
+  resolveContextualActions,
+  type ContextualActionContext,
+  type ContextualActionEntity,
+  type ResolvedContextualAction,
+} from "@/lib/contextual-actions";
 import type {
   AdminOverview,
   AccessRole,
@@ -920,6 +928,13 @@ type BreadcrumbItem = {
   layout?: Layout;
 };
 
+type ContextualMenuState = {
+  context: ContextualActionContext;
+  x: number;
+  y: number;
+  restoreFocus: HTMLElement | null;
+};
+
 export function TaskTracker({
   initialData,
   initialNavigation,
@@ -952,6 +967,7 @@ export function TaskTracker({
   const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
   const selectionAnchorRef = useRef<string | null>(null);
   const previousKeyboardTaskIdsRef = useRef<string[]>([]);
+  const [contextualMenu, setContextualMenu] = useState<ContextualMenuState | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -1576,6 +1592,13 @@ export function TaskTracker({
   const contextProjectRecord = contextProject
     ? data.projects.find((project) => project.id === contextProject)
     : undefined;
+  const surfaceContextualEntity = contextReleaseRecord
+    ? releaseContextualEntity(contextReleaseRecord)
+    : activeSavedView
+      ? viewContextualEntity(activeSavedView)
+      : surface.startsWith("project:") && contextProjectRecord
+        ? projectContextualEntity(contextProjectRecord)
+        : null;
   const groupingOwnerIds = new Set(visibleTasks.map((task) => task.ownerUserId));
   if (!groupingOwnerIds.size) {
     groupingOwnerIds.add(contextProjectRecord?.ownerUserId ?? data.user.id);
@@ -2168,6 +2191,178 @@ export function TaskTracker({
     });
   }
 
+  function openContextualActions(
+    context: ContextualActionContext,
+    x: number,
+    y: number,
+    restoreFocus: HTMLElement | null,
+  ) {
+    if (!context.entities.length) return;
+    setContextualMenu({ context, x, y, restoreFocus });
+  }
+
+  function openTaskContextualActions(
+    task: TaskRecord,
+    x: number,
+    y: number,
+    restoreFocus: HTMLElement | null,
+  ) {
+    const tasks = taskContextualEntities(task.id, null);
+    openContextualActions(
+      { entities: tasks },
+      x,
+      y,
+      restoreFocus,
+    );
+  }
+
+  function taskContextualEntities(
+    triggerTaskId: string | null,
+    fallbackTaskId: string | null,
+  ): ContextualActionEntity[] {
+    const entities = data.tasks.map(taskContextualEntity);
+    const selectedEntities = entities.filter((entity) => selected.has(entity.id));
+    if (triggerTaskId) {
+      const trigger = entities.find((entity) => entity.id === triggerTaskId);
+      if (!trigger) return [];
+      return selected.has(triggerTaskId) ? selectedEntities : [trigger];
+    }
+    if (selectedEntities.length) return selectedEntities;
+    const fallback = fallbackTaskId
+      ? entities.find((entity) => entity.id === fallbackTaskId)
+      : undefined;
+    return fallback ? [fallback] : [];
+  }
+
+  function closeContextualActions() {
+    const restoreFocus = contextualMenu?.restoreFocus;
+    setContextualMenu(null);
+    if (restoreFocus) window.requestAnimationFrame(() => restoreFocus.focus());
+  }
+
+  function currentContext(context: ContextualActionContext): ContextualActionContext {
+    return {
+      entities: context.entities.flatMap((entity) => {
+        if (entity.kind === "task") {
+          const record = data.tasks.find((item) => item.id === entity.id);
+          return record ? [taskContextualEntity(record)] : [];
+        }
+        if (entity.kind === "project") {
+          const record = data.projects.find((item) => item.id === entity.id);
+          return record ? [projectContextualEntity(record)] : [];
+        }
+        if (entity.kind === "release") {
+          const record = data.releases.find((item) => item.id === entity.id);
+          return record ? [releaseContextualEntity(record)] : [];
+        }
+        const record = data.views.find((item) => item.id === entity.id);
+        return record ? [viewContextualEntity(record)] : [];
+      }),
+    };
+  }
+
+  function focusedContextualActionEntity(element: HTMLElement): ContextualActionEntity | null {
+    const contextElement = element.closest<HTMLElement>("[data-context-entity-id]");
+    const id = contextElement?.dataset.contextEntityId;
+    const kind = contextElement?.dataset.contextEntityKind;
+    if (!id) return null;
+    if (kind === "task") {
+      const record = data.tasks.find((item) => item.id === id);
+      return record ? taskContextualEntity(record) : null;
+    }
+    if (kind === "project") {
+      const record = data.projects.find((item) => item.id === id);
+      return record ? projectContextualEntity(record) : null;
+    }
+    if (kind === "release") {
+      const record = data.releases.find((item) => item.id === id);
+      return record ? releaseContextualEntity(record) : null;
+    }
+    if (kind === "saved_view") {
+      const record = data.views.find((item) => item.id === id);
+      return record ? viewContextualEntity(record) : null;
+    }
+    return null;
+  }
+
+  async function executeContextualAction(action: ResolvedContextualAction) {
+    if (!contextualMenu) return;
+    try {
+      const liveContext = currentContext(contextualMenu.context);
+      const liveAction = resolveContextualActions(liveContext).find((item) => item.id === action.id);
+      if (!liveAction || liveAction.contextKey !== action.contextKey) {
+        throw new Error("The contextual action context changed. Open the menu again.");
+      }
+      if (liveAction.disabledReason) throw new Error(liveAction.disabledReason);
+      const entity = liveContext.entities[0]!;
+
+      if (action.id === "open") {
+        if (entity.kind === "task") openTask(entity.id);
+        else if (entity.kind === "project") navigateSurface(`project:${entity.id}`, "list");
+        else if (entity.kind === "release") navigateSurface(`release:${entity.id}`, "list");
+        else {
+          const view = data.views.find((item) => item.id === entity.id);
+          if (view) navigateSurface(`view:${view.id}`, view.display.layout);
+        }
+        closeContextualActions();
+        return;
+      }
+
+      if (entity.kind === "task") {
+        const command = buildTaskArchiveCommand(liveContext, action);
+        const ok = await mutate(command.path, command.method, command.body);
+        if (ok) {
+          setSelected(new Set());
+          closeContextualActions();
+        }
+        return;
+      }
+
+      const targetSurface = entity.kind === "project"
+        ? `project:${entity.id}`
+        : entity.kind === "release"
+          ? `release:${entity.id}`
+          : `view:${entity.id}`;
+      const targetLayout = entity.kind === "saved_view"
+        ? data.views.find((item) => item.id === entity.id)?.display.layout ?? "list"
+        : "list";
+
+      if (action.id === "edit" || action.id === "share") {
+        navigateSurface(targetSurface, targetLayout);
+        setDialog(action.id === "share"
+          ? "share"
+          : entity.kind === "project"
+            ? "projectEdit"
+            : entity.kind === "release"
+              ? "releaseEdit"
+              : "viewEdit");
+        closeContextualActions();
+        return;
+      }
+
+      if (entity.kind === "project") {
+        const ok = await mutate(`/api/projects/${entity.id}`, "PATCH", {
+          version: entity.version,
+          archived: action.id === "archive",
+        });
+        if (ok) closeContextualActions();
+      } else if (entity.kind === "saved_view") {
+        const ok = await mutate(`/api/views/${entity.id}`, "PATCH", {
+          version: entity.version,
+          archived: action.id === "archive",
+        });
+        if (ok) {
+          if (action.id === "archive" && surface === `view:${entity.id}`) {
+            navigateSurface("views", "list");
+          }
+          closeContextualActions();
+        }
+      }
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Contextual action failed");
+    }
+  }
+
   useEffect(() => {
     function handlePopState(event: PopStateEvent) {
       const target = parseNavigationPath(window.location.pathname);
@@ -2192,6 +2387,7 @@ export function TaskTracker({
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
       const target = event.target as HTMLElement;
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
       const searchShortcut = resolveSearchShortcut(event, {
@@ -2206,7 +2402,7 @@ export function TaskTracker({
       const layerOwnsKeyboard = Boolean(
         globalSearchOpen || mobileActionsOpen || mobileSidebarOpen ||
         accountMenuOpen || pendingProjectMove || dialog || peekTaskId ||
-        filterOpen || displayOpen,
+        filterOpen || displayOpen || contextualMenu,
       );
       const command = keyboardCommandFor(event, { layerOwnsKeyboard });
       if (!command) return;
@@ -2231,7 +2427,8 @@ export function TaskTracker({
 
       if (command === "escape") {
         let handled = true;
-        if (globalSearchOpen) closeGlobalSearch();
+        if (contextualMenu) closeContextualActions();
+        else if (globalSearchOpen) closeGlobalSearch();
         else if (pendingProjectMove) {
           if (!busy) setPendingProjectMove(null);
           else handled = false;
@@ -2289,18 +2486,51 @@ export function TaskTracker({
         return;
       }
 
-      const taskSurface = !isCollectionSurface(surface);
-      if (!taskSurface) return;
       const integrationTaskId = highlightedTaskId ?? keyboardTaskIds[0] ?? null;
       if (command === "contextual-actions") {
+        const focusedEntity = focusedContextualActionEntity(target);
+        const taskEntities = taskContextualEntities(
+          focusedEntity?.kind === "task" ? focusedEntity.id : null,
+          integrationTaskId,
+        );
         const claimed = dispatchTaskKeyboardIntegrationCommand(window, {
           command,
-          taskId: integrationTaskId,
-          selectedTaskIds: [...selected],
+          taskId: focusedEntity?.kind === "task"
+            ? focusedEntity.id
+            : taskEntities.length === 1
+              ? taskEntities[0]!.id
+              : integrationTaskId,
+          selectedTaskIds: taskEntities.length
+            ? taskEntities.map((entity) => entity.id)
+            : [...selected],
           surface,
         });
-        if (claimed) event.preventDefault();
-      } else if (command === "filter") {
+        event.preventDefault();
+        if (!claimed) {
+          const entities = taskEntities.length
+            ? taskEntities
+            : focusedEntity
+              ? [focusedEntity]
+              : surfaceContextualEntity
+                ? [surfaceContextualEntity]
+                : [];
+          if (entities.length) {
+            openContextualActions(
+              { entities },
+              Math.max(8, window.innerWidth / 2 - 120),
+              Math.max(8, window.innerHeight / 3),
+              document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : null,
+            );
+          }
+        }
+        return;
+      }
+
+      const taskSurface = !isCollectionSurface(surface);
+      if (!taskSurface) return;
+      if (command === "filter") {
         event.preventDefault();
         setDisplayOpen(false);
         setFilterOpen(true);
@@ -2370,7 +2600,7 @@ export function TaskTracker({
     // The handlers close over the state listed below; adding the local wrapper
     // functions themselves would recreate this listener on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, data, dialog, displayOpen, filterOpen, globalSearchOpen, highlightedTaskId, keyboardTaskIdsKey, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, selectableTaskIdsKey, selected, surface, systemBackupBusy]);
+  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, contextualMenu, data, dialog, displayOpen, filterOpen, globalSearchOpen, highlightedTaskId, keyboardTaskIdsKey, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, selectableTaskIdsKey, selected, surface, surfaceContextualEntity, systemBackupBusy]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -2679,6 +2909,7 @@ export function TaskTracker({
               {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => setDialog("viewEdit")}><Zap size={14} />Edit view</button>}
               {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
               {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
+              {surfaceContextualEntity && <button className="icon-button" type="button" aria-label={`Open contextual actions for ${surfaceContextualEntity.label}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openContextualActions({ entities: [surfaceContextualEntity] }, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>
           </div>
@@ -2795,22 +3026,33 @@ export function TaskTracker({
         ) : surface === "admin" && data.admin ? (
           <AdminSurface overview={data.admin} timeZone={data.user.timezone} />
         ) : surface === "views" ? (
-          <ViewsSurface data={data} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} onRestore={(view) => mutate(`/api/views/${view.id}`, "PATCH", { version: view.version, archived: false })} busy={busy} />
+          <ViewsSurface data={data} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} onContextActions={(view, x, y, focus) => openContextualActions({ entities: [viewContextualEntity(view)] }, x, y, focus)} onRestore={(view) => mutate(`/api/views/${view.id}`, "PATCH", { version: view.version, archived: false })} busy={busy} />
         ) : surface === "projects" ? (
-          <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} users={userMap} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onCreate={() => setDialog("project")} />
+          <ProjectsSurface projects={data.projects} tasks={data.tasks} statuses={data.statuses} users={userMap} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onContextActions={(project, x, y, focus) => openContextualActions({ entities: [projectContextualEntity(project)] }, x, y, focus)} onCreate={() => setDialog("project")} />
         ) : surface === "releases" || projectReleaseSurfaceId ? (
-          <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onCreate={() => canCreateTask && setDialog("release")} />
+          <ReleasesSurface releases={scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onContextActions={(release, x, y, focus) => openContextualActions({ entities: [releaseContextualEntity(release)] }, x, y, focus)} onCreate={() => canCreateTask && setDialog("release")} />
         ) : taskSearchStatus ? (
           <TaskSearchNotice status={taskSearchStatus} />
         ) : layout === "board" ? (
-          <><TaskBoard tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlightedTaskId={highlightedTaskId} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onHighlight={setHighlightedTaskId} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
+          <><TaskBoard tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlightedTaskId={highlightedTaskId} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onHighlight={setHighlightedTaskId} onOpen={openTask} onContextActions={openTaskContextualActions} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
         ) : (
-          <><TaskList tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlightedTaskId={highlightedTaskId} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} pullRefreshing={pullRefreshing} pullRefreshError={pullRefreshError} pullRefreshDisabled={busy || taskWindowLoading} onRefresh={refreshTaskList} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlightedTaskId} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onStatusChange={(task, statusId) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: taskMutationVersion(task), statusId })} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
+          <><TaskList tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlightedTaskId={highlightedTaskId} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} pullRefreshing={pullRefreshing} pullRefreshError={pullRefreshError} pullRefreshDisabled={busy || taskWindowLoading} onRefresh={refreshTaskList} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlightedTaskId} onOpen={openTask} onContextActions={openTaskContextualActions} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onStatusChange={(task, statusId) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: taskMutationVersion(task), statusId })} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
         )}
       </section>
 
       {selected.size > 0 && (
         <BulkBar data={data} tasks={selectedTasks} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onAssignee={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "assigneeUserId", value }).then((ok) => ok && setSelected(new Set()))} onProject={() => setDialog("bulkProject")} onRelease={() => setDialog("bulkRelease")} onLabel={(labelId, active) => mutate("/api/tasks/labels/bulk", "POST", { ids: [...selected], labelId, active })} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
+      )}
+
+      {contextualMenu && (
+        <ContextualActionMenu
+          actions={resolveContextualActions(contextualMenu.context)}
+          x={contextualMenu.x}
+          y={contextualMenu.y}
+          busy={busy}
+          onExecute={executeContextualAction}
+          onClose={closeContextualActions}
+        />
       )}
 
       {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
@@ -2870,7 +3112,7 @@ function SidebarSection({ title, action, children }: { title: string; action: ()
   return <section className="sidebar-section"><div className="section-label"><span>{title}</span><button onClick={action} title={`Add ${title.toLowerCase()}`}><Plus size={12} /></button></div>{children}</section>;
 }
 
-function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFields, canReorder, canMoveGroups, projects, releases, users, labelContext, selected, highlightedTaskId, collapsed, canCreate, createOwnerUserId, createAssigneeUserIds, pullRefreshing, pullRefreshError, pullRefreshDisabled, onRefresh, onToggleGroup, onSelect, onHighlight, onOpen, onCreate, onMove, onStatusChange, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; highlightedTaskId: string | null; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; pullRefreshing: boolean; pullRefreshError: string; pullRefreshDisabled: boolean; onRefresh: () => Promise<AppSnapshot>; onToggleGroup: (id: string) => void; onSelect: (id: string, extendRange?: boolean) => void; onHighlight: (taskId: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onStatusChange: (task: TaskRecord, statusId: string) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
+function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFields, canReorder, canMoveGroups, projects, releases, users, labelContext, selected, highlightedTaskId, collapsed, canCreate, createOwnerUserId, createAssigneeUserIds, pullRefreshing, pullRefreshError, pullRefreshDisabled, onRefresh, onToggleGroup, onSelect, onHighlight, onOpen, onContextActions, onCreate, onMove, onStatusChange, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; highlightedTaskId: string | null; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; pullRefreshing: boolean; pullRefreshError: string; pullRefreshDisabled: boolean; onRefresh: () => Promise<AppSnapshot>; onToggleGroup: (id: string) => void; onSelect: (id: string, extendRange?: boolean) => void; onHighlight: (taskId: string) => void; onOpen: (id: string) => void; onContextActions: (task: TaskRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onStatusChange: (task: TaskRecord, statusId: string) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
   const [over, setOver] = useState<string | null>(null);
   const hierarchySummaries = useMemo(
     () => buildTaskHierarchySummaries(hierarchyTasks),
@@ -2953,7 +3195,7 @@ function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFie
   } else if (groupBy === "none") {
     content = tasks.map((task) => {
       const status = statuses.get(task.statusId);
-      return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null;
+      return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onContextActions={(x, y, focus) => onContextActions(task, x, y, focus)} onDragState={onDragState} /> : null;
     });
   } else {
     content = groups.map((group) => {
@@ -2980,7 +3222,7 @@ function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFie
           onDragState(null);
           if (task) moveFromDrop(task.id, group, group.tasks, null);
         }}
-      ><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(group.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><TaskGroupIcon group={group} /><span>{group.label}</span><small>{group.tasks.length}</small></button>{groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)} title={`Add to ${group.label}`}><Plus size={13} /></button>}</div>{!isCollapsed && group.tasks.map((task) => { const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus={groupBy !== "status"} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null; })}</section>;
+      ><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(group.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><TaskGroupIcon group={group} /><span>{group.label}</span><small>{group.tasks.length}</small></button>{groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)} title={`Add to ${group.label}`}><Plus size={13} /></button>}</div>{!isCollapsed && group.tasks.map((task) => { const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus={groupBy !== "status"} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onContextActions={(x, y, focus) => onContextActions(task, x, y, focus)} onDragState={onDragState} /> : null; })}</section>;
     });
   }
 
@@ -3050,7 +3292,7 @@ function PullRefreshIndicator({ distance, refreshing, error, onRetry }: {
   </div>;
 }
 
-function TaskRow({ task, status, statusOptions, showStatus, project, release, assignee, labels, hierarchy, visibleFields, selected, highlighted, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, onStatusChange, onSelect, onHighlight, onOpen, onDragState }: { task: TaskRecord; status: WorkflowStatusRecord; statusOptions: WorkflowStatusRecord[]; showStatus: boolean; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; selected: boolean; highlighted: boolean; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; onStatusChange: (statusId: string) => Promise<unknown>; onSelect: (extendRange?: boolean) => void; onHighlight: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
+function TaskRow({ task, status, statusOptions, showStatus, project, release, assignee, labels, hierarchy, visibleFields, selected, highlighted, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, onStatusChange, onSelect, onHighlight, onOpen, onContextActions, onDragState }: { task: TaskRecord; status: WorkflowStatusRecord; statusOptions: WorkflowStatusRecord[]; showStatus: boolean; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; selected: boolean; highlighted: boolean; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; onStatusChange: (statusId: string) => Promise<unknown>; onSelect: (extendRange?: boolean) => void; onHighlight: () => void; onOpen: () => void; onContextActions: (x: number, y: number, restoreFocus: HTMLElement | null) => void; onDragState: (taskId: string | null) => void }) {
   const editable = canEditContent(task.accessRole);
   const draggable = editable && canDrag;
   const reorderTitle = editable
@@ -3060,10 +3302,10 @@ function TaskRow({ task, status, statusOptions, showStatus, project, release, as
         ? `Drag to change ${dragGroupLabel}; Priority order remains authoritative`
         : "Choose Manual order to reorder Tasks"
     : undefined;
-  return <div role="button" tabIndex={0} data-task-keyboard-id={task.id} aria-pressed={selected} aria-current={highlighted ? "true" : undefined} title={reorderTitle} className={`task-row ${showStatus ? "show-status" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={(event) => { if (event.target === event.currentTarget) onOpen(); }} onKeyDown={(event) => { const reorderDirection = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (reorderDirection) { event.preventDefault(); onKeyboardMove(reorderDirection); return; } if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); onOpen(); } }} onMouseEnter={onHighlight} onFocus={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}{visibleFields.includes("priority") ? <PriorityIcon priority={task.priority} /> : <span className="priority-icon-placeholder" />}<a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a>{showStatus && <TaskStatusControl status={status} statuses={statusOptions} onChange={editable ? onStatusChange : undefined} />}<a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{labels.slice(0, 3).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 3 && <span className="label-overflow">+{labels.length - 3}</span>}<TaskHierarchyChip hierarchy={hierarchy} />{visibleFields.includes("project") && project && <span className="metadata-chip" title={project.name}><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip" title={release.name}><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}{editable && <button className="row-more" type="button" aria-label="Open task details" title="Open task details" onClick={(event) => { event.stopPropagation(); onOpen(); }}><MoreHorizontal size={14} /></button>}</div></div>;
+  return <div role="button" tabIndex={0} data-task-keyboard-id={task.id} data-context-entity-kind="task" data-context-entity-id={task.id} aria-pressed={selected} aria-current={highlighted ? "true" : undefined} title={reorderTitle} className={`task-row ${showStatus ? "show-status" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onContextMenu={(event) => { event.preventDefault(); onContextActions(event.clientX, event.clientY, event.currentTarget); }} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={(event) => { if (event.target === event.currentTarget) onOpen(); }} onKeyDown={(event) => { const reorderDirection = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (reorderDirection) { event.preventDefault(); onKeyboardMove(reorderDirection); return; } if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); onOpen(); } }} onMouseEnter={onHighlight} onFocus={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}{visibleFields.includes("priority") ? <PriorityIcon priority={task.priority} /> : <span className="priority-icon-placeholder" />}<a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a>{showStatus && <TaskStatusControl status={status} statuses={statusOptions} onChange={editable ? onStatusChange : undefined} />}<a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{labels.slice(0, 3).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 3 && <span className="label-overflow">+{labels.length - 3}</span>}<TaskHierarchyChip hierarchy={hierarchy} />{visibleFields.includes("project") && project && <span className="metadata-chip" title={project.name}><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip" title={release.name}><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}<button className="row-more" type="button" data-context-entity-kind="task" data-context-entity-id={task.id} aria-label={`Open contextual actions for ${task.identifier}`} title="Actions" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); onContextActions(rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={14} /></button></div></div>;
 }
 
-function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canReorder, canMoveGroups, statuses, projects, releases, users, labelContext, selected, highlightedTaskId, canCreate, createOwnerUserId, createAssigneeUserIds, onSelect, onHighlight, onOpen, onCreate, onMove, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; highlightedTaskId: string | null; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onSelect: (id: string, extendRange?: boolean) => void; onHighlight: (taskId: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
+function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canReorder, canMoveGroups, statuses, projects, releases, users, labelContext, selected, highlightedTaskId, canCreate, createOwnerUserId, createAssigneeUserIds, onSelect, onHighlight, onOpen, onContextActions, onCreate, onMove, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; highlightedTaskId: string | null; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onSelect: (id: string, extendRange?: boolean) => void; onHighlight: (taskId: string) => void; onOpen: (id: string) => void; onContextActions: (task: TaskRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
   const [over, setOver] = useState<string | null>(null);
   const hierarchySummaries = useMemo(
     () => buildTaskHierarchySummaries(hierarchyTasks),
@@ -3084,7 +3326,7 @@ function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canR
   }
   if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   if (groupBy === "none") {
-    return <div className="board" role="list" aria-label="Tasks"><section className={`board-column ${over === "end:none" ? "drag-over" : ""}`} onDragOver={(event) => { if (!canReorder) return; event.preventDefault(); setOver("end:none"); }} onDragLeave={() => setOver(null)} onDrop={(event) => { if (!canReorder) return; event.preventDefault(); const draggedId = event.dataTransfer.getData("text/task-id"); setOver(null); onDragState(null); if (draggedId) moveFromDrop(draggedId, null, tasks, null); }}><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} showStatus showAssignee selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
+    return <div className="board" role="list" aria-label="Tasks"><section className={`board-column ${over === "end:none" ? "drag-over" : ""}`} onDragOver={(event) => { if (!canReorder) return; event.preventDefault(); setOver("end:none"); }} onDragLeave={() => setOver(null)} onDrop={(event) => { if (!canReorder) return; event.preventDefault(); const draggedId = event.dataTransfer.getData("text/task-id"); setOver(null); onDragState(null); if (draggedId) moveFromDrop(draggedId, null, tasks, null); }}><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} showStatus showAssignee selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onContextActions={(x, y, focus) => onContextActions(task, x, y, focus)} onDragState={onDragState} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
   }
   return (
     <div className="board" role="list" aria-label="Tasks">
@@ -3121,7 +3363,7 @@ function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canR
               </button>}
             </div>
             <div className="column-cards">
-              {group.tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} showStatus={group.kind !== "status"} showAssignee={group.kind !== "assignee"} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}
+              {group.tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} showStatus={group.kind !== "status"} showAssignee={group.kind !== "assignee"} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onContextActions={(x, y, focus) => onContextActions(task, x, y, focus)} onDragState={onDragState} />)}
             </div>
             {groupCanCreate && <button className="add-card" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)}>
               <Plus size={13} />Add task
@@ -3133,7 +3375,7 @@ function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canR
   );
 }
 
-function TaskBoardCard({ task, status, project, release, assignee, labels, hierarchy, visibleFields, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, showStatus, showAssignee, selected, highlighted, onSelect, onHighlight, onOpen, onDragState }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; showStatus: boolean; showAssignee: boolean; selected: boolean; highlighted: boolean; onSelect: (extendRange?: boolean) => void; onHighlight: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
+function TaskBoardCard({ task, status, project, release, assignee, labels, hierarchy, visibleFields, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, showStatus, showAssignee, selected, highlighted, onSelect, onHighlight, onOpen, onContextActions, onDragState }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; showStatus: boolean; showAssignee: boolean; selected: boolean; highlighted: boolean; onSelect: (extendRange?: boolean) => void; onHighlight: () => void; onOpen: () => void; onContextActions: (x: number, y: number, restoreFocus: HTMLElement | null) => void; onDragState: (taskId: string | null) => void }) {
   const editable = canEditContent(task.accessRole);
   const draggable = editable && canDrag;
   const reorderTitle = editable
@@ -3143,7 +3385,7 @@ function TaskBoardCard({ task, status, project, release, assignee, labels, hiera
         ? `Drag to change ${dragGroupLabel}; Priority order remains authoritative`
         : "Choose Manual order to reorder Tasks"
     : undefined;
-  return <div role="button" tabIndex={0} data-task-keyboard-id={task.id} aria-pressed={selected} aria-current={highlighted ? "true" : undefined} title={reorderTitle} className={`task-card ${editable ? "editable" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={onOpen} onMouseEnter={onHighlight} onFocus={onHighlight} onKeyDown={(event) => { const direction = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (direction) { event.preventDefault(); onKeyboardMove(direction); return; } if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3>{labels.length > 0 && <div className="card-labels">{labels.slice(0, 4).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 4 && <span className="label-overflow">+{labels.length - 4}</span>}</div>}<div className="card-meta"><span className="card-identifier">{task.identifier}</span>{visibleFields.includes("priority") && <PriorityIcon priority={task.priority} />}<TaskHierarchyChip hierarchy={hierarchy} />{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{visibleFields.includes("project") && project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${status && isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
+  return <div role="button" tabIndex={0} data-task-keyboard-id={task.id} data-context-entity-kind="task" data-context-entity-id={task.id} aria-pressed={selected} aria-current={highlighted ? "true" : undefined} title={reorderTitle} className={`task-card ${editable ? "editable" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onContextMenu={(event) => { event.preventDefault(); onContextActions(event.clientX, event.clientY, event.currentTarget); }} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={onOpen} onMouseEnter={onHighlight} onFocus={onHighlight} onKeyDown={(event) => { const direction = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (direction) { event.preventDefault(); onKeyboardMove(direction); return; } if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<button className="card-more" type="button" data-context-entity-kind="task" data-context-entity-id={task.id} aria-label={`Open contextual actions for ${task.identifier}`} title="Actions" onClick={(event) => { event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); onContextActions(rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={14} /></button><a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3>{labels.length > 0 && <div className="card-labels">{labels.slice(0, 4).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 4 && <span className="label-overflow">+{labels.length - 4}</span>}</div>}<div className="card-meta"><span className="card-identifier">{task.identifier}</span>{visibleFields.includes("priority") && <PriorityIcon priority={task.priority} />}<TaskHierarchyChip hierarchy={hierarchy} />{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{visibleFields.includes("project") && project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${status && isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
 }
 
 function TaskGroupIcon({ group }: { group: TaskGroup }) {
@@ -6105,10 +6347,10 @@ function WorkspaceSharedCount({ label, value }: { label: string; value: number }
   return <span><b>{value}</b><small>{label}</small></span>;
 }
 
-function ViewsSurface({ data, statusMap, onOpen, onRestore, busy }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void; onRestore: (view: SavedViewRecord) => Promise<boolean>; busy: boolean }) {
+function ViewsSurface({ data, statusMap, onOpen, onContextActions, onRestore, busy }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void; onContextActions: (view: SavedViewRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onRestore: (view: SavedViewRecord) => Promise<boolean>; busy: boolean }) {
   const activeViews = data.views.filter((view) => !view.archivedAt);
   const archivedViews = data.views.filter((view) => Boolean(view.archivedAt));
-  return <div className="views-collection"><div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{activeViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>{archivedViews.length > 0 && <section className="archived-view-section"><h2>Archived views</h2><div className="entity-grid">{archivedViews.map((view) => <article className="entity-card archived" key={view.id}><div className="entity-icon"><Archive size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Archived</span></div><p>Unavailable in navigation and direct routes.</p><div className="progress-meta"><span>{view.display.layout}</span><button className="button ghost compact" type="button" disabled={busy || !canEditContent(view.accessRole)} onClick={() => void onRestore(view)}><ArchiveRestore size={13} />Restore</button></div></div></article>)}</div></section>}</div>;
+  return <div className="views-collection"><div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{activeViews.map((view) => <a className="entity-card" key={view.id} data-context-entity-kind="saved_view" data-context-entity-id={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onContextMenu={(event) => { event.preventDefault(); onContextActions(view, event.clientX, event.clientY, event.currentTarget); }} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>{archivedViews.length > 0 && <section className="archived-view-section"><h2>Archived views</h2><div className="entity-grid">{archivedViews.map((view) => <article className="entity-card archived" key={view.id} data-context-entity-kind="saved_view" data-context-entity-id={view.id} onContextMenu={(event) => { event.preventDefault(); onContextActions(view, event.clientX, event.clientY, event.currentTarget); }}><div className="entity-icon"><Archive size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Archived</span></div><p>Unavailable in navigation and direct routes.</p><div className="progress-meta"><span>{view.display.layout}</span><button className="button ghost compact" type="button" disabled={busy || !canEditContent(view.accessRole)} onClick={() => void onRestore(view)}><ArchiveRestore size={13} />Restore</button></div></div></article>)}</div></section>}</div>;
 }
 const projectStatusOptions: ProjectStatus[] = ["planned", "active", "paused", "completed", "canceled"];
 
@@ -6181,8 +6423,8 @@ export function ReleaseOverview({ release, project, tasks, statuses, onEdit }: {
   return <section className="project-overview release-overview" aria-label={`${fullName} release summary`}><div className="project-overview-heading"><span className="project-overview-icon release-overview-icon"><Rocket size={20} /></span><div><span className="project-code">Release</span><h2>{fullName}</h2><p>{release.description ? "Native release scope" : "No description yet"}</p></div><div className="project-overview-actions"><span className={`status-badge release-${release.status}`}>{projectStatusLabel(release.status)}</span>{onEdit && <button className="button ghost compact" onClick={onEdit}>Edit</button>}</div></div><div className="project-overview-metadata"><span><b>{tasks.length}</b> Tasks</span><span><b>{openTasks}</b> open</span><span><b>{progress}%</b> complete</span>{release.targetDate && <span>Target <b>{shortDate(release.targetDate)}</b></span>}{release.releasedAt && <span>Released <b>{shortDate(release.releasedAt.slice(0, 10))}</b></span>}</div>{release.description && <MarkdownBody body={release.description} className="project-description-markdown" />}{release.releaseNotes && <section className="release-notes"><h3>Release notes</h3><MarkdownBody body={release.releaseNotes} className="project-description-markdown" /></section>}</section>;
 }
 
-function ProjectsSurface({ projects, tasks, statuses, users, onOpen, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; users: Map<string, UserRecord>; onOpen: (id: string) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); const lead = project.leadUserId ? users.get(project.leadUserId) : undefined; return <a className={`entity-card ${project.archivedAt ? "archived" : ""}`} key={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><ProjectIcon project={project} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.archivedAt ? "archived" : project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="project-card-meta"><span>{lead ? `${lead.displayName} · Lead` : "No lead"}</span><span>{project.startDate ? `Start ${shortDate(project.startDate)}` : "No start"}</span><span>{project.targetDate ? `Target ${shortDate(project.targetDate)}` : "No target"}</span></div><div className="progress-meta"><span>{scoped.length} tasks</span><span>{progress}% complete</span></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div></div></a>; })}</div>; }
-function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); const releaseName = formatReleaseName(project?.name, release.name); return <a className="release-row" key={release.id} aria-label={releaseName} title={releaseName} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{releaseName}</b><small>{scoped.length} Task{scoped.length === 1 ? "" : "s"}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.releasedAt ? `Released ${shortDate(release.releasedAt.slice(0, 10))}` : release.targetDate ? `Target ${shortDate(release.targetDate)}` : "No date"}</span></a>; })}</div>; }
+function ProjectsSurface({ projects, tasks, statuses, users, onOpen, onContextActions, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; users: Map<string, UserRecord>; onOpen: (id: string) => void; onContextActions: (project: ProjectRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); const lead = project.leadUserId ? users.get(project.leadUserId) : undefined; return <a className={`entity-card ${project.archivedAt ? "archived" : ""}`} key={project.id} data-context-entity-kind="project" data-context-entity-id={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onContextMenu={(event) => { event.preventDefault(); onContextActions(project, event.clientX, event.clientY, event.currentTarget); }} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><ProjectIcon project={project} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.archivedAt ? "archived" : project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="project-card-meta"><span>{lead ? `${lead.displayName} · Lead` : "No lead"}</span><span>{project.startDate ? `Start ${shortDate(project.startDate)}` : "No start"}</span><span>{project.targetDate ? `Target ${shortDate(project.targetDate)}` : "No target"}</span></div><div className="progress-meta"><span>{scoped.length} tasks</span><span>{progress}% complete</span></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div></div></a>; })}</div>; }
+function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onContextActions, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onContextActions: (release: ReleaseRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); const releaseName = formatReleaseName(project?.name, release.name); return <a className="release-row" key={release.id} data-context-entity-kind="release" data-context-entity-id={release.id} aria-label={releaseName} title={releaseName} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onContextMenu={(event) => { event.preventDefault(); onContextActions(release, event.clientX, event.clientY, event.currentTarget); }} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{releaseName}</b><small>{scoped.length} Task{scoped.length === 1 ? "" : "s"}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.releasedAt ? `Released ${shortDate(release.releasedAt.slice(0, 10))}` : release.targetDate ? `Target ${shortDate(release.targetDate)}` : "No date"}</span></a>; })}</div>; }
 function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZone: string }) {
   return (
     <div className="admin-surface">
@@ -6522,6 +6764,18 @@ function surfaceBreadcrumbs(
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
 function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:"); }
+function taskContextualEntity(task: TaskRecord): ContextualActionEntity {
+  return { kind: "task", id: task.id, label: task.identifier, accessRole: task.accessRole, archivedAt: task.archivedAt, version: taskMutationVersion(task) };
+}
+function projectContextualEntity(project: ProjectRecord): ContextualActionEntity {
+  return { kind: "project", id: project.id, label: project.name, accessRole: project.accessRole, archivedAt: project.archivedAt ?? null, version: project.version };
+}
+function releaseContextualEntity(release: ReleaseRecord): ContextualActionEntity {
+  return { kind: "release", id: release.id, label: release.name, accessRole: release.accessRole, archivedAt: null, version: release.version };
+}
+function viewContextualEntity(view: SavedViewRecord): ContextualActionEntity {
+  return { kind: "saved_view", id: view.id, label: view.name, accessRole: view.accessRole, archivedAt: view.archivedAt ?? null, version: view.version };
+}
 function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot): ShareTarget | null {
   const projectTarget = (project: ProjectRecord | undefined): ShareTarget | null => {
     if (!project || (project.accessRole !== "owner" && project.accessRole !== "manager")) return null;

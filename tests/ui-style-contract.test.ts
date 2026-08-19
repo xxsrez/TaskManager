@@ -194,7 +194,7 @@ test("mobile task rows use a two-line title and wrapping metadata without horizo
     css,
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-list\s*\{[^}]*overflow-x:\s*hidden\s*;/,
   );
-  assert.match(taskTracker, /aria-label="Open task details"[\s\S]*?onClick=\{\(event\) => \{ event\.stopPropagation\(\); onOpen\(\); \}\}/);
+  assert.match(taskTracker, /aria-label=\{`Open contextual actions for \$\{task\.identifier\}`\}[\s\S]*?onContextActions\(rect\.right, rect\.bottom, event\.currentTarget\)/);
 });
 
 test("list status controls keep compact desktop placement and touch-safe mobile geometry", () => {
