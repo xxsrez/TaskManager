@@ -16,7 +16,9 @@ import {
   commentUploadBlocksSubmit,
   createCommentUploadCandidate,
   insertCommentAttachmentToken,
-  removeCommentAttachmentToken,
+  rebaseCommentAttachmentInsertion,
+  removeCommentAttachmentInsertion,
+  type CommentAttachmentInsertion,
   type CommentUploadCandidate,
 } from "@/lib/comment-attachment-authoring";
 import {
@@ -60,6 +62,7 @@ export function CommentAttachmentAuthoring({
   const taskIdRef = useRef(taskId);
   const activeUploads = useRef(new Map<string, () => void>());
   const canceledUploads = useRef(new Set<string>());
+  const insertionAnchors = useRef(new Map<string, CommentAttachmentInsertion>());
 
   const readyAttachments = attachments.filter(
     (attachment) => attachment.state === "ready",
@@ -99,6 +102,7 @@ export function CommentAttachmentAuthoring({
   }, [taskId]);
 
   useEffect(() => {
+    rebaseInsertionAnchors(valueRef.current, value, insertionAnchors.current);
     valueRef.current = value;
   }, [value]);
 
@@ -139,6 +143,12 @@ export function CommentAttachmentAuthoring({
     });
   }
 
+  function adoptValue(next: string) {
+    rebaseInsertionAnchors(valueRef.current, next, insertionAnchors.current);
+    valueRef.current = next;
+    onChange(next);
+  }
+
   async function runUpload(candidate: CommentUploadCandidate, point = candidate.insertionPoint) {
     if (canceledUploads.current.has(candidate.id)) {
       canceledUploads.current.delete(candidate.id);
@@ -169,8 +179,8 @@ export function CommentAttachmentAuthoring({
         point,
         attachment,
       );
-      valueRef.current = inserted.value;
-      onChange(inserted.value);
+      adoptValue(inserted.value);
+      insertionAnchors.current.set(candidate.id, inserted.insertion);
       updateUpload(candidate.id, {
         insertionPoint: inserted.cursor,
         status: "ready",
@@ -235,13 +245,18 @@ export function CommentAttachmentAuthoring({
       return;
     }
     if (upload.status === "ready" && upload.token) {
-      const next = removeCommentAttachmentToken(valueRef.current, upload.token);
-      valueRef.current = next;
-      onChange(next);
-      focusAt(Math.min(next.length, upload.insertionPoint));
+      const insertion = insertionAnchors.current.get(upload.id);
+      const removed = insertion
+        ? removeCommentAttachmentInsertion(valueRef.current, insertion)
+        : { value: valueRef.current, removed: false };
+      if (removed.removed) {
+        adoptValue(removed.value);
+        focusAt(Math.min(removed.value.length, insertion?.start ?? upload.insertionPoint));
+      }
     }
     setUploads((current) => current.filter((candidate) => candidate.id !== upload.id));
     canceledUploads.current.delete(upload.id);
+    insertionAnchors.current.delete(upload.id);
   }
 
   function insertExistingAttachment() {
@@ -251,8 +266,7 @@ export function CommentAttachmentAuthoring({
     if (!attachment || disabled) return;
     const point = textareaRef.current?.selectionStart ?? valueRef.current.length;
     const inserted = insertCommentAttachmentToken(valueRef.current, point, attachment);
-    valueRef.current = inserted.value;
-    onChange(inserted.value);
+    adoptValue(inserted.value);
     focusAt(inserted.cursor);
     setGalleryOpen(false);
   }
@@ -397,4 +411,17 @@ function upsertAttachment(
   const next = [...attachments];
   next[index] = attachment;
   return next;
+}
+
+function rebaseInsertionAnchors(
+  previousValue: string,
+  nextValue: string,
+  anchors: Map<string, CommentAttachmentInsertion>,
+) {
+  if (previousValue === nextValue) return;
+  for (const [id, insertion] of anchors) {
+    const rebased = rebaseCommentAttachmentInsertion(previousValue, nextValue, insertion);
+    if (rebased) anchors.set(id, rebased);
+    else anchors.delete(id);
+  }
 }

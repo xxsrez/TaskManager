@@ -9,7 +9,8 @@ import {
   commentUploadBlocksSubmit,
   createCommentUploadCandidate,
   insertCommentAttachmentToken,
-  removeCommentAttachmentToken,
+  rebaseCommentAttachmentInsertion,
+  removeCommentAttachmentInsertion,
 } from "../lib/comment-attachment-authoring";
 
 const image = {
@@ -52,12 +53,40 @@ test("comment attachment authoring inserts image blocks and file links at the cu
 });
 
 test("removing a ready upload removes only its inserted draft token", () => {
-  const token = buildCommentAttachmentToken(document);
-  const draft = `First ${token}\nKeep [another](attachment:v1:another-reference-789)`;
-  assert.equal(
-    removeCommentAttachmentToken(draft, token),
-    "First\nKeep [another](attachment:v1:another-reference-789)",
+  const upload = insertCommentAttachmentToken("First\nKeep", 5, document);
+  const gallery = insertCommentAttachmentToken(upload.value, upload.cursor, document);
+  const rebased = rebaseCommentAttachmentInsertion(
+    upload.value,
+    gallery.value,
+    upload.insertion,
   );
+  assert.ok(rebased);
+
+  const removed = removeCommentAttachmentInsertion(gallery.value, rebased);
+  assert.equal(removed.removed, true);
+  assert.equal(
+    removed.value,
+    "First [Очень длинный отчёт [финал).pdf](attachment:v1:file-reference-456)\nKeep",
+  );
+});
+
+test("upload insertion identity rebases after cursor edits before an identical token", () => {
+  const upload = insertCommentAttachmentToken("Before", 0, document);
+  const edited = `Cursor edit: ${upload.value}`;
+  const rebased = rebaseCommentAttachmentInsertion(
+    upload.value,
+    edited,
+    upload.insertion,
+  );
+  assert.ok(rebased);
+  assert.equal(
+    edited.slice(rebased.tokenStart, rebased.tokenEnd),
+    buildCommentAttachmentToken(document),
+  );
+  assert.deepEqual(removeCommentAttachmentInsertion(edited, rebased), {
+    value: "Cursor edit: Before",
+    removed: true,
+  });
 });
 
 test("queued, active, processing, failed, and canceled uploads block submit until removed or ready", () => {
