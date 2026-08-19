@@ -219,11 +219,13 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
   const projectB = snapshot.projects.find((item) => item.name === "REST graph B")!;
   await createTask(owner, { title: "Graph source", projectId: projectA.id });
   await createTask(owner, { title: "Graph child", projectId: projectA.id });
-  await createTask(owner, { title: "Graph peer", projectId: projectB.id });
+  await createTask(owner, { title: "Graph peer", projectId: projectA.id });
+  await createTask(owner, { title: "Graph cross-project", projectId: projectB.id });
   const tasks = (await getSnapshot(owner)).tasks;
   const source = tasks.find((item) => item.title === "Graph source")!;
   const child = tasks.find((item) => item.title === "Graph child")!;
   const peer = tasks.find((item) => item.title === "Graph peer")!;
+  const crossProject = tasks.find((item) => item.title === "Graph cross-project")!;
   await grantAccess(owner, {
     resourceType: "project",
     resourceId: projectA.id,
@@ -257,6 +259,17 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
   );
   assert.equal(cycle.status, 400);
   assert.equal((await getAgentTaskDetail(owner, source.publicId)).parent, null);
+
+  const crossProjectDenied = await createAgentTaskRelationRoute(
+    jsonRequest(`https://example.test/api/agent/v1/tasks/${source.publicId}/relations`, authorization, {
+      targetTaskRef: crossProject.publicId,
+      type: "related",
+      direction: "outgoing",
+      idempotencyKey: "rest-cross-project-denied",
+    }, "POST"),
+    taskContext(source.publicId),
+  );
+  assert.equal(crossProjectDenied.status, 400);
 
   const relationInput = {
     targetTaskRef: peer.publicId,
@@ -312,6 +325,7 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
       authorization: `Bearer ${oneSideCredential.token}`,
     }, {
       ...relationInput,
+      targetTaskRef: crossProject.publicId,
       idempotencyKey: "rest-one-side-relation",
     }, "POST"),
     taskContext(source.publicId),
@@ -376,8 +390,12 @@ test("MCP exposes the same assignee, Label replacement, hierarchy, and relation 
   const owner = await getOrCreateUser(actor("mcp-parity-owner"));
   const member = await getOrCreateUser(actor("mcp-parity-member"));
   await createProject(owner, { name: "MCP parity", taskCode: "MP" });
+  await createProject(owner, { name: "MCP parity other", taskCode: "MO" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "MCP parity",
+  )!;
+  const otherProject = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "MCP parity other",
   )!;
   await grantAccess(owner, {
     resourceType: "project",
@@ -386,8 +404,12 @@ test("MCP exposes the same assignee, Label replacement, hierarchy, and relation 
     permission: "viewer",
   });
   await createTask(owner, { title: "MCP parent", projectId: project.id });
+  await createTask(owner, { title: "MCP cross-project", projectId: otherProject.id });
   const parent = (await getSnapshot(owner)).tasks.find(
     (item) => item.title === "MCP parent",
+  )!;
+  const crossProject = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "MCP cross-project",
   )!;
   const labels = await createLabel(owner, { name: "MCP label", color: "#225588" });
   const label = labels.find((item) => item.name === "MCP label")!;
@@ -437,6 +459,16 @@ test("MCP exposes the same assignee, Label replacement, hierarchy, and relation 
     parentTaskRef: parent.publicId,
   }) as TaskDetail;
   assert.equal(attached.parent?.ref, parent.publicId);
+  assert.match(
+    await mcpCallFailure(credential.token, "create_task_relation", {
+      taskRef: created.ref,
+      targetTaskRef: crossProject.publicId,
+      type: "related",
+      direction: "outgoing",
+      idempotencyKey: "mcp-parity-cross-project",
+    }),
+    /same Project/,
+  );
   const relationResult = await mcpCall(credential.token, "create_task_relation", {
     taskRef: created.ref,
     targetTaskRef: parent.publicId,
@@ -541,6 +573,41 @@ async function mcpCall(
   };
   assert.notEqual(result.result.isError, true, result.result.content?.[0]?.text ?? name);
   return result.result.structuredContent.data;
+}
+
+async function mcpCallFailure(
+  token: string,
+  name: string,
+  args: Record<string, unknown>,
+) {
+  const response = await mcpPost(new Request("https://example.test/api/mcp", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: `${name}-${crypto.randomUUID()}`,
+      method: "tools/call",
+      params: { name, arguments: args },
+    }),
+  }));
+  assert.equal(response.status, 200, name);
+  const text = await response.text();
+  const payload = text.startsWith("event:")
+    ? text.split("\n").find((line) => line.startsWith("data:"))!
+        .slice("data:".length).trim()
+    : text;
+  const result = JSON.parse(payload) as {
+    result: {
+      isError?: boolean;
+      content?: Array<{ type: string; text?: string }>;
+    };
+  };
+  assert.equal(result.result.isError, true, name);
+  return result.result.content?.[0]?.text ?? "";
 }
 
 type TaskDetail = {

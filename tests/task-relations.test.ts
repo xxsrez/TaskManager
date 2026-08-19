@@ -11,6 +11,7 @@ import {
 import { configureActorResolverForTests } from "../lib/auth";
 import {
   ConflictError,
+  NotFoundError,
   PermissionError,
   ValidationError,
 } from "../lib/domain";
@@ -219,14 +220,22 @@ test("relation commands require two editable project tasks and reject unsafe sha
   const collaborator = await getOrCreateUser(collaboratorActor);
   const viewer = await getOrCreateUser(viewerActor);
   await createProject(owner, { name: "Relations ACL project", taskCode: "RA" });
+  await createProject(owner, { name: "Relations other project", taskCode: "RO" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Relations ACL project",
   )!;
+  const otherProject = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Relations other project",
+  )!;
   await createTask(owner, { title: "ACL source", projectId: project.id });
   await createTask(owner, { title: "ACL target", projectId: project.id });
+  await createTask(owner, { title: "ACL third", projectId: project.id });
+  await createTask(owner, { title: "ACL cross-project", projectId: otherProject.id });
   const tasks = (await getSnapshot(owner)).tasks;
   const source = tasks.find((item) => item.title === "ACL source")!;
   const target = tasks.find((item) => item.title === "ACL target")!;
+  const third = tasks.find((item) => item.title === "ACL third")!;
+  const crossProject = tasks.find((item) => item.title === "ACL cross-project")!;
 
   await grantAccess(owner, {
     resourceType: "project",
@@ -247,6 +256,38 @@ test("relation commands require two editable project tasks and reject unsafe sha
     idempotencyKey: "relations-editor-1",
   });
   assert.equal(created.type, "blocks");
+  await assert.rejects(
+    createTaskRelation(owner, source.id, {
+      targetTaskId: crossProject.id,
+      type: "related",
+      direction: "outgoing",
+      idempotencyKey: "relations-cross-project-owner",
+    }),
+    /same Project/,
+  );
+  await assert.rejects(
+    createTaskRelation(collaborator, source.id, {
+      targetTaskId: crossProject.id,
+      type: "related",
+      direction: "outgoing",
+      idempotencyKey: "relations-cross-project-hidden",
+    }),
+    NotFoundError,
+  );
+  const unrelated = await createTaskRelation(owner, target.id, {
+    targetTaskId: third.id,
+    type: "related",
+    direction: "outgoing",
+    idempotencyKey: "relations-unrelated-edge",
+  });
+  await assert.rejects(
+    updateTaskRelation(collaborator, source.id, unrelated.id, {
+      version: unrelated.version + 100,
+      type: "blocks",
+      direction: "outgoing",
+    }),
+    NotFoundError,
+  );
   await assert.rejects(
     createTaskRelation(viewer, source.id, {
       targetTaskId: target.id,

@@ -214,8 +214,9 @@ version conflict остаётся write boundary и не заменяется po
    получить capabilities и схемы tools для установки connector, но каждый
 `tools/call` требует bearer token до data query.
 6. Relation commands разрешают обе Task references через тот же ACL predicate,
-   требуют Editor+ на каждой стороне и вызывают общий application command
-   service. Relation имеет собственную version; create имеет idempotency key.
+   требуют один Project и Editor+ на каждой стороне и вызывают общий
+   application command service. Relation имеет собственную version; create
+   имеет idempotency key.
    `duplicate_of` выполняет relation write и Task status transition одной D1
    batch, а UI/REST/MCP затем перечитывают canonical detail projection.
 7. Базовый Task create/update переводит external status/release/Label refs и
@@ -291,7 +292,8 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    Task patch не меняет Project.
 2. Repository до записи проверяет Task version, edit access к Task и обоим
    Projects, active target, explicit Release/Assignee effect и отсутствие
-   parent/subtasks. Relations не участвуют в ACL и могут остаться cross-project.
+   parent/subtasks/relations. Hierarchy сначала detach/reparent, а relations
+   явно unlink; command не создаёт cross-Project edges неявным переносом.
 3. Одна D1 batch transaction обновляет monotonic allocator и version target
    Project, переносит Task с новым sequence/identifier, повышает Task version и
    `INSERT OR IGNORE` сохраняет прежний identifier как alias. Guard predicates

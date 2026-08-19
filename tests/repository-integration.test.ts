@@ -38,7 +38,7 @@ import {
   updateTask,
   updateLabel,
 } from "../lib/repository";
-import { createTaskRelation } from "../lib/task-relations";
+import { createTaskRelation, deleteTaskRelation } from "../lib/task-relations";
 import type { TaskRecord } from "../lib/types";
 import { GET as searchTasksRoute, POST as createTaskRoute } from "../app/api/tasks/route";
 import { POST as queryTasksRoute } from "../app/api/tasks/query/route";
@@ -653,17 +653,39 @@ test("explicit Task moves allocate atomically, preserve identity, and enforce de
   await database.prepare("UPDATE tasks SET parent_task_id = NULL WHERE id = ?")
     .bind(child.id)
     .run();
-  await database.prepare(
-    `INSERT INTO task_relations
-       (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key)
-     VALUES (?, ?, ?, 'related', ?, ?)`,
-  ).bind("relation-move-preserve", task.id, child.id, owner.id, "move-preserve").run();
+  const moveRelation = await createTaskRelation(owner, task.id, {
+    targetTaskId: child.id,
+    type: "related",
+    direction: "outgoing",
+    idempotencyKey: "move-unlink-required",
+  });
   await database.prepare(
     "INSERT INTO labels (id, owner_user_id, name) VALUES (?, ?, ?)",
   ).bind("label-move-preserve", owner.id, "Move preserved").run();
   await database.prepare(
     "INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)",
   ).bind(task.id, "label-move-preserve").run();
+  const sourceSequenceBeforeRelationBlock = Number((await database.prepare(
+    "SELECT task_sequence FROM projects WHERE id = ?",
+  ).bind(source.id).first<{ task_sequence: number }>())!.task_sequence);
+  await assert.rejects(
+    moveTask(owner, task.id, {
+      version: task.version,
+      targetProjectId: source.id,
+      releaseId: null,
+      assigneeUserId: null,
+    }),
+    /Unlink every Task relation/,
+  );
+  assert.equal((await getTask(owner, task.id)).projectId, target.id);
+  assert.equal(
+    Number((await database.prepare("SELECT task_sequence FROM projects WHERE id = ?")
+      .bind(source.id).first<{ task_sequence: number }>())!.task_sequence),
+    sourceSequenceBeforeRelationBlock,
+  );
+  await deleteTaskRelation(owner, task.id, moveRelation.id, {
+    version: moveRelation.version,
+  });
   task = await moveTask(owner, task.id, {
     version: task.version,
     targetProjectId: source.id,
@@ -675,8 +697,8 @@ test("explicit Task moves allocate atomically, preserve identity, and enforce de
   assert.equal(task.assigneeUserId, null);
   assert.equal(
     (await database.prepare("SELECT COUNT(*) AS count FROM task_relations WHERE id = ?")
-      .bind("relation-move-preserve").first<{ count: number }>())!.count,
-    1,
+      .bind(moveRelation.id).first<{ count: number }>())!.count,
+    0,
   );
   assert.equal(
     (await database.prepare("SELECT COUNT(*) AS count FROM task_labels WHERE task_id = ?")
@@ -1098,6 +1120,37 @@ test("bulk Project and Release changes preserve identity and roll back every inv
   snapshot = await getSnapshot(owner);
   assert.equal(snapshot.projects.find((project) => project.id === target.id)?.taskSequence, sequenceBeforeBlocked);
   assert.ok(snapshot.tasks.filter((task) => hierarchyTasks.some((selectedTask) => selectedTask.id === task.id)).every((task) => task.projectId === source.id));
+
+  await createTask(owner, { title: "Bulk relation one", projectId: source.id });
+  await createTask(owner, { title: "Bulk relation two", projectId: source.id });
+  snapshot = await getSnapshot(owner);
+  const relationTasks = snapshot.tasks.filter(
+    (task) => task.title === "Bulk relation one" || task.title === "Bulk relation two",
+  );
+  await createTaskRelation(owner, relationTasks[0]!.id, {
+    targetTaskId: relationTasks[1]!.id,
+    type: "related",
+    direction: "outgoing",
+    idempotencyKey: "bulk-move-unlink-required",
+  });
+  const sequenceBeforeRelationBlock = snapshot.projects.find(
+    (project) => project.id === target.id,
+  )!.taskSequence;
+  await assert.rejects(
+    bulkMoveTasks(owner, {
+      ids: relationTasks.map((task) => task.id),
+      versions: Object.fromEntries(relationTasks.map((task) => [task.id, task.version])),
+      targetProjectId: target.id,
+    }),
+    /Unlink every selected Task relation/,
+  );
+  snapshot = await getSnapshot(owner);
+  assert.equal(
+    snapshot.projects.find((project) => project.id === target.id)?.taskSequence,
+    sequenceBeforeRelationBlock,
+  );
+  assert.ok(relationTasks.every((task) =>
+    snapshot.tasks.find((candidate) => candidate.id === task.id)?.projectId === source.id));
 });
 
 test("manual rank reorder is neighbor-bound, atomic across groups, and conflict-safe", async () => {

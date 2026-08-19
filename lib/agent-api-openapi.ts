@@ -268,7 +268,7 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/move": {
       post: {
         operationId: "moveTask",
-        summary: "Atomically move a task to another Project and allocate its identifier",
+        summary: "Move an unlinked task to another Project and allocate its identifier",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter()],
         requestBody: jsonRequest("#/components/schemas/TaskMove"),
@@ -365,7 +365,7 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/relations": {
       post: {
         operationId: "createTaskRelation",
-        summary: "Create a versioned native relation between two editable project tasks",
+        summary: "Create a versioned native relation between two editable Tasks in one Project",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter()],
         requestBody: jsonRequest("#/components/schemas/TaskRelationCreate"),
@@ -1061,7 +1061,12 @@ export const agentApiOpenApi = {
         type: "object",
         required: ["targetTaskRef", "type", "direction", "idempotencyKey"],
         properties: {
-          targetTaskRef: { type: "string", minLength: 1, maxLength: 200 },
+          targetTaskRef: {
+            type: "string",
+            minLength: 1,
+            maxLength: 200,
+            description: "Canonical peer Task ref in the same Project",
+          },
           type: { enum: ["blocks", "related", "duplicate_of"] },
           direction: { enum: ["outgoing", "incoming"] },
           idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },

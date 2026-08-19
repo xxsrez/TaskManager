@@ -213,6 +213,26 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   );
 });
 
+test("Linear import rejects relations across Projects", () => {
+  const payload = fixture();
+  const projects = payload.projects as Array<Record<string, unknown>>;
+  projects.push({
+    ...projects[0]!,
+    id: "p2",
+    name: "Other Project",
+    milestones: [],
+  });
+  const issues = payload.issues as Array<Record<string, unknown>>;
+  issues[0]!.projectId = "p2";
+  issues[0]!.projectMilestone = null;
+  issues[0]!.parentId = null;
+
+  assert.throws(
+    () => buildLinearImportPlan("usr_test", payload),
+    /crosses Projects/,
+  );
+});
+
 test("Linear import writes Project identifiers and aliases idempotently", async () => {
   const harness = await createD1TestHarness();
   try {

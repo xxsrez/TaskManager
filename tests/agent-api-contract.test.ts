@@ -205,6 +205,10 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     agentApiOpenApi.paths["/tasks/{ref}/relations"].post.operationId,
     "createTaskRelation",
   );
+  assert.match(
+    agentApiOpenApi.paths["/tasks/{ref}/relations"].post.summary,
+    /one Project/,
+  );
   assert.deepEqual(
     agentApiOpenApi.paths["/tasks/{ref}/relations"].post.security,
     [{ oauth2: ["api:write"] }, { personalToken: [] }],

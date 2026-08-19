@@ -260,8 +260,9 @@ scope check и owner/ACL scope до обращения к repository.
 | blocks/blocked_by, related, duplicate_of/duplicates | relation `POST`/`PATCH`/`DELETE` | `create_task_relation`, `update_task_relation`, `delete_task_relation` | create idempotency key; update/delete relation version; `taskVersion` для перехода в `duplicate_of` |
 
 `blocked_by` и `duplicates` — относительные read presentations, а не хранимые
-relation types. Cross-Project relation допустима только при `Editor+` на обеих
-Project Tasks и не распространяет ACL. REST и MCP вызывают один
+relation types. Relation допустима только между Tasks одного Project при
+`Editor+` на обеих сторонах; недоступный peer fail-closed как `not_found`.
+REST и MCP вызывают один
 application/repository boundary; отдельной connector-реализации business rules
 нет.
 
@@ -383,8 +384,9 @@ Optional `releaseRef` и write-only `assigneeEmail` принимают compatibl
 validation error. Если операция добавляет Task в выпущенный Release либо
 удаляет её оттуда, caller обязан явно передать
 `confirmReleasedComposition=true`; тот же флаг доступен create/subtask
-contracts и MCP schemas. Server проверяет edit access к обеим сторонам, active target
-и hierarchy, затем в одной transaction резервирует target sequence, меняет
+contracts и MCP schemas. Server проверяет edit access к обеим сторонам, active target,
+hierarchy и отсутствие relations; parent/subtasks сначала detach/reparent, а
+relations явно unlink. Затем одна transaction резервирует target sequence, меняет
 Project/identifier, записывает alias и применяет dependent changes. Same-Project
 возвращает неизменённую Task. Ответный `TaskDetail.identifier` authoritative;
 preview номера не является reservation. MCP tool `move_task` вызывает тот же
@@ -437,7 +439,7 @@ Editor+ может назначить active Label только owner catalog Ta
 принимают current Task version и атомарно заменяют полный набор; успешная
 single add/remove или replace возвращает detail с актуальной Task version.
 Relations имеют отдельные create/update/delete commands: обе Tasks должны
-принадлежать Project, caller должен иметь Editor+ на обеих, `related`
+быть разными Tasks одного Project, caller должен иметь Editor+ на обеих, `related`
 канонизируется, `blocks` хранит direction, а outgoing `duplicate_of` требует
 актуальную Task version и атомарно назначает системный `Duplicate`. Remove или
 смена type не восстанавливает прежний status. Task create ещё не имеет
@@ -573,8 +575,8 @@ Authorization invariants:
 14. REST и MCP создают Task с assignee/Labels и изменяют базовые metadata с
     read-back новой Task version; атомарный replace Labels отклоняет stale
     version без partial write. Hierarchy отклоняет self/cycle/cross-Project и
-    stale version; relation retry сохраняет одну identity, cross-Project
-    relation требует write access к обеим Tasks, stale relation version не
+    stale version; relation retry сохраняет одну identity, cross-Project и
+    недоступный peer отклоняются без existence leak, stale relation version не
     изменяет edge.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются

@@ -804,8 +804,13 @@ function validateRelationships(tables: BackupTables) {
     nonEmpty(relation.id, "Relation ID");
     nonEmpty(relation.idempotency_key, "Relation idempotency key");
     positiveVersion(relation.version, "Relation version");
-    if (source.id === target.id || source.project_id === null || target.project_id === null) {
-      throw new ValidationError("Relations require different project tasks");
+    if (
+      source.id === target.id ||
+      source.project_id === null ||
+      target.project_id === null ||
+      source.project_id !== target.project_id
+    ) {
+      throw new ValidationError("Relations require different tasks in the same Project");
     }
     oneOf(relation.type, ["blocks", "related", "duplicate_of"], "Relation type");
     if (relation.type === "related") {

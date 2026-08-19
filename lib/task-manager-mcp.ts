@@ -333,7 +333,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Move task",
       description:
-        "Atomically moves a task to another editable active Project. First resolve the task and target Project, then pass canonical refs and the current task version. If the current Release or assignee cannot remain valid, explicitly pass releaseRef or assigneeEmail as null, or choose a compatible value. The returned identifier is authoritative; the preview does not reserve a number.",
+        "Atomically moves a task to another editable active Project. First detach or reparent hierarchy and explicitly unlink every Task relation, then resolve the task and target Project and pass canonical refs plus the current task version. If the current Release or assignee cannot remain valid, explicitly pass releaseRef or assigneeEmail as null, or choose a compatible value. The returned identifier is authoritative; the preview does not reserve a number.",
       inputSchema: z.object({
         taskRef: reference("Canonical current or historical Task ref."),
         version: z.number().int().positive(),
@@ -422,10 +422,10 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Create task relation",
       description:
-        "Creates one native relation after resolving both tasks. Use outgoing blocks for taskRef blocks targetTaskRef, incoming blocks for taskRef is blocked by targetTaskRef, related for a symmetric relation, and outgoing duplicate_of to mark taskRef as a duplicate and move it to the reserved Duplicate status. Reuse idempotencyKey only when retrying the identical command.",
+        "Creates one native relation after resolving two different Tasks in the same Project. Use outgoing blocks for taskRef blocks targetTaskRef, incoming blocks for taskRef is blocked by targetTaskRef, related for a symmetric relation, and outgoing duplicate_of to mark taskRef as a duplicate and move it to the reserved Duplicate status. Reuse idempotencyKey only when retrying the identical command.",
       inputSchema: z.object({
         taskRef: reference("Canonical source/context task ref."),
-        targetTaskRef: reference("Canonical peer task ref."),
+        targetTaskRef: reference("Canonical peer Task ref in the same Project."),
         type: z.enum(["blocks", "related", "duplicate_of"]),
         direction: z.enum(["outgoing", "incoming"]),
         idempotencyKey: z.string().min(1).max(200),

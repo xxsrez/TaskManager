@@ -171,12 +171,12 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   не расходует sequence.
 - Несовместимый Release и Assignee без доступа к target нельзя очистить молча:
   command содержит явный compatible replacement либо `null`. Task с parent или
-  subtask сначала detach/reparent; обычные relations могут остаться
-  cross-project и не расширяют ACL.
+  subtask сначала detach/reparent; все relations необходимо явно unlink до
+  переноса, чтобы ни один edge не стал cross-Project.
 - В одной D1 transaction allocator целевого Project, новый
   `project_id`/sequence/identifier, Release/Assignee и alias прежнего identifier
   либо применяются вместе, либо полностью откатываются. `public_id`, content,
-  comments, attachments, labels, relations и внутренние keys не меняются.
+  comments, attachments, labels и внутренние keys не меняются.
 - Контекст создания предварительно заполняет metadata: проект, релиз, статус
   либо значение текущей группы.
 - Каждая Task требует Project и наследует его owner даже при создании
@@ -251,9 +251,9 @@ commands задают желаемое состояние идемпотентн
 - `related` симметрично.
 - `duplicate_of` направлено на каноническую задачу; self-relations и дубликаты
   одной связи запрещены.
-- Relation создаётся только между двумя Tasks, каждая из которых принадлежит
-  Project; Project может различаться. Автор mutation обязан иметь Editor или
-  выше на обеих Tasks, а сама связь не распространяет ACL между Projects.
+- Relation создаётся только между двумя разными Tasks одного Project. Автор
+  mutation обязан иметь Editor или выше на обеих Tasks; недоступный target
+  возвращает `not_found`, не раскрывая существование Task.
 - Каждая relation имеет immutable identity, idempotency key создания и
   независимую optimistic `version`. Изменение direction/type и удаление требуют
   актуальную relation version; sync инвалидирует lazy details обеих сторон.
@@ -826,7 +826,7 @@ created/updated/started/completed/canceled dates и archived state.
     `duplicate_of`, изменить direction/type и удалить relation. Проверить
     группировку `Blocked by`/`Blocking`/`Related`/`Duplicate of`, перенос
     terminal blocker в `Related`, атомарный статус `Duplicate`, Viewer без
-    mutation controls, cross-Project Editor access на обеих сторонах, stale
+    mutation controls, отказ cross-Project без existence leak, stale
     relation/task version и lazy sync invalidation обеих Tasks. Повторить
     create/update/delete через Agent REST и MCP canonical refs; retry create с
     тем же idempotency key не создаёт вторую row.

@@ -1049,6 +1049,11 @@ function buildRelations(
     if (sourceTask.id === targetTask.id) {
       throw new ValidationError(`Linear issue ${sourceId} relates to itself`);
     }
+    if (sourceTask.projectId !== targetTask.projectId) {
+      throw new ValidationError(
+        `Linear relation ${sourceId} -> ${targetSourceId} crosses Projects`,
+      );
+    }
     let sourceTaskId = sourceTask.id;
     let targetTaskId = targetTask.id;
     if (type === "related" && sourceTaskId > targetTaskId) {

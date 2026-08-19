@@ -2,6 +2,7 @@ import { getD1 } from "@/db";
 import { canEditContent } from "./access";
 import {
   ConflictError,
+  NotFoundError,
   PermissionError,
   ValidationError,
   statusTimestamps,
@@ -44,7 +45,7 @@ export async function createTaskRelation(
     getTask(currentUser, taskId),
     getTask(currentUser, targetTaskId),
   ]);
-  assertEditableProjectTasks(anchor, peer);
+  assertEditableSameProjectTasks(anchor, peer);
   const semantic = normalizeRelation(
     anchor.id,
     peer.id,
@@ -85,6 +86,7 @@ export async function createTaskRelation(
        SELECT ?, ?, ?, ?, ?, ?, 1, ?, ?
        WHERE ${editableParticipantExists("source_task")}
          AND ${editableParticipantExists("target_task")}
+         AND ${sameProjectParticipants()}
          ${semantic.type === "duplicate_of"
            ? "AND EXISTS (SELECT 1 FROM tasks duplicate_source WHERE duplicate_source.id = ? AND duplicate_source.version = ?)"
            : ""}`,
@@ -104,6 +106,8 @@ export async function createTaskRelation(
       semantic.targetTaskId,
       currentUser.id,
       currentUser.id,
+      semantic.targetTaskId,
+      semantic.sourceTaskId,
       ...(semantic.type === "duplicate_of"
         ? [
             semantic.sourceTaskId,
@@ -185,20 +189,17 @@ export async function updateTaskRelation(
   input: Record<string, unknown>,
 ): Promise<TaskRelationRecord> {
   assertOnlyKeys(input, ["version", "type", "direction", "taskVersion"]);
-  const current = await loadRelation(relationId);
+  const anchor = await getTask(currentUser, taskId);
+  const current = await loadTaskRelation(relationId, anchor.id);
   const expectedVersion = positiveInteger(input.version, "Relation version");
   if (expectedVersion !== current.version) {
     throw new ConflictError("Relation was changed in another session");
-  }
-  const anchor = await getTask(currentUser, taskId);
-  if (current.sourceTaskId !== anchor.id && current.targetTaskId !== anchor.id) {
-    throw new ValidationError("Relation does not belong to this task");
   }
   const peerId = current.sourceTaskId === anchor.id
     ? current.targetTaskId
     : current.sourceTaskId;
   const peer = await getTask(currentUser, peerId);
-  assertEditableProjectTasks(anchor, peer);
+  assertEditableSameProjectTasks(anchor, peer);
   const semantic = normalizeRelation(
     anchor.id,
     peer.id,
@@ -226,6 +227,7 @@ export async function updateTaskRelation(
        WHERE id = ? AND version = ?
          AND ${editableParticipantExists("source_task")}
          AND ${editableParticipantExists("target_task")}
+         AND ${sameProjectParticipants()}
          ${semantic.type === "duplicate_of"
            ? "AND EXISTS (SELECT 1 FROM tasks duplicate_source WHERE duplicate_source.id = ? AND duplicate_source.version = ?)"
            : ""}`,
@@ -243,6 +245,8 @@ export async function updateTaskRelation(
       semantic.targetTaskId,
       currentUser.id,
       currentUser.id,
+      semantic.targetTaskId,
+      semantic.sourceTaskId,
       ...(semantic.type === "duplicate_of"
         ? [
             semantic.sourceTaskId,
@@ -322,14 +326,11 @@ export async function deleteTaskRelation(
   input: Record<string, unknown>,
 ): Promise<{ deleted: true; relation: TaskRelationRecord }> {
   assertOnlyKeys(input, ["version"]);
-  const relation = await loadRelation(relationId);
+  const anchor = await getTask(currentUser, taskId);
+  const relation = await loadTaskRelation(relationId, anchor.id);
   const expectedVersion = positiveInteger(input.version, "Relation version");
   if (relation.version !== expectedVersion) {
     throw new ConflictError("Relation was changed in another session");
-  }
-  const anchor = await getTask(currentUser, taskId);
-  if (relation.sourceTaskId !== anchor.id && relation.targetTaskId !== anchor.id) {
-    throw new ValidationError("Relation does not belong to this task");
   }
   const peer = await getTask(
     currentUser,
@@ -418,6 +419,21 @@ async function loadRelation(id: string): Promise<TaskRelationRecord> {
     .bind(id)
     .first<DbRow>();
   if (!row) throw new ConflictError("Relation was changed or removed");
+  return mapRelation(row);
+}
+
+async function loadTaskRelation(
+  id: string,
+  taskId: string,
+): Promise<TaskRelationRecord> {
+  const row = await getD1()
+    .prepare(
+      `SELECT ${relationProjection} FROM task_relations
+       WHERE id = ? AND (source_task_id = ? OR target_task_id = ?) LIMIT 1`,
+    )
+    .bind(id, taskId, taskId)
+    .first<DbRow>();
+  if (!row) throw new NotFoundError("Relation not found");
   return mapRelation(row);
 }
 
@@ -512,6 +528,16 @@ function editableParticipantExists(alias: string) {
   )`;
 }
 
+function sameProjectParticipants() {
+  return `EXISTS (
+    SELECT 1
+    FROM tasks same_source
+    JOIN tasks same_target ON same_target.id = ?
+      AND same_target.project_id = same_source.project_id
+    WHERE same_source.id = ? AND same_source.project_id IS NOT NULL
+  )`;
+}
+
 function editableProjectTask(alias: string) {
   return `(
     ${alias}.project_id IS NOT NULL AND (
@@ -539,6 +565,13 @@ function assertEditableProjectTasks(...tasks: TaskRecord[]) {
     if (!canEditContent(task.accessRole)) {
       throw new PermissionError("Editor access to both tasks is required");
     }
+  }
+}
+
+function assertEditableSameProjectTasks(anchor: TaskRecord, peer: TaskRecord) {
+  assertEditableProjectTasks(anchor, peer);
+  if (anchor.projectId !== peer.projectId) {
+    throw new ValidationError("Relations require both tasks to belong to the same Project");
   }
 }
 

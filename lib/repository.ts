@@ -2491,6 +2491,18 @@ export async function moveTask(
       "Detach or reparent this Task hierarchy before moving it to another Project",
     );
   }
+  const relation = await getD1()
+    .prepare(
+      `SELECT 1 AS related FROM task_relations
+       WHERE source_task_id = ? OR target_task_id = ? LIMIT 1`,
+    )
+    .bind(task.id, task.id)
+    .first<{ related: number }>();
+  if (relation) {
+    throw new ValidationError(
+      "Unlink every Task relation before moving it to another Project",
+    );
+  }
 
   const now = new Date().toISOString();
   const db = getD1();
@@ -2524,6 +2536,11 @@ export async function moveTask(
       AND moving.parent_task_id IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM tasks child WHERE child.parent_task_id = moving.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM task_relations relation
+        WHERE relation.source_task_id = moving.id
+           OR relation.target_task_id = moving.id
       )
       AND (
         ? IS NULL OR EXISTS (
@@ -2758,6 +2775,20 @@ export async function bulkMoveTasks(
   if (hierarchy) {
     throw new ValidationError("Detach or reparent selected Task hierarchies before moving them");
   }
+  const relation = await db.prepare(
+    `SELECT 1 AS related FROM task_relations
+     WHERE source_task_id IN (${placeholders})
+        OR target_task_id IN (${placeholders})
+     LIMIT 1`,
+  ).bind(
+    ...movingTasks.map((task) => task.id),
+    ...movingTasks.map((task) => task.id),
+  ).first<{ related: number }>();
+  if (relation) {
+    throw new ValidationError(
+      "Unlink every selected Task relation before moving Tasks to another Project",
+    );
+  }
 
   const clearRelease = input.clearRelease === true;
   if (movingTasks.some((task) => task.releaseId) && !clearRelease) {
@@ -2861,6 +2892,11 @@ export async function bulkMoveTasks(
          WHERE id = ? AND version = ? AND project_id = ? AND archived_at IS NULL
            AND parent_task_id IS NULL
            AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.parent_task_id = tasks.id)
+           AND NOT EXISTS (
+             SELECT 1 FROM task_relations relation
+             WHERE relation.source_task_id = tasks.id
+                OR relation.target_task_id = tasks.id
+           )
            AND ${editableTaskWhere}
            AND EXISTS (
              SELECT 1 FROM projects target

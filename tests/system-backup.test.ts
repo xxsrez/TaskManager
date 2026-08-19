@@ -347,6 +347,28 @@ test("snapshot validation rejects Tasks without an explicit Project mapping", as
   await assert.rejects(validateSystemBackup(backup), /project_id cannot be null|explicit Project mapping/i);
 });
 
+test("snapshot validation rejects relations across Projects", async () => {
+  const tables = validTables();
+  tables.projects.push({
+    ...tables.projects[0]!,
+    id: "project-2",
+    public_id: "66666666-6666-4666-8666-666666666666",
+    name: "Other Project",
+    task_code: "OP",
+    task_sequence: 1,
+    lead_user_id: null,
+  });
+  tables.tasks[1]!.project_id = "project-2";
+  tables.tasks[1]!.identifier = "OP-1";
+  tables.tasks[1]!.sequence_number = 1;
+  const backup = await createSystemBackup(tables, now);
+
+  await assert.rejects(
+    validateSystemBackup(backup),
+    /same Project/i,
+  );
+});
+
 test("restore requires the current administrator identity in the snapshot", async () => {
   const backup = await createSystemBackup(validTables(), now);
 

@@ -597,9 +597,9 @@ desired-state add/remove идемпотентны. Назначать можно
 Для `related` хранится одна канонически упорядоченная пара. `blocked_by`
 вычисляется как обратное чтение `blocks` и не является отдельным type. Обратные
 `blocks` одной пары считаются одним logical conflict; source имеет не более
-одного `duplicate_of`. Relation допустима только между двумя Project Tasks.
-Project и catalog owner могут различаться, но mutation требует Editor+ на обеих
-сторонах и не создаёт ACL propagation.
+одного `duplicate_of`. Relation допустима только между двумя разными Tasks
+одного Project; mutation требует Editor+ на обеих сторонах. Недоступный peer
+fail-closed как `not_found` до проверки relation semantics.
 
 ## ExternalRecord
 
@@ -683,9 +683,8 @@ Editor-or-higher role и optimistic `version`; смена access scope допо�
    references; явный перенос выдаёт identifier целевого Project и сохраняет
    старый как alias.
 4. Status, Label, Project, Release и parent обязаны принадлежать тому же catalog
-   owner scope, что и Task. Cross-owner hierarchy запрещена. TaskRelation —
-   явное исключение: обе стороны обязаны быть Project Tasks, могут относиться к
-   разным Projects/owners и не наследуют доступ друг от друга.
+   owner scope, что и Task. Cross-owner hierarchy запрещена. Обе стороны
+   TaskRelation обязаны быть разными Tasks одного Project.
    Active Label name уникально в owner catalog без учёта регистра. Только owner
    управляет каталогом, а Task Editor+ назначает active labels; Viewer читает.
 5. `task.release_id IS NULL` либо release существует и
@@ -697,15 +696,15 @@ Editor-or-higher role и optimistic `version`; смена access scope допо�
    следующий непереиспользуемый target sequence, меняет Project/identifier,
    сохраняет прежний identifier как alias и применяет согласованные
    Release/Assignee changes в одной transaction. Несовместимые Release и
-   Assignee требуют явный replacement или `null`; hierarchy, archive, ACL,
-   conflict или collision откатывают всю операцию. Same-Project — no-op без
-   расхода sequence.
+   Assignee требуют явный replacement или `null`; hierarchy и relations должны
+   быть явно отсоединены до переноса. Archive, ACL, conflict или collision
+   откатывают всю операцию. Same-Project — no-op без расхода sequence.
 8. Terminal timestamps выводятся из status category и обновляются в одной
    транзакции со status.
 9. Parent graph ацикличен; self-parent и self-relation запрещены. Relation
-   create/update требует write access на обе стороны; `duplicate_of` атомарно
-   назначает source системный `Duplicate`, но remove/change не восстанавливает
-   предыдущий status.
+   create/update требует один Project и write access на обе стороны;
+   `duplicate_of` атомарно назначает source системный `Duplicate`, но
+   remove/change не восстанавливает предыдущий status.
 10. Архивирование project/release не удаляет задачи. Новое назначение в архивную
    сущность запрещено.
 11. Assignee и lead обязаны иметь owner либо granted access к соответствующему

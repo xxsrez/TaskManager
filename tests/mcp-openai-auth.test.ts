@@ -290,6 +290,10 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     "version",
     "labelRefs",
   ]);
+  const createRelationTool = listBody.result.tools.find(
+    (tool) => tool.name === "create_task_relation",
+  ) as { description?: string } | undefined;
+  assert.match(createRelationTool?.description ?? "", /same Project/);
   const uploadTool = listBody.result.tools.find(
     (tool) => tool.name === "upload_task_attachment",
   ) as {

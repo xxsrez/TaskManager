@@ -205,7 +205,7 @@ export async function stageProjectBackup(
 
   const warnings = await validateLiveDependenciesAndCollisions(db, backup, currentUser.id);
   if (backup.warnings.externalRelationsOmitted > 0) {
-    warnings.push(`${backup.warnings.externalRelationsOmitted} relation(s) to tasks outside this project are provenance-only and will not be restored.`);
+    warnings.push(`${backup.warnings.externalRelationsOmitted} legacy cross-Project relation(s) were omitted; unlink them in live data before export.`);
   }
   if (backup.sharing.length > 0) warnings.push("Project sharing is staged but will only be restored with explicit opt-in.");
 
