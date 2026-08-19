@@ -28,6 +28,8 @@ import {
   resolveArchiveBulkAction,
   runSingleFlight,
   shouldTriggerPullRefresh,
+  StatusIcon,
+  taskRowReorderDirection,
   taskMutationVersion,
   taskNeedsDetailRefresh,
   taskDraftSyncMode,
@@ -411,6 +413,7 @@ test("workspace overview is a distinct linked surface", () => {
   assert.match(markup, /<div class="breadcrumb-step" aria-current="page"><h1 class="breadcrumb-current" title="Workspace">Workspace<\/h1>/);
   assert.match(markup, /My work/);
   assert.match(markup, /Recent tasks/);
+  assert.match(markup, /workspace-record-icon"><span[^>]*aria-hidden="true"/);
   assert.match(markup, /href="\/issues\/active"/);
   assert.match(markup, /href="\/issues\/33333333-3333-4333-8333-333333333333"/);
   assert.match(markup, /Projects/);
@@ -1292,6 +1295,46 @@ test("priority icons distinguish medium and high by active bar count", () => {
   assert.equal((high.match(/priority-bar active/g) ?? []).length, 3);
   assert.match(urgent, /aria-label="Urgent priority"/);
   assert.match(urgent, /priority-symbol/);
+});
+
+test("StatusIcon semantics are opt-in when visible text already names the status", () => {
+  const status = snapshot.statuses[0]!;
+  const decorative = renderToStaticMarkup(createElement(StatusIcon, { status }));
+  const announced = renderToStaticMarkup(createElement(StatusIcon, { status, announce: true }));
+
+  assert.match(decorative, /aria-hidden="true"/);
+  assert.doesNotMatch(decorative, /role="img"/);
+  assert.doesNotMatch(decorative, /aria-label="Status: Todo"/);
+  assert.match(announced, /role="img"/);
+  assert.match(announced, /aria-label="Status: Todo"/);
+  assert.doesNotMatch(announced, /aria-hidden="true"/);
+});
+
+test("row reordering ignores Alt+Arrow from interactive descendants", () => {
+  assert.equal(taskRowReorderDirection({
+    draggable: true,
+    altKey: true,
+    key: "ArrowUp",
+    targetIsRow: true,
+  }), "up");
+  assert.equal(taskRowReorderDirection({
+    draggable: true,
+    altKey: true,
+    key: "ArrowDown",
+    targetIsRow: true,
+  }), "down");
+  assert.equal(taskRowReorderDirection({
+    draggable: true,
+    altKey: true,
+    key: "ArrowUp",
+    targetIsRow: false,
+  }), null);
+  assert.equal(taskRowReorderDirection({
+    draggable: true,
+    altKey: false,
+    key: "ArrowUp",
+    targetIsRow: true,
+  }), null);
 });
 
 test("a saved priority grouping is rendered consistently in list and board", () => {
