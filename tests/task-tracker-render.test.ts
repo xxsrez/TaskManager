@@ -202,6 +202,24 @@ test("Settings profile is a first-class surface with server-projected identity",
   assert.doesNotMatch(markup, /Administration/);
 });
 
+test("Settings Labels exposes the Label groups manager", () => {
+  const markup = renderToStaticMarkup(createElement(SettingsSurface, {
+    section: "labels",
+    data: snapshot,
+    theme: "system",
+    sidebarCollapsed: false,
+    signOutPath: "/auth/signout",
+    onNavigate: () => undefined,
+    onProfile: () => undefined,
+    onAppearance: () => undefined,
+    onStatuses: () => undefined,
+    onLabels: () => undefined,
+  }));
+
+  assert.match(markup, /Manage label groups/);
+  assert.match(markup, /aria-label="Label settings"/);
+});
+
 test("local Task changes invalidate an already loaded Activity projection", () => {
   const retained = {
     ...snapshot.tasks[0]!,

@@ -3622,6 +3622,7 @@ export function TaskTracker({
             onAppearance={(changes) => void saveUserPreferences(changes)}
             onStatuses={(statuses) => setData((current) => ({ ...current, statuses: [...current.statuses.filter((status) => status.ownerUserId !== current.user.id), ...statuses] }))}
             onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))}
+            onGroups={(labelGroups) => setData((current) => ({ ...current, labelGroups: [...(current.labelGroups ?? []).filter((group) => group.ownerUserId !== current.user.id), ...labelGroups] }))}
           />
         ) : surface === "workspace" ? (
           <WorkspaceOverviewSurface
@@ -6238,6 +6239,7 @@ export function SettingsSurface({
   onAppearance,
   onStatuses,
   onLabels,
+  onGroups,
 }: {
   section: string;
   data: AppSnapshot;
@@ -6249,7 +6251,9 @@ export function SettingsSurface({
   onAppearance: (changes: { theme?: "system" | "light" | "dark"; sidebarPreference?: "expanded" | "collapsed" }) => void;
   onStatuses: (statuses: WorkflowStatusRecord[]) => void;
   onLabels: (labels: LabelRecord[]) => void;
+  onGroups?: (groups: LabelGroupRecord[]) => void;
 }) {
+  const [labelGroupsOpen, setLabelGroupsOpen] = useState(false);
   const active = settingsNavigation.flatMap((group) => group.items)
     .find((item) => item.section === section)?.section ?? "profile";
   const profile = data.userProfile ?? {
@@ -6286,7 +6290,19 @@ export function SettingsSurface({
       {active === "profile" && <ProfileSettingsPanel key={profile.user.version} profile={profile} signOutPath={signOutPath} onProfile={onProfile} />}
       {active === "appearance" && <AppearanceSettingsPanel theme={theme} sidebarCollapsed={sidebarCollapsed} onChange={onAppearance} />}
       {active === "workflow-statuses" && <WorkflowSettingsDialog embedded initialStatuses={data.statuses.filter((status) => status.ownerUserId === data.user.id)} onClose={() => undefined} onStatuses={onStatuses} />}
-      {active === "labels" && <LabelSettingsDialog embedded onClose={() => undefined} onLabels={onLabels} />}
+      {active === "labels" && <>
+        <div className="catalog-toolbar">
+          <button className="button ghost compact" type="button" onClick={() => setLabelGroupsOpen(true)}>Manage label groups</button>
+        </div>
+        <LabelSettingsDialog embedded onClose={() => undefined} onLabels={onLabels} />
+        {labelGroupsOpen && <LabelGroupSettingsDialog
+          initialGroups={(data.labelGroups ?? []).filter((group) => group.ownerUserId === data.user.id)}
+          initialLabels={data.labels.filter((label) => label.ownerUserId === data.user.id)}
+          onClose={() => setLabelGroupsOpen(false)}
+          onGroups={(groups) => onGroups?.(groups)}
+          onLabels={onLabels}
+        />}
+      </>}
       {active === "integrations" && <CodexSetupDialog embedded onClose={() => undefined} />}
       {active === "project-backup" && <ProjectBackupManager embedded initialSnapshot={data} />}
     </article>
