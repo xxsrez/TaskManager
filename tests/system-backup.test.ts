@@ -908,6 +908,7 @@ function migratedDatabase() {
     "0026_repair_legacy_workflow_catalogs.sql",
     "0027_busy_silver_sable.sql",
     "0028_hot_obadiah_stane.sql",
+    "0029_steep_joseph.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }
