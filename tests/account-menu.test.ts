@@ -69,6 +69,18 @@ test("account menu keeps canonical browser anchors and local history integration
   assert.match(source, /accountMenuFirstItemRef\.current\?\.focus\(\)/);
 });
 
+test("Administration navigation reloads the server-projected admin surface", () => {
+  const source = readFileSync(
+    new URL("../components/task-tracker.tsx", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(
+    source,
+    /function navigateSurface\(nextSurface: string, nextLayout\?: Layout\)\s*\{[\s\S]*?if \(nextSurface === "admin"\) \{[\s\S]*?window\.location\.assign\("\/admin"\);[\s\S]*?return;/,
+  );
+});
+
 test("account menu remains overflow-safe and touch-sized in both phone orientations", () => {
   const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
 

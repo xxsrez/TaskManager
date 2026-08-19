@@ -2563,6 +2563,12 @@ export function TaskTracker({
     setMobileActionsOpen(false);
     setSearch("");
     setTemporaryQuery(emptyViewQuery());
+    if (nextSurface === "admin") {
+      // The initial workspace snapshot intentionally omits the admin overview.
+      // Let the server build the gated projection before rendering this surface.
+      window.location.assign("/admin");
+      return;
+    }
     applyNavigation({
       surface: nextSurface,
       layout: nextLayout ?? defaultLayoutForSurface(nextSurface, data),
