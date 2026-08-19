@@ -330,9 +330,15 @@ immutable ID и может группировать Tasks по значения�
   ссылок; guessed, cross-Task, deleted/pending и несовместимый image ref
   отклоняются без existence leak. Historical body immutable, но native reply
   на historical root может содержать такие ссылки.
-- Этот срез фиксирует server/domain, Agent/MCP и backup contract. Browser
-  composer и renderer для Comment attachment refs поставляются отдельными
-  UI-срезами и до этого не считаются реализованными этим foundation.
+- Browser authoring для root/reply и edit собственного native Comment
+  переиспользует Task Attachment gallery/upload: paperclip, picker,
+  `Cmd/Ctrl+Shift+A`, drop/paste и multi-file queue вставляют image/file token
+  в позицию курсора. Per-file progress, cancel/retry/partial success и stable
+  attachment idempotency не позволяют отправить Comment, пока связанный upload
+  не готов либо не удалён из draft. Ready refs сохраняются в изолированном
+  draft current User + Task + optional root thread; незавершённый upload после
+  reload не объявляется ready. Browser renderer поставляется отдельным
+  UI-срезом и до него не считается реализованным.
 - Импортированный comment становится historical `Comment` той же Task с
   snapshot имени автора и исходных timestamps/quote. Он не получает
   `author_user_id`, не impersonates текущего User и сохраняет source identity.
@@ -957,5 +963,8 @@ created/updated/started/completed/canceled dates и archived state.
     system backup/restore schema `12`.
 23. Native Comment attachment refs: normalized bounded index, атомарные
     create/edit/delete, ACL-safe Agent/MCP projection, race-safe Attachment
-    delete guard, reconciliation и backup/restore schema `13`; browser
-    composer/renderer входят в следующие UI-срезы.
+    delete guard, reconciliation и backup/restore schema `13`.
+24. Browser authoring Comment attachments: root/reply/edit composer,
+    picker/gallery/shortcut/drop/paste, multi-file progress/cancel/retry,
+    draft isolation и responsive accessibility; browser renderer входит в
+    следующий UI-срез.

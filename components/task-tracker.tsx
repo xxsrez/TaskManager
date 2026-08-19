@@ -124,6 +124,7 @@ import {
   TaskDescriptionImage,
 } from "@/components/task-attachments";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
+import { CommentAttachmentAuthoring } from "@/components/comment-attachment-authoring";
 import { ContextualActionMenu } from "@/components/contextual-action-menu";
 import { ProjectBackupManager } from "@/components/project-backup-manager";
 import {
@@ -4909,6 +4910,8 @@ function TaskActivity({ task, currentUser, canWrite }: {
   const [error, setError] = useState("");
   const [activityError, setActivityError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [uploadBlocked, setUploadBlocked] = useState(false);
+  const [composerEpoch, setComposerEpoch] = useState(0);
   const [draft, setDraft] = useState("");
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const pendingIdempotencyKeys = useRef(new Map<string, string>());
@@ -4993,7 +4996,7 @@ function TaskActivity({ task, currentUser, canWrite }: {
   }, [page]);
 
   async function submitComment() {
-    if (!canWrite || busy || !draft.trim()) return;
+    if (!canWrite || busy || uploadBlocked || !draft.trim()) return;
     const submittedDraftKey = draftKey;
     const submittedReplyTo = replyTo;
     const idempotencyKey = pendingIdempotencyKeys.current.get(submittedDraftKey) ?? crypto.randomUUID();
@@ -5015,6 +5018,7 @@ function TaskActivity({ task, currentUser, canWrite }: {
       );
       pendingIdempotencyKeys.current.delete(submittedDraftKey);
       window.localStorage.removeItem(submittedDraftKey);
+      setComposerEpoch((current) => current + 1);
       setReplyTo(null);
       setDraft(submittedReplyTo
         ? window.localStorage.getItem(commentDraftStorageKey(currentUser.id, task.id)) ?? ""
@@ -5028,7 +5032,7 @@ function TaskActivity({ task, currentUser, canWrite }: {
   }
 
   async function mutateComment(path: string, method: string, input: Record<string, unknown>) {
-    if (busy) return;
+    if (busy) return false;
     setBusy(true);
     setError("");
     try {
@@ -5038,8 +5042,10 @@ function TaskActivity({ task, currentUser, canWrite }: {
         body: JSON.stringify(input),
       });
       await Promise.all([loadComments(), loadActivity()]);
+      return true;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Comment action failed");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -5075,6 +5081,7 @@ function TaskActivity({ task, currentUser, canWrite }: {
     <div className="comment-threads">
       {page?.threads.map((thread) => <CommentThread
         key={`${thread.root.id}:${thread.root.resolvedAt ?? "open"}`}
+        taskId={task.id}
         thread={thread}
         busy={busy}
         onReply={(rootId) => {
@@ -5092,20 +5099,30 @@ function TaskActivity({ task, currentUser, canWrite }: {
       <span className="comment-avatar" style={{ "--avatar-hue": avatarHue(currentUser.id) } as React.CSSProperties}>{initials(currentUser.displayName)}</span>
       <div className="comment-composer-box">
         {replyTo && <div className="reply-context"><span>Replying in thread</span><button type="button" onClick={() => switchComposer(null)}>Cancel</button></div>}
-        <textarea
-          ref={composerRef}
+        <CommentAttachmentAuthoring
+          key={`${draftKey}:${composerEpoch}`}
+          taskId={task.id}
           value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-              event.preventDefault();
-              void submitComment();
-            }
-          }}
-          placeholder="Leave a comment…"
-          aria-label="Comment body"
-          rows={draft.includes("\n") ? 5 : 3}
-        />
+          onChange={setDraft}
+          textareaRef={composerRef}
+          disabled={busy}
+          onBlockingChange={setUploadBlocked}
+        >
+          <textarea
+            ref={composerRef}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                event.preventDefault();
+                void submitComment();
+              }
+            }}
+            placeholder="Leave a comment…"
+            aria-label="Comment body"
+            rows={draft.includes("\n") ? 5 : 3}
+          />
+        </CommentAttachmentAuthoring>
         <div className="comment-composer-actions">
           <div className="comment-toolbar" role="toolbar" aria-label="Comment formatting">
             <button type="button" title="Bold" aria-label="Bold" onClick={() => formatCommentSelection(composerRef.current, setDraft, "**")}><b>B</b></button>
@@ -5116,7 +5133,7 @@ function TaskActivity({ task, currentUser, canWrite }: {
             <button type="button" title="Link" aria-label="Link" onClick={() => formatCommentSelection(composerRef.current, setDraft, "[", "](https://)")}>↗</button>
           </div>
           <span><kbd>⌘</kbd><kbd>Enter</kbd></span>
-          <button className="button primary" type="button" disabled={busy || !draft.trim()} onClick={() => void submitComment()}>{busy ? "Saving…" : replyTo ? "Reply" : "Comment"}</button>
+          <button className="button primary" type="button" disabled={busy || uploadBlocked || !draft.trim()} onClick={() => void submitComment()}>{busy ? "Saving…" : uploadBlocked ? "Upload pending" : replyTo ? "Reply" : "Comment"}</button>
         </div>
       </div>
     </div>}
@@ -5189,37 +5206,41 @@ function activityEventFallback(event: ActivityEventRecord) {
   return "";
 }
 
-function CommentThread({ thread, busy, onReply, onEdit, onDelete, onReact, onResolve }: {
+function CommentThread({ taskId, thread, busy, onReply, onEdit, onDelete, onReact, onResolve }: {
+  taskId: string;
   thread: CommentThreadRecord;
   busy: boolean;
   onReply: (rootId: string) => void;
-  onEdit: (comment: CommentRecord, body: string) => Promise<void>;
-  onDelete: (comment: CommentRecord) => Promise<void>;
-  onReact: (comment: CommentRecord, emoji: string, active: boolean) => Promise<void>;
-  onResolve: (comment: CommentRecord, resolved: boolean) => Promise<void>;
+  onEdit: (comment: CommentRecord, body: string) => Promise<boolean>;
+  onDelete: (comment: CommentRecord) => Promise<boolean>;
+  onReact: (comment: CommentRecord, emoji: string, active: boolean) => Promise<boolean>;
+  onResolve: (comment: CommentRecord, resolved: boolean) => Promise<boolean>;
 }) {
   const [collapsed, setCollapsed] = useState(Boolean(thread.root.resolvedAt));
   return <article className={`comment-thread ${thread.root.resolvedAt ? "resolved" : ""}`}>
     {thread.root.resolvedAt && <button className="resolved-thread-toggle" type="button" aria-expanded={!collapsed} onClick={() => setCollapsed((value) => !value)}><Check size={13} />Resolved thread · {thread.replies.length + 1} messages</button>}
     {!collapsed && <>
-      <CommentEntry comment={thread.root} rootId={thread.root.id} busy={busy} onReply={onReply} onEdit={onEdit} onDelete={onDelete} onReact={onReact} onResolve={onResolve} />
-      {thread.replies.length > 0 && <div className="comment-replies">{thread.replies.map((reply) => <CommentEntry key={reply.id} comment={reply} rootId={thread.root.id} busy={busy} onReply={onReply} onEdit={onEdit} onDelete={onDelete} onReact={onReact} onResolve={onResolve} />)}</div>}
+      <CommentEntry taskId={taskId} comment={thread.root} rootId={thread.root.id} busy={busy} onReply={onReply} onEdit={onEdit} onDelete={onDelete} onReact={onReact} onResolve={onResolve} />
+      {thread.replies.length > 0 && <div className="comment-replies">{thread.replies.map((reply) => <CommentEntry key={reply.id} taskId={taskId} comment={reply} rootId={thread.root.id} busy={busy} onReply={onReply} onEdit={onEdit} onDelete={onDelete} onReact={onReact} onResolve={onResolve} />)}</div>}
     </>}
   </article>;
 }
 
-function CommentEntry({ comment, rootId, busy, onReply, onEdit, onDelete, onReact, onResolve }: {
+function CommentEntry({ taskId, comment, rootId, busy, onReply, onEdit, onDelete, onReact, onResolve }: {
+  taskId: string;
   comment: CommentRecord;
   rootId: string;
   busy: boolean;
   onReply: (rootId: string) => void;
-  onEdit: (comment: CommentRecord, body: string) => Promise<void>;
-  onDelete: (comment: CommentRecord) => Promise<void>;
-  onReact: (comment: CommentRecord, emoji: string, active: boolean) => Promise<void>;
-  onResolve: (comment: CommentRecord, resolved: boolean) => Promise<void>;
+  onEdit: (comment: CommentRecord, body: string) => Promise<boolean>;
+  onDelete: (comment: CommentRecord) => Promise<boolean>;
+  onReact: (comment: CommentRecord, emoji: string, active: boolean) => Promise<boolean>;
+  onResolve: (comment: CommentRecord, resolved: boolean) => Promise<boolean>;
 }) {
   const [editing, setEditing] = useState(false);
   const [editBody, setEditBody] = useState(comment.body);
+  const [editUploadBlocked, setEditUploadBlocked] = useState(false);
+  const editRef = useRef<HTMLTextAreaElement>(null);
   const [expanded, setExpanded] = useState(false);
   const long = comment.body.length > 1_200;
   const body = long && !expanded ? `${comment.body.slice(0, 1_200)}…` : comment.body;
@@ -5236,7 +5257,7 @@ function CommentEntry({ comment, rootId, busy, onReply, onEdit, onDelete, onReac
         </div></details>
       </header>
       {comment.historical?.quotedText && <blockquote className="historical-comment-quote">{comment.historical.quotedText}</blockquote>}
-      {comment.deletedAt ? <p className="comment-tombstone">Comment deleted</p> : editing ? <div className="comment-edit"><textarea value={editBody} onChange={(event) => setEditBody(event.target.value)} rows={4} autoFocus /><div><button className="button ghost" type="button" onClick={() => { setEditBody(comment.body); setEditing(false); }}>Cancel</button><button className="button primary" type="button" disabled={busy || !editBody.trim()} onClick={() => void onEdit(comment, editBody).then(() => setEditing(false))}>Save</button></div></div> : <><CommentMarkdown body={body} />{long && <button className="comment-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Show more"}</button>}</>}
+      {comment.deletedAt ? <p className="comment-tombstone">Comment deleted</p> : editing ? <div className="comment-edit"><CommentAttachmentAuthoring taskId={taskId} value={editBody} onChange={setEditBody} textareaRef={editRef} disabled={busy} onBlockingChange={setEditUploadBlocked}><textarea ref={editRef} value={editBody} onChange={(event) => setEditBody(event.target.value)} rows={4} autoFocus /></CommentAttachmentAuthoring><div><button className="button ghost" type="button" onClick={() => { setEditBody(comment.body); setEditing(false); }}>Cancel</button><button className="button primary" type="button" disabled={busy || editUploadBlocked || !editBody.trim()} onClick={() => void onEdit(comment, editBody).then((saved) => { if (saved) setEditing(false); })}>{editUploadBlocked ? "Upload pending" : "Save"}</button></div></div> : <><CommentMarkdown body={body} />{long && <button className="comment-expand" type="button" aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Show more"}</button>}</>}
       {!comment.deletedAt && <div className="comment-actions">
         {comment.reactions.map((reaction) => <button key={reaction.emoji} className={reaction.reactedByCurrentUser ? "active" : ""} type="button" disabled={!comment.permissions.canReact || busy} onClick={() => void onReact(comment, reaction.emoji, !reaction.reactedByCurrentUser)}>{reaction.emoji} <span>{reaction.count}</span></button>)}
         {comment.permissions.canReact && ["👍", "❤️", "🎉"].filter((emoji) => !comment.reactions.some((reaction) => reaction.emoji === emoji)).map((emoji) => <button className="reaction-add" key={emoji} type="button" disabled={busy} aria-label={`React ${emoji}`} onClick={() => void onReact(comment, emoji, true)}>{emoji}</button>)}

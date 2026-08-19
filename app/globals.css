@@ -901,6 +901,31 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .comment-edit { display: grid; gap: 7px; }
 .comment-edit textarea { width: 100%; min-height: 88px; padding: 8px; resize: vertical; border: 1px solid var(--border-strong); border-radius: 7px; outline: 0; background: var(--surface-subtle); color: var(--text); }
 .comment-edit > div { display: flex; justify-content: flex-end; gap: 6px; }
+.comment-attachment-authoring { position: relative; min-width: 0; }
+.comment-attachment-authoring.drag-active { background: color-mix(in srgb, var(--accent) 8%, transparent); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent) 36%, transparent); }
+.comment-attachment-controls { min-width: 0; min-height: 34px; display: flex; align-items: center; gap: 5px; padding: 3px 7px; border-top: 1px solid var(--border); color: var(--muted); }
+.comment-attachment-controls button { min-height: 28px; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
+.comment-attachment-controls button:hover { background: var(--hover); color: var(--text); }
+.comment-attachment-controls button:disabled { opacity: .5; cursor: default; }
+.comment-attachment-button { width: 28px; display: grid; place-items: center; }
+.comment-gallery-button { max-width: 190px; overflow: hidden; padding: 0 7px; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.comment-attachment-controls > span { min-width: 0; overflow: hidden; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.comment-attachment-gallery { min-width: 0; min-height: 38px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px; padding: 5px 7px; border-top: 1px solid var(--border); background: var(--surface-subtle); color: var(--muted); font-size: 10px; }
+.comment-attachment-gallery select { min-width: 0; width: 100%; height: 30px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text-secondary); text-overflow: ellipsis; }
+.comment-attachment-gallery > button:not(.button) { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 5px; background: var(--surface); color: var(--muted); cursor: pointer; }
+.comment-attachment-drop { min-height: 42px; display: grid; place-items: center; margin: 5px 7px; border: 1px dashed color-mix(in srgb, var(--accent) 52%, var(--border)); border-radius: 6px; color: var(--accent); font-size: 10px; }
+.comment-attachment-uploads { min-width: 0; max-height: 186px; display: grid; gap: 4px; padding: 5px 7px; overflow-y: auto; border-top: 1px solid var(--border); }
+.comment-attachment-uploads article { min-width: 0; min-height: 42px; display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 7px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); }
+.comment-attachment-uploads article[data-upload-state="failed"], .comment-attachment-uploads article[data-upload-state="canceled"] { border-color: color-mix(in srgb, var(--danger) 28%, var(--border)); }
+.comment-upload-icon { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 5px; background: var(--raised); color: var(--muted); }
+.comment-attachment-uploads article > div:nth-child(2) { min-width: 0; display: grid; gap: 1px; }
+.comment-attachment-uploads b, .comment-attachment-uploads small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.comment-attachment-uploads b { color: var(--text-secondary); font-size: 10px; font-weight: 560; }
+.comment-attachment-uploads small { color: var(--muted); font-size: 9px; }
+.comment-attachment-uploads progress { width: min(200px, 100%); height: 3px; accent-color: var(--accent); }
+.comment-upload-actions { display: flex; align-items: center; gap: 2px; }
+.comment-upload-actions button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 5px; background: transparent; color: var(--muted); cursor: pointer; }
+.comment-upload-actions button:hover { background: var(--hover); color: var(--text); }
 .comment-composer { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 9px; padding-top: 4px; }
 .comment-composer-box { overflow: hidden; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); }
 .comment-composer-box:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 9%, transparent); }
@@ -1220,6 +1245,16 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .comment-menu > summary { width: 40px; height: 40px; opacity: 1; }
   .comment-actions button { min-height: 36px; }
   .comment-toolbar button { width: 40px; height: 40px; }
+  .comment-attachment-controls { min-height: 48px; flex-wrap: wrap; }
+  .comment-attachment-controls button { min-height: 44px; }
+  .comment-attachment-button { width: 44px; }
+  .comment-gallery-button { max-width: calc(100% - 58px); }
+  .comment-attachment-controls > span { flex-basis: 100%; padding: 0 4px 4px; }
+  .comment-attachment-gallery { grid-template-columns: minmax(0, 1fr); padding: 7px; }
+  .comment-attachment-gallery select, .comment-attachment-gallery .button { min-height: 44px; }
+  .comment-attachment-gallery > button:not(.button) { width: 44px; height: 44px; }
+  .comment-attachment-uploads article { min-height: 58px; grid-template-columns: 44px minmax(0, 1fr) auto; }
+  .comment-upload-icon, .comment-upload-actions button { width: 44px; height: 44px; }
   .comment-composer-actions { flex-wrap: wrap; }
   .comment-composer-actions > span { display: none; }
   .comment-composer-actions > .button { min-height: 40px; margin-left: auto; }

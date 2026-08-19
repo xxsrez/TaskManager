@@ -515,6 +515,15 @@ comment write/delete не оставляет dangling edge. Projections публ
 opaque ref и presentation, а reconciliation сравнивает bounded body/index
 sets без body, filename, object key или existence detail.
 
+Browser authoring вынесен в общий root/reply/edit wrapper над существующим XHR
+Attachment upload primitive. Он держит per-draft upload state и независимый
+stable attachment idempotency key, вставляет opaque image/file token только
+после ready response и сохраняет в `localStorage` только body через ключ current
+User + Task + optional root thread. Поэтому reload не повышает pending upload до
+ready, switch thread отменяет только текущую upload-сессию, а готовый удалённый
+из body token оставляет Attachment видимым в Task gallery. Browser read renderer
+остаётся отдельным срезом.
+
 Append-only change history запрашивается независимо через
 `/api/tasks/{id}/activity`. Repository сначала разрешает текущую Task ACL, затем
 читает descending keyset page `(created_at, id)` и отдельный count. Native

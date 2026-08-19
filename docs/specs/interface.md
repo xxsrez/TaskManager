@@ -489,6 +489,23 @@ List повторяет плотную grouped-list модель Linear.
 - Root composer и reply composer сохраняют local draft по
   current User + Task, поддерживают `Cmd/Ctrl+Enter`, явный submit, retry без
   дублей и кнопки базового Markdown-like форматирования.
+- Root/reply composer и edit собственного native Comment используют одинаковый
+  attachment authoring path: paperclip, выбор ready Task file,
+  `Cmd/Ctrl+Shift+A`, multi-file picker, drop и clipboard paste. Raster image
+  вставляется block token, generic file — downloadable link с filename-derived
+  label в текущую позицию курсора; focus возвращается в editor.
+- Upload queue показывает per-file queued/uploading/processing/ready/failed,
+  progress, cancel, retry и remove-from-draft. Submit недоступен, пока любой
+  связанный upload не ready и не удалён; partial success не скрывает failed
+  files. Upload retry сохраняет attachment idempotency key независимо от
+  comment idempotency key. Удаление ready token или abandon draft не удаляет
+  Attachment из Task gallery.
+- Ready refs сохраняются только в draft current User + Task + optional root
+  thread; pending upload не восстанавливается как ready. Успешный submit очищает
+  только отправленный draft. Viewer не получает authoring/edit controls, а
+  revoked Editor получает server mutation error. На touch picker/gallery
+  остаются полным путём; controls не меньше 44 px и long/Unicode filenames не
+  создают horizontal overflow.
 - Root thread показывает author/avatar, timestamps, body, reactions,
   resolve/reopen и actions по permissions. Replies всегда одноуровневые;
   resolved thread свёрнут, permalink прокручивает и подсвечивает comment,
@@ -900,7 +917,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
-| Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates и mentions; server/domain Comment refs используют существующие Task attachments, browser authoring/rendering поставляются отдельным UI-срезом; Task-file upload после create имеет честный partial result |
+| Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates и mentions; Comment authoring использует существующие Task attachments, browser rendering поставляется отдельным UI-срезом; Task-file upload после create имеет честный partial result |
 | Issue relations | Grouped blocking/related/duplicate links и explicit add/edit/remove | Берём ядро | Без auto-related из description/comments в первом writable slice |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |

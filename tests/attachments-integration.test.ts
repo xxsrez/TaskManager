@@ -202,8 +202,8 @@ test("native attachments use private opaque R2 keys, verified metadata, and scop
   assert.equal(editorUpload.uploaderUserId, editor.id);
 });
 
-test("attachment reads follow current Task ACL and never leak existence", async () => {
-  const { owner, viewer, outsider, project, task } = await setupSharedTask("Attachment ACL");
+test("attachment reads and uploads follow current Task ACL and never leak existence", async () => {
+  const { owner, editor, viewer, outsider, project, task } = await setupSharedTask("Attachment ACL");
   const attachment = await createAttachment(owner, task.id, {
     body: new TextEncoder().encode("%PDF-1.7\nprivate\n%%EOF"),
     filename: "private\"\r\nX-Evil: yes.pdf",
@@ -240,6 +240,20 @@ test("attachment reads follow current Task ACL and never leak existence", async 
   await revokeAccess(owner, grant.grantId);
   await assert.rejects(
     getAttachmentContent(viewer, task.id, attachment.publicId, { preview: false }),
+    NotFoundError,
+  );
+
+  const editorGrant = (await getSnapshot(owner)).collaborators.find(
+    (item) => item.resourceId === project.id && item.userId === editor.id,
+  )!;
+  await revokeAccess(owner, editorGrant.grantId);
+  await assert.rejects(
+    createAttachment(editor, task.id, {
+      body: new TextEncoder().encode("%PDF-1.7\nrevoked\n%%EOF"),
+      filename: "revoked.pdf",
+      claimedMediaType: "application/pdf",
+      idempotencyKey: "revoked-editor-upload",
+    }),
     NotFoundError,
   );
 });
