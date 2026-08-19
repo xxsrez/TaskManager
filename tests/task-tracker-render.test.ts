@@ -1929,6 +1929,41 @@ test("Task description renderer keeps fenced and escaped native refs literal", (
   assert.doesNotMatch(markup, /class="task-description-file-link/);
 });
 
+test("Task description renderer shares complex inline-code attachment boundaries with validation", () => {
+  const literal = "[literal.pdf](attachment:v1:literal-reference-123)";
+  const active = "[active.pdf](attachment:v1:active-reference-456)";
+  const unclosed = "[unclosed.pdf](attachment:v1:unclosed-reference-789)";
+  const description = [
+    `\`\`Example with one \` inside: ${literal}\`\` then ${active}`,
+    `Unclosed inline \`${unclosed}`,
+    "```markdown",
+    literal,
+    "~~~",
+    literal,
+  ].join("\n");
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        tasks: snapshot.tasks.map((task) => ({ ...task, description })),
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: "task-1",
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.equal((markup.match(/Loading literal\.pdf/g) ?? []).length, 0);
+  assert.equal((markup.match(/Loading active\.pdf/g) ?? []).length, 1);
+  assert.equal((markup.match(/Loading unclosed\.pdf/g) ?? []).length, 1);
+  assert.match(markup, /<code>Example with one ` inside: \[literal\.pdf\]/);
+  assert.equal((markup.match(/<pre><code>/g) ?? []).length, 1);
+  assert.equal((markup.match(/\[literal\.pdf\]\(attachment:v1:literal-reference-123\)/g) ?? []).length, 3);
+});
+
 test("task detail timestamps render in the authenticated user timezone", () => {
   const originalTimeZone = process.env.TZ;
   process.env.TZ = "UTC";

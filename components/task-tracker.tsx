@@ -124,6 +124,7 @@ import {
   parseTaskAttachmentReferences,
   parseTaskFileToken,
   parseTaskImageLine,
+  parseTaskMarkdownInlineTokens,
   parseTaskMarkdownLines,
 } from "@/lib/task-description-format";
 import {
@@ -4813,7 +4814,29 @@ function renderMarkdownInline(
   taskId?: string,
   attachments?: Map<string, PublicAttachmentRecord> | null,
 ) {
-  const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
+  const nodes: React.ReactNode[] = [];
+  for (const token of parseTaskMarkdownInlineTokens(value)) {
+    if (token.kind === "code") {
+      nodes.push(<code key={token.start}>{token.text}</code>);
+    } else {
+      nodes.push(...renderMarkdownInlineText(
+        token.text,
+        token.start,
+        taskId,
+        attachments,
+      ));
+    }
+  }
+  return nodes;
+}
+
+function renderMarkdownInlineText(
+  value: string,
+  keyOffset: number,
+  taskId?: string,
+  attachments?: Map<string, PublicAttachmentRecord> | null,
+) {
+  const pattern = /(\[[^\]]+\]\([^)]+\)|\*\*[^*]+\*\*|\*[^*]+\*)/g;
   const nodes: React.ReactNode[] = [];
   let offset = 0;
   for (const match of value.matchAll(pattern)) {
@@ -4827,7 +4850,7 @@ function renderMarkdownInline(
       if (nativeFile) {
         nodes.push(
           <TaskDescriptionFileLink
-            key={match.index}
+            key={keyOffset + match.index}
             taskId={taskId!}
             attachment={attachments === null || attachments === undefined
               ? undefined
@@ -4837,11 +4860,10 @@ function renderMarkdownInline(
         );
       } else if (!escaped) {
         const href = safeMarkdownHref(link[2]);
-        nodes.push(href ? <a key={match.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : token);
+        nodes.push(href ? <a key={keyOffset + match.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : token);
       } else nodes.push(token);
-    } else if (token.startsWith("`")) nodes.push(<code key={match.index}>{token.slice(1, -1)}</code>);
-    else if (token.startsWith("**")) nodes.push(<strong key={match.index}>{token.slice(2, -2)}</strong>);
-    else nodes.push(<em key={match.index}>{token.slice(1, -1)}</em>);
+    } else if (token.startsWith("**")) nodes.push(<strong key={keyOffset + match.index}>{token.slice(2, -2)}</strong>);
+    else nodes.push(<em key={keyOffset + match.index}>{token.slice(1, -1)}</em>);
     offset = match.index + token.length;
   }
   if (offset < value.length) nodes.push(value.slice(offset));

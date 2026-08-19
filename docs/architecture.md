@@ -458,6 +458,11 @@ file link, лениво читает ACL-scoped metadata и строит private
 Validator и renderer используют один Task Markdown fence scanner для backtick/
 tilde fences с 0–3 leading spaces; escaped native syntax остаётся literal в
 обоих путях и не создаёт Attachment edge.
+Inline code также проходит через общий tokenizer: opener/closer — backtick-runs
+одинаковой длины, а незакрытый inline opener остаётся обычным Markdown text и
+не скрывает исполняемый reference от validator. Незакрытый fenced block,
+напротив, одинаково в validator и renderer поглощает остаток description как
+code, поэтому неоднозначный ввод не расходится между write и read paths.
 
 Agent REST повторяет эту boundary через `/api/agent/v1/tasks/{ref}/attachments`:
 metadata использует Task-bound keyset cursor, upload читает raw body только после

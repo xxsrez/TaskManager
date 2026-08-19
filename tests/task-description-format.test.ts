@@ -98,6 +98,46 @@ test("Task Markdown fences and escapes have one executable-reference contract", 
   );
 });
 
+test("Task Markdown keeps complex inline code literal while validating adjacent executable refs", () => {
+  const literalRef = "literal-reference-123";
+  const activeRef = "active-reference-456";
+  const literal = `[literal.pdf](attachment:v1:${literalRef})`;
+  const active = `[active.pdf](attachment:v1:${activeRef})`;
+  const description = `\`\`Example with one \` inside: ${literal}\`\` then ${active}`;
+
+  assert.deepEqual(
+    parseTaskAttachmentReferences(description).map((reference) => reference.ref),
+    [activeRef],
+  );
+  assert.equal(taskDescriptionUsesAttachment(description, literalRef), false);
+  assert.equal(taskDescriptionUsesAttachment(description, activeRef), true);
+  assert.equal(hasMalformedTaskAttachmentReference(description), false);
+});
+
+test("Task Markdown handles unclosed code delimiters deterministically and fail-safe", () => {
+  const token = "[literal.pdf](attachment:v1:literal-reference-123)";
+  const unclosedFence = [
+    "```markdown",
+    token,
+    "~~~",
+    token,
+  ].join("\n");
+
+  assert.deepEqual(parseTaskAttachmentReferences(unclosedFence), []);
+  assert.equal(hasMalformedTaskAttachmentReference(unclosedFence), false);
+  assert.deepEqual(
+    parseTaskMarkdownLines(unclosedFence).map((line) => line.kind),
+    ["fence", "code", "code", "code"],
+  );
+
+  const unclosedInline = `Unclosed \`${token}`;
+  assert.deepEqual(
+    parseTaskAttachmentReferences(unclosedInline).map((reference) => reference.ref),
+    ["literal-reference-123"],
+  );
+  assert.equal(taskDescriptionUsesAttachment(unclosedInline, "literal-reference-123"), true);
+});
+
 test("native Task file links require a bounded label and exact versioned syntax", () => {
   const ref = "4d9701e5-fdb5-41f2-9538-fc5e43256ec9";
   assert.equal(hasMalformedTaskAttachmentReference(`[PDF](attachment:v1:${ref})`), false);

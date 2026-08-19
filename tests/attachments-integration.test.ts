@@ -490,6 +490,93 @@ test("Task descriptions accept ready same-Task image embeds and file links and b
   );
 });
 
+test("UI repository, Agent, and MCP preserve literal attachment examples without lookup", async () => {
+  const { owner, task } = await setupSharedTask("Description code literals");
+  const guessed = "guessed-reference";
+  const fileToken = `[missing.pdf](attachment:v1:${guessed})`;
+  const imageToken = `![missing](attachment:v1:${guessed})`;
+  const description = [
+    `Inline \`\`example with one \` inside: ${fileToken}\`\` remains code.`,
+    "~~~markdown",
+    imageToken,
+    "~~~~",
+    "   ```ts",
+    fileToken,
+    "   ```",
+    `\\${fileToken}`,
+    "```markdown",
+    fileToken,
+  ].join("\n");
+
+  let detail = await getTask(owner, task.id);
+  detail = await updateTask(owner, detail.id, {
+    version: detail.version,
+    description,
+  });
+  assert.equal(detail.description, description);
+
+  const agentDetail = await updateAgentTask(owner, detail.publicId, {
+    version: detail.version,
+    description,
+  });
+  assert.equal(agentDetail.description, description);
+
+  const credential = await issueApiCredential(owner, {
+    name: "description-code-literals",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const mcpHeaders = {
+    authorization: `Bearer ${credential.token}`,
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  const mcpUpdate = await mcpPost(new Request("https://example.test/api/mcp", {
+    method: "POST",
+    headers: mcpHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 269,
+      method: "tools/call",
+      params: {
+        name: "update_task",
+        arguments: {
+          taskRef: detail.publicId,
+          version: agentDetail.version,
+          description,
+        },
+      },
+    }),
+  }));
+  const mcpUpdated = await mcpResult(mcpUpdate);
+  assert.equal(
+    (mcpUpdated.result.structuredContent.data as { description: string }).description,
+    description,
+  );
+
+  const currentVersion = (mcpUpdated.result.structuredContent.data as { version: number }).version;
+  const rejected = await mcpPost(new Request("https://example.test/api/mcp", {
+    method: "POST",
+    headers: mcpHeaders,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 270,
+      method: "tools/call",
+      params: {
+        name: "update_task",
+        arguments: {
+          taskRef: detail.publicId,
+          version: currentVersion,
+          description: `Literal \`${fileToken}\` next to active ${fileToken}`,
+        },
+      },
+    }),
+  }));
+  const rejectedResult = await mcpResult(rejected);
+  assert.equal(rejectedResult.result.isError, true);
+  assert.doesNotMatch(JSON.stringify(rejectedResult), /guessed-reference/);
+});
+
 test("binary HTTP routes authenticate before bounded upload and preserve private range delivery", async () => {
   const { owner, viewer, outsider, task } = await setupSharedTask("Attachment routes");
   const routeContext = { params: Promise.resolve({ id: task.id }) };

@@ -30,6 +30,13 @@ export type TaskMarkdownLine = {
   end: number;
 };
 
+export type TaskMarkdownInlineToken = {
+  text: string;
+  kind: "text" | "code";
+  start: number;
+  end: number;
+};
+
 const attachmentRef = "([A-Za-z0-9_-]{8,128})";
 const nativeImagePattern = new RegExp(
   `!\\[([^\\]\\n]{1,${TASK_ATTACHMENT_LABEL_MAX_LENGTH}})\\]\\(attachment:v1:${attachmentRef}(?:\\s+"([^"\\n]*)")?\\)`,
@@ -128,6 +135,51 @@ export function parseTaskMarkdownLines(description: string): TaskMarkdownLine[] 
       result.push({ text, kind: "text", start, end });
     }
     offset = end + 1;
+  }
+  return result;
+}
+
+export function parseTaskMarkdownInlineTokens(value: string): TaskMarkdownInlineToken[] {
+  const result: TaskMarkdownInlineToken[] = [];
+  let textStart = 0;
+  let cursor = 0;
+  while (cursor < value.length) {
+    if (value[cursor] !== "`" || isTaskMarkdownEscaped(value, cursor)) {
+      cursor += 1;
+      continue;
+    }
+    let openerEnd = cursor + 1;
+    while (openerEnd < value.length && value[openerEnd] === "`") openerEnd += 1;
+    const markerLength = openerEnd - cursor;
+    const closer = findInlineCodeCloser(value, openerEnd, markerLength);
+    if (!closer) {
+      cursor = openerEnd;
+      continue;
+    }
+    if (cursor > textStart) {
+      result.push({
+        text: value.slice(textStart, cursor),
+        kind: "text",
+        start: textStart,
+        end: cursor,
+      });
+    }
+    result.push({
+      text: value.slice(openerEnd, closer.start),
+      kind: "code",
+      start: cursor,
+      end: closer.end,
+    });
+    cursor = closer.end;
+    textStart = cursor;
+  }
+  if (textStart < value.length) {
+    result.push({
+      text: value.slice(textStart),
+      kind: "text",
+      start: textStart,
+      end: value.length,
+    });
   }
   return result;
 }
@@ -233,23 +285,27 @@ function maskInlineCode(
   start: number,
   end: number,
 ) {
+  const line = description.slice(start, end);
+  for (const token of parseTaskMarkdownInlineTokens(line)) {
+    if (token.kind === "code") {
+      mask(characters, start + token.start, start + token.end);
+    }
+  }
+}
+
+function findInlineCodeCloser(value: string, start: number, markerLength: number) {
   let cursor = start;
-  while (cursor < end) {
-    if (description[cursor] !== "`") {
+  while (cursor < value.length) {
+    if (value[cursor] !== "`" || isTaskMarkdownEscaped(value, cursor)) {
       cursor += 1;
       continue;
     }
     let runEnd = cursor + 1;
-    while (runEnd < end && description[runEnd] === "`") runEnd += 1;
-    const delimiter = description.slice(cursor, runEnd);
-    const close = description.indexOf(delimiter, runEnd);
-    if (close === -1 || close >= end) {
-      cursor = runEnd;
-      continue;
-    }
-    mask(characters, cursor, close + delimiter.length);
-    cursor = close + delimiter.length;
+    while (runEnd < value.length && value[runEnd] === "`") runEnd += 1;
+    if (runEnd - cursor === markerLength) return { start: cursor, end: runEnd };
+    cursor = runEnd;
   }
+  return null;
 }
 
 function mask(characters: string[], start: number, end: number) {

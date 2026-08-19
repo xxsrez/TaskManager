@@ -331,6 +331,13 @@ delivery URL не сохраняются. Repository разбирает толь
 delete не создал битую ссылку. Delete симметрично сверяет точную current Task
 version/description и отклоняется, пока актуальный image token или file link
 ссылается на Attachment. Literal inline/fenced code reference не создаёт edge.
+Inline code определяется общим для validator и renderer scanner по паре
+backtick-runs одинаковой длины; backtick-run другой длины внутри span остаётся
+literal content. Незакрытый inline delimiter не открывает code span, поэтому
+следующий native token остаётся исполняемым и проходит обычную проверку. Fence
+с backticks или tildes и 0–3 leading spaces закрывается только тем же marker с
+длиной не меньше opening marker и без trailing info; незакрытый fence
+детерминированно трактует остаток description как code и так же рендерится.
 Alt/label обязательны и bounded, caption optional; это пользовательский
 Markdown text. Один Attachment может встречаться несколько раз и по-прежнему
 имеет один lifecycle record.
