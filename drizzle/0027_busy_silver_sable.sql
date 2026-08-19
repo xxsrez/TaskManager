@@ -100,4 +100,26 @@ BEGIN
   SELECT DISTINCT tl.task_id, 'task_detail'
   FROM labels l JOIN task_labels tl ON tl.label_id = l.id
   WHERE l.group_id = OLD.id;
+END;--> statement-breakpoint
+CREATE TRIGGER `workspace_sync_label_groups_catalog_insert`
+AFTER INSERT ON `label_groups`
+BEGIN
+  INSERT INTO workspace_sync_sequences (audience_user_id, last_sequence)
+  VALUES (NEW.owner_user_id, 1)
+  ON CONFLICT(audience_user_id) DO UPDATE SET last_sequence = last_sequence + 1;
+  INSERT INTO workspace_change_events
+    (audience_user_id, sequence, entity_type, entity_id, operation)
+  SELECT NEW.owner_user_id, last_sequence, 'label_group', NEW.id, 'upsert'
+  FROM workspace_sync_sequences WHERE audience_user_id = NEW.owner_user_id;
+END;--> statement-breakpoint
+CREATE TRIGGER `workspace_sync_label_groups_catalog_update`
+AFTER UPDATE ON `label_groups`
+BEGIN
+  INSERT INTO workspace_sync_sequences (audience_user_id, last_sequence)
+  VALUES (NEW.owner_user_id, 1)
+  ON CONFLICT(audience_user_id) DO UPDATE SET last_sequence = last_sequence + 1;
+  INSERT INTO workspace_change_events
+    (audience_user_id, sequence, entity_type, entity_id, operation)
+  SELECT NEW.owner_user_id, last_sequence, 'label_group', NEW.id, 'upsert'
+  FROM workspace_sync_sequences WHERE audience_user_id = NEW.owner_user_id;
 END;

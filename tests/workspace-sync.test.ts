@@ -9,6 +9,7 @@ import {
 } from "../lib/workspace-sync-contract";
 import {
   createProject,
+  createLabelGroup,
   createRelease,
   createSavedView,
   createTask,
@@ -20,6 +21,7 @@ import {
   revokeAccess,
   transferProjectOwnership,
   updateTask,
+  updateLabelGroup,
 } from "../lib/repository";
 import { getWorkspaceSync } from "../lib/workspace-sync";
 import type { AppSnapshot, WorkspaceSyncResponse } from "../lib/types";
@@ -207,6 +209,64 @@ test("projects, releases, and saved views share the same create and delete feed"
   assert.deepEqual(removed.changes.views.remove, [view.id]);
   assert.deepEqual(removed.changes.releases.remove, [release.id]);
   assert.deepEqual(removed.changes.projects.remove, [project.id]);
+});
+
+test("owner Label Group catalog mutations advance bounded incremental sync", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-label-group-owner",
+    email: "sync-label-group-owner@example.test",
+  });
+  const outsider = await getOrCreateUser({
+    ...outsiderActor,
+    providerAccountKey: "sync-label-group-outsider",
+    email: "sync-label-group-outsider@example.test",
+  });
+  const initial = await getSnapshot(owner);
+  const outsiderInitial = await getSnapshot(outsider);
+
+  let catalog = await createLabelGroup(owner, { name: "Synchronized group" });
+  let group = catalog.find((item) => item.name === "Synchronized group")!;
+  const created = await getWorkspaceSync(owner, initial.syncCursor!);
+  assert.notEqual(created.cursor, initial.syncCursor);
+  assert.equal(created.resetRequired, false);
+  assert.deepEqual(created.changes.tasks, { upsert: [], remove: [] });
+  assert.deepEqual(created.changes.projects, { upsert: [], remove: [] });
+  assert.equal(created.changes.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+  let client = applyWorkspaceSync(initial, created);
+  assert.equal(client.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+
+  catalog = await updateLabelGroup(owner, group.id, {
+    action: "update",
+    version: group.version,
+    name: "Renamed synchronized group",
+  });
+  group = catalog.find((item) => item.id === group.id)!;
+  const renamed = await getWorkspaceSync(owner, created.cursor);
+  assert.notEqual(renamed.cursor, created.cursor);
+  assert.equal(renamed.changes.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+  client = applyWorkspaceSync(client, renamed);
+  assert.equal(client.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+
+  catalog = await updateLabelGroup(owner, group.id, { action: "archive", version: group.version });
+  group = catalog.find((item) => item.id === group.id)!;
+  const archived = await getWorkspaceSync(owner, renamed.cursor);
+  assert.notEqual(archived.cursor, renamed.cursor);
+  assert.ok(archived.changes.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
+  client = applyWorkspaceSync(client, archived);
+  assert.ok(client.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
+
+  catalog = await updateLabelGroup(owner, group.id, { action: "restore", version: group.version });
+  group = catalog.find((item) => item.id === group.id)!;
+  const restored = await getWorkspaceSync(owner, archived.cursor);
+  assert.notEqual(restored.cursor, archived.cursor);
+  assert.equal(restored.changes.labelGroups?.find((item) => item.id === group.id)?.archivedAt, null);
+  client = applyWorkspaceSync(client, restored);
+  assert.equal(client.labelGroups?.find((item) => item.id === group.id)?.archivedAt, null);
+
+  const outsiderSync = await getWorkspaceSync(outsider, outsiderInitial.syncCursor!);
+  assert.equal(outsiderSync.cursor, outsiderInitial.syncCursor);
+  assert.deepEqual(outsiderSync.changes.labelGroups, []);
 });
 
 test("task label and relation updates emit bounded Label context with lazy detail invalidations", async () => {

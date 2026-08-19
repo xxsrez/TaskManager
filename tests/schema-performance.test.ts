@@ -500,6 +500,8 @@ test("workspace synchronization has per-principal ordering and mutation triggers
     "workspace_sync_task_relations_insert",
     "workspace_sync_labels_update",
     "workspace_sync_labels_delete",
+    "workspace_sync_label_groups_catalog_insert",
+    "workspace_sync_label_groups_catalog_update",
     "workspace_sync_lazy_invalidation_fanout",
     "workspace_sync_comments_insert",
     "workspace_sync_comments_update",

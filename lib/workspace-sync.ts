@@ -102,6 +102,7 @@ export async function getWorkspaceSync(
     projectIds: [...touched.project],
     releaseIds: [...touched.release],
     viewIds: [...touched.saved_view],
+    labelGroupIds: [...touched.label_group],
     invalidatedTaskIds,
   });
   return {
@@ -154,6 +155,7 @@ type IncrementalEntity =
   | "project"
   | "release"
   | "saved_view"
+  | "label_group"
   | "task_detail"
   | "task_comments"
   | "task_activity"
@@ -165,6 +167,7 @@ function isIncrementalEntity(value: string): value is IncrementalEntity {
     value === "project" ||
     value === "release" ||
     value === "saved_view" ||
+    value === "label_group" ||
     value === "task_detail" ||
     value === "task_comments" ||
     value === "task_activity" ||
@@ -178,6 +181,7 @@ function coalesceTouchedEntities(rows: ChangeRow[]) {
     project: new Set<string>(),
     release: new Set<string>(),
     saved_view: new Set<string>(),
+    label_group: new Set<string>(),
     task_detail: new Set<string>(),
     task_comments: new Set<string>(),
     task_activity: new Set<string>(),

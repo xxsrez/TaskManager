@@ -563,6 +563,65 @@ test("Label Groups enforce one atomic value across ACL, bulk, Agent, and concurr
   ).bind(second.id, small.id, medium.id).first<{ count: number }>())!.count), 0);
 });
 
+test("an assigned Label can move to an empty group without duplicating the DB guard", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "label-regroup-owner-account",
+    email: "label-regroup-owner@example.test",
+  });
+  const source = (await createLabelGroup(owner, { name: "Regroup source" }))
+    .find((group) => group.name === "Regroup source")!;
+  const target = (await createLabelGroup(owner, { name: "Regroup target" }))
+    .find((group) => group.name === "Regroup target")!;
+  let labels = await createLabel(owner, { name: "Moving Label", groupId: source.id });
+  labels = await createLabel(owner, { name: "Target Label", groupId: target.id });
+  const moving = labels.find((label) => label.name === "Moving Label")!;
+  const targetLabel = labels.find((label) => label.name === "Target Label")!;
+  await createProject(owner, { name: "Live regroup project", taskCode: "LR" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Live regroup project",
+  )!;
+  const task = await createTask(owner, {
+    title: "Live regroup",
+    projectId: project.id,
+    labelIds: [moving.id],
+  });
+
+  labels = await updateLabel(owner, moving.id, {
+    action: "update",
+    version: moving.version,
+    groupId: target.id,
+  });
+  const regrouped = labels.find((label) => label.id === moving.id)!;
+  assert.equal(regrouped.groupId, target.id);
+  const guardRows = await database.prepare(
+    "SELECT task_id, group_id, label_id FROM task_label_group_values WHERE task_id = ?",
+  ).bind(task.id).all<{ task_id: string; group_id: string; label_id: string }>();
+  assert.deepEqual(guardRows.results, [
+    { task_id: task.id, group_id: target.id, label_id: moving.id },
+  ]);
+
+  await assert.rejects(
+    updateLabel(owner, regrouped.id, {
+      action: "update",
+      version: regrouped.version,
+      name: targetLabel.name,
+    }),
+    /active Label with this name already exists/i,
+  );
+  labels = await createLabel(owner, { name: "Independent regroup Label" });
+  const independent = labels.find((label) => label.name === "Independent regroup Label")!;
+  await setTaskLabel(owner, task.id, { labelId: independent.id, active: true });
+  await assert.rejects(
+    updateLabel(owner, independent.id, {
+      action: "update",
+      version: independent.version,
+      groupId: target.id,
+    }),
+    /group conflicts|at most one Label/i,
+  );
+});
+
 test("task route maps authentication and validation boundaries", async () => {
   configureActorResolverForTests(async () => null);
   const unauthenticated = await createTaskRoute(new Request("https://example.test/api/tasks", {

@@ -914,6 +914,7 @@ export type WorkspaceSyncProjectionInput = {
   projectIds: readonly string[];
   releaseIds: readonly string[];
   viewIds: readonly string[];
+  labelGroupIds: readonly string[];
   invalidatedTaskIds: readonly string[];
 };
 
@@ -944,7 +945,8 @@ export async function getWorkspaceSyncProjection(
   const projectPlaceholders = sqlPlaceholders(input.projectIds);
   const releasePlaceholders = sqlPlaceholders(input.releaseIds);
   const viewPlaceholders = sqlPlaceholders(input.viewIds);
-  const [tasks, projects, releases, views] = await db.batch<DbRow>([
+  const labelGroupPlaceholders = sqlPlaceholders(input.labelGroupIds);
+  const [tasks, projects, releases, views, catalogLabelGroups] = await db.batch<DbRow>([
     db
       .prepare(
         `WITH scoped AS (
@@ -1068,6 +1070,13 @@ export async function getWorkspaceSyncProjection(
          SELECT * FROM scoped WHERE access_role IS NOT NULL`,
       )
       .bind(user.id, user.id, user.id, user.id, ...input.viewIds),
+    db
+      .prepare(
+        `SELECT * FROM label_groups
+         WHERE owner_user_id = ? AND id IN (${labelGroupPlaceholders})
+         ORDER BY position, lower(name), id`,
+      )
+      .bind(user.id, ...input.labelGroupIds),
   ]);
 
   const taskRecords = tasks.results.map(mapTask);
@@ -1086,6 +1095,7 @@ export async function getWorkspaceSyncProjection(
        ORDER BY tl.task_id, lower(l.name), l.id`,
     ).bind(...accessibleInvalidatedTaskIds).all<DbRow>()
     : { results: [] as DbRow[] };
+  const taskLabelGroups = await loadLabelGroupsForLabels(labelContext.results);
   return {
     tasks: taskRecords.filter((task) => requestedTasks.has(task.id)),
     projects: projects.results.map(mapProject),
@@ -1095,7 +1105,10 @@ export async function getWorkspaceSyncProjection(
       String(row.label_id),
       mapLabel({ ...row, id: row.label_id }),
     ])).values()],
-    labelGroups: await loadLabelGroupsForLabels(labelContext.results),
+    labelGroups: [...new Map([
+      ...catalogLabelGroups.results.map(mapLabelGroup),
+      ...taskLabelGroups,
+    ].map((group) => [group.id, group])).values()],
     taskLabels: labelContext.results.map(mapTaskLabel),
     labelContextTaskIds: accessibleInvalidatedTaskIds,
     accessibleTaskIds: taskRecords.map((task) => task.id),
@@ -1161,6 +1174,7 @@ export async function getTaskDetail(
         projectIds: [],
         releaseIds: [],
         viewIds: [],
+        labelGroupIds: [],
         invalidatedTaskIds: [],
       })).tasks
     : [];
@@ -3777,20 +3791,14 @@ export async function updateLabel(
           const count = Number(conflict?.count ?? 0);
           if (count > 0) throw new ConflictError(`Moving this Label would create group conflicts on ${count} Task${count === 1 ? "" : "s"}`);
         }
-        const db = getD1();
-        const results = await db.batch([
-          db.prepare("DELETE FROM task_label_group_values WHERE label_id = ?").bind(labelId),
-          db.prepare(
-            `UPDATE labels SET group_id = ?, name = ?, color = ?, description = ?,
-               version = version + 1, updated_at = ?
-             WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL`,
-          ).bind(nextGroup?.id ?? null, name, color, description, now, labelId, currentUser.id, version),
-          ...(nextGroup ? [db.prepare(
-            `INSERT INTO task_label_group_values (task_id, group_id, label_id)
-             SELECT task_id, ?, label_id FROM task_labels WHERE label_id = ?`,
-          ).bind(nextGroup.id, labelId)] : []),
-        ]);
-        result = results[1]!;
+        // label_group_label_move_sync is the single authority for rebuilding
+        // the derived exclusivity guard. Keeping this as one UPDATE also makes
+        // the version check, conflict trigger, and guard rewrite atomic.
+        result = await getD1().prepare(
+          `UPDATE labels SET group_id = ?, name = ?, color = ?, description = ?,
+             version = version + 1, updated_at = ?
+           WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL`,
+        ).bind(nextGroup?.id ?? null, name, color, description, now, labelId, currentUser.id, version).run();
       } else {
         result = await getD1().prepare(
           `UPDATE labels SET name = ?, color = ?, description = ?,
@@ -3799,7 +3807,7 @@ export async function updateLabel(
         ).bind(name, color, description, now, labelId, currentUser.id, version).run();
       }
     } catch (error) {
-      translateLabelNameCollision(error);
+      translateLabelUpdateCollision(error);
     }
   } else {
     throw new ValidationError("Unsupported Label action");
@@ -4460,7 +4468,7 @@ function requiredLabelGroupId(value: unknown) {
 
 function translateLabelGroupNameCollision(error: unknown): never {
   if (error instanceof ValidationError) throw error;
-  if (error instanceof Error && /idx_label_groups_owner_name|unique/i.test(error.message)) {
+  if (error instanceof Error && /idx_label_groups_owner_name_active/i.test(error.message)) {
     throw new ValidationError("An active Label Group with this name already exists");
   }
   throw error;
@@ -4518,10 +4526,21 @@ function staleLabel() {
 
 function translateLabelNameCollision(error: unknown): never {
   if (error instanceof ValidationError) throw error;
-  if (error instanceof Error && /idx_labels_owner_name|unique/i.test(error.message)) {
+  if (error instanceof Error && /idx_labels_owner_name_active/i.test(error.message)) {
     throw new ValidationError("An active Label with this name already exists");
   }
   throw error;
+}
+
+function translateLabelUpdateCollision(error: unknown): never {
+  if (error instanceof ConflictError) throw error;
+  if (error instanceof Error && (
+    /at most one Label from each Label Group/i.test(error.message) ||
+    /task_label_group_values\.task_id.*task_label_group_values\.group_id/i.test(error.message)
+  )) {
+    throw new ConflictError("Moving this Label would create a Label Group conflict");
+  }
+  translateLabelNameCollision(error);
 }
 
 export async function createProject(
