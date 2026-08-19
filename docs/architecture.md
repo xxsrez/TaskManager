@@ -459,7 +459,8 @@ Validator и renderer используют один Task Markdown fence scanner 
 tilde fences с 0–3 leading spaces; escaped native syntax остаётся literal в
 обоих путях и не создаёт Attachment edge.
 Inline code также проходит через общий tokenizer: opener/closer — backtick-runs
-одинаковой длины, а незакрытый inline opener остаётся обычным Markdown text и
+одинаковой длины; preceding backslash не отменяет их delimiter-семантику.
+Незакрытый inline opener остаётся обычным Markdown text и
 не скрывает исполняемый reference от validator. Незакрытый fenced block,
 напротив, одинаково в validator и renderer поглощает остаток description как
 code, поэтому неоднозначный ввод не расходится между write и read paths.

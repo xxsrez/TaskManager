@@ -138,6 +138,20 @@ test("Task Markdown handles unclosed code delimiters deterministically and fail-
   assert.equal(taskDescriptionUsesAttachment(unclosedInline, "literal-reference-123"), true);
 });
 
+test("escaped backticks retain the established inline-code closing boundary", () => {
+  const midRef = "mid-reference-123";
+  const tailRef = "tail-reference-456";
+  const description = "`code \\` [mid](attachment:v1:" + midRef +
+    ")` [tail](attachment:v1:" + tailRef + ")";
+
+  assert.deepEqual(
+    parseTaskAttachmentReferences(description).map((reference) => reference.ref),
+    [midRef, tailRef],
+  );
+  assert.equal(taskDescriptionUsesAttachment(description, midRef), true);
+  assert.equal(taskDescriptionUsesAttachment(description, tailRef), true);
+});
+
 test("native Task file links require a bounded label and exact versioned syntax", () => {
   const ref = "4d9701e5-fdb5-41f2-9538-fc5e43256ec9";
   assert.equal(hasMalformedTaskAttachmentReference(`[PDF](attachment:v1:${ref})`), false);

@@ -144,7 +144,7 @@ export function parseTaskMarkdownInlineTokens(value: string): TaskMarkdownInline
   let textStart = 0;
   let cursor = 0;
   while (cursor < value.length) {
-    if (value[cursor] !== "`" || isTaskMarkdownEscaped(value, cursor)) {
+    if (value[cursor] !== "`") {
       cursor += 1;
       continue;
     }
@@ -296,7 +296,9 @@ function maskInlineCode(
 function findInlineCodeCloser(value: string, start: number, markerLength: number) {
   let cursor = start;
   while (cursor < value.length) {
-    if (value[cursor] !== "`" || isTaskMarkdownEscaped(value, cursor)) {
+    // Preserve the established Task Markdown contract: a preceding backslash
+    // does not prevent a same-length backtick run from closing inline code.
+    if (value[cursor] !== "`") {
       cursor += 1;
       continue;
     }

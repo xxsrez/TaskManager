@@ -492,6 +492,12 @@ test("Task descriptions accept ready same-Task image embeds and file links and b
 
 test("UI repository, Agent, and MCP preserve literal attachment examples without lookup", async () => {
   const { owner, task } = await setupSharedTask("Description code literals");
+  const tailAttachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\ntail\n%%EOF"),
+    filename: "tail.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "description-escaped-backtick-tail",
+  });
   const guessed = "guessed-reference";
   const fileToken = `[missing.pdf](attachment:v1:${guessed})`;
   const imageToken = `![missing](attachment:v1:${guessed})`;
@@ -514,12 +520,28 @@ test("UI repository, Agent, and MCP preserve literal attachment examples without
     description,
   });
   assert.equal(detail.description, description);
+  const escapedBacktickBoundary = "`code \\` [mid](attachment:v1:mid-reference-123)` " +
+    buildTaskFileLink(tailAttachment.publicId, "tail.pdf");
+  await assert.rejects(
+    updateTask(owner, detail.id, {
+      version: detail.version,
+      description: escapedBacktickBoundary,
+    }),
+    ValidationError,
+  );
 
   const agentDetail = await updateAgentTask(owner, detail.publicId, {
     version: detail.version,
     description,
   });
   assert.equal(agentDetail.description, description);
+  await assert.rejects(
+    updateAgentTask(owner, detail.publicId, {
+      version: agentDetail.version,
+      description: escapedBacktickBoundary,
+    }),
+    ValidationError,
+  );
 
   const credential = await issueApiCredential(owner, {
     name: "description-code-literals",
@@ -567,14 +589,14 @@ test("UI repository, Agent, and MCP preserve literal attachment examples without
         arguments: {
           taskRef: detail.publicId,
           version: currentVersion,
-          description: `Literal \`${fileToken}\` next to active ${fileToken}`,
+          description: escapedBacktickBoundary,
         },
       },
     }),
   }));
   const rejectedResult = await mcpResult(rejected);
   assert.equal(rejectedResult.result.isError, true);
-  assert.doesNotMatch(JSON.stringify(rejectedResult), /guessed-reference/);
+  assert.doesNotMatch(JSON.stringify(rejectedResult), /mid-reference-123/);
 });
 
 test("binary HTTP routes authenticate before bounded upload and preserve private range delivery", async () => {

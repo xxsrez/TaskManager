@@ -333,7 +333,8 @@ version/description и отклоняется, пока актуальный ima
 ссылается на Attachment. Literal inline/fenced code reference не создаёт edge.
 Inline code определяется общим для validator и renderer scanner по паре
 backtick-runs одинаковой длины; backtick-run другой длины внутри span остаётся
-literal content. Незакрытый inline delimiter не открывает code span, поэтому
+literal content. Для обратной совместимости preceding backslash не меняет
+роль backtick-run как delimiter. Незакрытый inline delimiter не открывает code span, поэтому
 следующий native token остаётся исполняемым и проходит обычную проверку. Fence
 с backticks или tildes и 0–3 leading spaces закрывается только тем же marker с
 длиной не меньше opening marker и без trailing info; незакрытый fence

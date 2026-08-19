@@ -1964,6 +1964,28 @@ test("Task description renderer shares complex inline-code attachment boundaries
   assert.equal((markup.match(/\[literal\.pdf\]\(attachment:v1:literal-reference-123\)/g) ?? []).length, 3);
 });
 
+test("Task description renderer keeps escaped-backtick closing parity with attachment validation", () => {
+  const description = "`code \\` [mid](attachment:v1:mid-reference-123)` [tail](attachment:v1:tail-reference-456)";
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: {
+        ...snapshot,
+        tasks: snapshot.tasks.map((task) => ({ ...task, description })),
+      },
+      initialNavigation: {
+        surface: "all",
+        layout: "list",
+        taskId: "task-1",
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+
+  assert.match(markup, /<code>code \\<\/code>/);
+  assert.equal((markup.match(/Loading mid/g) ?? []).length, 1);
+  assert.equal((markup.match(/Loading tail/g) ?? []).length, 1);
+});
+
 test("task detail timestamps render in the authenticated user timezone", () => {
   const originalTimeZone = process.env.TZ;
   process.env.TZ = "UTC";
