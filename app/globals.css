@@ -273,7 +273,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .settings-choice-row > div button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); color: var(--text-secondary); cursor: pointer; }
 .settings-choice-row > div button.active { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); background: var(--active); color: var(--accent); }
 .settings-catalog .workflow-status-list, .settings-catalog .label-settings-list { max-height: none; }
-.settings-integration .codex-setup-body { padding: 0; }
+.settings-integration .codex-setup-body { padding: 0; overflow-x: hidden; }
 .settings-content .import-card.embedded { width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .settings-content .import-card.embedded > div:first-child { display: none; }
 .surface-header { position: relative; z-index: 8; flex: 0 0 auto; background: color-mix(in srgb, var(--surface) 95%, transparent); border-bottom: 1px solid var(--border); backdrop-filter: blur(12px); }
