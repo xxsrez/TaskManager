@@ -2,7 +2,7 @@
 
 Статус: `Implemented`
 
-Последнее обновление: 2026-08-18
+Последнее обновление: 2026-08-19
 
 ## 1. Назначение и граница
 
@@ -13,7 +13,10 @@ Task Manager предоставляет самостоятельный versioned
 - найти проекты и готовящиеся релизы;
 - получить задачи проекта или релиза в компактной форме;
 - загрузить полный контекст одной выбранной задачи;
-- создать задачу и изменить status, project, release, priority, срок и archive;
+- создать задачу с базовыми metadata и изменить title/description, status,
+  priority, assignee, release, estimate, due date, archive и manual rank;
+- назначить/снять один Label, атомарно заменить весь набор Labels, установить
+  или очистить parent и создать subtask;
 - читать bounded native/historical Task Activity без загрузки event bodies в
   Task collections/detail;
 - читать unified native/historical comment threads, добавлять/reply/edit/delete
@@ -165,6 +168,7 @@ restore атомарно отзывает все authentication capabilities, ч
 | `GET /tasks/{ref}/activity` | `api:read` | Paginated native/historical Activity events |
 | `PATCH /tasks/{ref}` | `api:write` | Изменить Task с optimistic version |
 | `POST /tasks/{ref}/move` | `api:write` | Атомарно перенести Task и вернуть authoritative identifier |
+| `PUT /tasks/{ref}/labels` | `api:write` | Атомарно заменить полный набор Labels с Task version |
 | `PUT /tasks/{ref}/labels/{labelRef}` | `api:write` | Идемпотентно назначить active Label |
 | `DELETE /tasks/{ref}/labels/{labelRef}` | `api:write` | Идемпотентно снять Label, включая archived |
 | `POST /tasks/{ref}/relations` | `api:write` | Создать relation идемпотентно |
@@ -208,7 +212,10 @@ protocol revisions).
 | `list_task_activity` | `api:read` | Читать bounded native/historical Activity отдельно от Task detail |
 | `create_task` | `api:write` | Создать Task по canonical refs |
 | `update_task` | `api:write` | Изменить Task с optimistic version |
+| `move_task` | `api:write` | Атомарно перенести Task между Projects |
+| `set_task_parent`, `create_subtask` | `api:write` | Менять hierarchy по canonical refs и versions |
 | `add_task_label`, `remove_task_label` | `api:write` | Задать желаемое состояние одного native Label идемпотентно |
+| `replace_task_labels` | `api:write` | Атомарно заменить полный набор Labels с Task version |
 | `create_task_relation` | `api:write` | Создать native relation с idempotency key |
 | `update_task_relation`, `delete_task_relation` | `api:write` | Изменить или удалить relation по current version |
 | `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |
@@ -240,7 +247,37 @@ MCP discovery methods: `initialize`, `notifications/initialized`, `ping` и
 но не пользовательские данные. Любой `tools/call` проходит bearer verification,
 scope check и owner/ACL scope до обращения к repository.
 
-### 5.2 Pagination и envelope
+### 5.2 Parity matrix базовых Task metadata
+
+| UI capability | Agent REST v1 | MCP tool | Marketplace adapter documentation |
+|---|---|---|---|
+| title, description, status, priority, assignee, release, estimate, due date, archive/restore, rank | `PATCH /tasks/{ref}` | `update_task` | current version + canonical status/release refs; assignee передаётся write-only `assigneeEmail`, `null` очищает |
+| create с базовыми metadata и Labels | `POST /tasks` | `create_task` | canonical `projectRef`, optional `releaseRef`/`statusRef`/`labelRefs`; `assigneeEmail` проверяется по Project access |
+| add/remove одного Label | `PUT`/`DELETE /tasks/{ref}/labels/{labelRef}` | `add_task_label`, `remove_task_label` | desired-state idempotency; archived Label можно снять, но нельзя назначить |
+| replace полного набора Labels | `PUT /tasks/{ref}/labels` | `replace_task_labels` | current Task version + полный `labelRefs[]`; пустой список очищает все назначения, уже назначенный archived Label можно сохранить или снять |
+| set/change/clear parent | `PUT`/`DELETE /tasks/{ref}/parent` | `set_task_parent` | same-Project, no self/cycle, current child version |
+| create subtask | `POST /tasks/{ref}/subtasks` | `create_subtask` | current parent version; Project наследуется, metadata/Labels создаются атомарно |
+| blocks/blocked_by, related, duplicate_of/duplicates | relation `POST`/`PATCH`/`DELETE` | `create_task_relation`, `update_task_relation`, `delete_task_relation` | create idempotency key; update/delete relation version; `taskVersion` для перехода в `duplicate_of` |
+
+`blocked_by` и `duplicates` — относительные read presentations, а не хранимые
+relation types. Cross-Project relation допустима только при `Editor+` на обеих
+Project Tasks и не распространяет ACL. REST и MCP вызывают один
+application/repository boundary; отдельной connector-реализации business rules
+нет.
+
+Явно не поддерживаются generic Task move через `PATCH`, изменение Project,
+Label или Workflow catalog, sharing/ownership, administration, backup/restore,
+irreversible purge, а также comments/attachments внутри generic metadata patch.
+Для move, comments и attachments сохраняются отдельные специализированные
+contracts.
+
+In-repo MCP `tools/list`, OpenAPI и этот документ являются исходной tool
+metadata для marketplace adapter. Версия/manifest опубликованного
+`task-manager@srez-marketplace` меняются только в marketplace repository и
+проверяются после установки в новой Codex-задаче; локальная реализация этого
+контракта сама по себе не является публикацией plugin package.
+
+### 5.3 Pagination и envelope
 
 Collections имеют default `limit=50`, maximum `200` и opaque `cursor`.
 Native attachments имеют maximum `100`; Activity events и unified comment roots — maximum `50`
@@ -266,7 +303,7 @@ cursor другого query отклоняется. Collections использу
 Data responses используют `Cache-Control: private, no-store` и
 `X-Request-Id`.
 
-### 5.3 Filters
+### 5.4 Filters
 
 `GET /tasks` поддерживает:
 
@@ -324,14 +361,19 @@ release notes. Project/Release detail возвращают `workflowStatuses`, �
 ## 7. Task commands
 
 `POST /tasks` принимает `title`, `description`, `statusRef`, `priority`,
-`projectRef`, `releaseRef`, `estimate`, `dueDate` и optional
+`projectRef`, `releaseRef`, write-only `assigneeEmail`, `labelRefs`, `estimate`,
+`dueDate` и optional
 `confirmReleasedComposition`. Обязательны `title` и
 canonical `projectRef`; release не заменяет явный Project.
 Несовместимые project/release и status другого owner scope отклоняются до записи.
+Каждый `labelRef` обязан обозначать active Label owner catalog выбранного
+Project; assignee обязан быть зарегистрированным User с доступом к Project.
+Все эти поля записываются одной Task-create transaction.
 
 `PATCH /tasks/{ref}` требует актуальный `version` и принимает `title`,
 `description`, `statusRef`, `priority`, `projectRef`, `releaseRef`,
-`estimate`, `dueDate`, `rank`, `archived`, `confirmReleasedComposition`.
+write-only `assigneeEmail`, `estimate`, `dueDate`, `rank`, `archived`,
+`confirmReleasedComposition`.
 Generic patch не очищает и не меняет
 Project; отдельный атомарный move contract меняет Project и identifier вместе.
 
@@ -356,7 +398,8 @@ archived target отклоняются. Desired state, уже применённ
 тот же contract.
 
 `POST /tasks/{ref}/subtasks` принимает current parent `version`, обязательный
-`title` и optional Task fields кроме Project. Project наследуется, identifier
+`title`, write-only `assigneeEmail`, `labelRefs` и optional Task fields кроме
+Project. Project наследуется, identifier
 выделяется внутри атомарной transaction, а parent version повышается; stale
 retry не создаёт duplicate. MCP `create_subtask` использует те же canonical
 refs и возвращает authoritative child `TaskDetail`.
@@ -385,11 +428,15 @@ Repository атомарно обновляет `startedAt`, `completedAt` и `ca
 `409 version_conflict`; Viewer — `403 forbidden`. Response содержит новый
 `TaskDetail`, а не workspace snapshot.
 
-Hierarchy, assignee другого User и bulk mutation пока read-only через API.
-Labels имеют отдельные desired-state `PUT`/`DELETE` и MCP add/remove commands:
+Assignee другого User задаётся только write-only verified email и никогда не
+возвращает email/User ID в projection. Labels имеют отдельные desired-state
+`PUT`/`DELETE` и MCP add/remove commands:
 Editor+ может назначить active Label только owner catalog Task, Viewer получает
 отказ, retry не создаёт дубликат и archived Label можно снять, но нельзя
-назначить заново. Relations имеют отдельные create/update/delete commands: обе Tasks должны
+назначить заново. `PUT /tasks/{ref}/labels` и MCP `replace_task_labels`
+принимают current Task version и атомарно заменяют полный набор; успешная
+single add/remove или replace возвращает detail с актуальной Task version.
+Relations имеют отдельные create/update/delete commands: обе Tasks должны
 принадлежать Project, caller должен иметь Editor+ на обеих, `related`
 канонизируется, `blocks` хранит direction, а outgoing `duplicate_of` требует
 актуальную Task version и атомарно назначает системный `Duplicate`. Remove или
@@ -523,6 +570,12 @@ Authorization invariants:
     bounded page native/historical events. Viewer читает, outsider/post-revoke
     получает `not_found`; actor projection не содержит ID/email, cursor другой
     Task отклоняется, а Task list/detail не получает event bodies.
+14. REST и MCP создают Task с assignee/Labels и изменяют базовые metadata с
+    read-back новой Task version; атомарный replace Labels отклоняет stale
+    version без partial write. Hierarchy отклоняет self/cycle/cross-Project и
+    stale version; relation retry сохраняет одну identity, cross-Project
+    relation требует write access к обеим Tasks, stale relation version не
+    изменяет edge.
 
 Hosted smoke и rate-limit policy остаются release work, а не заявляются
 проверенными локальной реализацией.

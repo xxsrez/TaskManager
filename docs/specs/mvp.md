@@ -617,6 +617,7 @@ created/updated/started/completed/canceled dates и archived state.
 
 - Task Manager предоставляет agent API для workspace summary, Projects,
   Releases, compact task lists, одной полной Task, task create/update,
+  Label desired-state/atomic replace, versioned hierarchy и relation CRUD,
   bounded read-only Task Activity, unified native/historical comment threads и
   native Attachment metadata/binary.
 - List response не содержит task description, release notes, historical или

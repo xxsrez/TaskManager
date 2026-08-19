@@ -3458,6 +3458,108 @@ export async function setTaskLabel(
   return state;
 }
 
+export async function replaceTaskLabels(
+  currentUser: UserRecord,
+  taskId: string,
+  input: Record<string, unknown>,
+) {
+  const task = await loadAccessibleTask(currentUser.id, taskId);
+  requireContentEdit(task.accessRole);
+  const expectedVersion = Number(input.version);
+  if (!Number.isInteger(expectedVersion) || expectedVersion !== task.version) {
+    throw new ConflictError("Task was changed in another session");
+  }
+  const currentRows = await getD1().prepare(
+    `SELECT tl.label_id, l.name
+     FROM task_labels tl JOIN labels l ON l.id = tl.label_id
+     WHERE tl.task_id = ? ORDER BY tl.label_id`,
+  ).bind(task.id).all<{ label_id: string; name: string }>();
+  const currentIds = currentRows.results.map((row) => row.label_id).sort();
+  const labelIds = await validateReplacementLabelIds(
+    task.ownerUserId,
+    input.labelIds,
+    new Set(currentIds),
+  );
+  const nextIds = [...labelIds].sort();
+  if (JSON.stringify(currentIds) === JSON.stringify(nextIds)) {
+    return getTaskLabelState(currentUser, task.id);
+  }
+
+  const labels = labelIds.length
+      ? await getD1().prepare(
+        `SELECT id, name FROM labels
+         WHERE owner_user_id = ?
+           AND id IN (${sqlPlaceholders(labelIds)})
+         ORDER BY id`,
+      ).bind(task.ownerUserId, ...labelIds).all<{ id: string; name: string }>()
+    : { results: [] as Array<{ id: string; name: string }> };
+  const now = new Date().toISOString();
+  const db = getD1();
+  const activity = activityEventStatement(db, currentUser, {
+    taskId: task.id,
+    eventType: "labels_changed",
+    payload: {
+      replace: true,
+      before: currentRows.results.map((row) => ({ id: row.label_id, name: row.name })),
+      after: labels.results.map((label) => ({ id: label.id, name: label.name })),
+    },
+    createdAt: now,
+  });
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      `UPDATE tasks SET version = version + 1, updated_at = ?
+       WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
+    ).bind(
+      now,
+      task.id,
+      expectedVersion,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+      currentUser.id,
+    ),
+    activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
+    db.prepare("DELETE FROM task_labels WHERE task_id = ?").bind(task.id),
+  ];
+  for (const labelId of labelIds) {
+    statements.push(
+      db.prepare(
+        `INSERT INTO task_labels (task_id, label_id)
+         SELECT task.id, label.id
+         FROM tasks task JOIN labels label ON label.id = ?
+         WHERE task.id = ? AND task.version = ?
+           AND label.owner_user_id = task.owner_user_id
+           AND (label.archived_at IS NULL OR ? = 1)`,
+      ).bind(
+        labelId,
+        task.id,
+        expectedVersion + 1,
+        currentIds.includes(labelId) ? 1 : 0,
+      ),
+      activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
+    );
+  }
+  statements.push(activity.statement);
+  try {
+    await db.batch(statements);
+  } catch (error) {
+    if (isConstraintError(error)) {
+      throw new ConflictError(
+        "Task access, version, or Label catalog changed before replacement",
+      );
+    }
+    throw error;
+  }
+  const state = await getTaskLabelState(currentUser, task.id);
+  const applied = state.taskLabels.map((item) => item.labelId).sort();
+  if (JSON.stringify(applied) !== JSON.stringify(nextIds)) {
+    throw new ConflictError(
+      "Task access, version, or Label catalog changed before replacement",
+    );
+  }
+  return state;
+}
+
 export async function bulkSetTaskLabel(
   currentUser: UserRecord,
   input: Record<string, unknown>,
@@ -3581,6 +3683,28 @@ async function validateActiveLabelIds(ownerUserId: string, value: unknown) {
   ).bind(ownerUserId, ...ids).all<{ id: string }>();
   if (rows.results.length !== ids.length) {
     throw new ValidationError("Every Label must be active in the Task owner catalog");
+  }
+  return ids;
+}
+
+async function validateReplacementLabelIds(
+  ownerUserId: string,
+  value: unknown,
+  currentlyAssigned: ReadonlySet<string>,
+) {
+  if (!Array.isArray(value)) throw new ValidationError("Label IDs must be an array");
+  const ids = [...new Set(value.map(requiredLabelId))];
+  if (ids.length > 50) throw new ValidationError("A Task can have at most 50 Labels");
+  if (!ids.length) return ids;
+  const rows = await getD1().prepare(
+    `SELECT id, archived_at FROM labels
+     WHERE owner_user_id = ? AND id IN (${sqlPlaceholders(ids)})`,
+  ).bind(ownerUserId, ...ids).all<{ id: string; archived_at: string | null }>();
+  if (rows.results.length !== ids.length) {
+    throw new ValidationError("Every Label must belong to the Task owner catalog");
+  }
+  if (rows.results.some((row) => row.archived_at && !currentlyAssigned.has(row.id))) {
+    throw new ValidationError("Archived Labels cannot be newly assigned");
   }
   return ids;
 }

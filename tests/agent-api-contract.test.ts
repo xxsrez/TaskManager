@@ -157,6 +157,7 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks/{ref}/relations"), true);
   assert.equal(paths.includes("/tasks/{ref}/relations/{relationRef}"), true);
   assert.equal(paths.includes("/labels"), true);
+  assert.equal(paths.includes("/tasks/{ref}/labels"), true);
   assert.equal(paths.includes("/tasks/{ref}/labels/{labelRef}"), true);
   assert.equal(paths.includes("/projects"), true);
   assert.equal(paths.includes("/releases"), true);
@@ -209,6 +210,18 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     [{ oauth2: ["api:write"] }, { personalToken: [] }],
   );
   assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/labels"].put.operationId,
+    "replaceTaskLabels",
+  );
+  assert.equal(
+    agentApiOpenApi.components.schemas.TaskCreate.properties.estimate.minimum,
+    1,
+  );
+  assert.equal(
+    agentApiOpenApi.components.schemas.TaskCreate.properties.estimate.maximum,
+    100,
+  );
+  assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/labels/{labelRef}"].put.operationId,
     "addTaskLabel",
   );
@@ -240,6 +253,15 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     agentApiOpenApi.components.schemas.TaskParentUpdate.required,
     ["version", "parentTaskRef"],
   );
+  assert.deepEqual(
+    agentApiOpenApi.components.schemas.TaskLabelsReplace.required,
+    ["version", "labelRefs"],
+  );
+  assert.ok(agentApiOpenApi.components.schemas.TaskCreate.properties.assigneeEmail);
+  assert.ok(agentApiOpenApi.components.schemas.TaskUpdate.properties.assigneeEmail);
+  assert.ok(agentApiOpenApi.components.schemas.TaskSubtaskCreate.properties.assigneeEmail);
+  assert.ok(agentApiOpenApi.components.schemas.TaskCreate.properties.labelRefs);
+  assert.ok(agentApiOpenApi.components.schemas.TaskSubtaskCreate.properties.labelRefs);
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/comments/{commentRef}/resolution"].put
       .operationId,

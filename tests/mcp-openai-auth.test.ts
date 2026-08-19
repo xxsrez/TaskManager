@@ -247,9 +247,12 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     "update_task_relation",
     "delete_task_relation",
     "move_task",
+    "set_task_parent",
+    "create_subtask",
     "list_labels",
     "add_task_label",
     "remove_task_label",
+    "replace_task_labels",
   ]) {
     assert.ok(listBody.result.tools.some((tool) => tool.name === name), name);
   }
@@ -263,6 +266,30 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
   ]);
   assert.ok(moveTool?.inputSchema?.properties?.releaseRef);
   assert.ok(moveTool?.inputSchema?.properties?.assigneeEmail);
+  const createTool = listBody.result.tools.find(
+    (tool) => tool.name === "create_task",
+  ) as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
+  const updateTool = listBody.result.tools.find(
+    (tool) => tool.name === "update_task",
+  ) as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
+  const subtaskTool = listBody.result.tools.find(
+    (tool) => tool.name === "create_subtask",
+  ) as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
+  const replaceLabelsTool = listBody.result.tools.find(
+    (tool) => tool.name === "replace_task_labels",
+  ) as {
+    inputSchema?: { required?: string[]; properties?: Record<string, unknown> };
+  } | undefined;
+  assert.ok(createTool?.inputSchema?.properties?.assigneeEmail);
+  assert.ok(createTool?.inputSchema?.properties?.labelRefs);
+  assert.ok(updateTool?.inputSchema?.properties?.assigneeEmail);
+  assert.ok(subtaskTool?.inputSchema?.properties?.assigneeEmail);
+  assert.ok(subtaskTool?.inputSchema?.properties?.labelRefs);
+  assert.deepEqual(replaceLabelsTool?.inputSchema?.required, [
+    "taskRef",
+    "version",
+    "labelRefs",
+  ]);
   const uploadTool = listBody.result.tools.find(
     (tool) => tool.name === "upload_task_attachment",
   ) as {

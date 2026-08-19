@@ -26,6 +26,7 @@ import {
   createSubtask,
   createTask,
   moveTask,
+  replaceTaskLabels,
   setTaskLabel,
   setTaskParent,
   updateTask,
@@ -652,6 +653,8 @@ export async function createAgentTask(
     "projectRef",
     "releaseRef",
     "confirmReleasedComposition",
+    "assigneeEmail",
+    "labelRefs",
     "estimate",
     "dueDate",
   ]);
@@ -670,11 +673,19 @@ export async function createAgentTask(
   const statusId = input.statusRef
     ? await resolveStatusReference(ownerUserId, String(input.statusRef))
     : undefined;
+  const assigneeUserId = Object.hasOwn(input, "assigneeEmail")
+    ? await resolveAssigneeEmail(input.assigneeEmail)
+    : undefined;
+  const labelIds = Object.hasOwn(input, "labelRefs")
+    ? await resolveLabelReferences(ownerUserId, input.labelRefs)
+    : undefined;
   const created = await createTask(currentUser, {
     ...input,
     projectId: project.id,
     releaseId: release?.id ?? null,
     ...(statusId ? { statusId } : {}),
+    ...(Object.hasOwn(input, "assigneeEmail") ? { assigneeUserId } : {}),
+    ...(labelIds ? { labelIds } : {}),
   });
   return getAgentTaskDetail(currentUser, created.publicId);
 }
@@ -693,6 +704,7 @@ export async function updateAgentTask(
     "projectRef",
     "releaseRef",
     "confirmReleasedComposition",
+    "assigneeEmail",
     "estimate",
     "dueDate",
     "rank",
@@ -703,6 +715,7 @@ export async function updateAgentTask(
   delete translated.statusRef;
   delete translated.projectRef;
   delete translated.releaseRef;
+  delete translated.assigneeEmail;
   if (Object.hasOwn(input, "statusRef")) {
     if (!input.statusRef) throw new ValidationError("statusRef cannot be empty");
     translated.statusId = await resolveStatusReference(
@@ -728,6 +741,9 @@ export async function updateAgentTask(
           )).id,
         )
       : null;
+  }
+  if (Object.hasOwn(input, "assigneeEmail")) {
+    translated.assigneeUserId = await resolveAssigneeEmail(input.assigneeEmail);
   }
   await updateTask(currentUser, String(task.id), translated);
   return getAgentTaskDetail(currentUser, String(task.public_id));
@@ -771,23 +787,7 @@ export async function moveAgentTask(
     translated.confirmReleasedComposition = true;
   }
   if (Object.hasOwn(input, "assigneeEmail")) {
-    if (input.assigneeEmail === null) {
-      translated.assigneeUserId = null;
-    } else if (typeof input.assigneeEmail === "string" && input.assigneeEmail) {
-      const matches = await getD1()
-        .prepare("SELECT id FROM users WHERE lower(email) = ? ORDER BY id LIMIT 2")
-        .bind(input.assigneeEmail.trim().toLowerCase())
-        .all<{ id: string }>();
-      if (matches.results.length === 0) {
-        throw new NotFoundError("Assignee not found");
-      }
-      if (matches.results.length > 1) {
-        throw new ValidationError("More than one account uses that email");
-      }
-      translated.assigneeUserId = matches.results[0]!.id;
-    } else {
-      throw new ValidationError("assigneeEmail is invalid");
-    }
+    translated.assigneeUserId = await resolveAssigneeEmail(input.assigneeEmail);
   }
   await moveTask(currentUser, String(task.id), translated);
   return getAgentTaskDetail(currentUser, String(task.public_id));
@@ -828,6 +828,8 @@ export async function createAgentSubtask(
     "priority",
     "releaseRef",
     "confirmReleasedComposition",
+    "assigneeEmail",
+    "labelRefs",
     "estimate",
     "dueDate",
   ]);
@@ -835,6 +837,8 @@ export async function createAgentSubtask(
   const translated: Record<string, unknown> = { ...input };
   delete translated.statusRef;
   delete translated.releaseRef;
+  delete translated.assigneeEmail;
+  delete translated.labelRefs;
   if (input.statusRef) {
     translated.statusId = await resolveStatusReference(
       String(parent.owner_user_id),
@@ -850,6 +854,15 @@ export async function createAgentSubtask(
           )).id,
         )
       : null;
+  }
+  if (Object.hasOwn(input, "assigneeEmail")) {
+    translated.assigneeUserId = await resolveAssigneeEmail(input.assigneeEmail);
+  }
+  if (Object.hasOwn(input, "labelRefs")) {
+    translated.labelIds = await resolveLabelReferences(
+      String(parent.owner_user_id),
+      input.labelRefs,
+    );
   }
   const created = await createSubtask(
     currentUser,
@@ -915,6 +928,25 @@ export async function setAgentTaskLabel(
     !active,
   );
   await setTaskLabel(currentUser, String(task.id), { labelId, active });
+  return getAgentTaskDetail(currentUser, String(task.public_id));
+}
+
+export async function replaceAgentTaskLabels(
+  currentUser: UserRecord,
+  taskReference: string,
+  input: Record<string, unknown>,
+) {
+  assertOnlyKeys(input, ["version", "labelRefs"]);
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const labelIds = await resolveLabelReferences(
+    String(task.owner_user_id),
+    input.labelRefs,
+    true,
+  );
+  await replaceTaskLabels(currentUser, String(task.id), {
+    version: input.version,
+    labelIds,
+  });
   return getAgentTaskDetail(currentUser, String(task.public_id));
 }
 
@@ -1482,6 +1514,43 @@ async function resolveLabelReference(
     if ((await catalogReference("label", row.id)) === reference) return row.id;
   }
   throw new ValidationError("Label is not available for this Task");
+}
+
+async function resolveLabelReferences(
+  ownerUserId: string,
+  value: unknown,
+  allowArchived = false,
+) {
+  if (!Array.isArray(value)) {
+    throw new ValidationError("labelRefs must be an array");
+  }
+  if (value.length > 50) {
+    throw new ValidationError("A Task can have at most 50 Labels");
+  }
+  const references = [...new Set(value.map((item) => String(item)))];
+  return Promise.all(
+    references.map((reference) =>
+      resolveLabelReference(ownerUserId, reference, allowArchived)),
+  );
+}
+
+async function resolveAssigneeEmail(value: unknown): Promise<string | null> {
+  if (value === null) return null;
+  if (typeof value !== "string" || !value.trim() || value.length > 320) {
+    throw new ValidationError("assigneeEmail must be a verified email or null");
+  }
+  const normalized = value.trim().toLowerCase();
+  const matches = await getD1()
+    .prepare("SELECT id FROM users WHERE lower(email) = ? ORDER BY id LIMIT 2")
+    .bind(normalized)
+    .all<{ id: string }>();
+  if (matches.results.length === 0) {
+    throw new NotFoundError("Assignee not found");
+  }
+  if (matches.results.length > 1) {
+    throw new ValidationError("More than one account uses that email");
+  }
+  return matches.results[0]!.id;
 }
 
 async function mapTaskSummary(row: DbRow, currentUser: UserRecord) {

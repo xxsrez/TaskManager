@@ -41,6 +41,7 @@ import {
   listAgentTaskActivity,
   listAgentTaskComments,
   moveAgentTask,
+  replaceAgentTaskLabels,
   setAgentTaskParent,
   setAgentTaskLabel,
   resolveAgentTaskThread,
@@ -74,7 +75,10 @@ const taskFields = {
   confirmReleasedComposition: z.boolean().optional().describe(
     "Explicitly confirms adding to or removing from a released Release.",
   ),
-  estimate: z.number().finite().nonnegative().nullable().optional(),
+  assigneeEmail: z.string().email().max(320).nullable().optional().describe(
+    "Verified email of a User with access to the Task Project, or null to clear.",
+  ),
+  estimate: z.number().int().min(1).max(100).nullable().optional(),
   dueDate: z.string().nullable().optional().describe("ISO 8601 calendar date or null."),
 };
 
@@ -294,6 +298,9 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
         ...taskFields,
         title: z.string().min(1).max(500),
         projectRef: reference("Canonical Project ref; every Task requires one."),
+        labelRefs: z.array(reference("Canonical active Label ref from list_labels."))
+          .max(50)
+          .optional(),
       }),
       annotations: writeAnnotations,
       _meta: toolSecurity("api:write"),
@@ -390,8 +397,14 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
         confirmReleasedComposition: z.boolean().optional().describe(
           "Explicitly confirms adding the subtask to a released Release.",
         ),
-        estimate: z.number().finite().nonnegative().nullable().optional(),
+        estimate: z.number().int().min(1).max(100).nullable().optional(),
         dueDate: z.string().nullable().optional(),
+        assigneeEmail: z.string().email().max(320).nullable().optional().describe(
+          "Verified email of a User with access to the parent Project, or null to clear.",
+        ),
+        labelRefs: z.array(reference("Canonical active Label ref from list_labels."))
+          .max(50)
+          .optional(),
       }),
       annotations: writeAnnotations,
       _meta: toolSecurity("api:write"),
@@ -459,6 +472,25 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, labelRef }) => writeToolCall(context, () =>
       setAgentTaskLabel(context.user, taskRef, labelRef, false)),
+  );
+
+  server.registerTool(
+    "replace_task_labels",
+    {
+      title: "Replace task labels",
+      description:
+        "Atomically replaces the complete Label assignment set of one Task. Resolve canonical refs and pass the current Task version; an empty list clears all Labels. A currently assigned archived Label may be retained or removed but cannot be newly assigned.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical Task ref."),
+        version: z.number().int().positive(),
+        labelRefs: z.array(reference("Canonical active Label ref from list_labels."))
+          .max(50),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, ...input }) => writeToolCall(context, () =>
+      replaceAgentTaskLabels(context.user, taskRef, defined(input))),
   );
 
   server.registerTool(

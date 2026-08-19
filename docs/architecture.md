@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-17
+Последнее обновление: 2026-08-19
 
 Архитектура реализована первым вертикальным срезом на TypeScript, React 19,
 Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentication
@@ -218,6 +218,11 @@ version conflict остаётся write boundary и не заменяется po
    service. Relation имеет собственную version; create имеет idempotency key.
    `duplicate_of` выполняет relation write и Task status transition одной D1
    batch, а UI/REST/MCP затем перечитывают canonical detail projection.
+7. Базовый Task create/update переводит external status/release/Label refs и
+   write-only assignee email до общего repository command. Полная замена Labels
+   использует отдельную Task-versioned transaction; set-parent/create-subtask и
+   relation commands остаются специализированными intentions, чтобы generic
+   patch не создавал промежуточно неверное состояние.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в
