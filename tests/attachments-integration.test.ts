@@ -374,7 +374,7 @@ test("attachment mutations emit a bounded lazy invalidation for other sessions",
 });
 
 test("Task descriptions accept ready same-Task image embeds and file links and block deletion while referenced", async () => {
-  const { owner, project, task } = await setupSharedTask("Description images");
+  const { owner, viewer, project, task } = await setupSharedTask("Description images");
   const imageBytes = Uint8Array.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
     0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
@@ -386,13 +386,31 @@ test("Task descriptions accept ready same-Task image embeds and file links and b
     claimedMediaType: "image/png",
     idempotencyKey: "description-image",
   });
-  const token = buildTaskImageToken(image.publicId, "Architecture diagram", "Request flow");
+  const token = buildTaskImageToken(image.publicId, "Architecture diagram", "Request flow", 480);
   let detail = await getTask(owner, task.id);
   detail = await updateTask(owner, detail.id, {
     version: detail.version,
     description: `## Design\n\n${token}\n\nSafe [link](https://example.test).`,
   });
   assert.match(detail.description ?? "", /attachment:v1:/);
+  assert.match(detail.description ?? "", /\{width=480\}/);
+  await assert.rejects(
+    updateTask(owner, detail.id, {
+      version: detail.version,
+      description: `![Architecture diagram](attachment:v1:${image.publicId}){width=481}`,
+    }),
+    (error: unknown) => error instanceof ValidationError && /malformed/.test(error.message),
+  );
+  const resizeBaseline = await getSnapshot(viewer);
+  detail = await updateTask(owner, detail.id, {
+    version: detail.version,
+    description: `## Design\n\n${buildTaskImageToken(image.publicId, "Architecture diagram", "Request flow", 720)}`,
+  });
+  const resizeSync = await getWorkspaceSync(viewer, resizeBaseline.syncCursor!);
+  assert.deepEqual(resizeSync.changes.tasks.upsert.map((changed) => changed.id), [task.id]);
+  assert.deepEqual(resizeSync.changes.invalidations.taskComments, []);
+  assert.deepEqual(resizeSync.changes.invalidations.taskAttachments, []);
+  assert.match(detail.description ?? "", /\{width=720\}/);
   await assert.rejects(
     deleteAttachment(owner, task.id, image.publicId, image.version),
     (error: unknown) => error instanceof ValidationError && /description/.test(error.message),
@@ -490,6 +508,7 @@ test("Task descriptions accept ready same-Task image embeds and file links and b
     description: token,
   });
   assert.match(agentDetail.description ?? "", /attachment:v1:/);
+  assert.match(agentDetail.description ?? "", /\{width=480\}/);
   const agentRemoved = await updateAgentTask(owner, detail.publicId, {
     version: agentDetail.version,
     description: "The Agent path enforces the same repository invariant.",

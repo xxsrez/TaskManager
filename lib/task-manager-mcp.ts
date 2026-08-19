@@ -713,7 +713,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Upload native task attachment",
       description:
-        "Uploads one OpenAI-provided file into the selected Task's private storage. Reuse idempotencyKey only when retrying the identical file. After upload, update the Task description with ![alt](attachment:v1:<ref>) for a raster embed or [label](attachment:v1:<ref>) for an ACL-scoped download; never use a local path or base64.",
+        "Uploads one OpenAI-provided file into the selected Task's private storage. Reuse idempotencyKey only when retrying the identical file. After upload, update the Task description with ![alt](attachment:v1:<ref>){width=480} for an optional bounded raster width (160-960 in 8px steps; omit the suffix for Auto) or [label](attachment:v1:<ref>) for an ACL-scoped download; never use a local path or base64.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         file: mcpFileInputSchema,
@@ -824,7 +824,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "add_task_comment",
     {
       title: "Add task comment",
-      description: "Adds one native root comment as the authenticated user. The body may reference ready attachments of the same Task with native image/file Markdown. Reuse the idempotency key when retrying the same write.",
+      description: "Adds one native root comment as the authenticated user. The body may reference ready attachments of the same Task with native image/file Markdown; raster embeds may append {width=N} for 160-960px in 8px steps, or omit it for Auto. Reuse the idempotency key when retrying the same write.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         body: z.string().min(1).max(100_000),
@@ -841,7 +841,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "reply_to_task_comment",
     {
       title: "Reply to task comment",
-      description: "Replies one level deep to a native or historical root thread as the authenticated user, accepts same-Task native attachment Markdown, and reopens a resolved thread.",
+      description: "Replies one level deep to a native or historical root thread as the authenticated user, accepts same-Task native attachment Markdown with optional bounded raster {width=N}, and reopens a resolved thread.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         rootCommentRef: reference("Root comment ref."),
@@ -862,7 +862,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "edit_task_comment",
     {
       title: "Edit task comment",
-      description: "Edits the authenticated author's native comment and its attachment refs atomically using the current version.",
+      description: "Edits the authenticated author's native comment and its attachment refs atomically using the current version, preserving or validating optional bounded raster {width=N} metadata.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         commentRef: reference("Comment ref."),

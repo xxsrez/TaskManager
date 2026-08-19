@@ -13,7 +13,7 @@ const imageRef = "11111111-1111-4111-8111-111111111111";
 const fileRef = "22222222-2222-4222-8222-222222222222";
 
 test("collapsed comment previews never split or resolve a hidden attachment token", () => {
-  const hiddenImage = buildTaskImageToken(imageRef, "Tall diagram", "Request flow");
+  const hiddenImage = buildTaskImageToken(imageRef, "Tall diagram", "Request flow", 480);
   const body = `${"Long context ".repeat(110)}${hiddenImage}\nAfter`;
   const preview = commentBodyPreview(body, 1_200);
 

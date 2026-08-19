@@ -705,8 +705,19 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .task-description-image { width: min(100%, 620px); margin: 12px 0 16px; }
 .task-description-image > button { width: 100%; max-height: 420px; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-subtle); cursor: zoom-in; }
 .task-description-image img { width: auto; max-width: 100%; height: auto; max-height: 420px; object-fit: contain; }
+.task-description-image[data-presentation-width]:not([data-presentation-width="auto"]) img { width: 100%; }
 .task-description-image figcaption { margin-top: 5px; color: var(--muted); font-size: 10px; line-height: 15px; text-align: center; }
 .task-description-image-placeholder { min-height: 96px; display: grid; place-items: center; margin: 10px 0; border: 1px dashed var(--border-strong); border-radius: 8px; background: var(--surface-subtle); color: var(--muted); font-size: 11px; }
+.native-image-width-editor { max-width: 100%; display: grid; gap: 7px; margin-top: 9px; padding: 9px; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
+.native-image-width-tabs, .native-image-width-presets { display: flex; flex-wrap: wrap; gap: 5px; }
+.native-image-width-tabs button, .native-image-width-presets button { min-height: 28px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--text-secondary); font-size: 10px; }
+.native-image-width-tabs button.active, .native-image-width-presets button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.native-image-width-preview { position: relative; max-width: 100%; min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); }
+.native-image-width-preview img { width: 100%; max-width: 100%; max-height: 280px; display: block; object-fit: contain; }
+.native-image-resize-handle { min-height: 24px; display: grid; place-items: center; border-top: 1px solid var(--border-strong); background: color-mix(in srgb, var(--raised) 86%, var(--accent) 14%); color: var(--text-secondary); cursor: ew-resize; touch-action: none; user-select: none; }
+.native-image-resize-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.native-image-resize-handle span { padding: 2px 7px; border-radius: 999px; background: var(--surface); font-size: 9px; }
+.native-image-width-editor > p { margin: 0; color: var(--muted); font-size: 9px; line-height: 14px; }
 .task-description-file-link { display: inline-flex; min-width: 0; max-width: 100%; align-items: center; gap: 4px; vertical-align: text-bottom; overflow-wrap: anywhere; }
 .task-description-file-link svg { flex: 0 0 auto; }
 .task-description-file-link span { min-width: 0; overflow-wrap: anywhere; }
@@ -1273,6 +1284,8 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .attachment-lightbox-dialog > header { min-height: 56px; padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
   .attachment-lightbox-dialog .icon-button { width: 44px; height: 44px; flex-basis: 44px; }
   .comment-body .task-description-image > button { min-height: 44px; }
+  .native-image-width-tabs button, .native-image-width-presets button { min-height: 44px; }
+  .native-image-resize-handle { min-height: 44px; }
   .attachment-preview-canvas { padding: 16px 48px calc(16px + env(safe-area-inset-bottom)); }
   .attachment-preview-nav.previous { left: 3px; }
   .attachment-preview-nav.next { right: 3px; }

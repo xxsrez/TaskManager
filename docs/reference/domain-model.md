@@ -257,7 +257,7 @@ journal rows старше 30 дней удаляются не чаще раза 
 | `owner_user_id` | UUID | да | Владелец и tenant scope записи |
 | `identifier` | string | да | Текущий human ID `<project.task_code>-<sequence_number>`, например `TM-123`; меняется только атомарным move |
 | `title` | string | да | Непустой заголовок |
-| `description` | Markdown/text | нет | Подробный контекст; native raster image использует `![alt](attachment:v1:<public-ref> "caption")`, ready Attachment — `[label](attachment:v1:<public-ref>)` |
+| `description` | Markdown/text | нет | Подробный контекст; native raster image использует `![alt](attachment:v1:<public-ref> "caption"){width=480}`, ready Attachment — `[label](attachment:v1:<public-ref>)` |
 | `status_id` | UUID | да | Ссылка на `WorkflowStatus` |
 | `priority` | enum | да | `none`, `low`, `medium`, `high`, `urgent` |
 | `assignee_id` | UUID | нет | User с доступом к Task |
@@ -343,8 +343,12 @@ literal content. Для обратной совместимости preceding ba
 длиной не меньше opening marker и без trailing info; незакрытый fence
 детерминированно трактует остаток description как code и так же рендерится.
 Alt/label обязательны и bounded, caption optional; это пользовательский
-Markdown text. Один Attachment может встречаться несколько раз и по-прежнему
-имеет один lifecycle record.
+Markdown text. Image suffix `{width=N}` optional и canonical только для integer
+`160..960` с шагом `8`; отсутствие suffix означает responsive `Auto`. Width —
+presentation metadata одного embed, не `Attachment.image_width`: effective
+width ограничена контейнером, aspect ratio сохраняется. Один Attachment может
+встречаться несколько раз с разными widths и по-прежнему имеет один lifecycle
+record.
 
 Logical backup schema `3` переносит Attachment row и original одним bounded
 container: row ссылается на `sha256:<digest>`, object set содержит size,
@@ -381,7 +385,8 @@ Row содержит только opaque identities и `created_at`, не filena
 object key или delivery URL.
 
 Create/edit Comment разбирает executable Markdown общим tokenizer с Task
-description, проверяет file/image semantics и атомарно заменяет exact edge set
+description, включая bounded image width metadata, проверяет file/image
+semantics и атомарно заменяет exact edge set
 вместе с Comment, Activity и sync mutation. Soft-delete Comment удаляет edges,
 но не Attachment binary. Attachment delete допускается только при отсутствии
 description edge и `CommentAttachmentRef`; guarded predicates закрывают гонку

@@ -433,8 +433,15 @@ List повторяет плотную grouped-list модель Linear.
   Пользователь может редактировать alt/caption/label и перемещать или удалить
   token как обычный Markdown. Пока upload активен, сохранение description
   недоступно; удаление token не удаляет Attachment.
+- Выбранный native image в description, root/reply composer и edit собственного
+  Comment показывает общий resize preview. Нижний handle поддерживает pointer
+  drag и клавиши-стрелки с шагом `8 px`; touch/keyboard path также предлагает
+  presets `240`, `480`, `720 px` и `Auto`. Допустимый canonical диапазон —
+  `160..960 px`; `Auto` удаляет width metadata. Controls существуют только в
+  authoring mode, не меняют textarea selection и не запускают новый upload.
 - Native image в режиме чтения занимает доступную ширину без горизонтального
-  overflow, сохраняет aspect ratio, показывает caption и открывает тот же
+  overflow, применяет optional embed width не шире контейнера, сохраняет aspect
+  ratio, показывает caption и открывает тот же
   private full-preview contract, что Attachment gallery. Loading, invalid и
   недоступный reference имеют локальный placeholder без публичного URL.
 - Native file link в режиме чтения остаётся компактной inline-ссылкой с
@@ -506,6 +513,10 @@ List повторяет плотную grouped-list модель Linear.
   revoked Editor получает server mutation error. На touch picker/gallery
   остаются полным путём; controls не меньше 44 px и long/Unicode filenames не
   создают horizontal overflow.
+- Width resize обновляет только token выбранного embed в том же draft: duplicate
+  refs одного Attachment могут иметь разные widths, reload восстанавливает
+  metadata вместе с body, а version conflict/revoke обрабатывается обычным
+  Comment/Task save contract.
 - Root thread показывает author/avatar, timestamps, body, reactions,
   resolve/reopen и actions по permissions. Replies всегда одноуровневые;
   resolved thread свёрнут, permalink прокручивает и подсвечивает comment,

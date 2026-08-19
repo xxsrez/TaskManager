@@ -324,7 +324,9 @@ immutable ID и может группировать Tasks по значения�
   `http`, `https` и `mailto`.
 - Native comment может ссылаться на готовый Attachment той же Task через тот
   же executable Markdown contract, что description: raster image использует
-  `![alt](attachment:v1:<public-ref> "caption")`, downloadable file —
+  `![alt](attachment:v1:<public-ref> "caption"){width=480}`, где optional
+  `{width=N}` принимает только `160..960` с шагом `8`, а отсутствие suffix
+  означает responsive `Auto`; downloadable file —
   `[label](attachment:v1:<public-ref>)`. Inline/fenced code и escaped examples
   остаются literal. Create/edit атомарно проверяет и нормализует bounded index
   ссылок; guessed, cross-Task, deleted/pending и несовместимый image ref
@@ -424,10 +426,12 @@ immutable ID и может группировать Tasks по значения�
   state. Raster list использует отдельный authenticated server thumbnail;
   full-size original загружается только в preview/download.
 - Markdown description встраивает готовый raster Attachment той же Task через
-  `![alt](attachment:v1:<public-ref> "caption")`, а любой готовый Attachment —
+  `![alt](attachment:v1:<public-ref> "caption"){width=480}`, а любой готовый Attachment —
   как скачиваемую ссылку `[label](attachment:v1:<public-ref>)`. Оба вида token
   хранят только непрозрачный reference и пользовательский текст, но не R2 key,
-  filename, public URL или signed URL. Editor вставляет image/file из
+  filename, public URL или signed URL. Optional width относится только к
+  конкретному embed, принимает `160..960` с шагом `8`, а отсутствие metadata
+  сохраняет прежний responsive `Auto`. Editor вставляет image/file из
   picker/drop/paste в текущую позицию курсора, показывает progress/retry/cancel
   и оставляет alt/caption/label редактируемыми как текст.
 - При каждом create/update description server проверяет исполняемый Markdown,

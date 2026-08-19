@@ -19,6 +19,14 @@ const commentAttachmentMetadata = readFileSync(
   new URL("../components/comment-attachment-metadata.tsx", import.meta.url),
   "utf8",
 );
+const nativeImageWidthEditor = readFileSync(
+  new URL("../components/native-image-width-editor.tsx", import.meta.url),
+  "utf8",
+);
+const commentAttachmentAuthoring = readFileSync(
+  new URL("../components/comment-attachment-authoring.tsx", import.meta.url),
+  "utf8",
+);
 
 function declarations(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -422,6 +430,7 @@ test("native description attachments use private refs, cursor upload, and respon
   assert.match(taskDescriptionEditor, /selectionStart/);
   assert.match(taskDescriptionEditor, /buildTaskImageToken/);
   assert.match(taskDescriptionEditor, /buildTaskFileLink/);
+  assert.match(taskDescriptionEditor, /NativeImageWidthEditor/);
   assert.match(taskDescriptionEditor, /Insert file/);
   assert.doesNotMatch(taskDescriptionEditor, /https?:\/\//);
   assert.match(taskAttachments, /Used in description/);
@@ -430,10 +439,28 @@ test("native description attachments use private refs, cursor upload, and respon
   assert.match(taskAttachments, /TaskDescriptionFileLink/);
   assert.match(declarations(".task-description-image"), /width:\s*min\(100%,\s*620px\)\s*;/);
   assert.match(declarations(".task-description-image img"), /max-width:\s*100%\s*;/);
+  assert.match(declarations('.task-description-image[data-presentation-width]:not([data-presentation-width="auto"]) img'), /width:\s*100%\s*;/);
   assert.match(declarations(".task-description-file-link"), /max-width:\s*100%\s*;/);
   assert.match(
     css,
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-description-upload \.icon-button\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;/,
+  );
+});
+
+test("description and comment authoring share accessible bounded image resize controls", () => {
+  assert.match(commentAttachmentAuthoring, /NativeImageWidthEditor/);
+  assert.match(nativeImageWidthEditor, /replaceTaskImageWidth/);
+  assert.match(nativeImageWidthEditor, /role="slider"/);
+  assert.match(nativeImageWidthEditor, /aria-valuemin=\{TASK_IMAGE_WIDTH_MIN\}/);
+  assert.match(nativeImageWidthEditor, /onPointerMove=\{onPointerMove\}/);
+  assert.match(nativeImageWidthEditor, /ArrowLeft/);
+  assert.match(nativeImageWidthEditor, />Reset to Auto</);
+  assert.match(nativeImageWidthEditor, /variant=thumbnail&disposition=inline/);
+  assert.match(declarations(".native-image-width-preview"), /max-width:\s*100%\s*;/);
+  assert.match(declarations(".native-image-resize-handle"), /touch-action:\s*none\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.native-image-resize-handle\s*\{[^}]*min-height:\s*44px\s*;/,
   );
 });
 

@@ -471,12 +471,16 @@ metadata, не вызывая bootstrap или Task-detail rebase. Контра�
 
 Description хранит native raster embed и downloadable file link как versioned
 opaque reference `attachment:v1:<public-id>`, но не object key, filename или
-content URL. Все Task-write entrypoints сходятся в repository validator: он
+content URL. Raster token может завершаться canonical `{width=N}`, где integer
+`160..960` кратен `8`; отсутствие suffix — backward-compatible `Auto`. Это
+metadata конкретного embed, поэтому binary/Attachment row не меняются. Все
+Task-write entrypoints сходятся в repository validator: он
 различает image/file presentation, игнорирует literal code, требует ready
 Attachment той же Task и добавляет race-safe `EXISTS` predicates в update.
 Attachment delete применяет обратный guard по точной current Task
-version/description. Renderer отдельно разрешает image block и compact inline
-file link, лениво читает ACL-scoped metadata и строит private content route уже
+version/description. Renderer отдельно разрешает image block, применяет width
+через container-bounded CSS с сохранением aspect ratio и compact inline file
+link, лениво читает ACL-scoped metadata и строит private content route уже
 после server authorization; stale reference становится placeholder.
 Validator и renderer используют один Task Markdown fence scanner для backtick/
 tilde fences с 0–3 leading spaces; escaped native syntax остаётся literal в
@@ -525,7 +529,10 @@ stable attachment idempotency key, вставляет opaque image/file token т
 после ready response и сохраняет в `localStorage` только body через ключ current
 User + Task + optional root thread. Поэтому reload не повышает pending upload до
 ready, switch thread отменяет только текущую upload-сессию, а готовый удалённый
-из body token оставляет Attachment видимым в Task gallery.
+из body token оставляет Attachment видимым в Task gallery. Description и
+Comment authoring переиспользуют один image-width preview: pointer drag нижнего
+handle, keyboard step/presets и touch-safe preset path заменяют только exact
+token; `Auto` удаляет suffix и resize не запускает upload.
 
 Browser Comment renderer агрегирует только executable refs из смонтированных
 bodies текущей comment page и deterministic chunks максимум по 100 передаёт их

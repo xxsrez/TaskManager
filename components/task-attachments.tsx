@@ -388,27 +388,29 @@ export function TaskDescriptionImage({
   attachment,
   alt,
   caption,
+  width,
 }: {
   taskId: string;
   attachment: PublicAttachmentRecord | null | undefined;
   alt: string;
   caption: string | null;
+  width: number | null;
 }) {
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   if (attachment === undefined) {
-    return <span className="task-description-image-placeholder" role="status">Loading image…</span>;
+    return <figure className="task-description-image" style={{ width: width == null ? undefined : `min(100%, ${width}px)` }} data-presentation-width={width ?? "auto"}><span className="task-description-image-placeholder" role="status">Loading image…</span></figure>;
   }
   if (!attachment || attachment.kind !== "image" || attachment.state !== "ready") {
-    return <span className="task-description-image-placeholder" role="img" aria-label={alt}>Image unavailable</span>;
+    return <figure className="task-description-image" style={{ width: width == null ? undefined : `min(100%, ${width}px)` }} data-presentation-width={width ?? "auto"}><span className="task-description-image-placeholder" role="img" aria-label={alt}>Image unavailable</span></figure>;
   }
   const content = attachmentContentPath(taskId, attachment.ref);
   const source = thumbnailFailed
     ? `${content}?disposition=inline`
     : `${content}?variant=thumbnail&disposition=inline`;
   return (
-    <figure className="task-description-image">
+    <figure className="task-description-image" style={{ width: width == null ? undefined : `min(100%, ${width}px)` }} data-presentation-width={width ?? "auto"}>
       {unavailable ? (
         <span className="task-description-image-placeholder" role="img" aria-label={alt}>Image unavailable</span>
       ) : (

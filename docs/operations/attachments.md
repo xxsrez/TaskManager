@@ -38,6 +38,8 @@ metadata не редактируется вручную. Любое provision/mi
    description: Viewer после reload видит compact link и скачивает byte-identical
    original. Image embed остаётся preview; literal refs в inline/fenced code не
    валидируются как edges. Referenced file/image delete отклоняется.
+   Для raster проверить `{width=480}` в description и Comment после reload,
+   затем Reset to `Auto`: suffix исчезает, binary/Attachment record не меняются.
 6. Delete сохраняет object до grace; restore возвращает `ready`. Cleanup после
    cutoff удаляет object и metadata. В UAT используются только synthetic files.
 7. Открыть ту же Task во второй сессии: `task_attachments` invalidation должна

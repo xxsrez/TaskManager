@@ -5415,6 +5415,7 @@ function MarkdownBody({
             : attachments.get(nativeImage.ref) ?? null}
           alt={nativeImage.alt}
           caption={nativeImage.caption}
+          width={nativeImage.width}
         />,
       );
       continue;

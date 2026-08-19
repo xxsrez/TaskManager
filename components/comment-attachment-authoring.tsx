@@ -7,6 +7,7 @@ import {
   RotateCcw,
   X,
 } from "lucide-react";
+import { NativeImageWidthEditor } from "@/components/native-image-width-editor";
 import {
   notifyTaskAttachmentChanged,
   startTaskAttachmentUpload,
@@ -390,6 +391,12 @@ export function CommentAttachmentAuthoring({
           ))}
         </div>
       )}
+      <NativeImageWidthEditor
+        taskId={taskId}
+        value={value}
+        onChange={adoptValue}
+        disabled={disabled || blocked}
+      />
     </div>
   );
 }

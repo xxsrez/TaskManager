@@ -1021,7 +1021,7 @@ export const agentApiOpenApi = {
         required: ["title", "projectRef"],
         properties: {
           title: { type: "string", minLength: 1, maxLength: 500 },
-          description: { type: "string", maxLength: 50000, description: "Markdown. Native refs are valid only after Task creation: use ![alt](attachment:v1:<ref>) for a ready raster embed or [label](attachment:v1:<ref>) for a ready downloadable attachment." },
+          description: { type: "string", maxLength: 50000, description: "Markdown. Native refs are valid only after Task creation: use ![alt](attachment:v1:<ref>){width=480} for a ready raster embed with optional 160-960px width in 8px steps (omit the suffix for Auto), or [label](attachment:v1:<ref>) for a ready downloadable attachment." },
           statusRef: { type: "string" },
           priority: { enum: ["urgent", "high", "medium", "low", "none"] },
           projectRef: { type: "string", minLength: 1 },
@@ -1050,7 +1050,7 @@ export const agentApiOpenApi = {
         properties: {
           version: { type: "integer", minimum: 1 },
           title: { type: "string", minLength: 1, maxLength: 500 },
-          description: { type: "string", maxLength: 50000, description: "Markdown. A ready same-Task attachment can be referenced as ![alt](attachment:v1:<ref>) for raster preview or [label](attachment:v1:<ref>) for ACL-scoped original download." },
+          description: { type: "string", maxLength: 50000, description: "Markdown. A ready same-Task attachment can be referenced as ![alt](attachment:v1:<ref>){width=480} for raster preview (optional 160-960px width, 8px steps; omitted means Auto) or [label](attachment:v1:<ref>) for ACL-scoped original download." },
           statusRef: { type: "string" },
           priority: { enum: ["urgent", "high", "medium", "low", "none"] },
           projectRef: { type: "string", minLength: 1 },
@@ -1302,7 +1302,7 @@ export const agentApiOpenApi = {
         type: "object",
         required: ["body", "idempotencyKey"],
         properties: {
-          body: { type: "string", minLength: 1, maxLength: 100000 },
+          body: { type: "string", minLength: 1, maxLength: 100000, description: "Markdown-like body. Ready same-Task raster refs may append {width=N}, where N is 160-960 in 8px steps; omit it for responsive Auto." },
           idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
           parentCommentRef: { type: "string" },
         },
@@ -1313,7 +1313,7 @@ export const agentApiOpenApi = {
         required: ["version", "body"],
         properties: {
           version: { type: "integer", minimum: 1 },
-          body: { type: "string", minLength: 1, maxLength: 100000 },
+          body: { type: "string", minLength: 1, maxLength: 100000, description: "Markdown-like body. Ready same-Task raster refs may append {width=N}, where N is 160-960 in 8px steps; omit it for responsive Auto." },
         },
         additionalProperties: false,
       },

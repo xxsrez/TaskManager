@@ -91,7 +91,7 @@ test("native comments atomically index ready image/file refs across create, edit
   await database.prepare(
     "UPDATE attachments SET kind = 'image', media_type = 'image/png' WHERE id = ?",
   ).bind(image.id).run();
-  const imageToken = buildTaskImageToken(image.publicId, "Diagram", "Request flow");
+  const imageToken = buildTaskImageToken(image.publicId, "Diagram", "Request flow", 480);
   const fileToken = buildTaskFileLink(file.publicId, "Download notes");
   const literalToken = "[literal](attachment:v1:guessed-reference)";
   const body = [
@@ -112,10 +112,18 @@ test("native comments atomically index ready image/file refs across create, edit
     body,
     idempotencyKey: "root-with-refs",
   });
+  assert.match(root.body, /\{width=480\}/);
   assert.deepEqual(root.attachmentRefs, [
     { ref: image.publicId, presentation: "image" },
     { ref: file.publicId, presentation: "file" },
   ]);
+  await assert.rejects(
+    createComment(owner, task.id, {
+      body: `![Bad width](attachment:v1:${image.publicId}){width=481}`,
+      idempotencyKey: "root-bad-image-width",
+    }),
+    (error: unknown) => error instanceof ValidationError && /malformed/.test(error.message),
+  );
   assert.equal(await activityCount(task.id, "comment_added"), 1);
   const projectBackup = await exportProjectBackup(
     owner,
@@ -124,12 +132,20 @@ test("native comments atomically index ready image/file refs across create, edit
   );
   assert.equal(projectBackup.schemaVersion, 13);
   assert.equal(projectBackup.tables.comment_attachment_refs.length, 2);
+  assert.match(
+    String(projectBackup.tables.comments.find((comment) => comment.id === root.id)?.body ?? ""),
+    /\{width=480\}/,
+  );
   assert.equal(
     projectBackup.tables.comment_attachment_refs.every((ref) => ref.comment_id === root.id),
     true,
   );
   const systemBackup = await exportSystemBackup(owner);
   assert.equal(systemBackup.schemaVersion, 13);
+  assert.match(
+    String(systemBackup.tables.comments.find((comment) => comment.id === root.id)?.body ?? ""),
+    /\{width=480\}/,
+  );
   assert.equal(
     systemBackup.tables.comment_attachment_refs.filter((ref) => ref.comment_id === root.id).length,
     2,

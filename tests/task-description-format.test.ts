@@ -7,6 +7,7 @@ import {
 import {
   buildTaskFileLink,
   buildTaskImageToken,
+  replaceTaskImageWidth,
   hasMalformedTaskAttachmentReference,
   hasMalformedTaskImageReference,
   parseTaskAttachmentReferences,
@@ -28,12 +29,72 @@ test("native Task image tokens round-trip opaque refs and accessible metadata", 
     ref,
     alt: "Diagram ) one",
     caption: "Caption 'quoted'",
+    width: null,
     token,
     start: 0,
     end: token.length,
   });
   assert.equal(taskDescriptionUsesAttachment(`Before\n${token}\nAfter`, ref), true);
   assert.equal(parseTaskImageReferences(`${token}\n${token}`).length, 2);
+});
+
+test("native image width presentation is canonical, bounded, and local to one embed", () => {
+  const ref = "88ff4153-cb23-4043-aab8-6fbc97800762";
+  const compact = buildTaskImageToken(ref, "Diagram", "Request flow", 240);
+  const large = buildTaskImageToken(ref, "Diagram", null, 720);
+  assert.equal(
+    compact,
+    `![Diagram](attachment:v1:${ref} "Request flow"){width=240}`,
+  );
+  assert.deepEqual(
+    parseTaskImageReferences(`${compact}\n${large}`).map(({ ref: parsedRef, width }) => ({
+      ref: parsedRef,
+      width,
+    })),
+    [{ ref, width: 240 }, { ref, width: 720 }],
+  );
+
+  const resized = replaceTaskImageWidth(`${compact}\n${large}`, 0, compact.length, 480);
+  assert.equal(
+    resized,
+    `![Diagram](attachment:v1:${ref} "Request flow"){width=480}\n${large}`,
+  );
+  assert.equal(
+    replaceTaskImageWidth(resized, 0, resized.indexOf("\n"), null),
+    `${buildTaskImageToken(ref, "Diagram", "Request flow")}\n${large}`,
+  );
+});
+
+test("native image width rejects non-canonical, too small, and too large metadata", () => {
+  const ref = "88ff4153-cb23-4043-aab8-6fbc97800762";
+  for (const suffix of [
+    "{width=159}",
+    "{width=968}",
+    "{width=481}",
+    "{width=wide}",
+    "{width=240px}",
+    "{height=240}",
+  ]) {
+    const token = `![Diagram](attachment:v1:${ref})${suffix}`;
+    assert.equal(hasMalformedTaskAttachmentReference(token), true, suffix);
+    assert.deepEqual(parseTaskImageReferences(token), [], suffix);
+  }
+  assert.throws(() => buildTaskImageToken(ref, "Diagram", null, 159));
+  assert.throws(() => buildTaskImageToken(ref, "Diagram", null, 481));
+  assert.throws(() => replaceTaskImageWidth(
+    buildTaskImageToken(ref, "Diagram"),
+    0,
+    buildTaskImageToken(ref, "Diagram").length,
+    968,
+  ));
+});
+
+test("image width examples inside code and escaped Markdown stay literal", () => {
+  const ref = "88ff4153-cb23-4043-aab8-6fbc97800762";
+  const token = buildTaskImageToken(ref, "Diagram", null, 480);
+  const literal = [`\`${token}\``, "~~~md", token, "~~~", `\\${token}`].join("\n");
+  assert.deepEqual(parseTaskImageReferences(literal), []);
+  assert.equal(hasMalformedTaskAttachmentReference(literal), false);
 });
 
 test("native Task file links round-trip opaque refs and ignore literal code examples", () => {

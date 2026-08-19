@@ -1,6 +1,7 @@
 "use client";
 
 import { FilePlus2, ImagePlus, RotateCcw, X } from "lucide-react";
+import { NativeImageWidthEditor } from "@/components/native-image-width-editor";
 import {
   notifyTaskAttachmentChanged,
   startTaskAttachmentUpload,
@@ -289,6 +290,12 @@ export function TaskDescriptionEditor({
           )}
         </div>
       )}
+      <NativeImageWidthEditor
+        taskId={taskId}
+        value={value}
+        onChange={onChange}
+        disabled={disabled || upload?.status === "uploading"}
+      />
       <p className="task-description-image-help">Native image and file links keep only a private attachment ref. Edit the Markdown label to rename it; removing the token does not remove the file.</p>
     </div>
   );

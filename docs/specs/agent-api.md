@@ -413,14 +413,17 @@ retry не создаёт duplicate. MCP `create_subtask` использует �
 refs и возвращает authoritative child `TaskDetail`.
 
 `description` может содержать native raster embed
-`![alt](attachment:v1:<public-ref> "optional caption")` и downloadable file link
+`![alt](attachment:v1:<public-ref> "optional caption"){width=480}` и downloadable file link
 `[label](attachment:v1:<public-ref>)`. Сначала Attachment должен стать `ready`
 в этой же Task через Agent REST upload или MCP `upload_task_attachment`, затем
 ref вставляется обычным versioned Task update. Image embed дополнительно требует
 `kind=image`; file link допускает ready file/image. Общий repository path для
 REST, MCP и UI игнорирует literal inline/fenced code и отклоняет malformed,
 cross-Task, incompatible, deleted или неготовый reference без подтверждения
-существования недоступного resource. Task create с native reference отклоняется,
+существования недоступного resource. Optional `{width=N}` разрешён только для
+raster embed: integer `160..960` с шагом `8`; отсутствие suffix означает
+responsive `Auto`. Malformed/out-of-range width получает ту же validation
+boundary без existence leak. Task create с native reference отклоняется,
 потому что Attachment ещё не может принадлежать создаваемой Task.
 
 ```json
@@ -475,7 +478,8 @@ Body нормализует line endings, отбрасывает внешний 
 unsupported control characters и размер больше 100 000 characters. Он остаётся
 Markdown-like text: transport не принимает raw rendered HTML. Executable
 `attachment:v1` image/file refs проходят тот же bounded parser и same-Task
-ready validation, что Task description; literal code/escaped examples не
+ready validation, что Task description, включая optional bounded image
+`{width=N}`; literal code/escaped examples не
 создают edge. Comment representation возвращает только `attachmentRefs` с
 opaque `ref` и `presentation=image|file`, без filename/object key/content URL.
 Reactions возвращаются как aggregate count + `reactedByCurrentUser`, без списка

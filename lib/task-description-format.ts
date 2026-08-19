@@ -1,11 +1,16 @@
 export const TASK_ATTACHMENT_REFERENCE_SCHEME = "attachment:v1:";
 export const TASK_IMAGE_REFERENCE_SCHEME = TASK_ATTACHMENT_REFERENCE_SCHEME;
 export const TASK_ATTACHMENT_LABEL_MAX_LENGTH = 256;
+export const TASK_IMAGE_WIDTH_MIN = 160;
+export const TASK_IMAGE_WIDTH_MAX = 960;
+export const TASK_IMAGE_WIDTH_STEP = 8;
+export const TASK_IMAGE_WIDTH_PRESETS = [240, 480, 720] as const;
 
 export type TaskImageReference = {
   ref: string;
   alt: string;
   caption: string | null;
+  width: number | null;
   token: string;
   start: number;
   end: number;
@@ -39,7 +44,7 @@ export type TaskMarkdownInlineToken = {
 
 const attachmentRef = "([A-Za-z0-9_-]{8,128})";
 const nativeImagePattern = new RegExp(
-  `!\\[([^\\]\\n]{1,${TASK_ATTACHMENT_LABEL_MAX_LENGTH}})\\]\\(attachment:v1:${attachmentRef}(?:\\s+"([^"\\n]*)")?\\)`,
+  `!\\[([^\\]\\n]{1,${TASK_ATTACHMENT_LABEL_MAX_LENGTH}})\\]\\(attachment:v1:${attachmentRef}(?:\\s+"([^"\\n]*)")?\\)(?:\\{([^}\\n]{0,64})\\})?`,
   "g",
 );
 const nativeFilePattern = new RegExp(
@@ -52,11 +57,13 @@ export function parseTaskImageReferences(description: string) {
   const references: TaskImageReference[] = [];
   for (const match of executable.matchAll(nativeImagePattern)) {
     const alt = match[1]!.trim();
-    if (!alt) continue;
+    const width = parseTaskImageWidthAttribute(match[4]);
+    if (!alt || width === undefined) continue;
     references.push({
       ref: match[2]!,
       alt,
       caption: match[3]?.trim() || null,
+      width,
       token: description.slice(match.index, match.index + match[0].length),
       start: match.index,
       end: match.index + match[0].length,
@@ -198,6 +205,9 @@ export function hasMalformedTaskAttachmentReference(description: string) {
   let remaining = "";
   let offset = 0;
   for (const reference of parseTaskAttachmentReferences(description)) {
+    if (reference.kind === "image" && executable[reference.end] === "{") {
+      return true;
+    }
     remaining += executable.slice(offset, reference.start);
     offset = reference.end;
   }
@@ -223,6 +233,7 @@ export function buildTaskImageToken(
   attachmentRef: string,
   alt: string,
   caption?: string | null,
+  width?: number | null,
 ) {
   const safeRef = normalizeAttachmentRef(attachmentRef);
   const safeAlt = normalizeTokenText(alt).replaceAll("]", ")");
@@ -231,7 +242,40 @@ export function buildTaskImageToken(
     throw new Error("Image alt text is too long");
   }
   const safeCaption = caption ? normalizeTokenText(caption).replaceAll('"', "'") : "";
-  return `![${safeAlt}](${TASK_ATTACHMENT_REFERENCE_SCHEME}${safeRef}${safeCaption ? ` "${safeCaption}"` : ""})`;
+  const safeWidth = normalizeTaskImageWidth(width);
+  return `![${safeAlt}](${TASK_ATTACHMENT_REFERENCE_SCHEME}${safeRef}${safeCaption ? ` "${safeCaption}"` : ""})${safeWidth == null ? "" : `{width=${safeWidth}}`}`;
+}
+
+export function normalizeTaskImageWidth(value: number | null | undefined) {
+  if (value == null) return null;
+  if (!Number.isInteger(value) ||
+      value < TASK_IMAGE_WIDTH_MIN ||
+      value > TASK_IMAGE_WIDTH_MAX ||
+      value % TASK_IMAGE_WIDTH_STEP !== 0) {
+    throw new Error(
+      `Image width must be ${TASK_IMAGE_WIDTH_MIN}-${TASK_IMAGE_WIDTH_MAX} in ${TASK_IMAGE_WIDTH_STEP}px steps`,
+    );
+  }
+  return value;
+}
+
+export function replaceTaskImageWidth(
+  body: string,
+  start: number,
+  end: number,
+  width: number | null,
+) {
+  const reference = parseTaskImageReferences(body).find(
+    (candidate) => candidate.start === start && candidate.end === end,
+  );
+  if (!reference) throw new Error("Image embed could not be found");
+  const replacement = buildTaskImageToken(
+    reference.ref,
+    reference.alt,
+    reference.caption,
+    width,
+  );
+  return `${body.slice(0, start)}${replacement}${body.slice(end)}`;
 }
 
 export function buildTaskFileLink(attachmentRef: string, label: string) {
@@ -254,6 +298,17 @@ function normalizeAttachmentRef(value: string) {
 
 function normalizeTokenText(value: string) {
   return value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function parseTaskImageWidthAttribute(value: string | undefined): number | null | undefined {
+  if (value === undefined) return null;
+  const match = value.match(/^width=(\d{1,4})$/);
+  if (!match) return undefined;
+  try {
+    return normalizeTaskImageWidth(Number(match[1]));
+  } catch {
+    return undefined;
+  }
 }
 
 function executableMarkdown(description: string) {
