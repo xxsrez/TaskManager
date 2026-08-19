@@ -27,7 +27,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 12);
+  assert.equal(backup.schemaVersion, 13);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -297,7 +297,7 @@ test("schema 10 project bundles remain importable with empty attachment migratio
   assert.deepEqual(validated.tables.activity_events, current.tables.activity_events);
 });
 
-test("schema 11 project bundles remain importable with an empty comment attachment index", async () => {
+test("schema 12 project bundles remain importable with an empty comment attachment index", async () => {
   const current = await createProjectBackup({
     siteOrigin: "https://task-manager.example",
     tables: validProjectTables(),
@@ -314,7 +314,7 @@ test("schema 11 project bundles remain importable with an empty comment attachme
   const body = {
     format: current.format,
     version: current.version,
-    schemaVersion: 11,
+    schemaVersion: 12,
     siteOrigin: current.siteOrigin,
     exportedAt: current.exportedAt,
     projectId: current.projectId,
@@ -331,8 +331,33 @@ test("schema 11 project bundles remain importable with an empty comment attachme
     ...body,
     sha256: await checksum(JSON.stringify(body)),
   });
-  assert.equal(validated.schemaVersion, 11);
+  assert.equal(validated.schemaVersion, 12);
   assert.deepEqual(validated.tables.comment_attachment_refs, []);
+});
+
+test("schema 13 project bundles require the comment attachment index", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const tables = Object.fromEntries(
+    Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
+  );
+  const counts = Object.fromEntries(
+    Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
+  );
+  const body = { ...current, tables, counts };
+  delete (body as Partial<typeof current>).sha256;
+  await assert.rejects(
+    validateProjectBackup({
+      ...body,
+      sha256: await checksum(JSON.stringify(body)),
+    }),
+    /comment_attachment_refs/i,
+  );
 });
 
 test("project bundle rejects tampering after checksum", async () => {

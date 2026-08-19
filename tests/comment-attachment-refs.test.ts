@@ -109,14 +109,14 @@ test("native comments atomically index ready image/file refs across create, edit
     project.id,
     "https://example.test",
   );
-  assert.equal(projectBackup.schemaVersion, 12);
+  assert.equal(projectBackup.schemaVersion, 13);
   assert.equal(projectBackup.tables.comment_attachment_refs.length, 2);
   assert.equal(
     projectBackup.tables.comment_attachment_refs.every((ref) => ref.comment_id === root.id),
     true,
   );
   const systemBackup = await exportSystemBackup(owner);
-  assert.equal(systemBackup.schemaVersion, 12);
+  assert.equal(systemBackup.schemaVersion, 13);
   assert.equal(
     systemBackup.tables.comment_attachment_refs.filter((ref) => ref.comment_id === root.id).length,
     2,

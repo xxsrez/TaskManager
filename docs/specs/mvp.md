@@ -315,7 +315,7 @@ immutable ID и может группировать Tasks по значения�
   ACL-scoped вызовом при открытии Activity.
 - Body хранится как ограниченный plain Markdown-like text. UI безопасно
   отрисовывает форматирование без raw HTML и разрешает ссылки только схем
-  `http`, `https`, `mailto` и native `attachment:v1`.
+  `http`, `https` и `mailto`.
 - Native comment может ссылаться на готовый Attachment той же Task через тот
   же executable Markdown contract, что description: raster image использует
   `![alt](attachment:v1:<public-ref> "caption")`, downloadable file —
@@ -324,6 +324,9 @@ immutable ID и может группировать Tasks по значения�
   ссылок; guessed, cross-Task, deleted/pending и несовместимый image ref
   отклоняются без existence leak. Historical body immutable, но native reply
   на historical root может содержать такие ссылки.
+- Этот срез фиксирует server/domain, Agent/MCP и backup contract. Browser
+  composer и renderer для Comment attachment refs поставляются отдельными
+  UI-срезами и до этого не считаются реализованными этим foundation.
 - Импортированный comment становится historical `Comment` той же Task с
   snapshot имени автора и исходных timestamps/quote. Он не получает
   `author_user_id`, не impersonates текущего User и сохраняет source identity.
@@ -365,12 +368,12 @@ immutable ID и может группировать Tasks по значения�
   Каждая source row получает `migrated`/`exception`; offline повторный прогон не
   дублирует events. Raw evidence остаётся только в reconciliation/backup до
   отдельно разрешённого durable-data cleanup.
-- Project/system backup schema `12` сохраняет LabelGroup topology, events,
-  attachment migration outcomes и reconciliation evidence. System backup
-  дополнительно сохраняет versioned profile preferences; schema `11` получает
-  deterministic defaults для новых User fields, пустого LabelGroup catalog и
-  пустого comment attachment index. Current schema также сохраняет normalized
-  live Comment attachment refs.
+- Project/system backup schema `13` сохраняет events, attachment migration
+  outcomes, LabelGroup topology, normalized comment attachment refs и
+  reconciliation evidence. System backup дополнительно сохраняет versioned
+  profile preferences; schema `2`–`11` получает deterministic defaults для
+  новых User fields и пустой LabelGroup catalog, а schema `2`–`12` — пустой
+  comment attachment index.
   Activity хранится до удаления Task; отдельного retention deletion нет.
   Logical export ограничен 5 000 rows на таблицу и общим размером package,
   поэтому превышение останавливает export явно, а не обрезает историю.
@@ -514,7 +517,7 @@ immutable ID и может группировать Tasks по значения�
   schema `6` добавляет Project task code/sequence и aliases прежних Task
   identifiers. Legacy schema `2`–`5` импортируются детерминированно, но Task без
   Project требует явного mapping.
-- Schema `12` включает `comment_attachment_refs`; schema `2`–`11` после
+- Schema `13` включает `comment_attachment_refs`; schema `2`–`12` после
   проверки исходного checksum получает пустой index без попытки синтезировать
   historical edges из legacy comment bodies.
 - Restore materializes новые environment-scoped R2 keys до атомарного D1
@@ -941,4 +944,5 @@ created/updated/started/completed/canceled dates и archived state.
     system backup/restore schema `12`.
 23. Native Comment attachment refs: normalized bounded index, атомарные
     create/edit/delete, ACL-safe Agent/MCP projection, race-safe Attachment
-    delete guard, reconciliation и backup/restore schema `12`.
+    delete guard, reconciliation и backup/restore schema `13`; browser
+    composer/renderer входят в следующие UI-срезы.

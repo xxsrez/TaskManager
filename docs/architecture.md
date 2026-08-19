@@ -653,10 +653,11 @@ User preferences.
 12. Schema `12` переносит LabelGroup topology, а в system backup также
     versioned User `theme`, `sidebar_preference` и `version`; schema `2`–`11`
     получает пустой LabelGroup catalog, deterministic `system`/`expanded`
-    preferences и User version `1` после проверки исходного checksum. Та же
-    schema переносит `comment_attachment_refs` и валидирует exact body/index
-    equality для live native comments; schema `2`–`11` получает пустой index,
-    не сканируя legacy bodies в restore edge set.
+    preferences и User version `1` после проверки исходного checksum.
+13. Schema `13` переносит `comment_attachment_refs` и валидирует exact body/
+    index equality для live native comments. Validators schema `2`–`12` после
+    проверки исходного checksum добавляют пустой index для backward
+    compatibility, не сканируя legacy bodies в restore edge set.
 
 ### Project backup и restore
 
@@ -674,7 +675,7 @@ User preferences.
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
-6. Current schema `12` сохраняет historical comments, Activity,
+6. Current schema `13` сохраняет historical comments, Activity,
    LabelGroup topology, comment/activity/attachment reconciliation outcomes и
    normalized live Comment attachment refs;
    schema `2`–`8` получает deterministic legacy upgrades после проверки

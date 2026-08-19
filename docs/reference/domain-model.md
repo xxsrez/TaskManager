@@ -385,8 +385,8 @@ description, проверяет file/image semantics и атомарно зам�
 вместе с Comment, Activity и sync mutation. Soft-delete Comment удаляет edges,
 но не Attachment binary. Attachment delete допускается только при отсутствии
 description edge и `CommentAttachmentRef`; guarded predicates закрывают гонку
-с конкурентным comment create/edit. Logical backup schema `12` сохраняет и
-проверяет body/index equality; schema `2`–`11` нормализуется с пустым index.
+с конкурентным comment create/edit. Logical backup schema `13` сохраняет и
+проверяет body/index equality; schema `2`–`12` нормализуется с пустым index.
 
 ### AttachmentMigrationOutcome
 

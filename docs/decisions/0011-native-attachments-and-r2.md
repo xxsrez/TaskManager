@@ -21,7 +21,7 @@ Markdown file links. Canonical body по-прежнему хранит толь�
 пользовательский label; private original разрешается через current Task ACL.
 
 Дополнение 2026-08-19: live native Comments используют тот же Markdown contract
-и normalized `comment_attachment_refs`; backup schema `12` переносит index.
+и normalized `comment_attachment_refs`; backup schema `13` переносит index.
 
 ## Контекст
 
@@ -88,8 +88,8 @@ bootstrap или публичный URL. Attachment обязан менять д
     Comment create/edit/delete, Task Activity/sync и exact edge replacement
     выполняются одной D1 batch; Attachment delete повторяет indexed
     `NOT EXISTS` guard в atomic update. Historical bodies не переписываются,
-    reply на historical root остаётся native. Backup schema `12` переносит и
-    проверяет index, а schema `2`–`11` получает пустой edge set.
+    reply на historical root остаётся native. Backup schema `13` переносит и
+    проверяет index, а schema `2`–`12` получает пустой edge set.
 
 ## Последствия
 

@@ -896,7 +896,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Issue selection | Hover checkbox, multi-select, bulk bar | Берём | Только in-scope bulk actions |
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
-| Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates и mentions; Comment использует существующие Task attachments через native Markdown refs, Task-file upload после create имеет честный partial result |
+| Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates и mentions; server/domain Comment refs используют существующие Task attachments, browser authoring/rendering поставляются отдельным UI-срезом; Task-file upload после create имеет честный partial result |
 | Issue relations | Grouped blocking/related/duplicate links и explicit add/edit/remove | Берём ядро | Без auto-related из description/comments в первом writable slice |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |

@@ -19,7 +19,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 12);
+  assert.equal(backup.schemaVersion, 13);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -267,7 +267,7 @@ test("schema 10 system backups remain importable with empty attachment migration
   assert.deepEqual(validated.tables.activity_events, current.tables.activity_events);
 });
 
-test("schema 11 system backups remain importable with an empty comment attachment index", async () => {
+test("schema 12 system backups remain importable with an empty comment attachment index", async () => {
   const current = await createSystemBackup(validTables(), now);
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
@@ -278,7 +278,7 @@ test("schema 11 system backups remain importable with an empty comment attachmen
   const body = {
     format: current.format,
     version: current.version,
-    schemaVersion: 11,
+    schemaVersion: 12,
     siteOrigin: current.siteOrigin,
     environmentScope: current.environmentScope,
     exportedAt: current.exportedAt,
@@ -290,8 +290,27 @@ test("schema 11 system backups remain importable with an empty comment attachmen
     ...body,
     sha256: await checksum(JSON.stringify(body)),
   });
-  assert.equal(validated.schemaVersion, 11);
+  assert.equal(validated.schemaVersion, 12);
   assert.deepEqual(validated.tables.comment_attachment_refs, []);
+});
+
+test("schema 13 system backups require the comment attachment index", async () => {
+  const current = await createSystemBackup(validTables(), now);
+  const tables = Object.fromEntries(
+    Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
+  );
+  const counts = Object.fromEntries(
+    Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
+  );
+  const body = { ...current, tables, counts };
+  delete (body as Partial<typeof current>).sha256;
+  await assert.rejects(
+    validateSystemBackup({
+      ...body,
+      sha256: await checksum(JSON.stringify(body)),
+    }),
+    /comment_attachment_refs/i,
+  );
 });
 
 test("snapshot validation rejects content changed after export", async () => {
