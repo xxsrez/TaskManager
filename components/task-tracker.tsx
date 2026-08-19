@@ -131,7 +131,6 @@ import {
   moveTaskHighlight,
   reconcileTaskInteraction,
   selectTaskRange,
-  type TaskKeyboardIntegrationDetail,
   toggleTaskSelection,
 } from "@/lib/task-keyboard";
 import type {
