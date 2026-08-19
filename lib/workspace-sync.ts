@@ -143,6 +143,7 @@ function emptyChanges(): WorkspaceSyncChanges {
       taskAttachments: [],
     },
     labels: [],
+    labelGroups: [],
     taskLabels: [],
     relations: [],
   };
@@ -212,6 +213,7 @@ function buildChanges(
     // Only labels assigned to invalidated Tasks are projected. The owner
     // catalog remains detail-on-demand and never expands compact sync pages.
     labels: projection.labels,
+    labelGroups: projection.labelGroups,
     taskLabels: projection.taskLabels,
     labelContextTaskIds: projection.labelContextTaskIds,
     relations: [],

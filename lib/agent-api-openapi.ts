@@ -181,6 +181,25 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/label-groups": {
+      get: {
+        operationId: "listLabelGroups",
+        summary: "List canonical Label Groups visible through accessible catalogs",
+        parameters: [{ name: "archived", in: "query", schema: { type: "boolean", default: false } }],
+        responses: {
+          "200": envelopeResponse("Visible Label Groups", {
+            type: "object",
+            required: ["items", "page"],
+            properties: {
+              items: { type: "array", items: { $ref: "#/components/schemas/LabelGroup" } },
+              page: pageSchema,
+            },
+            additionalProperties: false,
+          }),
+          ...errorResponses,
+        },
+      },
+    },
     "/tasks": {
       get: {
         operationId: "listTasks",
@@ -360,6 +379,31 @@ export const agentApiOpenApi = {
           "200": envelopeResponse("Updated task", { $ref: "#/components/schemas/TaskDetail" }),
           ...errorResponses,
         },
+      },
+    },
+    "/tasks/{ref}/label-groups/{groupRef}": {
+      parameters: [referenceParameter(), {
+        name: "groupRef", in: "path", required: true, schema: { type: "string" },
+        description: "Canonical Label Group ref from listLabelGroups",
+      }],
+      put: {
+        operationId: "setTaskLabelGroupValue",
+        summary: "Atomically replace one Task Label Group value",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: {
+            type: "object", required: ["labelRef"],
+            properties: { labelRef: { type: "string" } }, additionalProperties: false,
+          } } },
+        },
+        responses: { "200": envelopeResponse("Updated task", { $ref: "#/components/schemas/TaskDetail" }), ...errorResponses },
+      },
+      delete: {
+        operationId: "clearTaskLabelGroupValue",
+        summary: "Idempotently clear one Task Label Group value",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        responses: { "200": envelopeResponse("Updated task", { $ref: "#/components/schemas/TaskDetail" }), ...errorResponses },
       },
     },
     "/tasks/{ref}/relations": {
@@ -664,7 +708,7 @@ export const agentApiOpenApi = {
     schemas: {
       Label: {
         type: "object",
-        required: ["ref", "name", "color", "description", "archivedAt", "version", "owner"],
+        required: ["ref", "name", "color", "description", "archivedAt", "version", "group", "owner"],
         properties: {
           ref: { type: "string" },
           name: { type: "string" },
@@ -672,12 +716,24 @@ export const agentApiOpenApi = {
           description: { type: "string" },
           archivedAt: { type: ["string", "null"], format: "date-time" },
           version: { type: "integer", minimum: 1 },
+          group: { type: ["object", "null"] },
           owner: {
             type: "object",
             required: ["isCurrentUser"],
             properties: { isCurrentUser: { type: "boolean" } },
             additionalProperties: false,
           },
+        },
+        additionalProperties: false,
+      },
+      LabelGroup: {
+        type: "object",
+        required: ["ref", "name", "description", "position", "archivedAt", "version", "labelCount", "taskCount", "owner"],
+        properties: {
+          ref: { type: "string" }, name: { type: "string" }, description: { type: "string" },
+          position: { type: "integer", minimum: 0 }, archivedAt: { type: ["string", "null"], format: "date-time" },
+          version: { type: "integer", minimum: 1 }, labelCount: { type: "integer", minimum: 0 },
+          taskCount: { type: "integer", minimum: 0 }, owner: { type: "object" },
         },
         additionalProperties: false,
       },

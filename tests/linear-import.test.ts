@@ -25,7 +25,8 @@ function fixture(): Record<string, unknown> {
       { id: "s2", name: "Done", type: "completed" },
       { id: "s3", name: "Duplicate", type: "duplicate" },
     ],
-    labels: [{ id: "l1", name: "Bug", color: "#eb5757" }],
+    labelGroups: [{ id: "lg1", name: "Kind", description: "Issue kind", position: 0 }],
+    labels: [{ id: "l1", name: "Bug", color: "#eb5757", groupId: "lg1" }],
     projects: [
       {
         id: "p1",
@@ -164,6 +165,8 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   assert.equal(plan.releases.length, 1);
   assert.equal(plan.tasks.length, 2);
   assert.equal(plan.taskLabels.length, 1);
+  assert.equal(plan.labelGroups.length, 1);
+  assert.equal(plan.labels[0]?.groupId, plan.labelGroups[0]?.id);
   assert.equal(plan.relations.length, 2);
   assert.equal(plan.views.length, 1);
 
@@ -245,6 +248,7 @@ test("Linear import writes Project identifiers and aliases idempotently", async 
     const first = await importLinearWorkspace(owner, fixture());
     const second = await importLinearWorkspace(owner, fixture());
     assert.equal(first.tasks, 2);
+    assert.equal(first.labelGroups, 1);
     assert.equal(first.activityMigrated, 1);
     assert.equal(first.activityExceptions, 1);
     assert.deepEqual(second, first);
@@ -271,6 +275,13 @@ test("Linear import writes Project identifiers and aliases idempotently", async 
       tasks.results.map((row) => [row.identifier, row.alias_identifier]),
       [["PRO-1", "AND-1"], ["PRO-2", "AND-2"]],
     );
+    const importedGroup = await harness.database.prepare(
+      `SELECT g.name, l.name AS label_name, t.identifier
+       FROM label_groups g JOIN labels l ON l.group_id = g.id
+       JOIN task_label_group_values v ON v.label_id = l.id
+       JOIN tasks t ON t.id = v.task_id`,
+    ).first<Record<string, unknown>>();
+    assert.deepEqual(importedGroup, { name: "Kind", label_name: "Bug", identifier: "PRO-2" });
     const historical = await harness.database.prepare(
       `SELECT c.source, c.author_user_id, c.historical_author_name,
          c.historical_quoted_text, c.created_at, t.comment_count

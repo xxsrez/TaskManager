@@ -671,11 +671,33 @@ export const workspaceSyncInvalidations = sqliteTable("workspace_sync_invalidati
   invalidationType: text("invalidation_type").notNull(),
 });
 
+export const labelGroups = sqliteTable(
+  "label_groups",
+  {
+    id: text("id").primaryKey(),
+    ownerUserId: text("owner_user_id").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    position: integer("position").notNull().default(0),
+    archivedAt: text("archived_at"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default("1970-01-01T00:00:00.000Z"),
+  },
+  (table) => [
+    uniqueIndex("idx_label_groups_owner_name_active")
+      .on(table.ownerUserId, sql`lower(${table.name})`)
+      .where(sql`${table.archivedAt} IS NULL`),
+    index("idx_label_groups_owner_position").on(table.ownerUserId, table.position),
+  ],
+);
+
 export const labels = sqliteTable(
   "labels",
   {
     id: text("id").primaryKey(),
     ownerUserId: text("owner_user_id").notNull(),
+    groupId: text("group_id").references(() => labelGroups.id, { onDelete: "set null" }),
     name: text("name").notNull(),
     color: text("color").notNull().default("#6b7280"),
     description: text("description").notNull().default(""),
@@ -700,6 +722,23 @@ export const taskLabels = sqliteTable(
   (table) => [
     primaryKey({ columns: [table.taskId, table.labelId] }),
     index("idx_task_labels_label_task").on(table.labelId, table.taskId),
+  ],
+);
+
+// Denormalized exclusivity guard for the task_labels join. SQL triggers keep
+// it synchronized, so every write path (including restore/import) is protected
+// by UNIQUE(task_id, group_id), not only by application validation.
+export const taskLabelGroupValues = sqliteTable(
+  "task_label_group_values",
+  {
+    taskId: text("task_id").notNull().references(() => tasks.id, { onDelete: "cascade" }),
+    groupId: text("group_id").notNull().references(() => labelGroups.id, { onDelete: "cascade" }),
+    labelId: text("label_id").notNull().references(() => labels.id, { onDelete: "cascade" }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.taskId, table.groupId] }),
+    uniqueIndex("idx_task_label_group_values_task_label").on(table.taskId, table.labelId),
+    index("idx_task_label_group_values_label").on(table.labelId, table.taskId),
   ],
 );
 

@@ -158,7 +158,9 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks/{ref}/relations/{relationRef}"), true);
   assert.equal(paths.includes("/labels"), true);
   assert.equal(paths.includes("/tasks/{ref}/labels"), true);
+  assert.equal(paths.includes("/label-groups"), true);
   assert.equal(paths.includes("/tasks/{ref}/labels/{labelRef}"), true);
+  assert.equal(paths.includes("/tasks/{ref}/label-groups/{groupRef}"), true);
   assert.equal(paths.includes("/projects"), true);
   assert.equal(paths.includes("/releases"), true);
   assert.equal(paths.includes("/views"), true);

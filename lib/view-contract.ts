@@ -9,6 +9,7 @@ import type {
   ViewDisplay,
   ViewFilterCondition,
   ViewFilterField,
+  ViewFilterLabelGroupValue,
   ViewFilterOperator,
   ViewFilterRelationValue,
   ViewQuery,
@@ -40,6 +41,7 @@ const filterFields: ViewFilterField[] = [
   "project",
   "release",
   "label",
+  "label_group",
   "estimate",
   "due_date",
   "parent",
@@ -101,6 +103,7 @@ const displayKeys = new Set([
   "direction",
   "showEmptyGroups",
   "visibleFields",
+  "labelGroupId",
 ]);
 const groupings: ViewDisplay["groupBy"][] = [
   "status",
@@ -108,6 +111,7 @@ const groupings: ViewDisplay["groupBy"][] = [
   "assignee",
   "project",
   "release",
+  "label_group",
   "none",
 ];
 const orderings: ViewDisplay["orderBy"][] = [
@@ -244,6 +248,24 @@ function validateCondition(value: unknown, index: number): ViewFilterCondition {
   const operator = input.operator as ViewFilterOperator;
   const hasValue = Object.hasOwn(input, "value");
 
+  if (field === "label_group") {
+    member(operator, ["is", "is_not"], "filter operator");
+    const groupValue = object(input.value, "Saved view Label Group value");
+    rejectUnknownKeys(groupValue, new Set(["groupId", "mode", "labelIds"]), "Saved view Label Group value");
+    const groupId = boundedString(groupValue.groupId, "Saved view Label Group id");
+    const mode = member(groupValue.mode, ["any", "values", "none"], "Label Group mode");
+    const labelIds = "labelIds" in groupValue
+      ? stringArray(groupValue.labelIds, "Saved view Label Group label ids")
+      : undefined;
+    if (mode === "values" && !labelIds?.length) {
+      throw new ValidationError("Saved view Label Group values cannot be empty");
+    }
+    if (mode !== "values" && labelIds !== undefined) {
+      throw new ValidationError("Saved view Label Group label ids are only valid for values mode");
+    }
+    return { field, operator, value: { groupId, mode, ...(labelIds ? { labelIds } : {}) } satisfies ViewFilterLabelGroupValue };
+  }
+
   if (categoricalFields.has(field)) {
     member(operator, categoricalOperators, "filter operator");
     if (operator === "is_empty") {
@@ -366,6 +388,9 @@ export function validateViewDisplay(value: unknown): ViewDisplay {
   if ("groupBy" in input) {
     fallback.groupBy = member(input.groupBy, groupings, "groupBy");
   }
+  if ("labelGroupId" in input) {
+    fallback.labelGroupId = nullableId(input.labelGroupId, "Saved view Label Group id");
+  }
   if ("orderBy" in input) {
     fallback.orderBy = member(input.orderBy, orderings, "orderBy");
   }
@@ -390,6 +415,10 @@ export function validateViewDisplay(value: unknown): ViewDisplay {
     }
     fallback.visibleFields = fields;
   }
+  if (fallback.groupBy === "label_group" && !fallback.labelGroupId) {
+    throw new ValidationError("Saved view Label Group grouping requires a canonical group id");
+  }
+  if (fallback.groupBy !== "label_group") delete fallback.labelGroupId;
   return fallback;
 }
 

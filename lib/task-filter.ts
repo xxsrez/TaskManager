@@ -6,6 +6,7 @@ import type {
   TaskRelationRecord,
   ViewFilterCondition,
   ViewFilterField,
+  ViewFilterLabelGroupValue,
   ViewFilterRelationValue,
   ViewQuery,
   WorkflowStatusRecord,
@@ -126,6 +127,20 @@ function compileCondition(
       "filter_label.label_id",
       condition,
     );
+  }
+  if (condition.field === "label_group") {
+    const value = condition.value as ViewFilterLabelGroupValue;
+    const parameters: unknown[] = [value.groupId];
+    let exists = `EXISTS (SELECT 1 FROM task_label_group_values filter_group
+      WHERE filter_group.task_id = ${alias}.id AND filter_group.group_id = ?`;
+    if (value.mode === "values") {
+      const ids = value.labelIds ?? [];
+      exists += ` AND filter_group.label_id IN (${ids.map(() => "?").join(", ")})`;
+      parameters.push(...ids);
+    }
+    exists += ")";
+    const positive = value.mode === "none" ? `NOT ${exists}` : exists;
+    return { sql: condition.operator === "is_not" ? `NOT (${positive})` : positive, parameters };
   }
   if (condition.field === "subtasks") {
     const present = condition.value === true;

@@ -154,6 +154,7 @@ import type {
   CommentPage,
   CommentRecord,
   CommentThreadRecord,
+  LabelGroupRecord,
   LabelRecord,
   Priority,
   ProjectRecord,
@@ -170,6 +171,7 @@ import type {
   UserRecord,
   ViewFilterCondition,
   ViewFilterField,
+  ViewFilterLabelGroupValue,
   ViewFilterOperator,
   ViewDisplay,
   ViewQuery,
@@ -188,7 +190,7 @@ type ShareTarget = {
   inherited: boolean;
 };
 
-type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "bulkProject" | "bulkRelease" | null;
+type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | null;
 export type CodexSetupMode = "desktop" | "cli";
 export type CodexSetupModeAction =
   | { type: "select"; mode: CodexSetupMode }
@@ -199,6 +201,7 @@ type TaskCreateDefaults = Partial<{
   assigneeUserId: string | null;
   projectId: string | null;
   releaseId: string | null;
+  labelId: string | null;
 }>;
 export type TaskSearchState = {
   query: string;
@@ -296,6 +299,7 @@ const groupByOptions: Array<{ value: ViewDisplay["groupBy"]; label: string }> = 
   { value: "assignee", label: "Assignee" },
   { value: "project", label: "Project" },
   { value: "release", label: "Release" },
+  { value: "label_group", label: "Label group" },
   { value: "none", label: "No grouping" },
 ];
 const viewOrderOptions: Array<{ value: ViewDisplay["orderBy"]; label: string }> = [
@@ -337,6 +341,7 @@ export function resolveArchiveBulkAction(
 }
 
 type LabelMutationResult = {
+  labelGroups?: LabelGroupRecord[];
   labels: LabelRecord[];
   taskLabels: TaskLabelAssignment[];
   taskIds: string[];
@@ -409,6 +414,7 @@ export function applyMutationResult(
       tasks: current.tasks.map((task) =>
         replaced.has(task.id) ? invalidateTaskActivity(task) : task,
       ),
+      labelGroups: mergeUnique(result.labelGroups ?? [], current.labelGroups ?? [], (group) => group.id),
       labels: mergeUnique(result.labels, current.labels, (label) => label.id),
       taskLabels: [
         ...current.taskLabels.filter((item) => !replaced.has(item.taskId)),
@@ -558,6 +564,7 @@ export function mergeDeferredSnapshot(
       incoming.views,
       viewCoverage === "complete" ? options.viewIdsAtRequest : undefined,
     ),
+    labelGroups: mergeUnique(incoming.labelGroups ?? [], current.labelGroups ?? [], (group) => group.id),
     labels: mergeUnique(incoming.labels, current.labels, (label) => label.id)
       .filter((label) => !options.taskIdsAtRequest ||
         incomingLabelIds.has(label.id) || retainedLabelIds.has(label.id)),
@@ -786,6 +793,7 @@ export function mergeTaskDetailContext(
       ...contextualTasks,
     ],
     labels: mergeUnique(detail.labels, current.labels, (label) => label.id),
+    labelGroups: mergeUnique(detail.labelGroups ?? [], current.labelGroups ?? [], (group) => group.id),
     taskLabels: [
       ...current.taskLabels.filter(
         (assignment) => assignment.taskId !== detail.task.id,
@@ -1934,6 +1942,10 @@ export function TaskTracker({
     projects: groupingProjects,
     releases: groupingReleases,
     users: groupingUsers,
+    labelGroups: data.labelGroups ?? [],
+    labels: data.labels,
+    taskLabels: data.taskLabels,
+    labelGroupId: currentDisplay.labelGroupId ?? null,
     groupBy: currentGroupBy,
     showEmptyGroups: shouldShowEmptyTaskGroups(
       currentGroupBy,
@@ -2145,6 +2157,14 @@ export function TaskTracker({
       (group.kind === "status" && Boolean(statusMap.get(group.value ?? "")?.archivedAt)))) {
       return false;
     }
+    if (currentGroupBy === "label_group") {
+      const groupId = currentDisplay.labelGroupId;
+      if (!groupId || !group) return false;
+      return mutate(`/api/tasks/${task.id}/label-groups`, "PUT", {
+        groupId,
+        labelId: group.value,
+      });
+    }
     const projectMove = projectGroupMovePreview(task, group);
     if (projectMove) {
       setPendingProjectMove(projectMove);
@@ -2205,7 +2225,7 @@ export function TaskTracker({
     const saved = await mutate(`/api/tasks/${task.id}/reorder`, "POST", {
       version: taskMutationVersion(task),
       groupBy: currentGroupBy,
-      expectedGroupValue: taskGroupValue(task, currentGroupBy),
+      expectedGroupValue: taskGroupValue(task, currentGroupBy, data.taskLabels, data.labels, currentDisplay.labelGroupId ?? null),
       targetGroupValue,
       previousTaskId,
       nextTaskId,
@@ -2373,7 +2393,12 @@ export function TaskTracker({
   }
 
   function changeGroupBy(nextGroupBy: ViewDisplay["groupBy"]) {
-    changeDisplay({ groupBy: nextGroupBy });
+    changeDisplay({
+      groupBy: nextGroupBy,
+      labelGroupId: nextGroupBy === "label_group"
+        ? currentDisplay.labelGroupId ?? (data.labelGroups ?? []).find((group) => !group.archivedAt)?.id ?? null
+        : null,
+    });
     setCollapsedGroups(new Set());
   }
 
@@ -3170,6 +3195,18 @@ export function TaskTracker({
                   <Tag size={14} />
                   <span>Labels</span>
                 </button>
+                <button
+                  className="account-menu-item"
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setAccountMenuOpen(false);
+                    setDialog("labelGroupSettings");
+                  }}
+                >
+                  <Tag size={14} />
+                  <span>Label groups</span>
+                </button>
                 <a className="account-menu-item" href="/import/project" role="menuitem">
                   <Download size={14} />
                   <span>Project backup</span>
@@ -3304,7 +3341,7 @@ export function TaskTracker({
                   </div>
                   <div className="popover-anchor display-anchor">
                     <button ref={displayTriggerRef} className={`button ghost ${displayOpen ? "active" : ""}`} aria-keyshortcuts="Shift+V" title="Display (Shift+V)" onClick={() => { setFilterOpen(false); setDisplayOpen((value) => !value); }}><SlidersHorizontal size={14} />Display</button>
-                    {displayOpen && <DisplayPopover display={currentDisplay} onLayout={changeLayout} onDisplay={changeDisplay} onClose={() => { setDisplayOpen(false); displayTriggerRef.current?.focus(); }} />}
+                    {displayOpen && <DisplayPopover display={currentDisplay} labelGroups={data.labelGroups ?? []} onLayout={changeLayout} onDisplay={changeDisplay} onClose={() => { setDisplayOpen(false); displayTriggerRef.current?.focus(); }} />}
                   </div>
                   {activeSavedView && canSaveView && hasViewChanges && <button className="button ghost save-view" onClick={() => void saveCurrentView()}><Save size={13} />Save</button>}
                   {activeSavedView && hasViewChanges && <button className="button ghost" onClick={cancelViewChanges}><X size={13} />Cancel</button>}
@@ -3357,6 +3394,7 @@ export function TaskTracker({
                         <button className={layout === "board" ? "active" : ""} onClick={() => changeLayout("board")}><Columns3 size={14} />Board</button>
                       </div>
                       <label className="mobile-display-summary"><span>Group by</span><select value={currentGroupBy} onChange={(event) => changeGroupBy(event.target.value as ViewDisplay["groupBy"])}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+                      {currentGroupBy === "label_group" && <label className="mobile-display-summary"><span>Label group</span><select value={currentDisplay.labelGroupId ?? ""} onChange={(event) => changeDisplay({ labelGroupId: event.target.value || null })}>{(data.labelGroups ?? []).filter((group) => !group.archivedAt || group.id === currentDisplay.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}
                       <label className="mobile-display-summary"><span>Order</span><select value={currentDisplay.orderBy} onChange={(event) => changeDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                       <label className="mobile-display-summary"><span>Direction</span><select value={currentDisplay.direction} disabled={currentDisplay.orderBy === "manual"} onChange={(event) => changeDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>
                       <fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={currentDisplay.visibleFields.includes(option.value)} onChange={() => changeDisplay({ visibleFields: toggleViewField(currentDisplay.visibleFields, option.value) })} />{option.label}</label>)}</fieldset>
@@ -3503,7 +3541,8 @@ export function TaskTracker({
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
       {dialog === "workflowSettings" && <WorkflowSettingsDialog initialStatuses={data.statuses.filter((status) => status.ownerUserId === data.user.id)} onClose={() => setDialog(null)} onStatuses={(statuses) => setData((current) => ({ ...current, statuses: [...current.statuses.filter((status) => status.ownerUserId !== current.user.id), ...statuses] }))} />}
-      {dialog === "labelSettings" && <LabelSettingsDialog onClose={() => setDialog(null)} onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))} />}
+      {dialog === "labelSettings" && <LabelSettingsDialog onClose={() => setDialog(null)} onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))} onGroups={(labelGroups) => setData((current) => ({ ...current, labelGroups: [...(current.labelGroups ?? []).filter((group) => group.ownerUserId !== current.user.id), ...labelGroups] }))} />}
+      {dialog === "labelGroupSettings" && <LabelGroupSettingsDialog initialGroups={(data.labelGroups ?? []).filter((group) => group.ownerUserId === data.user.id)} initialLabels={data.labels.filter((label) => label.ownerUserId === data.user.id)} onClose={() => setDialog(null)} onGroups={(labelGroups) => setData((current) => ({ ...current, labelGroups: [...(current.labelGroups ?? []).filter((group) => group.ownerUserId !== current.user.id), ...labelGroups] }))} onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))} />}
       {dialog === "bulkProject" && selectedTasks.length > 0 && <BulkProjectDialog data={data} tasks={selectedTasks} busy={busy} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "projectId", value: input.targetProjectId, clearRelease: input.clearRelease, clearAssignee: input.clearAssignee, confirmReleasedComposition: input.confirmReleasedComposition }); if (ok) { setDialog(null); setSelected(new Set()); } }} />}
       {dialog === "bulkRelease" && selectedTasks.length > 0 && <BulkReleaseDialog data={data} tasks={selectedTasks} busy={busy} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "releaseId", value: input.releaseId, confirmReleasedComposition: input.confirmReleasedComposition }); if (ok) { setDialog(null); setSelected(new Set()); } }} />}
     </main>
@@ -3969,7 +4008,9 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
   const [labelCatalog, setLabelCatalog] = useState<LabelRecord[]>(
     data.labels.filter((label) => label.ownerUserId === ownerId && !label.archivedAt),
   );
-  const [selectedLabelIds, setSelectedLabelIds] = useState<Set<string>>(new Set());
+  const [selectedLabelIds, setSelectedLabelIds] = useState<Set<string>>(
+    new Set(defaults.labelId ? [defaults.labelId] : []),
+  );
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [createdTask, setCreatedTask] = useState<TaskRecord | null>(null);
   const [composerError, setComposerError] = useState("");
@@ -4086,7 +4127,7 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
   }
 
   const pendingCount = attachments.filter((item) => item.status !== "complete").length;
-  return <Modal onClose={closeComposer} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">{createdTask ? `${createdTask.identifier} created` : "New task"}</span><button type="button" className="icon-button" onClick={closeComposer}><X size={15} /></button></div><fieldset className="composer-fields" disabled={Boolean(createdTask)}><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); setSelectedLabelIds(new Set()); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="" disabled>Select project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><LabelPicker labels={labelCatalog} selected={selectedLabelIds} onToggle={(labelId) => setSelectedLabelIds((current) => toggleSet(current, labelId))} disabled={Boolean(createdTask)} label="Task labels" /></fieldset>{!editableProjects.length && <p className="inline-note">Create an editable Project before adding a Task.</p>}<section className={`composer-attachments ${dragActive ? "drag-active" : ""}`} aria-label="Task attachments" onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false); }} onDrop={(event) => { event.preventDefault(); setDragActive(false); addFiles(event.dataTransfer.files); }} onPaste={(event) => { if (!event.clipboardData.files.length) return; event.preventDefault(); addFiles(event.clipboardData.files); }}><div><button className="button ghost" type="button" disabled={Boolean(createdTask)} onClick={() => fileInputRef.current?.click()}><Paperclip size={14} />Add files</button><span>{attachments.length ? `${attachments.length} selected` : "Files upload after Task creation"}</span></div><input ref={fileInputRef} className="visually-hidden" type="file" multiple aria-label="Choose files for the new task" disabled={Boolean(createdTask)} onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.target.value = ""; }} />{attachments.length > 0 && <div className="composer-attachment-list" aria-live="polite">{attachments.map((attachment) => <article key={attachment.id}><FileAttachmentIcon filename={attachment.file.name} /><div><b title={attachment.file.name}>{attachment.file.name}</b><small>{attachment.status === "uploading" ? `${attachment.progress}% uploaded` : attachment.status === "complete" ? "Attached" : attachment.error ?? attachment.status}</small>{attachment.status === "uploading" && <progress value={attachment.progress} max="100" aria-label={`Upload progress for ${attachment.file.name}`} />}</div>{attachment.status === "uploading" ? <button className="icon-button" type="button" aria-label={`Cancel ${attachment.file.name}`} onClick={() => activeUploads.current.get(attachment.id)?.()}><X size={14} /></button> : attachment.status === "failed" || attachment.status === "canceled" ? <button className="icon-button" type="button" aria-label={`Retry ${attachment.file.name}`} onClick={() => createdTask && void uploadOne(createdTask, attachment)}><RotateComposerIcon /></button> : !createdTask ? <button className="icon-button" type="button" aria-label={`Remove ${attachment.file.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={14} /></button> : null}</article>)}</div>}</section>{composerError && <p className="composer-upload-error" role="alert">{composerError}</p>}<div className="modal-footer"><span className="shortcut-hint">{createdTask ? "The Task is saved; closing never leaves orphan files." : <><kbd>⌘</kbd><kbd>Enter</kbd> to create</>}</span><button className="button primary" disabled={busy || !title.trim() || !projectId || attachments.some((item) => item.status === "uploading")}>{busy ? "Creating…" : createdTask ? pendingCount ? `Retry ${pendingCount} file${pendingCount === 1 ? "" : "s"}` : "Done" : attachments.length ? "Create and upload" : "Create task"}</button></div></form></Modal>;
+  return <Modal onClose={closeComposer} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">{createdTask ? `${createdTask.identifier} created` : "New task"}</span><button type="button" className="icon-button" onClick={closeComposer}><X size={15} /></button></div><fieldset className="composer-fields" disabled={Boolean(createdTask)}><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); setSelectedLabelIds(new Set()); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="" disabled>Select project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><LabelPicker labels={labelCatalog} selected={selectedLabelIds} onToggle={(labelId) => setSelectedLabelIds((current) => toggleLabelSelection(current, labelId, labelCatalog))} disabled={Boolean(createdTask)} label="Task labels" /></fieldset>{!editableProjects.length && <p className="inline-note">Create an editable Project before adding a Task.</p>}<section className={`composer-attachments ${dragActive ? "drag-active" : ""}`} aria-label="Task attachments" onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false); }} onDrop={(event) => { event.preventDefault(); setDragActive(false); addFiles(event.dataTransfer.files); }} onPaste={(event) => { if (!event.clipboardData.files.length) return; event.preventDefault(); addFiles(event.clipboardData.files); }}><div><button className="button ghost" type="button" disabled={Boolean(createdTask)} onClick={() => fileInputRef.current?.click()}><Paperclip size={14} />Add files</button><span>{attachments.length ? `${attachments.length} selected` : "Files upload after Task creation"}</span></div><input ref={fileInputRef} className="visually-hidden" type="file" multiple aria-label="Choose files for the new task" disabled={Boolean(createdTask)} onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.target.value = ""; }} />{attachments.length > 0 && <div className="composer-attachment-list" aria-live="polite">{attachments.map((attachment) => <article key={attachment.id}><FileAttachmentIcon filename={attachment.file.name} /><div><b title={attachment.file.name}>{attachment.file.name}</b><small>{attachment.status === "uploading" ? `${attachment.progress}% uploaded` : attachment.status === "complete" ? "Attached" : attachment.error ?? attachment.status}</small>{attachment.status === "uploading" && <progress value={attachment.progress} max="100" aria-label={`Upload progress for ${attachment.file.name}`} />}</div>{attachment.status === "uploading" ? <button className="icon-button" type="button" aria-label={`Cancel ${attachment.file.name}`} onClick={() => activeUploads.current.get(attachment.id)?.()}><X size={14} /></button> : attachment.status === "failed" || attachment.status === "canceled" ? <button className="icon-button" type="button" aria-label={`Retry ${attachment.file.name}`} onClick={() => createdTask && void uploadOne(createdTask, attachment)}><RotateComposerIcon /></button> : !createdTask ? <button className="icon-button" type="button" aria-label={`Remove ${attachment.file.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={14} /></button> : null}</article>)}</div>}</section>{composerError && <p className="composer-upload-error" role="alert">{composerError}</p>}<div className="modal-footer"><span className="shortcut-hint">{createdTask ? "The Task is saved; closing never leaves orphan files." : <><kbd>⌘</kbd><kbd>Enter</kbd> to create</>}</span><button className="button primary" disabled={busy || !title.trim() || !projectId || attachments.some((item) => item.status === "uploading")}>{busy ? "Creating…" : createdTask ? pendingCount ? `Retry ${pendingCount} file${pendingCount === 1 ? "" : "s"}` : "Done" : attachments.length ? "Create and upload" : "Create task"}</button></div></form></Modal>;
 }
 
 function FileAttachmentIcon({ filename }: { filename: string }) {
@@ -5358,6 +5399,24 @@ function LabelChip({ label }: { label: LabelRecord }) {
   return <span className={`label-chip ${label.archivedAt ? "archived" : ""}`} style={{ "--label-color": label.color } as React.CSSProperties} title={label.description || label.name}>{label.name}</span>;
 }
 
+export function toggleLabelSelection(
+  current: ReadonlySet<string>,
+  labelId: string,
+  labels: readonly LabelRecord[],
+): Set<string> {
+  const next = new Set(current);
+  if (next.has(labelId)) {
+    next.delete(labelId);
+    return next;
+  }
+  const selected = labels.find((label) => label.id === labelId);
+  if (selected?.groupId) {
+    for (const label of labels) if (label.groupId === selected.groupId) next.delete(label.id);
+  }
+  next.add(labelId);
+  return next;
+}
+
 function LabelPicker({ labels, selected, onToggle, disabled, label }: { labels: LabelRecord[]; selected: ReadonlySet<string>; onToggle: (labelId: string) => void; disabled?: boolean; label: string }) {
   const [query, setQuery] = useState("");
   const selectedLabels = labels.filter((item) => selected.has(item.id));
@@ -5377,6 +5436,7 @@ const filterFieldOptions: Array<{ value: ViewFilterField; label: string }> = [
   { value: "project", label: "Project" },
   { value: "release", label: "Release" },
   { value: "label", label: "Label" },
+  { value: "label_group", label: "Label group" },
   { value: "estimate", label: "Estimate" },
   { value: "due_date", label: "Due date" },
   { value: "parent", label: "Parent" },
@@ -5430,9 +5490,10 @@ export function FilterConditionEditor({ data, query, onQuery, compact = false }:
   const [propertySearch, setPropertySearch] = useState("");
   const canonical = canonicalViewQuery(query);
   const needle = propertySearch.trim().toLocaleLowerCase();
+  const availableFields = filterFieldOptions.filter((field) => field.value !== "label_group" || (data.labelGroups ?? []).length > 0);
   const fields = needle
-    ? filterFieldOptions.filter((field) => field.label.toLocaleLowerCase().includes(needle))
-    : filterFieldOptions;
+    ? availableFields.filter((field) => field.label.toLocaleLowerCase().includes(needle))
+    : availableFields;
   const replaceConditions = (conditions: ViewFilterCondition[]) => onQuery({
     version: 1,
     op: "all",
@@ -5486,6 +5547,12 @@ function FilterValueEditor({ condition, data, onChange }: {
     const value = condition.value as { type: TaskRelationRecord["type"] | "any"; direction: "outgoing" | "incoming" | "either" };
     return <span className="filter-relation-value"><select aria-label="Relation type" value={value.type} onChange={(event) => onChange({ ...value, type: event.target.value as typeof value.type })}><option value="any">Any relation</option><option value="blocks">Blocks</option><option value="related">Related</option><option value="duplicate_of">Duplicate of</option></select><select aria-label="Relation direction" value={value.direction} onChange={(event) => onChange({ ...value, direction: event.target.value as typeof value.direction })}><option value="either">Either direction</option><option value="outgoing">Outgoing</option><option value="incoming">Incoming</option></select></span>;
   }
+  if (condition.field === "label_group") {
+    const value = condition.value as ViewFilterLabelGroupValue;
+    const groups = data.labelGroups ?? [];
+    const availableLabels = data.labels.filter((label) => label.groupId === value.groupId);
+    return <span className="filter-relation-value"><select aria-label="Label Group" value={value.groupId} onChange={(event) => onChange({ groupId: event.target.value, mode: "any" })}>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><select aria-label="Label Group match" value={value.mode} onChange={(event) => { const mode = event.target.value as ViewFilterLabelGroupValue["mode"]; onChange({ groupId: value.groupId, mode, ...(mode === "values" ? { labelIds: availableLabels[0] ? [availableLabels[0].id] : [] } : {}) }); }}><option value="any">Any value</option><option value="values">Selected values</option><option value="none">No value</option></select>{value.mode === "values" && <select multiple aria-label="Label Group values" value={value.labelIds ?? []} onChange={(event) => onChange({ ...value, labelIds: [...event.currentTarget.selectedOptions].map((option) => option.value) })}>{availableLabels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select>}</span>;
+  }
   if (condition.field === "subtasks" || condition.field === "archived") {
     return <select aria-label={`${condition.field} value`} value={String(condition.value)} onChange={(event) => onChange(event.target.value === "true")}><option value="true">Yes</option><option value="false">No</option></select>;
   }
@@ -5521,10 +5588,14 @@ function filterOperators(field: ViewFilterField): ViewFilterOperator[] {
   if (field === "updated_at") return ["on", "before", "after", "on_or_before", "on_or_after", "recent", "is_empty"];
   if (field === "subtasks" || field === "archived") return ["is", "is_not"];
   if (field === "relation") return ["is", "is_not", "is_empty"];
+  if (field === "label_group") return ["is", "is_not"];
   return ["is", "is_not", "in", "not_in", "is_empty"];
 }
 
 function defaultFilterCondition(field: ViewFilterField, data: AppSnapshot): ViewFilterCondition {
+  if (field === "label_group") {
+    return { field, operator: "is", value: { groupId: (data.labelGroups ?? [])[0]?.id ?? "", mode: "any" } };
+  }
   if (["status", "assignee", "project", "release", "label", "parent"].includes(field) && !filterCatalogOptions(field, data).length) {
     return { field, operator: "is_empty" };
   }
@@ -5535,6 +5606,10 @@ function defaultFilterCondition(field: ViewFilterField, data: AppSnapshot): View
 function filterConditionValue(field: ViewFilterField, operator: ViewFilterOperator, data: AppSnapshot, previous?: ViewFilterCondition["value"]): Pick<ViewFilterCondition, "value"> | Record<string, never> {
   if (["is_empty", "overdue", "next_7_days"].includes(operator)) return {};
   if (field === "relation") return { value: typeof previous === "object" && previous && !Array.isArray(previous) ? previous : { type: "any", direction: "either" } };
+  if (field === "label_group") {
+    const existing = typeof previous === "object" && previous && !Array.isArray(previous) ? previous as ViewFilterLabelGroupValue : null;
+    return { value: existing ?? { groupId: (data.labelGroups ?? [])[0]?.id ?? "", mode: "any" } };
+  }
   if (field === "subtasks") return { value: typeof previous === "boolean" ? previous : true };
   if (field === "archived") return { value: typeof previous === "boolean" ? previous : false };
   if (field === "estimate") return { value: typeof previous === "number" ? previous : 0 };
@@ -5556,6 +5631,7 @@ function filterCatalogOptions(field: ViewFilterField, data: AppSnapshot) {
   if (field === "project") return data.projects.map((item) => ({ value: item.id, label: item.name }));
   if (field === "release") return data.releases.map((item) => ({ value: item.id, label: item.name }));
   if (field === "label") return data.labels.map((item) => ({ value: item.id, label: item.name }));
+  if (field === "label_group") return (data.labelGroups ?? []).map((item) => ({ value: item.id, label: item.name }));
   if (field === "parent") return data.tasks.map((item) => ({ value: item.id, label: `${item.identifier} · ${item.title}` }));
   return [];
 }
@@ -5567,13 +5643,19 @@ function filterConditionSummary(condition: ViewFilterCondition, data: AppSnapsho
     const value = condition.value as { type: string; direction: string };
     return `${field} ${filterOperatorLabels[condition.operator]} ${value.type}/${value.direction}`;
   }
+  if (condition.field === "label_group") {
+    const value = condition.value as ViewFilterLabelGroupValue;
+    const group = (data.labelGroups ?? []).find((item) => item.id === value.groupId)?.name ?? value.groupId;
+    const labels = (value.labelIds ?? []).map((id) => data.labels.find((label) => label.id === id)?.name ?? id);
+    return `${field} ${filterOperatorLabels[condition.operator]} ${group}: ${value.mode === "values" ? labels.join(", ") : value.mode}`;
+  }
   const options = new Map(filterCatalogOptions(condition.field, data).map((item) => [item.value, item.label]));
   const values = Array.isArray(condition.value) ? condition.value : [String(condition.value)];
   return `${field} ${filterOperatorLabels[condition.operator]} ${values.map((value) => options.get(String(value)) ?? String(value)).join(", ")}`;
 }
-function DisplayPopover({ display, onLayout, onDisplay, onClose }: { display: ViewDisplay; onLayout: (value: Layout) => void; onDisplay: (changes: Partial<ViewDisplay>) => void; onClose: () => void }) {
+function DisplayPopover({ display, labelGroups, onLayout, onDisplay, onClose }: { display: ViewDisplay; labelGroups: LabelGroupRecord[]; onLayout: (value: Layout) => void; onDisplay: (changes: Partial<ViewDisplay>) => void; onClose: () => void }) {
   const emptyGroupsDisabled = display.groupBy === "status" || display.groupBy === "none";
-  return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={display.layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={display.layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={display.groupBy} onChange={(event) => onDisplay({ groupBy: event.target.value as ViewDisplay["groupBy"] })}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Order by</span><select value={display.orderBy} onChange={(event) => onDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={display.direction} disabled={display.orderBy === "manual"} onChange={(event) => onDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={display.visibleFields.includes(option.value)} onChange={() => onDisplay({ visibleFields: toggleViewField(display.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox" title={display.groupBy === "status" ? "Empty status groups are always hidden." : undefined}><input type="checkbox" checked={display.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => onDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>{display.groupBy === "status" && <small className="display-help">Empty status groups are always hidden.</small>}</Popover>;
+  return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={display.layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={display.layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={display.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; onDisplay({ groupBy, labelGroupId: groupBy === "label_group" ? display.labelGroupId ?? labelGroups.find((group) => !group.archivedAt)?.id ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{display.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={display.labelGroupId ?? ""} onChange={(event) => onDisplay({ labelGroupId: event.target.value || null })}>{labelGroups.filter((group) => !group.archivedAt || group.id === display.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}<label className="popover-field"><span>Order by</span><select value={display.orderBy} onChange={(event) => onDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={display.direction} disabled={display.orderBy === "manual"} onChange={(event) => onDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={display.visibleFields.includes(option.value)} onChange={() => onDisplay({ visibleFields: toggleViewField(display.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox" title={display.groupBy === "status" ? "Empty status groups are always hidden." : undefined}><input type="checkbox" checked={display.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => onDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>{display.groupBy === "status" && <small className="display-help">Empty status groups are always hidden.</small>}</Popover>;
 }
 function Popover({ title, onClose, children, className = "" }: { title: string; onClose: () => void; children: React.ReactNode; className?: string }) { return <div className={`popover ${className}`}><header><b>{title}</b><button onClick={onClose}><X size={13} /></button></header>{children}</div>; }
 
@@ -5745,13 +5827,112 @@ function WorkflowSettingsDialog({
 }
 
 type LabelSettingsRecord = LabelRecord & { taskCount: number };
+type LabelGroupSettingsRecord = LabelGroupRecord & { taskCount: number; labelCount: number };
+
+function LabelGroupSettingsDialog({
+  initialGroups,
+  initialLabels,
+  onClose,
+  onGroups,
+  onLabels,
+}: {
+  initialGroups: LabelGroupRecord[];
+  initialLabels: LabelRecord[];
+  onClose: () => void;
+  onGroups: (groups: LabelGroupRecord[]) => void;
+  onLabels: (labels: LabelRecord[]) => void;
+}) {
+  const [groups, setGroups] = useState<LabelGroupSettingsRecord[]>(
+    initialGroups.map((group) => ({ ...group, taskCount: 0, labelCount: 0 })),
+  );
+  const [labels, setLabels] = useState<LabelRecord[]>(initialLabels);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    const [groupResponse, labelResponse] = await Promise.all([
+      fetch("/api/settings/label-groups", { cache: "no-store" }),
+      fetch("/api/settings/labels", { cache: "no-store" }),
+    ]);
+    const groupValue = await groupResponse.json() as { labelGroups?: LabelGroupSettingsRecord[]; error?: string };
+    const labelValue = await labelResponse.json() as { labels?: LabelSettingsRecord[]; error?: string };
+    if (!groupResponse.ok || !groupValue.labelGroups) throw new Error(groupValue.error ?? "Label Groups could not be loaded");
+    if (!labelResponse.ok || !labelValue.labels) throw new Error(labelValue.error ?? "Labels could not be loaded");
+    setGroups(groupValue.labelGroups);
+    setLabels(labelValue.labels);
+    onGroups(groupValue.labelGroups);
+    onLabels(labelValue.labels);
+  }, [onGroups, onLabels]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refresh().catch((cause) => setError(cause instanceof Error ? cause.message : "Catalog could not be loaded"));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [refresh]);
+
+  async function write(path: string, method: "POST" | "PATCH", body: Record<string, unknown>) {
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(path, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const value = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(value.error ?? "Catalog could not be saved");
+      await refresh();
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Catalog could not be saved");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const activeGroups = groups.filter((group) => !group.archivedAt);
+  const archivedGroups = groups.filter((group) => group.archivedAt);
+  const renderGroup = (group: LabelGroupSettingsRecord) => (
+    <article className={`label-settings-row ${group.archivedAt ? "archived" : ""}`} key={`${group.id}:${group.version}`}>
+      <form onSubmit={(event) => { event.preventDefault(); const value = Object.fromEntries(new FormData(event.currentTarget)); void write(`/api/settings/label-groups/${encodeURIComponent(group.id)}`, "PATCH", { action: "update", version: group.version, name: value.name, description: value.description, position: Number(value.position) }); }}>
+        <span className="label-settings-main">
+          <input name="name" defaultValue={group.name} disabled={busy || Boolean(group.archivedAt)} aria-label={`Name for ${group.name}`} />
+          <input name="description" defaultValue={group.description} disabled={busy || Boolean(group.archivedAt)} placeholder="Usage guidance" />
+          <input name="position" type="number" min="0" defaultValue={group.position} disabled={busy || Boolean(group.archivedAt)} aria-label={`Position for ${group.name}`} />
+          <small>{group.labelCount} labels · {group.taskCount} tasks</small>
+        </span>
+        {!group.archivedAt && <button className="button ghost compact" disabled={busy}>Save</button>}
+      </form>
+      <div className="label-settings-actions">
+        <button className={`button ghost compact ${group.archivedAt ? "" : "danger"}`} type="button" disabled={busy} onClick={() => void write(`/api/settings/label-groups/${encodeURIComponent(group.id)}`, "PATCH", { action: group.archivedAt ? "restore" : "archive", version: group.version })}>{group.archivedAt ? <ArchiveRestore size={13} /> : <Archive size={13} />}{group.archivedAt ? "Restore" : "Archive"}</button>
+      </div>
+    </article>
+  );
+
+  return <Modal onClose={() => !busy && onClose()} className="workflow-settings-modal" ariaLabel="Label Group settings">
+    <DialogHeader title="Label groups" icon={<Tag size={17} />} onClose={() => !busy && onClose()} />
+    <p className="dialog-copy">Each Task can hold one value from a group. Ungrouped labels remain independently selectable.</p>
+    {error && <p className="dialog-error" role="alert">{error}</p>}
+    <div className="label-settings-list">{activeGroups.map(renderGroup)}</div>
+    <form className="label-settings-create" onSubmit={async (event) => { event.preventDefault(); const form = event.currentTarget; const value = Object.fromEntries(new FormData(form)); if (await write("/api/settings/label-groups", "POST", value)) form.reset(); }}>
+      <input name="name" required maxLength={80} placeholder="New label group" disabled={busy} />
+      <input name="description" maxLength={2000} placeholder="Usage guidance" disabled={busy} />
+      <button className="button primary" disabled={busy}><Plus size={14} />Add group</button>
+    </form>
+    <section className="details-section">
+      <h2><Tag size={14} />Group membership</h2>
+      <div className="label-settings-list">{labels.map((label) => <label className="property-row" key={`${label.id}:${label.version}`}><span><span className="label-color-dot" style={{ background: label.color }} />{label.name}</span><select value={label.groupId ?? ""} disabled={busy || Boolean(label.archivedAt)} onChange={(event) => void write(`/api/settings/labels/${encodeURIComponent(label.id)}`, "PATCH", { action: "update", version: label.version, groupId: event.target.value || null })}><option value="">Ungrouped</option>{activeGroups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label>)}</div>
+    </section>
+    {archivedGroups.length > 0 && <details className="workflow-archived"><summary>Archived groups ({archivedGroups.length})</summary><div className="label-settings-list">{archivedGroups.map(renderGroup)}</div></details>}
+  </Modal>;
+}
 
 function LabelSettingsDialog({
   onClose,
   onLabels,
+  onGroups,
 }: {
   onClose: () => void;
   onLabels: (labels: LabelRecord[]) => void;
+  onGroups: (groups: LabelGroupRecord[]) => void;
 }) {
   const [labels, setLabels] = useState<LabelSettingsRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -5816,6 +5997,7 @@ function LabelSettingsDialog({
     event.preventDefault();
     const form = event.currentTarget;
     const values = Object.fromEntries(new FormData(form));
+    void onGroups;
     if (await request("/api/settings/labels", "POST", values, "create")) form.reset();
   }
 

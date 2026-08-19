@@ -349,10 +349,10 @@ export function encodeKeysetCursor(
 }
 
 export async function catalogReference(
-  kind: "status" | "label",
+  kind: "status" | "label" | "label-group",
   internalId: string,
 ): Promise<string> {
-  return digestReference(kind === "status" ? "sts" : "lbl", internalId);
+  return digestReference(kind === "status" ? "sts" : kind === "label" ? "lbl" : "lgr", internalId);
 }
 
 export async function digestReference(

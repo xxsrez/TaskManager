@@ -120,7 +120,7 @@ server-generated thumbnails, description images и lazy multi-session
 invalidation. Agent REST/MCP добавляют paginated metadata, private binary
 delivery, OpenAI native file input, versioned attachment delete и native
 relation commands. Attachment-aware system/Project backup и Task Activity
-schema `11` реализованы с legacy compatibility и resumable legacy attachment
+schema `12` реализованы с LabelGroup topology, legacy compatibility и resumable legacy attachment
 reconciliation.
 ADR-0012 заменяет optional/standalone Task semantics: каждая Task требует
 Project, получает identifier из Project code/sequence, а прежние identifiers

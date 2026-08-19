@@ -27,7 +27,7 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 11);
+  assert.equal(backup.schemaVersion, 12);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
@@ -434,7 +434,8 @@ function validProjectTables(): ProjectBackupTables {
     activity_events: [],
     activity_migration_outcomes: [],
     comment_reactions: [{ comment_id: "comment-1", user_id: "user-owner", emoji: "👍", created_at: now }],
-    labels: [{ id: "label-1", owner_user_id: "user-owner", name: "Backup", color: "#6b7280", description: "Keep for restore", archived_at: null, version: 1, created_at: now, updated_at: now }],
+    label_groups: [],
+    labels: [{ id: "label-1", owner_user_id: "user-owner", group_id: null, name: "Backup", color: "#6b7280", description: "Keep for restore", archived_at: null, version: 1, created_at: now, updated_at: now }],
     task_labels: [{ task_id: "task-2", label_id: "label-1" }],
     task_relations: [{
       id: "relation-1", source_task_id: "task-1", target_task_id: "task-2",
@@ -514,7 +515,7 @@ function legacyRelationRow(row: Record<string, string | number | null>) {
 function legacyLabelRow(row: Record<string, string | number | null>) {
   return Object.fromEntries(
     Object.entries(row).filter(([key]) =>
-      !["description", "archived_at", "version", "updated_at"].includes(key),
+      !["group_id", "description", "archived_at", "version", "updated_at"].includes(key),
     ),
   );
 }
@@ -543,6 +544,9 @@ function migratedDatabase() {
     "0021_freezing_preak.sql", "0022_cheerful_sue_storm.sql",
     "0023_tan_millenium_guard.sql",
     "0024_workable_zeigeist.sql",
+    "0025_revoke_scoped_view_grants.sql",
+    "0026_repair_legacy_workflow_catalogs.sql",
+    "0027_busy_silver_sable.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

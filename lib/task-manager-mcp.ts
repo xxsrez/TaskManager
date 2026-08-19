@@ -36,6 +36,7 @@ import {
   listAgentReleases,
   listAgentSavedViews,
   listAgentLabels,
+  listAgentLabelGroups,
   listAgentTasks,
   listAgentTaskAttachments,
   listAgentTaskActivity,
@@ -44,6 +45,7 @@ import {
   replaceAgentTaskLabels,
   setAgentTaskParent,
   setAgentTaskLabel,
+  setAgentTaskLabelGroupValue,
   resolveAgentTaskThread,
   setAgentCommentReaction,
   updateAgentTask,
@@ -139,6 +141,18 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
       _meta: toolSecurity("api:read"),
     },
     async ({ archived }) => toolCall(() => listAgentLabels(context.user, archived)),
+  );
+
+  server.registerTool(
+    "list_label_groups",
+    {
+      title: "List label groups",
+      description: "Lists canonical one-level Label Groups visible through accessible owner catalogs.",
+      inputSchema: z.object({ archived: z.boolean().optional() }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ archived }) => toolCall(() => listAgentLabelGroups(context.user, archived)),
   );
 
   server.registerTool(
@@ -491,6 +505,39 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, ...input }) => writeToolCall(context, () =>
       replaceAgentTaskLabels(context.user, taskRef, defined(input))),
+  );
+
+  server.registerTool(
+    "set_task_label_group_value",
+    {
+      title: "Set task label group value",
+      description: "Atomically replaces the current value of one Label Group on a Task.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical Task ref."),
+        groupRef: reference("Canonical Label Group ref from list_label_groups."),
+        labelRef: reference("Canonical active Label ref in the selected group."),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, groupRef, labelRef }) => writeToolCall(context, () =>
+      setAgentTaskLabelGroupValue(context.user, taskRef, groupRef, labelRef)),
+  );
+
+  server.registerTool(
+    "clear_task_label_group_value",
+    {
+      title: "Clear task label group value",
+      description: "Idempotently clears only the selected Label Group value on a Task.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical Task ref."),
+        groupRef: reference("Canonical Label Group ref from list_label_groups."),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, groupRef }) => writeToolCall(context, () =>
+      setAgentTaskLabelGroupValue(context.user, taskRef, groupRef, null)),
   );
 
   server.registerTool(

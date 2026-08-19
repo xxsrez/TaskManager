@@ -1,8 +1,11 @@
 import type {
+  LabelGroupRecord,
+  LabelRecord,
   Priority,
   ProjectRecord,
   ReleaseRecord,
   TaskRecord,
+  TaskLabelAssignment,
   UserRecord,
   ViewDisplay,
   WorkflowStatusRecord,
@@ -21,6 +24,8 @@ export type TaskGroup = {
   project?: ProjectRecord;
   release?: ReleaseRecord;
   assignee?: UserRecord;
+  labelGroup?: LabelGroupRecord;
+  labelRecord?: LabelRecord;
 };
 
 const priorities: Array<{ value: Priority; label: string }> = [
@@ -37,6 +42,10 @@ export function buildTaskGroups({
   projects,
   releases,
   users = [],
+  labelGroups = [],
+  labels = [],
+  taskLabels = [],
+  labelGroupId = null,
   groupBy,
   showEmptyGroups,
 }: {
@@ -45,6 +54,10 @@ export function buildTaskGroups({
   projects: ProjectRecord[];
   releases: ReleaseRecord[];
   users?: UserRecord[];
+  labelGroups?: LabelGroupRecord[];
+  labels?: LabelRecord[];
+  taskLabels?: TaskLabelAssignment[];
+  labelGroupId?: string | null;
   groupBy: ViewDisplay["groupBy"];
   showEmptyGroups: boolean;
 }): TaskGroup[] {
@@ -109,6 +122,34 @@ export function buildTaskGroups({
       label: "No project",
       tasks: tasks.filter((task) => task.projectId === null),
     });
+  } else if (groupBy === "label_group") {
+    const labelGroup = labelGroups.find((group) => group.id === labelGroupId);
+    if (!labelGroup) return [];
+    const assignedByTask = new Map(taskLabels.map((assignment) => [
+      `${assignment.taskId}:${labels.find((label) => label.id === assignment.labelId)?.groupId ?? ""}`,
+      assignment.labelId,
+    ]));
+    groups = labels
+      .filter((label) => label.groupId === labelGroup.id)
+      .filter((label) => !label.archivedAt || tasks.some((task) => assignedByTask.get(`${task.id}:${labelGroup.id}`) === label.id))
+      .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+      .map((label) => ({
+        id: `label-group:${labelGroup.id}:${label.id}`,
+        kind: "label_group" as const,
+        value: label.id,
+        label: label.name,
+        labelGroup,
+        labelRecord: label,
+        tasks: tasks.filter((task) => assignedByTask.get(`${task.id}:${labelGroup.id}`) === label.id),
+      }));
+    groups.push({
+      id: `label-group:${labelGroup.id}:none`,
+      kind: "label_group",
+      value: null,
+      label: `No ${labelGroup.name}`,
+      labelGroup,
+      tasks: tasks.filter((task) => !assignedByTask.has(`${task.id}:${labelGroup.id}`)),
+    });
   } else {
     const projectNames = new Map(projects.map((project) => [project.id, project.name]));
     groups = [...releases]
@@ -145,7 +186,12 @@ export function tasksInGroupOrder(
   return groups.flatMap((group) => collapsed.has(group.id) ? [] : group.tasks);
 }
 
-export function taskMatchesGroup(task: TaskRecord, group: TaskGroup): boolean {
+export function taskMatchesGroup(
+  task: TaskRecord,
+  group: TaskGroup,
+  taskLabels: readonly TaskLabelAssignment[] = [],
+  labels: readonly LabelRecord[] = [],
+): boolean {
   switch (group.kind) {
     case "status":
       return task.statusId === group.value;
@@ -157,6 +203,14 @@ export function taskMatchesGroup(task: TaskRecord, group: TaskGroup): boolean {
       return task.projectId === group.value;
     case "release":
       return task.releaseId === group.value;
+    case "label_group":
+      return taskGroupValue(
+        task,
+        "label_group",
+        taskLabels,
+        labels,
+        group.labelGroup?.id ?? null,
+      ) === group.value;
   }
 }
 
@@ -172,12 +226,18 @@ export function canMoveTaskToGroup(task: TaskRecord, group: TaskGroup): boolean 
   if (group.release) {
     return group.release.projectId === task.projectId && group.release.accessRole !== "viewer";
   }
+  if (group.labelGroup) {
+    return !group.labelGroup.archivedAt && (!group.labelRecord || !group.labelRecord.archivedAt);
+  }
   return true;
 }
 
 export function taskGroupValue(
   task: TaskRecord,
   groupBy: ViewDisplay["groupBy"],
+  taskLabels: readonly TaskLabelAssignment[] = [],
+  labels: readonly LabelRecord[] = [],
+  labelGroupId: string | null = null,
 ): string | null {
   switch (groupBy) {
     case "none": return null;
@@ -186,6 +246,11 @@ export function taskGroupValue(
     case "assignee": return task.assigneeUserId;
     case "project": return task.projectId;
     case "release": return task.releaseId;
+    case "label_group": {
+      const assignment = taskLabels.find((item) => item.taskId === task.id &&
+        labels.find((label) => label.id === item.labelId)?.groupId === labelGroupId);
+      return assignment?.labelId ?? null;
+    }
   }
 }
 
@@ -278,6 +343,8 @@ export function projectTaskGroupMove(
       next.releaseId = group.release?.id ?? null;
       if (group.release) next.projectId = group.release.projectId;
       break;
+    case "label_group":
+      break;
   }
   return next;
 }
@@ -334,5 +401,7 @@ export function taskGroupCreateDefaults(group: TaskGroup): Record<string, unknow
       return group.release
         ? { releaseId: group.release.id, projectId: group.release.projectId }
         : { releaseId: null };
+    case "label_group":
+      return { labelGroupId: group.labelGroup?.id, labelId: group.labelRecord?.id ?? null };
   }
 }

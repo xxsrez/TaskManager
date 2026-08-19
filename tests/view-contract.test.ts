@@ -53,6 +53,7 @@ test("saved view input validates every canonical filter family and reserves the 
       { field: "status_category", operator: "in", value: ["started", "completed"] },
       { field: "assignee", operator: "is_empty" },
       { field: "label", operator: "not_in", value: ["label-a"] },
+      { field: "label_group", operator: "is", value: { groupId: "group-size", mode: "values", labelIds: ["label-small"] } },
       { field: "estimate", operator: "gte", value: 3 },
       { field: "due_date", operator: "next_7_days" },
       { field: "parent", operator: "is", value: "task-parent" },
@@ -62,7 +63,10 @@ test("saved view input validates every canonical filter family and reserves the 
       { field: "archived", operator: "is", value: false },
     ],
   });
-  assert.equal(query.conditions.length, 10);
+  assert.equal(query.conditions.length, 11);
+  assert.deepEqual(validateViewDisplay({ groupBy: "label_group", labelGroupId: "group-size" }), {
+    ...validateViewDisplay({}), groupBy: "label_group", labelGroupId: "group-size",
+  });
   assert.throws(
     () => validateViewQuery({ version: 2, op: "all", conditions: [] }),
     ValidationError,
@@ -96,6 +100,11 @@ test("saved view input rejects values that can poison the client snapshot", () =
   );
   assert.throws(
     () => validateViewDisplay({ visibleFields: ["description"] }),
+    ValidationError,
+  );
+  assert.throws(() => validateViewDisplay({ groupBy: "label_group" }), ValidationError);
+  assert.throws(
+    () => validateViewQuery({ version: 1, op: "all", conditions: [{ field: "label_group", operator: "in", value: { groupId: "group-size", mode: "any" } }] }),
     ValidationError,
   );
 });

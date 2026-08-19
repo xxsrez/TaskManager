@@ -4,17 +4,21 @@ import { configureActorResolverForTests } from "../lib/auth";
 import { AgentApiError, parseAgentTaskListQuery } from "../lib/agent-api-contract";
 import {
   getAgentTaskDetail,
+  listAgentLabelGroups,
   listAgentLabels,
   listAgentTasks,
   moveAgentTask,
   setAgentTaskLabel,
+  setAgentTaskLabelGroupValue,
 } from "../lib/agent-api-repository";
 import { ConflictError, PermissionError, ValidationError } from "../lib/domain";
 import {
   bulkUpdateTasks,
   bulkMoveTasks,
   bulkSetTaskLabel,
+  bulkSetTaskLabelGroupValue,
   createLabel,
+  createLabelGroup,
   createProject,
   createRelease,
   createTask,
@@ -32,11 +36,13 @@ import {
   searchTaskIds,
   searchTaskSummaries,
   setTaskLabel,
+  setTaskLabelGroupValue,
   setTaskParent,
   transferProjectOwnership,
   updateAccessRole,
   updateTask,
   updateLabel,
+  updateLabelGroup,
 } from "../lib/repository";
 import { createTaskRelation, deleteTaskRelation } from "../lib/task-relations";
 import type { TaskRecord } from "../lib/types";
@@ -424,6 +430,137 @@ test("native Labels enforce owner catalogs, ACL, idempotency, archive, bulk, and
     setTaskLabel(editor, second.id, { labelId: frontend.id, active: false }),
     /not found/i,
   );
+});
+
+test("Label Groups enforce one atomic value across ACL, bulk, Agent, and concurrency paths", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "label-group-owner-account",
+    email: "label-group-owner@example.test",
+  });
+  const editor = await getOrCreateUser({
+    ...collaboratorActor,
+    providerAccountKey: "label-group-editor-account",
+    email: "label-group-editor@example.test",
+  });
+  await createProject(owner, { name: "Label Group Project", taskCode: "LG" });
+  const project = (await getSnapshot(owner)).projects.find((item) => item.name === "Label Group Project")!;
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: editor.email,
+    permission: "viewer",
+  });
+
+  let groups = await createLabelGroup(owner, { name: "Size", description: "Exactly one shirt size" });
+  const size = groups.find((group) => group.name === "Size")!;
+  await assert.rejects(createLabelGroup(owner, { name: "size" }), /already exists/i);
+  await assert.rejects(createLabel(editor, { name: "Foreign size", groupId: size.id }), /Label Group not found/i);
+  let labels = await createLabel(owner, { name: "Small", groupId: size.id, color: "#336699" });
+  labels = await createLabel(owner, { name: "Medium", groupId: size.id, color: "#993366" });
+  labels = await createLabel(owner, { name: "Independent", color: "#669933" });
+  const small = labels.find((label) => label.name === "Small")!;
+  const medium = labels.find((label) => label.name === "Medium")!;
+  const independent = labels.find((label) => label.name === "Independent")!;
+  const first = await createTask(owner, { title: "Sized first", projectId: project.id, labelIds: [small.id, independent.id] });
+  const second = await createTask(owner, { title: "Sized second", projectId: project.id });
+
+  await assert.rejects(
+    setTaskLabelGroupValue(editor, first.id, { groupId: size.id, labelId: medium.id }),
+    PermissionError,
+  );
+  const grant = (await getSnapshot(owner)).collaborators.find(
+    (item) => item.resourceId === project.id && item.userId === editor.id,
+  )!;
+  await updateAccessRole(owner, grant.grantId, { permission: "editor" });
+
+  await setTaskLabel(editor, first.id, { labelId: medium.id, active: true });
+  const eventCountBeforeNoop = Number((await database.prepare(
+    "SELECT COUNT(*) AS count FROM activity_events WHERE task_id = ? AND event_type = 'label_group_value_changed'",
+  ).bind(first.id).first<{ count: number }>())!.count);
+  await setTaskLabelGroupValue(editor, first.id, { groupId: size.id, labelId: medium.id });
+  assert.equal(Number((await database.prepare(
+    "SELECT COUNT(*) AS count FROM activity_events WHERE task_id = ? AND event_type = 'label_group_value_changed'",
+  ).bind(first.id).first<{ count: number }>())!.count), eventCountBeforeNoop);
+  let state = await getTaskLabelState(editor, first.id);
+  assert.deepEqual(
+    state.taskLabels.map((assignment) => assignment.labelId).sort(),
+    [medium.id, independent.id].sort(),
+  );
+  assert.equal(
+    Number((await database.prepare(
+      "SELECT COUNT(*) AS count FROM task_label_group_values WHERE task_id = ? AND group_id = ?",
+    ).bind(first.id, size.id).first<{ count: number }>())!.count),
+    1,
+  );
+
+  await Promise.all([
+    setTaskLabelGroupValue(editor, first.id, { groupId: size.id, labelId: small.id }),
+    setTaskLabelGroupValue(editor, first.id, { groupId: size.id, labelId: medium.id }),
+  ]);
+  state = await getTaskLabelState(editor, first.id);
+  assert.equal(
+    state.taskLabels.filter((assignment) => [small.id, medium.id].includes(assignment.labelId)).length,
+    1,
+  );
+
+  const beforeBulkEvents = Number((await database.prepare(
+    "SELECT COUNT(*) AS count FROM activity_events WHERE event_type = 'label_group_value_changed' AND task_id IN (?, ?)",
+  ).bind(first.id, second.id).first<{ count: number }>())!.count);
+  await bulkSetTaskLabelGroupValue(editor, { ids: [first.id, second.id], groupId: size.id, labelId: medium.id });
+  const afterBulkEvents = Number((await database.prepare(
+    "SELECT COUNT(*) AS count FROM activity_events WHERE event_type = 'label_group_value_changed' AND task_id IN (?, ?)",
+  ).bind(first.id, second.id).first<{ count: number }>())!.count);
+  assert.ok(afterBulkEvents - beforeBulkEvents >= 1 && afterBulkEvents - beforeBulkEvents <= 2);
+  for (const task of [first, second]) {
+    const taskState = await getTaskLabelState(editor, task.id);
+    assert.equal(taskState.taskLabels.some((assignment) => assignment.labelId === medium.id), true);
+    assert.equal(taskState.taskLabels.some((assignment) => assignment.labelId === small.id), false);
+  }
+
+  await assert.rejects(
+    updateLabel(owner, independent.id, { action: "update", version: independent.version, groupId: size.id }),
+    /group conflicts|already has another Label|at most one/i,
+  );
+  assert.equal((await getTaskLabelState(owner, first.id)).labels.find((label) => label.id === independent.id)?.groupId, null);
+
+  groups = await updateLabelGroup(owner, size.id, { action: "archive", version: size.version });
+  const archived = groups.find((group) => group.id === size.id)!;
+  await setTaskLabelGroupValue(editor, second.id, { groupId: size.id, labelId: null });
+  await assert.rejects(
+    setTaskLabelGroupValue(editor, second.id, { groupId: size.id, labelId: small.id }),
+    /Archived Label Groups/i,
+  );
+  await assert.rejects(updateLabelGroup(owner, size.id, { action: "restore", version: size.version }), ConflictError);
+  groups = await updateLabelGroup(owner, size.id, { action: "restore", version: archived.version });
+
+  const agentGroups = await listAgentLabelGroups(editor, false);
+  const groupRef = agentGroups.items.find((group) => group.name === "Size")!.ref;
+  const agentLabels = await listAgentLabels(editor, false);
+  const smallRef = agentLabels.items.find((label) => label.name === "Small")!.ref;
+  await setAgentTaskLabelGroupValue(editor, first.publicId, groupRef, smallRef);
+  assert.equal((await getTaskLabelState(editor, first.id)).taskLabels.some((assignment) => assignment.labelId === small.id), true);
+  const grouped = await queryTaskSummaries(editor, {
+    query: { version: 1, op: "all", conditions: [{ field: "label_group", operator: "is", value: { groupId: size.id, mode: "values", labelIds: [small.id] } }] },
+  });
+  assert.deepEqual(grouped.tasks.map((task) => task.id), [first.id]);
+  const withoutSize = await queryTaskSummaries(editor, {
+    query: { version: 1, op: "all", conditions: [{ field: "label_group", operator: "is", value: { groupId: size.id, mode: "none" } }] },
+  });
+  assert.equal(withoutSize.tasks.some((task) => task.id === second.id), true);
+
+  await database.prepare("DELETE FROM task_labels WHERE task_id = ? AND label_id IN (?, ?)")
+    .bind(second.id, small.id, medium.id).run();
+  await assert.rejects(
+    database.batch([
+      database.prepare("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)").bind(second.id, small.id),
+      database.prepare("INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)").bind(second.id, medium.id),
+    ]),
+    /UNIQUE|constraint|one Label/i,
+  );
+  assert.equal(Number((await database.prepare(
+    "SELECT COUNT(*) AS count FROM task_labels WHERE task_id = ? AND label_id IN (?, ?)",
+  ).bind(second.id, small.id, medium.id).first<{ count: number }>())!.count), 0);
 });
 
 test("task route maps authentication and validation boundaries", async () => {

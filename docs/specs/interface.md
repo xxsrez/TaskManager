@@ -525,6 +525,15 @@ List повторяет плотную grouped-list модель Linear.
   состояние ко всему набору, либо не меняет ни одну Task.
 - Dialog и picker складываются в одну колонку на mobile, сохраняют все actions
   в portrait и landscape и не создают horizontal overflow.
+- Account menu `Label groups` открывает owner-only управление name,
+  description, position, archive/restore и membership Labels. Grouped Labels
+  представлены single-select по каждой группе; выбор нового значения атомарно
+  заменяет старое, `Clear` снимает значение. Ungrouped секция остаётся
+  searchable multi-select.
+- Display control при `Group by: Label group` требует конкретную группу и
+  строит колонки по её Labels плюс `No <group>`. Drag меняет только group value;
+  create-in-column передаёт соответствующий Label. Archived группы/Labels
+  остаются видимыми для исторических Tasks, но не являются drop/create target.
 
 ### 8.3 Peek
 

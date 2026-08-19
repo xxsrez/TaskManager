@@ -120,9 +120,22 @@ export type TaskRecord = {
 export type LabelRecord = {
   id: string;
   ownerUserId: string;
+  groupId?: string | null;
   name: string;
   color: string;
   description: string;
+  archivedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LabelGroupRecord = {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  description: string;
+  position: number;
   archivedAt: string | null;
   version: number;
   createdAt: string;
@@ -147,6 +160,7 @@ export type TaskRelationRecord = {
 export type TaskDetailRecord = {
   task: TaskRecord;
   relatedTasks: TaskRecord[];
+  labelGroups?: LabelGroupRecord[];
   labels: LabelRecord[];
   taskLabels: TaskLabelAssignment[];
   relations: TaskRelationRecord[];
@@ -278,6 +292,7 @@ export type ViewFilterField =
   | "project"
   | "release"
   | "label"
+  | "label_group"
   | "estimate"
   | "due_date"
   | "parent"
@@ -316,12 +331,19 @@ export type ViewFilterRelationValue = {
   direction: "outgoing" | "incoming" | "either";
 };
 
+export type ViewFilterLabelGroupValue = {
+  groupId: string;
+  mode: "any" | "values" | "none";
+  labelIds?: string[];
+};
+
 export type ViewFilterValue =
   | string
   | number
   | boolean
   | string[]
-  | ViewFilterRelationValue;
+  | ViewFilterRelationValue
+  | ViewFilterLabelGroupValue;
 
 export type ViewFilterCondition = {
   field: ViewFilterField;
@@ -353,7 +375,9 @@ export type ViewQuery = Partial<CanonicalViewQuery> & {
 
 export type ViewDisplay = {
   layout: "list" | "board";
-  groupBy: "status" | "priority" | "assignee" | "project" | "release" | "none";
+  groupBy: "status" | "priority" | "assignee" | "project" | "release" | "label_group" | "none";
+  /** Required only when groupBy is label_group. Stored by immutable group identity. */
+  labelGroupId?: string | null;
   orderBy: "manual" | "priority" | "created" | "updated" | "due" | "title";
   direction: "asc" | "desc";
   showEmptyGroups: boolean;
@@ -421,6 +445,7 @@ export type SystemBackupCounts = Record<
   | "activity_migration_outcomes"
   | "comment_reactions"
   | "labels"
+  | "label_groups"
   | "task_labels"
   | "task_relations"
   | "saved_views"
@@ -481,6 +506,7 @@ export type AppSnapshot = {
   tasks: TaskRecord[];
   taskWindow?: { limit: number; truncated: boolean };
   labels: LabelRecord[];
+  labelGroups?: LabelGroupRecord[];
   taskLabels: TaskLabelAssignment[];
   relations: TaskRelationRecord[];
   views: SavedViewRecord[];
@@ -529,6 +555,7 @@ export type WorkspaceSyncChanges = {
   };
   /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   labels: LabelRecord[];
+  labelGroups?: LabelGroupRecord[];
   /** @deprecated Compatibility fields; lazy task context is invalidated by ID. */
   taskLabels: TaskLabelAssignment[];
   /** Tasks whose Label assignments are authoritatively replaced by taskLabels. */

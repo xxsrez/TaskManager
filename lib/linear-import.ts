@@ -35,6 +35,7 @@ export function decodeLinearImportPayload(bytes: Uint8Array): {
 
 export type LinearImportReport = {
   statuses: number;
+  labelGroups: number;
   labels: number;
   projects: number;
   releases: number;
@@ -121,6 +122,15 @@ type PlannedLabel = {
   sourceId: string;
   name: string;
   color: string;
+  groupId: string | null;
+};
+
+type PlannedLabelGroup = {
+  id: string;
+  sourceId: string;
+  name: string;
+  description: string;
+  position: number;
 };
 
 type PlannedRelation = {
@@ -150,6 +160,7 @@ type PlannedExternalRecord = {
 export type LinearImportPlan = {
   exportedAt: string;
   statuses: PlannedStatus[];
+  labelGroups: PlannedLabelGroup[];
   labels: PlannedLabel[];
   projects: PlannedProject[];
   releases: PlannedRelease[];
@@ -204,6 +215,7 @@ export function buildLinearImportPlan(
   }
   const exportedAt = isoInstant(source.exportedAt, "exportedAt");
   const sourceStatuses = array(payload.statuses, "statuses");
+  const sourceLabelGroups = array(payload.labelGroups ?? [], "labelGroups");
   const sourceLabels = array(payload.labels, "labels");
   const sourceProjects = array(payload.projects, "projects");
   const sourceIssues = array(payload.issues, "issues");
@@ -251,14 +263,32 @@ export function buildLinearImportPlan(
   });
   const statusByName = new Map(statuses.map((status) => [status.sourceName, status]));
 
+  const labelGroups = sourceLabelGroups.map((entry, index) => {
+    const row = object(entry, `labelGroups[${index}]`);
+    const sourceId = requiredString(row.id, `labelGroups[${index}].id`);
+    return {
+      id: targetId(ownerUserId, "label-group", sourceId),
+      sourceId,
+      name: requiredString(row.name, `labelGroups[${index}].name`),
+      description: optionalString(row.description) ?? "",
+      position: optionalInteger(row.position) ?? index,
+    };
+  });
+  const labelGroupBySourceId = new Map(labelGroups.map((group) => [group.sourceId, group]));
+
   const labels = sourceLabels.map((entry, index) => {
     const row = object(entry, `labels[${index}]`);
     const sourceId = requiredString(row.id, `labels[${index}].id`);
+    const sourceGroupId = optionalString(row.groupId);
+    if (sourceGroupId && !labelGroupBySourceId.has(sourceGroupId)) {
+      throw new ValidationError(`Linear label ${sourceId} references missing Label Group ${sourceGroupId}`);
+    }
     return {
       id: targetId(ownerUserId, "label", sourceId),
       sourceId,
       name: requiredString(row.name, `labels[${index}].name`),
       color: optionalString(row.color) ?? "#6b7280",
+      groupId: sourceGroupId ? labelGroupBySourceId.get(sourceGroupId)!.id : null,
     };
   });
   const labelByName = new Map(labels.map((label) => [label.name, label]));
@@ -459,6 +489,15 @@ export function buildLinearImportPlan(
       }
       taskLabels.push({ taskId: task.id, labelId: label.id });
     }
+    const grouped = new Set<string>();
+    for (const assignment of taskLabels.filter((assignment) => assignment.taskId === task.id)) {
+      const label = labels.find((candidate) => candidate.id === assignment.labelId)!;
+      if (!label.groupId) continue;
+      if (grouped.has(label.groupId)) {
+        throw new ValidationError(`Linear issue ${sourceId} has more than one Label in the same Label Group`);
+      }
+      grouped.add(label.groupId);
+    }
     return task;
   });
 
@@ -548,6 +587,7 @@ export function buildLinearImportPlan(
 
   return {
     exportedAt,
+    labelGroups,
     statuses,
     labels,
     projects,
@@ -612,19 +652,32 @@ export async function importLinearWorkspace(
   );
 
   await runBatches(
+    plan.labelGroups.map((group) => db.prepare(
+      `INSERT INTO label_groups
+        (id, owner_user_id, name, description, position, archived_at, version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name, description = excluded.description,
+         position = excluded.position, archived_at = NULL,
+         version = label_groups.version + 1, updated_at = excluded.updated_at`,
+    ).bind(group.id, currentUser.id, group.name, group.description, group.position, plan.exportedAt, plan.exportedAt)),
+  );
+
+  await runBatches(
     plan.labels.map((label) =>
       db
         .prepare(
           `INSERT INTO labels
-            (id, owner_user_id, name, color, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)
+            (id, owner_user_id, group_id, name, color, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
-             name = excluded.name, color = excluded.color,
+             group_id = excluded.group_id, name = excluded.name, color = excluded.color,
              updated_at = excluded.updated_at`,
         )
         .bind(
           label.id,
           currentUser.id,
+          label.groupId,
           label.name,
           label.color,
           plan.exportedAt,
@@ -1009,6 +1062,7 @@ export async function importLinearWorkspace(
   await db.prepare("PRAGMA optimize").run();
   return {
     statuses: plan.statuses.length,
+    labelGroups: plan.labelGroups.length,
     labels: plan.labels.length,
     projects: plan.projects.length,
     releases: plan.releases.length,

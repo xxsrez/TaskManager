@@ -547,6 +547,9 @@ optional/standalone Task semantics из ранних решений: кажда�
   name/summary и release name для prefix search;
 - versioned owner catalog `labels` с partial uniqueness active name и
   composite-key join table `task_labels` для идемпотентных назначений;
+- versioned ordered owner catalog `label_groups`, nullable `labels.group_id` и
+  trigger-maintained `task_label_group_values(task_id, group_id, label_id)` как
+  DB-level exclusivity guard для всех write ingress, включая concurrent/import;
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of` с
   immutable ID, create-idempotency, optimistic version, semantic indexes и
   partial uniqueness одного `duplicate_of` target на source;
@@ -594,7 +597,8 @@ provider context: `inventory` строит bounded source-position plan, а `app
 boundary и фиксирует outcome лишь после D1/R2 read-back. HTML остаётся явной
 non-binary mapping, а blocked row запрещает cutover. Source URL никогда не
 попадает в operational result/error; raw row сохраняется только в outcome и
-logical backup schema `11`.
+logical backup schema `12` (schema `11` остаётся legacy-compatible и
+обновляется пустым LabelGroup catalog).
 
 ### Системный backup и restore
 
@@ -652,7 +656,8 @@ logical backup schema `11`.
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
-6. Current schema `11` сохраняет historical comments, Activity и
+6. Current schema `12` сохраняет historical comments, Activity,
+   LabelGroup topology и
    comment/activity/attachment reconciliation outcomes;
    schema `2`–`8` получает deterministic legacy upgrades после проверки
    исходного checksum и до записи staging rows.

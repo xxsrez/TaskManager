@@ -64,6 +64,7 @@ export function applyWorkspaceSync(
     projects,
     releases,
     views,
+    labelGroups: mergeById(current.labelGroups ?? [], response.changes.labelGroups ?? []),
     labels: mergeById(current.labels, response.changes.labels),
     taskLabels: [
       ...current.taskLabels.filter(

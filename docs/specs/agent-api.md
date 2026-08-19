@@ -162,6 +162,7 @@ restore атомарно отзывает все authentication capabilities, ч
 | `GET /views` | `api:read` | Paginated SavedViews с query/display/scope/version |
 | `GET /views/{ref}` | `api:read` | Один SavedView с полным persisted contract |
 | `GET /labels` | `api:read` | Bounded native Labels доступных owner catalogs |
+| `GET /label-groups` | `api:read` | Ordered active/archived Label Groups с canonical refs |
 | `GET /tasks` | `api:read` | Paginated `TaskSummary[]` |
 | `POST /tasks` | `api:write` | Создать Task и вернуть `TaskDetail` |
 | `GET /tasks/{ref}` | `api:read` | Один `TaskDetail` |
@@ -171,6 +172,8 @@ restore атомарно отзывает все authentication capabilities, ч
 | `PUT /tasks/{ref}/labels` | `api:write` | Атомарно заменить полный набор Labels с Task version |
 | `PUT /tasks/{ref}/labels/{labelRef}` | `api:write` | Идемпотентно назначить active Label |
 | `DELETE /tasks/{ref}/labels/{labelRef}` | `api:write` | Идемпотентно снять Label, включая archived |
+| `PUT /tasks/{ref}/label-groups/{groupRef}` | `api:write` | Атомарно set/replace group value |
+| `DELETE /tasks/{ref}/label-groups/{groupRef}` | `api:write` | Атомарно clear group value |
 | `POST /tasks/{ref}/relations` | `api:write` | Создать relation идемпотентно |
 | `PATCH /tasks/{ref}/relations/{relationRef}` | `api:write` | Изменить type/direction с relation version |
 | `DELETE /tasks/{ref}/relations/{relationRef}` | `api:write` | Удалить relation с relation version |
@@ -207,6 +210,7 @@ protocol revisions).
 | `list_releases`, `get_release` | `api:read` | Найти Release и его task scope |
 | `list_views`, `get_view` | `api:read` | Прочитать SavedView query, Display, scope и version |
 | `list_labels` | `api:read` | Найти active либо archived Label и canonical ref |
+| `list_label_groups` | `api:read` | Найти Label Group и canonical `lgr_...` ref |
 | `list_tasks` | `api:read` | Все доступные Tasks или filters Project/Release/status/priority/assignee/search |
 | `get_task` | `api:read` | Полный контекст выбранной Task и актуальная version |
 | `list_task_activity` | `api:read` | Читать bounded native/historical Activity отдельно от Task detail |
@@ -216,6 +220,7 @@ protocol revisions).
 | `set_task_parent`, `create_subtask` | `api:write` | Менять hierarchy по canonical refs и versions |
 | `add_task_label`, `remove_task_label` | `api:write` | Задать желаемое состояние одного native Label идемпотентно |
 | `replace_task_labels` | `api:write` | Атомарно заменить полный набор Labels с Task version |
+| `set_task_label_group_value`, `clear_task_label_group_value` | `api:write` | Атомарно заменить или очистить одно взаимоисключающее значение |
 | `create_task_relation` | `api:write` | Создать native relation с idempotency key |
 | `update_task_relation`, `delete_task_relation` | `api:write` | Изменить или удалить relation по current version |
 | `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |

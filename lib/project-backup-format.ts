@@ -16,7 +16,7 @@ import {
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 11 as const;
+export const projectBackupSchemaVersion = 12 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -34,6 +34,7 @@ export const projectBackupTableNames = [
   "activity_events",
   "activity_migration_outcomes",
   "comment_reactions",
+  "label_groups",
   "labels",
   "task_labels",
   "task_relations",
@@ -55,7 +56,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -125,6 +126,13 @@ const legacyLabelDefinition: TableDefinition = {
   name: "labels",
   columns: ["id", "owner_user_id", "name", "color", "created_at"],
   orderBy: "id",
+};
+
+const flatLabelDefinition: TableDefinition = {
+  name: "labels",
+  columns: ["id", "owner_user_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: { archived_at: { nullable: true }, version: { number: true, integer: true } },
 };
 
 const legacySavedViewDefinition: TableDefinition = {
@@ -206,7 +214,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const legacyHistoricalComments = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8;
   const legacyActivity = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 9;
   const legacyAttachmentMigration = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 10;
-  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === 9 || payload.schemaVersion === 10 || payload.schemaVersion === projectBackupSchemaVersion;
+  const legacyLabelGroups = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 11;
+  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === 9 || payload.schemaVersion === 10 || payload.schemaVersion === 11 || payload.schemaVersion === projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
@@ -224,12 +233,14 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     throw new ValidationError("Unsupported Task Manager project backup format or version");
   }
   const sourceTables = object(payload.tables, "tables");
+  const legacyLabelGroupsMissing = legacyLabelGroups && !Object.hasOwn(sourceTables, "label_groups");
   const sourceTableNames = projectBackupTableNames.filter((name) =>
     !(withoutAttachments && name === "attachments") &&
     !(legacyIdentifiers && name === "task_identifier_aliases") &&
     !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
     !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
-    !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
+    !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
+    !(legacyLabelGroupsMissing && name === "label_groups"),
   );
   exactKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as ProjectBackupTables;
@@ -239,7 +250,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
       (legacyIdentifiers && table.name === "task_identifier_aliases") ||
       (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
       (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes")) ||
-      (legacyAttachmentMigration && table.name === "attachment_migration_outcomes")
+      (legacyAttachmentMigration && table.name === "attachment_migration_outcomes") ||
+      (legacyLabelGroupsMissing && table.name === "label_groups")
       ? []
       : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += values.length;
@@ -256,6 +268,9 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
         ? legacyTaskRelationDefinition
       : legacyLabels && table.name === "labels"
         ? legacyLabelDefinition
+      : legacyLabelGroups && table.name === "labels" &&
+          !values.some((row) => Object.hasOwn(object(row, "label"), "group_id"))
+        ? flatLabelDefinition
       : legacyHistoricalComments && table.name === "comments"
         ? legacyCommentDefinition
       : legacySavedViews && table.name === "saved_views" &&
@@ -279,6 +294,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   if (legacyRelations) tables = upgradeLegacyProjectRelations(tables);
   if (legacyIdentifiers) tables = upgradeLegacyProjectIdentifiers(tables);
   if (legacyLabels) tables = upgradeLegacyProjectLabels(tables);
+  if (legacyLabelGroups) tables = upgradeLegacyProjectLabelGroups(tables);
   if (legacySavedViews) tables = upgradeLegacyProjectSavedViews(tables);
   if (legacyHistoricalComments) tables = upgradeLegacyProjectComments(tables);
   const body = {
@@ -304,6 +320,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     if (legacyHistoricalComments && name === "comment_migration_outcomes") continue;
     if (legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) continue;
     if (legacyAttachmentMigration && name === "attachment_migration_outcomes") continue;
+    if (legacyLabelGroupsMissing && name === "label_groups") continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
   validateProjectRelationships(tables, sharing, body);
@@ -313,33 +330,35 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
     projectPublicId: body.projectPublicId,
     projectName: body.projectName,
     ownerUserId: body.ownerUserId,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
       ? Object.fromEntries(
           Object.entries(body.counts).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
             !(legacyIdentifiers && name === "task_identifier_aliases") &&
             !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
             !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
-            !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
+            !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
+            !(legacyLabelGroupsMissing && name === "label_groups"),
           ),
         )
       : body.counts,
     warnings: body.warnings,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
       ? Object.fromEntries(
           Object.entries(sourceNormalizedTables).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
             !(legacyIdentifiers && name === "task_identifier_aliases") &&
             !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
             !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
-            !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
+            !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
+            !(legacyLabelGroupsMissing && name === "label_groups"),
           ),
         )
       : sourceNormalizedTables,
@@ -353,7 +372,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -381,11 +400,36 @@ function validateProjectRelationships(
   const comments = unique(tables.comments, "id", "comment");
   const releases = unique(tables.releases, "id", "release");
   const statuses = unique(tables.workflow_statuses, "id", "workflow status");
+  const labelGroups = unique(tables.label_groups, "id", "label group");
+  const activeLabelGroupNames = new Set<string>();
+  for (const group of tables.label_groups) {
+    if (group.owner_user_id !== identity.ownerUserId) {
+      throw new ValidationError("Label Group is outside the Project owner catalog");
+    }
+    if (!String(group.name).trim()) throw new ValidationError("Label Group name is required");
+    if (!Number.isSafeInteger(group.position) || Number(group.position) < 0) {
+      throw new ValidationError("Label Group position is invalid");
+    }
+    if (!Number.isSafeInteger(group.version) || Number(group.version) < 1) {
+      throw new ValidationError("Label Group version is invalid");
+    }
+    if (group.archived_at === null) {
+      const key = String(group.name).toLocaleLowerCase();
+      if (activeLabelGroupNames.has(key)) throw new ValidationError("Duplicate active Label Group name");
+      activeLabelGroupNames.add(key);
+    }
+  }
   const labels = unique(tables.labels, "id", "label");
   const activeLabelNames = new Set<string>();
   for (const label of tables.labels) {
     if (label.owner_user_id !== identity.ownerUserId) {
       throw new ValidationError("Label is outside the Project owner catalog");
+    }
+    if (label.group_id !== null) {
+      const group = labelGroups.get(String(label.group_id));
+      if (!group || group.owner_user_id !== label.owner_user_id) {
+        throw new ValidationError("Label references an incompatible Label Group");
+      }
     }
     if (!String(label.name).trim()) throw new ValidationError("Label name is required");
     if (!Number.isSafeInteger(label.version) || Number(label.version) < 1) {
@@ -616,9 +660,18 @@ function validateProjectRelationships(
     parseJsonObject(view.query_json, "Saved view query");
     parseJsonObject(view.display_json, "Saved view display");
   }
+  const assignedGroups = new Set<string>();
   for (const assignment of tables.task_labels) {
     if (!tasks.has(String(assignment.task_id)) || !labels.has(String(assignment.label_id))) {
       throw new ValidationError("Task label references a missing bundle record");
+    }
+    const label = labels.get(String(assignment.label_id))!;
+    if (label.group_id !== null) {
+      const key = `${String(assignment.task_id)}\u0000${String(label.group_id)}`;
+      if (assignedGroups.has(key)) {
+        throw new ValidationError("A Task can have at most one Label from each Label Group");
+      }
+      assignedGroups.add(key);
     }
   }
   const relationKeys = new Set<string>();
@@ -914,6 +967,14 @@ function upgradeLegacyProjectLabels(source: ProjectBackupTables): ProjectBackupT
       version: 1,
       updated_at: label.created_at,
     })),
+  };
+}
+
+function upgradeLegacyProjectLabelGroups(source: ProjectBackupTables): ProjectBackupTables {
+  return {
+    ...source,
+    label_groups: [],
+    labels: source.labels.map((label): BackupRow => ({ ...label, group_id: null })),
   };
 }
 

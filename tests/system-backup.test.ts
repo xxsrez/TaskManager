@@ -19,7 +19,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 11);
+  assert.equal(backup.schemaVersion, 12);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -27,6 +27,27 @@ test("a complete system snapshot validates and preserves application data", asyn
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.tables.tasks[0]?.title, "Ship backup support");
   assert.equal(validated.tables.access_grants[0]?.permission, "full_access");
+});
+
+test("system backup preserves Label Group topology and rejects duplicate group values", async () => {
+  const tables = validTables();
+  tables.label_groups.push({
+    id: "group-size", owner_user_id: "user-admin", name: "Size", description: "",
+    position: 0, archived_at: null, version: 1, created_at: now, updated_at: now,
+  });
+  tables.labels[0]!.group_id = "group-size";
+  const backup = await createSystemBackup(tables, now);
+  const validated = await validateSystemBackup(backup);
+  assert.equal(validated.tables.labels[0]?.group_id, "group-size");
+
+  tables.labels.push({
+    id: "label-2", owner_user_id: "user-admin", group_id: "group-size", name: "Large",
+    color: "#993366", description: "", archived_at: null, version: 1,
+    created_at: now, updated_at: now,
+  });
+  tables.task_labels.push({ task_id: "task-1", label_id: "label-2" });
+  const conflicting = await createSystemBackup(tables, now);
+  await assert.rejects(validateSystemBackup(conflicting), /at most one Label/i);
 });
 
 test("system snapshots preserve historical comments, activity, and reconciliation outcomes", async () => {
@@ -654,10 +675,12 @@ function validTables(): BackupTables {
     comment_reactions: [
       { comment_id: "comment-1", user_id: "user-collaborator", emoji: "👍", created_at: now },
     ],
+    label_groups: [],
     labels: [
       {
         id: "label-1",
         owner_user_id: "user-admin",
+        group_id: null,
         name: "Infrastructure",
         color: "#6b7280",
         description: "Infrastructure work",
@@ -785,7 +808,7 @@ function legacyRelationRow(row: Record<string, string | number | null>) {
 function legacyLabelRow(row: Record<string, string | number | null>) {
   return Object.fromEntries(
     Object.entries(row).filter(([key]) =>
-      !["description", "archived_at", "version", "updated_at"].includes(key),
+      !["group_id", "description", "archived_at", "version", "updated_at"].includes(key),
     ),
   );
 }
@@ -828,6 +851,9 @@ function migratedDatabase() {
     "0022_cheerful_sue_storm.sql",
     "0023_tan_millenium_guard.sql",
     "0024_workable_zeigeist.sql",
+    "0025_revoke_scoped_view_grants.sql",
+    "0026_repair_legacy_workflow_catalogs.sql",
+    "0027_busy_silver_sable.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

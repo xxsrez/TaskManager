@@ -27,6 +27,7 @@ import {
   createTask,
   moveTask,
   replaceTaskLabels,
+  setTaskLabelGroupValue,
   setTaskLabel,
   setTaskParent,
   updateTask,
@@ -116,8 +117,11 @@ const taskScopeCte = (detail: boolean) => `WITH scoped_tasks AS (
 
 const taskProjection = `v.*,
   COALESCE((
-    SELECT json_group_array(json_object('id', l.id, 'name', l.name))
+    SELECT json_group_array(json_object(
+      'id', l.id, 'name', l.name, 'groupId', g.id, 'groupName', g.name
+    ))
     FROM task_labels tl JOIN labels l ON l.id = tl.label_id
+    LEFT JOIN label_groups g ON g.id = l.group_id
     WHERE tl.task_id = v.id
   ), '[]') AS labels_json,
   (SELECT COUNT(*) FROM visible_tasks child WHERE child.parent_task_id = v.id)
@@ -877,7 +881,8 @@ export async function listAgentLabels(
   includeArchived = false,
 ) {
   const rows = await getD1().prepare(
-    `SELECT DISTINCT l.* FROM labels l
+    `SELECT DISTINCT l.*, g.name AS group_name FROM labels l
+     LEFT JOIN label_groups g ON g.id = l.group_id
      WHERE (? = 1 OR l.archived_at IS NULL) AND (
        l.owner_user_id = ? OR EXISTS (
          SELECT 1 FROM projects p
@@ -909,6 +914,43 @@ export async function listAgentLabels(
       description: String(row.description ?? ""),
       archivedAt: nullableString(row.archived_at),
       version: Number(row.version ?? 1),
+      group: row.group_id ? {
+        ref: await catalogReference("label-group", String(row.group_id)),
+        name: String(row.group_name ?? ""),
+      } : null,
+      owner: { isCurrentUser: String(row.owner_user_id) === currentUser.id },
+    }))),
+    page: { nextCursor: null, hasMore: rows.results.length > 200 },
+  };
+}
+
+export async function listAgentLabelGroups(currentUser: UserRecord, includeArchived = false) {
+  const rows = await getD1().prepare(
+    `SELECT DISTINCT g.*,
+       (SELECT COUNT(*) FROM labels l WHERE l.group_id = g.id) AS label_count,
+       (SELECT COUNT(DISTINCT value.task_id) FROM task_label_group_values value WHERE value.group_id = g.id) AS task_count
+     FROM label_groups g
+     WHERE (? = 1 OR g.archived_at IS NULL) AND (
+       g.owner_user_id = ? OR EXISTS (
+         SELECT 1 FROM projects p WHERE p.owner_user_id = g.owner_user_id AND (
+           p.owner_user_id = ? OR EXISTS (
+             SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
+               AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+           )
+         )
+       )
+     ) ORDER BY g.owner_user_id = ? DESC, g.archived_at IS NOT NULL, g.position, lower(g.name), g.id LIMIT 201`,
+  ).bind(includeArchived ? 1 : 0, currentUser.id, currentUser.id, currentUser.id, currentUser.id).all<DbRow>();
+  return {
+    items: await Promise.all(rows.results.slice(0, 200).map(async (row) => ({
+      ref: await catalogReference("label-group", String(row.id)),
+      name: String(row.name),
+      description: String(row.description ?? ""),
+      position: Number(row.position ?? 0),
+      archivedAt: nullableString(row.archived_at),
+      version: Number(row.version ?? 1),
+      labelCount: Number(row.label_count ?? 0),
+      taskCount: Number(row.task_count ?? 0),
       owner: { isCurrentUser: String(row.owner_user_id) === currentUser.id },
     }))),
     page: { nextCursor: null, hasMore: rows.results.length > 200 },
@@ -947,6 +989,21 @@ export async function replaceAgentTaskLabels(
     version: input.version,
     labelIds,
   });
+  return getAgentTaskDetail(currentUser, String(task.public_id));
+}
+
+export async function setAgentTaskLabelGroupValue(
+  currentUser: UserRecord,
+  taskReference: string,
+  groupReference: string,
+  labelReference: string | null,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  const groupId = await resolveLabelGroupReference(String(task.owner_user_id), groupReference);
+  const labelId = labelReference
+    ? await resolveLabelReference(String(task.owner_user_id), labelReference, false)
+    : null;
+  await setTaskLabelGroupValue(currentUser, String(task.id), { groupId, labelId });
   return getAgentTaskDetail(currentUser, String(task.public_id));
 }
 
@@ -1553,8 +1610,18 @@ async function resolveAssigneeEmail(value: unknown): Promise<string | null> {
   return matches.results[0]!.id;
 }
 
+async function resolveLabelGroupReference(ownerUserId: string, reference: string) {
+  const rows = await getD1().prepare(
+    "SELECT id FROM label_groups WHERE owner_user_id = ? ORDER BY id",
+  ).bind(ownerUserId).all<{ id: string }>();
+  for (const row of rows.results) {
+    if ((await catalogReference("label-group", row.id)) === reference) return row.id;
+  }
+  throw new ValidationError("Label Group is not available for this Task");
+}
+
 async function mapTaskSummary(row: DbRow, currentUser: UserRecord) {
-  const labels = safeJson<Array<{ id: string; name: string }>>(
+  const labels = safeJson<Array<{ id: string; name: string; groupId?: string | null; groupName?: string | null }>>(
     row.labels_json,
     [],
   );
@@ -1584,6 +1651,10 @@ async function mapTaskSummary(row: DbRow, currentUser: UserRecord) {
       labels.map(async (label) => ({
         ref: await catalogReference("label", String(label.id)),
         name: String(label.name),
+        group: label.groupId ? {
+          ref: await catalogReference("label-group", String(label.groupId)),
+          name: String(label.groupName ?? ""),
+        } : null,
       })),
     ),
     dueDate: nullableString(row.due_date),

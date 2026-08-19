@@ -14,6 +14,8 @@ import {
   tasksInGroupOrder,
 } from "../lib/task-groups";
 import type {
+  LabelGroupRecord,
+  LabelRecord,
   ProjectRecord,
   ReleaseRecord,
   TaskRecord,
@@ -121,6 +123,27 @@ const baseTask: TaskRecord = {
   updatedAt: now,
   accessRole: "owner",
 };
+
+test("Label Group grouping yields one stable value column plus No value", () => {
+  const group: LabelGroupRecord = {
+    id: "group-size", ownerUserId: "user-1", name: "Size", description: "",
+    position: 0, archivedAt: null, version: 1, createdAt: now, updatedAt: now,
+  };
+  const labels: LabelRecord[] = [
+    { id: "label-small", ownerUserId: "user-1", groupId: group.id, name: "Small", color: "#336699", description: "", archivedAt: null, version: 1, createdAt: now, updatedAt: now },
+    { id: "label-medium", ownerUserId: "user-1", groupId: group.id, name: "Medium", color: "#993366", description: "", archivedAt: null, version: 1, createdAt: now, updatedAt: now },
+  ];
+  const other = { ...baseTask, id: "task-2", publicId: "44444444-4444-4444-8444-444444444444", identifier: "TM-2" };
+  const groups = buildTaskGroups({
+    tasks: [baseTask, other], statuses, projects, releases,
+    labelGroups: [group], labels,
+    taskLabels: [{ taskId: baseTask.id, labelId: labels[0]!.id }],
+    labelGroupId: group.id, groupBy: "label_group", showEmptyGroups: true,
+  });
+  assert.deepEqual(groups.map((item) => item.label), ["Medium", "Small", "No Size"]);
+  assert.deepEqual(groups.flatMap((item) => item.tasks.map((task) => task.id)).sort(), [baseTask.id, other.id].sort());
+  assert.deepEqual(taskGroupCreateDefaults(groups[0]!), { labelGroupId: group.id, labelId: labels[1]!.id });
+});
 
 test("priority grouping creates ordered empty groups and preserves task order", () => {
   const groups = buildTaskGroups({

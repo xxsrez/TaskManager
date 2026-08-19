@@ -30,7 +30,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -42,7 +42,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 11 as const;
+export const systemBackupSchemaVersion = 12 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 5000;
 const maxStagedRowBytes = 1_500_000;
@@ -81,6 +81,7 @@ export const backupTableNames = [
   "activity_events",
   "activity_migration_outcomes",
   "comment_reactions",
+  "label_groups",
   "labels",
   "task_labels",
   "task_relations",
@@ -130,7 +131,11 @@ export const tableDefinitions = [
     source_event_id: { nullable: true }, source_index: { number: true, integer: true }, reason: { nullable: true }, activity_event_id: { nullable: true },
   }),
   definition("comment_reactions", ["comment_id", "user_id", "emoji", "created_at"], "comment_id, emoji, user_id"),
-  definition("labels", ["id", "owner_user_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"], "id", {
+  definition("label_groups", ["id", "owner_user_id", "name", "description", "position", "archived_at", "version", "created_at", "updated_at"], "id", {
+    position: { number: true, integer: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
+  }),
+  definition("labels", ["id", "owner_user_id", "group_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"], "id", {
+    group_id: { nullable: true },
     archived_at: { nullable: true }, version: { number: true, integer: true },
   }),
   definition("task_labels", ["task_id", "label_id"], "task_id, label_id"),
@@ -157,6 +162,7 @@ const restoreTableOrder = [
   "tasks",
   "task_identifier_aliases",
   "attachments",
+  "label_groups",
   "labels",
   "saved_views",
   "external_records",
@@ -229,6 +235,13 @@ const legacyLabelDefinition = definition(
   "id",
 );
 
+const flatLabelDefinition = definition(
+  "labels",
+  ["id", "owner_user_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"],
+  "id",
+  { archived_at: { nullable: true }, version: { number: true, integer: true } },
+);
+
 const legacyCommentDefinition = definition(
   "comments",
   ["id", "task_id", "author_user_id", "body", "source", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"],
@@ -254,6 +267,7 @@ export const liveTableDeleteOrder: BackupTableName[] = [
   "saved_views",
   "projects",
   "labels",
+  "label_groups",
   "workflow_statuses",
   "user_identities",
   "users",
@@ -319,7 +333,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const legacyHistoricalComments = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8;
   const legacyActivity = typeof schemaVersion === "number" && schemaVersion <= 9;
   const legacyAttachmentMigration = typeof schemaVersion === "number" && schemaVersion <= 10;
-  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8 || schemaVersion === 9 || schemaVersion === 10 || schemaVersion === systemBackupSchemaVersion;
+  const legacyLabelGroups = typeof schemaVersion === "number" && schemaVersion <= 11;
+  const supported = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8 || schemaVersion === 9 || schemaVersion === 10 || schemaVersion === 11 || schemaVersion === systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
     withoutAttachments
@@ -332,12 +347,14 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   }
   const exportedAt = timestamp(payload.exportedAt, "exportedAt");
   const sourceTables = object(payload.tables, "tables");
+  const legacyLabelGroupsMissing = legacyLabelGroups && !Object.hasOwn(sourceTables, "label_groups");
   const sourceTableNames = backupTableNames.filter((name) =>
     !(withoutAttachments && name === "attachments") &&
     !(legacyIdentifiers && name === "task_identifier_aliases") &&
     !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
     !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
-    !(legacyAttachmentMigration && name === "attachment_migration_outcomes"),
+    !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
+    !(legacyLabelGroupsMissing && name === "label_groups"),
   );
   assertOnlyKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as BackupTables;
@@ -348,7 +365,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
       (legacyIdentifiers && table.name === "task_identifier_aliases") ||
       (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
       (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes")) ||
-      (legacyAttachmentMigration && table.name === "attachment_migration_outcomes")
+      (legacyAttachmentMigration && table.name === "attachment_migration_outcomes") ||
+      (legacyLabelGroupsMissing && table.name === "label_groups")
         ? []
         : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
@@ -363,6 +381,9 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         ? legacyTaskRelationDefinition
       : legacyLabels && table.name === "labels"
         ? legacyLabelDefinition
+      : legacyLabelGroups && table.name === "labels" &&
+          !sourceRows.some((row) => Object.hasOwn(object(row, "label"), "group_id"))
+        ? flatLabelDefinition
       : legacyHistoricalComments && table.name === "comments"
         ? legacyCommentDefinition
       : legacySavedViews && table.name === "saved_views" &&
@@ -385,6 +406,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   if (legacyRelations) tables = upgradeLegacySystemRelations(tables);
   if (legacyIdentifiers) tables = upgradeLegacySystemIdentifiers(tables);
   if (legacyLabels) tables = upgradeLegacySystemLabels(tables);
+  if (legacyLabelGroups) tables = upgradeLegacySystemLabelGroups(tables);
   if (legacySavedViews) tables = upgradeLegacySystemSavedViews(tables);
   if (legacyHistoricalComments) tables = upgradeLegacySystemComments(tables);
   const counts = countTables(tables);
@@ -395,7 +417,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
     ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
@@ -407,10 +429,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         }
       : {}),
     exportedAt,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
       ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
       : sourceCounts,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
       ? Object.fromEntries(
           sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
         )
@@ -422,7 +444,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12,
     siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
@@ -773,6 +795,26 @@ function validateRelationships(tables: BackupTables) {
     nonEmpty(reaction.emoji, "Reaction emoji");
   }
 
+  const labelGroups = uniqueIndex(tables.label_groups, ["id"], "label groups");
+  uniqueIndex(
+    tables.label_groups.filter((group) => group.archived_at === null),
+    ["owner_user_id", "name"],
+    "active label group owner/name",
+  );
+  const activeLabelGroupNames = new Set<string>();
+  for (const group of tables.label_groups) {
+    requireReference(users, group.owner_user_id, "Label group owner");
+    boundedTitle(group.name, "Label group name");
+    if (group.archived_at === null) {
+      const key = `${String(group.owner_user_id)}\u0000${String(group.name).toLocaleLowerCase()}`;
+      if (activeLabelGroupNames.has(key)) throw new ValidationError("Duplicate active Label Group name");
+      activeLabelGroupNames.add(key);
+    }
+    if (!Number.isSafeInteger(group.position) || Number(group.position) < 0) {
+      throw new ValidationError("Label group position must be a non-negative integer");
+    }
+    positiveVersion(group.version, "Label group version");
+  }
   const labels = uniqueIndex(tables.labels, ["id"], "labels");
   uniqueIndex(
     tables.labels.filter((label) => label.archived_at === null),
@@ -781,14 +823,28 @@ function validateRelationships(tables: BackupTables) {
   );
   for (const label of tables.labels) {
     requireReference(users, label.owner_user_id, "Label owner");
+    if (label.group_id !== null) {
+      const group = requireReference(labelGroups, label.group_id, "Label group");
+      if (group.owner_user_id !== label.owner_user_id) {
+        throw new ValidationError("Label and label group owners must match");
+      }
+    }
     boundedTitle(label.name, "Label name");
     positiveVersion(label.version, "Label version");
   }
   uniqueIndex(tables.task_labels, ["task_id", "label_id"], "task labels");
+  const assignedGroups = new Set<string>();
   for (const assignment of tables.task_labels) {
     const task = requireReference(tasks, assignment.task_id, "Task label task");
     const label = requireReference(labels, assignment.label_id, "Task label label");
     if (task.owner_user_id !== label.owner_user_id) throw new ValidationError("Task and label owners must match");
+    if (label.group_id !== null) {
+      const key = `${String(task.id)}\u0000${String(label.group_id)}`;
+      if (assignedGroups.has(key)) {
+        throw new ValidationError("A Task can have at most one Label from each Label Group");
+      }
+      assignedGroups.add(key);
+    }
   }
 
   uniqueIndex(tables.task_relations, ["id"], "task relation IDs");
@@ -1132,6 +1188,14 @@ function upgradeLegacySystemLabels(source: BackupTables): BackupTables {
       version: 1,
       updated_at: label.created_at,
     })),
+  };
+}
+
+function upgradeLegacySystemLabelGroups(source: BackupTables): BackupTables {
+  return {
+    ...source,
+    label_groups: [],
+    labels: source.labels.map((label): BackupRow => ({ ...label, group_id: null })),
   };
 }
 

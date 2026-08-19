@@ -77,6 +77,12 @@ export async function exportProjectBackup(
       JOIN tasks t ON t.id = c.task_id JOIN projects p ON p.id = t.project_id
       WHERE t.project_id = ? AND p.owner_user_id = ?
       ORDER BY cr.comment_id, cr.emoji, cr.user_id`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("label_groups").columns.map((column) => `g.${column}`).join(", ")}
+      FROM label_groups g WHERE EXISTS (
+        SELECT 1 FROM labels l JOIN task_labels tl ON tl.label_id = l.id
+        JOIN tasks t ON t.id = tl.task_id JOIN projects p ON p.id = t.project_id
+        WHERE t.project_id = ? AND p.owner_user_id = ? AND l.group_id = g.id
+      ) ORDER BY g.position, g.id`).bind(projectId, currentUser.id),
     db.prepare(`SELECT ${definition("labels").columns.map((column) => `l.${column}`).join(", ")}
       FROM labels l WHERE EXISTS (
         SELECT 1 FROM task_labels tl JOIN tasks t ON t.id = tl.task_id
@@ -152,14 +158,15 @@ export async function exportProjectBackup(
     activity_events: 6,
     activity_migration_outcomes: 7,
     comment_reactions: 8,
-    labels: 9,
-    task_labels: 10,
-    task_relations: 11,
-    saved_views: 12,
-    external_records: 13,
-    attachments: 14,
-    attachment_migration_outcomes: 15,
-    task_identifier_aliases: 16,
+    label_groups: 9,
+    labels: 10,
+    task_labels: 11,
+    task_relations: 12,
+    saved_views: 13,
+    external_records: 14,
+    attachments: 15,
+    attachment_migration_outcomes: 16,
+    task_identifier_aliases: 17,
   };
   projectBackupTableNames.forEach((name) => {
     const table = definition(name);
@@ -169,7 +176,7 @@ export async function exportProjectBackup(
     tables.attachments,
   );
   tables.attachments = attachmentData.rows;
-  const sharing = results[17].results.map((value) => {
+  const sharing = results[18].results.map((value) => {
     const row = value as DbRow;
     const permission = String(row.permission);
     if (permission !== "manager" && permission !== "editor" && permission !== "viewer") {
@@ -187,7 +194,7 @@ export async function exportProjectBackup(
     tables,
     objects: attachmentData.objects,
     sharing,
-    externalRelationsOmitted: Number((results[18].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted: Number((results[19].results[0] as DbRow | undefined)?.count ?? 0),
   });
 }
 
@@ -396,7 +403,7 @@ export async function applyProjectBackup(
   }
   statements.push(db.prepare("DELETE FROM projects WHERE id = ?").bind(session.project_id));
   for (const table of projectBackupRestoreTableDefinitions) {
-    if (table.name === "workflow_statuses" || table.name === "labels") {
+    if (table.name === "workflow_statuses" || table.name === "label_groups" || table.name === "labels") {
       statements.push(
         db.prepare(projectRestoreInsertSql(table, true))
           .bind(input.importId, table.name),
@@ -447,6 +454,7 @@ async function validateLiveDependenciesAndCollisions(
   backup: ProjectBackup,
   currentUserId: string,
 ) {
+  const groupRows = (await db.prepare("SELECT id, owner_user_id, name FROM label_groups").all()).results as DbRow[];
   const results = await db.batch([
     db.prepare("SELECT id, owner_user_id, name, category FROM workflow_statuses"),
     db.prepare("SELECT id, owner_user_id, name FROM labels"),
@@ -496,6 +504,24 @@ async function validateLiveDependenciesAndCollisions(
       throw new ValidationError(`Workflow status ${status.name} is incompatible with the backup`);
     }
     if (live.name !== status.name) warnings.push(`Workflow status ${status.name} was renamed and will keep its current catalog name.`);
+  }
+  const groups = new Map(groupRows.map((row) => [String(row.id), row]));
+  for (const group of backup.tables.label_groups) {
+    const live = groups.get(String(group.id));
+    if (!live) {
+      if (group.owner_user_id !== currentUserId) {
+        throw new ValidationError("A Label Group dependency owned by another user is missing");
+      }
+      const nameCollision = groupRows.some((row) =>
+        row.owner_user_id === group.owner_user_id &&
+        String(row.name).toLocaleLowerCase() === String(group.name).toLocaleLowerCase()
+      );
+      if (nameCollision) throw new ValidationError(`Label Group ${group.name} collides with a different catalog record`);
+    } else if (live.owner_user_id !== group.owner_user_id) {
+      throw new ValidationError(`Label Group ${group.name} has an incompatible owner`);
+    } else if (live.name !== group.name) {
+      warnings.push(`Label Group ${group.name} was renamed and will keep its current catalog name.`);
+    }
   }
   for (const label of backup.tables.labels) {
     const live = labels.get(String(label.id));
@@ -665,7 +691,7 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     external_records: counts[11], attachments: counts[12],
     attachment_migration_outcomes: counts[13],
     task_identifier_aliases: counts[14], sharing: counts[15],
-    workflow_statuses: 0, labels: 0,
+    workflow_statuses: 0, label_groups: 0, labels: 0,
   };
 }
 

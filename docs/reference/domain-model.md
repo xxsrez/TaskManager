@@ -564,12 +564,28 @@ Release mutation требует current `version` и effective Project role `edi
 `confirmReleasedComposition`; Project/Release compatibility и current status
 повторно проверяются server-side, а Task status автоматически не меняется.
 
+## LabelGroup
+
+| Поле | Семантика |
+|---|---|
+| `id`, `name` | Immutable identity и уникальное без учёта регистра active имя |
+| `owner_user_id` | Владелец каталога; Labels группы обязаны иметь того же owner |
+| `description`, `position` | Правило применения и стабильный owner-defined порядок |
+| `archived_at`, `version` | Reversible archive и optimistic concurrency |
+| `created_at`, `updated_at` | Серверные metadata |
+
+`LabelGroup` задаёт взаимоисключающее измерение. `task_label_group_values`
+материализует DB guard с ключом `(task_id, group_id)` и синхронизируется SQL
+triggers с `task_labels`: у Task физически не может быть двух Labels одной
+группы, включая concurrent REST, Agent, import и restore writes.
+
 ## Label
 
 | Поле | Семантика |
 |---|---|
 | `id`, `name` | Identity и уникальное без учёта регистра active имя в owner catalog |
 | `owner_user_id` | Владелец каталога labels |
+| `group_id` | Optional immutable-reference membership в owner LabelGroup |
 | `color`, `description` | Представление и правило применения |
 | `archived_at` | Запрет нового использования с сохранением истории |
 | `version` | Optimistic concurrency catalog mutation |
@@ -580,7 +596,9 @@ Label — гибкая классификация, но не подмена stat
 desired-state add/remove идемпотентны. Назначать можно только active Label того
 же owner catalog, что у Task; архивирование сохраняет существующие связи и
 разрешает их удалить. Bulk mutation предварительно валидирует весь набор и
-применяет одно желаемое состояние атомарно.
+применяет одно желаемое состояние атомарно. Для grouped Label set/clear — одна
+явная atomic command с одним Activity event; ungrouped Labels остаются
+независимым multi-select.
 
 ## TaskRelation
 

@@ -227,6 +227,15 @@ label остаётся видимым на уже размеченных Tasks �
 commands задают желаемое состояние идемпотентно, а bulk add/remove применяется
 атомарно к выбранному совместимому набору Tasks.
 
+Owner также управляет ordered `LabelGroup`: active name уникально без учёта
+регистра, archive/restore сохраняет историю, а Labels группы принадлежат тому же
+owner catalog. На Task допускается максимум один Label каждой группы. Set,
+replace и clear одного group value атомарны, дают один Activity event и
+одинаково enforced в UI, REST, Agent/MCP, bulk, import и restore. Ungrouped
+Labels остаются независимым multi-select. Saved View хранит group/filter refs по
+immutable ID и может группировать Tasks по значениям одной группы с явной
+колонкой `No <group>`.
+
 Точные поля и допустимые значения определены в
 [доменной модели](../reference/domain-model.md).
 
@@ -340,7 +349,7 @@ commands задают желаемое состояние идемпотентн
   Каждая source row получает `migrated`/`exception`; offline повторный прогон не
   дублирует events. Raw evidence остаётся только в reconciliation/backup до
   отдельно разрешённого durable-data cleanup.
-- Project/system backup schema `11` сохраняет events, attachment migration
+- Project/system backup schema `12` сохраняет LabelGroup topology, events, attachment migration
   outcomes и reconciliation evidence.
   Activity хранится до удаления Task; отдельного retention deletion нет.
   Logical export ограничен 5 000 rows на таблицу и общим размером package,
@@ -902,4 +911,4 @@ created/updated/started/completed/canceled dates и archived state.
     migration, lazy UI/Agent/MCP reads, ACL/revoke и backup/restore schema `10`.
 21. Legacy attachment reconciliation: resumable admin inventory/apply,
     allowlisted bounded download, native D1/R2 verification, explicit
-    non-binary/skipped/blocked outcomes и backup/restore schema `11`.
+    non-binary/skipped/blocked outcomes и backup/restore schema `12`.
