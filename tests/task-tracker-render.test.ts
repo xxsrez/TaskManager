@@ -7,6 +7,7 @@ import {
   canStartPullRefresh,
   commentDraftStorageKey,
   fetchTaskSnapshot,
+  GlobalSearchOverlay,
   applyMutationResult,
   bulkAssigneeOptions,
   BulkProjectDialog,
@@ -500,6 +501,25 @@ test("workspace overview is a distinct linked surface", () => {
   assert.match(markup, /Saved views/);
   assert.match(markup, /Shared with me/);
   assert.doesNotMatch(markup, /Search tasks…/);
+});
+
+test("global search renders an accessible overlay without replacing local task search", () => {
+  const overlay = renderToStaticMarkup(createElement(GlobalSearchOverlay, {
+    onClose: () => undefined,
+  }));
+  assert.match(overlay, /<dialog[^>]*aria-modal="true" aria-label="Global search"[^>]*open=""/);
+  assert.match(overlay, /aria-label="Global search query"/);
+  assert.match(overlay, /role="combobox" aria-expanded="true" aria-autocomplete="list"/);
+  assert.match(overlay, /Tasks, Projects, Releases, and Views/);
+  assert.match(overlay, /<kbd>Esc<\/kbd>/);
+
+  const tracker = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: { surface: "mine", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+  assert.match(tracker, /<button class="sidebar-search"/);
+  assert.match(tracker, /Search tasks…/);
 });
 
 test("workspace overview counts only accessible top-level shared resources", () => {

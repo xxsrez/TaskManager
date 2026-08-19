@@ -407,6 +407,13 @@ authorization-scoped `POST /api/tasks/query`: один SQL compiler исполь
 получает только `visible_tasks`, применяет typed operators и возвращает compact
 summary + bounded keyset continuation `(updated_at, id)`; description участвует
 только в server-side search predicate и не покидает server projection.
+Global search использует отдельный authenticated `GET /api/search`: четыре
+entity queries сначала материализуют ACL scope, затем сопоставляют Task
+identifier/title/description и user-facing имена Project/Release/SavedView.
+Каждая группа возвращает не больше 20 compact результатов, opaque offset cursor
+и только canonical public URL/context; browser выполняет debounce и никогда не
+загружает полный workspace ради overlay. Ошибка одной группы даёт одинаковый
+partial-error contract без недоступных counts или identifier hints.
 Reference validation читает только запрошенные ACL-scoped catalogs, а не
 перестраивает полный snapshot. Migration `0021` добавляет измеренно нужные
 reverse Label, project/status/archive, assignee/archive, due/archive и

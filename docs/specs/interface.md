@@ -643,6 +643,11 @@ sidebar; restore доступен в `All views`. Viewer видит сохран
   search.
 - Results сгруппированы по entity type, показывают icon, identifier/title и
   минимальный context; keyboard arrows перемещают highlight, `Enter` открывает.
+- Overlay выполняет debounced bounded запросы и догружает следующую страницу
+  только по opaque cursor. `Esc` или backdrop закрывает его без изменения
+  route, filter, scroll и selection и возвращает logical focus на trigger.
+- Loading, empty, partial error и unavailable состояния используют одинаковую
+  ACL-safe copy без counts или hints о недоступных records.
 - `Cmd/Ctrl+K` открывает contextual actions menu для focused/selected entity.
   Оно содержит только уже реализованные actions из MVP и не является полной
   command palette Linear.

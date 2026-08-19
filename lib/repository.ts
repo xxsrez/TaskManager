@@ -75,6 +75,16 @@ import {
   newActivityId,
 } from "./activity-write";
 import { rankBetweenNeighbors, taskGroupValue } from "./task-groups";
+import {
+  decodeGlobalSearchCursor,
+  encodeGlobalSearchCursor,
+  globalSearchLimit,
+  GLOBAL_SEARCH_MAX_OFFSET,
+  normalizeGlobalSearchQuery,
+  type GlobalSearchEntityType,
+  type GlobalSearchInput,
+  type GlobalSearchResponse,
+} from "./global-search";
 
 type DbRow = Record<string, unknown>;
 
@@ -930,6 +940,241 @@ export async function searchTaskSummaries(
     )
     .all<DbRow>();
   return rows.results.map(mapTask);
+}
+
+export async function searchWorkspace(
+  currentUser: UserRecord,
+  input: GlobalSearchInput,
+): Promise<GlobalSearchResponse> {
+  const query = normalizeGlobalSearchQuery(input.query);
+  const limit = globalSearchLimit(input.limit);
+  const { offset } = decodeGlobalSearchCursor(input.cursor, { query, limit });
+  const empty: GlobalSearchResponse = {
+    query,
+    groups: { tasks: [], projects: [], releases: [], views: [] },
+    nextCursor: null,
+    partialErrors: [],
+  };
+  if (!query) return empty;
+
+  const db = getD1();
+  const pageLimit = limit + 1;
+  const taskQuery = db.prepare(
+    `WITH scoped AS MATERIALIZED (
+       SELECT t.id, t.public_id, t.identifier, t.title, t.description, t.updated_at,
+         p.name AS project_name, p.public_id AS project_public_id,
+         r.name AS release_name,
+         CASE
+           WHEN p.owner_user_id = ? THEN 'owner'
+           ELSE (
+             SELECT ag.permission FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             LIMIT 1
+           )
+         END AS access_role
+       FROM tasks t
+       JOIN projects p ON p.id = t.project_id
+       LEFT JOIN releases r ON r.id = t.release_id
+       WHERE t.archived_at IS NULL AND p.archived_at IS NULL
+     ), visible AS MATERIALIZED (
+       SELECT * FROM scoped WHERE access_role IS NOT NULL
+     )
+     SELECT id, public_id, identifier, title, project_name, project_public_id,
+       release_name, updated_at
+     FROM visible
+     WHERE (
+       instr(lower(identifier), ?) > 0 OR EXISTS (
+         SELECT 1 FROM task_identifier_aliases alias
+         WHERE alias.task_id = visible.id AND instr(lower(alias.identifier), ?) > 0
+       ) OR instr(lower(title), ?) > 0
+         OR instr(lower(COALESCE(description, '')), ?) > 0
+     )
+     ORDER BY (
+       lower(identifier) = ? OR EXISTS (
+         SELECT 1 FROM task_identifier_aliases exact_alias
+         WHERE exact_alias.task_id = visible.id AND lower(exact_alias.identifier) = ?
+       )
+     ) DESC, updated_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+  ).bind(
+    currentUser.id,
+    currentUser.id,
+    query,
+    query,
+    query,
+    query,
+    query,
+    query,
+    pageLimit,
+    offset,
+  ).all<DbRow>();
+  const projectQuery = db.prepare(
+    `WITH scoped AS MATERIALIZED (
+       SELECT p.id, p.public_id, p.name, p.task_code, p.summary, p.status, p.updated_at,
+         CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+           SELECT ag.permission FROM access_grants ag
+           WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+           LIMIT 1
+         ) END AS access_role
+       FROM projects p WHERE p.archived_at IS NULL
+     ), visible AS MATERIALIZED (
+       SELECT * FROM scoped WHERE access_role IS NOT NULL
+     )
+     SELECT id, public_id, name, task_code, summary, status, updated_at
+     FROM visible
+     WHERE instr(lower(name), ?) > 0 OR instr(lower(summary), ?) > 0
+     ORDER BY (lower(name) = ?) DESC, updated_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+  ).bind(
+    currentUser.id,
+    currentUser.id,
+    query,
+    query,
+    query,
+    pageLimit,
+    offset,
+  ).all<DbRow>();
+  const releaseQuery = db.prepare(
+    `WITH scoped AS MATERIALIZED (
+       SELECT r.id, r.public_id, r.name, r.status, r.updated_at,
+         p.name AS project_name, p.public_id AS project_public_id,
+         CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
+           SELECT ag.permission FROM access_grants ag
+           WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
+             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+           LIMIT 1
+         ) END AS access_role
+       FROM releases r JOIN projects p ON p.id = r.project_id
+       WHERE p.archived_at IS NULL
+     ), visible AS MATERIALIZED (
+       SELECT * FROM scoped WHERE access_role IS NOT NULL
+     )
+     SELECT id, public_id, name, status, project_name, project_public_id, updated_at
+     FROM visible
+     WHERE instr(lower(name), ?) > 0 OR instr(lower(project_name), ?) > 0
+     ORDER BY (lower(name) = ?) DESC, updated_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+  ).bind(
+    currentUser.id,
+    currentUser.id,
+    query,
+    query,
+    query,
+    pageLimit,
+    offset,
+  ).all<DbRow>();
+  const viewQuery = db.prepare(
+    `WITH scoped AS MATERIALIZED (
+       SELECT v.id, v.public_id, v.name, v.updated_at,
+         p.name AS project_name,
+         CASE
+           WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
+           WHEN v.scope_project_id IS NOT NULL THEN (
+             SELECT ag.permission FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = v.scope_project_id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             LIMIT 1
+           )
+           WHEN v.owner_user_id = ? THEN 'owner'
+           ELSE (
+             SELECT ag.permission FROM access_grants ag
+             WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+             LIMIT 1
+           )
+         END AS access_role
+       FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
+       WHERE v.archived_at IS NULL
+         AND (v.scope_project_id IS NULL OR p.archived_at IS NULL)
+     ), visible AS MATERIALIZED (
+       SELECT * FROM scoped WHERE access_role IS NOT NULL
+     )
+     SELECT id, public_id, name, project_name, updated_at
+     FROM visible
+     WHERE instr(lower(name), ?) > 0
+     ORDER BY (lower(name) = ?) DESC, updated_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+  ).bind(
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    query,
+    query,
+    pageLimit,
+    offset,
+  ).all<DbRow>();
+
+  const settled = await Promise.allSettled([
+    taskQuery,
+    projectQuery,
+    releaseQuery,
+    viewQuery,
+  ]);
+  const partialErrors: GlobalSearchEntityType[] = [];
+  const page = (index: number, type: GlobalSearchEntityType) => {
+    const result = settled[index];
+    if (!result || result.status === "rejected") {
+      partialErrors.push(type);
+      return { rows: [] as DbRow[], hasMore: false };
+    }
+    return {
+      rows: result.value.results.slice(0, limit),
+      hasMore: result.value.results.length > limit,
+    };
+  };
+  const tasks = page(0, "task");
+  const projects = page(1, "project");
+  const releases = page(2, "release");
+  const views = page(3, "view");
+  const hasMore = tasks.hasMore || projects.hasMore || releases.hasMore || views.hasMore;
+  const nextOffset = offset + limit;
+
+  return {
+    query,
+    groups: {
+      tasks: tasks.rows.map((row) => ({
+        type: "task" as const,
+        id: String(row.id),
+        publicId: String(row.public_id),
+        identifier: String(row.identifier),
+        title: String(row.title),
+        context: [String(row.project_name), nullableString(row.release_name)]
+          .filter(Boolean).join(" · "),
+        href: `/issues/${encodeURIComponent(String(row.public_id))}`,
+      })),
+      projects: projects.rows.map((row) => ({
+        type: "project" as const,
+        id: String(row.id),
+        publicId: String(row.public_id),
+        title: String(row.name),
+        context: `${String(row.task_code)} · ${String(row.summary || row.status || "Project")}`,
+        href: `/projects/${encodeURIComponent(String(row.public_id))}`,
+      })),
+      releases: releases.rows.map((row) => ({
+        type: "release" as const,
+        id: String(row.id),
+        publicId: String(row.public_id),
+        title: String(row.name),
+        context: String(row.project_name),
+        href: `/projects/${encodeURIComponent(String(row.project_public_id))}/releases/${encodeURIComponent(String(row.public_id))}`,
+      })),
+      views: views.rows.map((row) => ({
+        type: "view" as const,
+        id: String(row.id),
+        publicId: String(row.public_id),
+        title: String(row.name),
+        context: row.project_name ? String(row.project_name) : "Global view",
+        href: `/views/${encodeURIComponent(String(row.public_id))}`,
+      })),
+    },
+    nextCursor: hasMore && nextOffset <= GLOBAL_SEARCH_MAX_OFFSET
+      ? encodeGlobalSearchCursor(nextOffset, query, limit)
+      : null,
+    partialErrors,
+  } satisfies GlobalSearchResponse;
 }
 
 export type TaskQueryInput = {

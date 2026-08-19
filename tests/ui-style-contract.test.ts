@@ -41,6 +41,27 @@ test("the application owns its reset without Tailwind Preflight", () => {
   assert.match(declarations("button"), /padding:\s*0\s*;/);
 });
 
+test("global search stays bounded, focus-safe, and overflow-free across phone orientations", () => {
+  const dialog = declarations(".global-search-dialog");
+  assert.match(dialog, /width:\s*min\(680px,\s*calc\(100vw\s*-\s*32px\)\)\s*;/);
+  assert.match(dialog, /max-height:\s*min\(680px,\s*calc\(100dvh/);
+  assert.match(declarations(".global-search-results"), /overflow-x:\s*hidden\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.global-search-backdrop\s*\{[^}]*safe-area-inset-top[^}]*safe-area-inset-right[^}]*safe-area-inset-bottom[^}]*safe-area-inset-left[^}]*\}/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.global-search-dialog\s*\{[^}]*width:\s*100%\s*;[^}]*max-height:\s*100%\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-height:\s*480px\)[\s\S]*?\.global-search-dialog\s*\{[^}]*max-height:\s*calc\(100dvh/,
+  );
+  assert.match(taskTracker, /globalSearchReturnFocus/);
+  assert.match(taskTracker, /queryRef\.current === requestedQuery/);
+});
+
 test("board cards do not shrink their content through the bottom padding", () => {
   const rule = declarations(".task-card");
   assert.match(rule, /flex:\s*0\s+0\s+auto\s*;/);

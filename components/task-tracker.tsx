@@ -83,6 +83,16 @@ import {
   type Layout,
   type ResolvedNavigation,
 } from "@/lib/navigation";
+import {
+  emptyGlobalSearchResponse,
+  flattenGlobalSearchResults,
+  mergeGlobalSearchResponses,
+  nextGlobalSearchHighlight,
+  resolveSearchShortcut,
+  type GlobalSearchEntityType,
+  type GlobalSearchResponse,
+  type GlobalSearchResult,
+} from "@/lib/global-search";
 import { formatReleaseName } from "@/lib/release-presentation";
 import { defaultViewDisplay, emptyViewQuery } from "@/lib/view-contract";
 import {
@@ -916,6 +926,7 @@ export function TaskTracker({
   const [surface, setSurface] = useState(initialNavigation.surface);
   const [layout, setLayout] = useState<Layout>(initialNavigation.layout);
   const [search, setSearch] = useState("");
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [taskSearch, setTaskSearch] = useState<TaskSearchState | null>(null);
   const [pendingProjectMove, setPendingProjectMove] = useState<PendingProjectGroupMove | null>(null);
   const [taskQueryPaging, setTaskQueryPaging] = useState(false);
@@ -958,6 +969,7 @@ export function TaskTracker({
   const accountTriggerRef = useRef<HTMLButtonElement>(null);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const mobileSidebarCloseRef = useRef<HTMLButtonElement>(null);
+  const globalSearchReturnFocus = useRef<HTMLElement | null>(null);
   const temporaryQueryUrlReady = useRef(false);
   const taskReturnPath = useRef(
     navigationPath({ ...initialNavigation, taskId: null }, initialData),
@@ -2057,7 +2069,28 @@ export function TaskTracker({
     setDialog("task");
   }
 
-  function focusSearch() {
+  function openGlobalSearch() {
+    globalSearchReturnFocus.current = mobileSidebarOpen
+      ? mobileMenuRef.current
+      : document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setMobileSidebarOpen(false);
+    setMobileActionsOpen(false);
+    setAccountMenuOpen(false);
+    setGlobalSearchOpen(true);
+  }
+
+  function closeGlobalSearch() {
+    setGlobalSearchOpen(false);
+    window.requestAnimationFrame(() => {
+      const target = globalSearchReturnFocus.current;
+      if (target?.isConnected) target.focus();
+      else mobileMenuRef.current?.focus();
+    });
+  }
+
+  function focusLocalSearch() {
     const mobile = window.matchMedia("(max-width: 900px)").matches;
     setMobileSidebarOpen(false);
     if (mobile) setMobileActionsOpen(true);
@@ -2102,10 +2135,12 @@ export function TaskTracker({
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
       const target = event.target as HTMLElement;
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
       if (event.key === "Escape") {
-        if (mobileActionsOpen) setMobileActionsOpen(false);
+        if (globalSearchOpen) closeGlobalSearch();
+        else if (mobileActionsOpen) setMobileActionsOpen(false);
         else if (mobileSidebarOpen) closeMobileSidebar();
         else if (accountMenuOpen) {
           setAccountMenuOpen(false);
@@ -2127,6 +2162,20 @@ export function TaskTracker({
         else if (selected.size) setSelected(new Set());
         return;
       }
+      const searchShortcut = resolveSearchShortcut(event, {
+        typing,
+        localSearchAvailable: !isCollectionSurface(surface) && surface !== "admin" && surface !== "workspace",
+      });
+      if (searchShortcut === "global") {
+        event.preventDefault();
+        openGlobalSearch();
+        return;
+      }
+      if (searchShortcut === "local") {
+        event.preventDefault();
+        focusLocalSearch();
+        return;
+      }
       if (typing) return;
       if (surface === "admin") return;
       if (surface === "workspace") {
@@ -2139,10 +2188,7 @@ export function TaskTracker({
       if (event.key.toLowerCase() === "c") {
         event.preventDefault();
         if (canCreateTask) openCreate();
-      } else if (event.key === "/") {
-        event.preventDefault();
-        searchRef.current?.focus();
-      } else if (event.key.toLowerCase() === "f") {
+      } else if (event.key.toLowerCase() === "f" && !event.metaKey && !event.ctrlKey) {
         event.preventDefault();
         setFilterOpen((value) => !value);
       } else if (event.key.toLowerCase() === "b" && (event.metaKey || event.ctrlKey)) {
@@ -2181,7 +2227,7 @@ export function TaskTracker({
     // The handlers close over the state listed below; adding the local wrapper
     // functions themselves would recreate this listener on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, data, dialog, highlighted, keyboardTasks, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, selected.size, surface, systemBackupBusy, visibleTasks]);
+  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, data, dialog, globalSearchOpen, highlighted, keyboardTasks, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, selected.size, surface, systemBackupBusy, visibleTasks]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -2209,6 +2255,7 @@ export function TaskTracker({
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
+      {globalSearchOpen && <GlobalSearchOverlay onClose={closeGlobalSearch} />}
       {mobileSidebarOpen && (
         <button
           className="mobile-sidebar-backdrop"
@@ -2235,6 +2282,11 @@ export function TaskTracker({
               <Plus size={15} />
             </button>
           )}
+          {sidebarCompact && (
+            <button className="icon-button" type="button" onClick={openGlobalSearch} title="Global search (/)" aria-label="Open global search">
+              <Search size={15} />
+            </button>
+          )}
           {mobileSidebarOpen && (
             <button
               ref={mobileSidebarCloseRef}
@@ -2249,7 +2301,7 @@ export function TaskTracker({
           )}
         </div>
         {!sidebarCompact && (
-          <button className="sidebar-search" onClick={focusSearch}>
+          <button className="sidebar-search" onClick={openGlobalSearch}>
             <Search size={14} /><span>Search</span><kbd>/</kbd>
           </button>
         )}
@@ -5366,6 +5418,214 @@ function SetupCopyBlock({ value, label, copied, multiline = false, onCopy }: { v
 function DialogHeader({ title, icon, onClose }: { title: string; icon: React.ReactNode; onClose: () => void }) { return <div className="dialog-header"><div>{icon}<h2>{title}</h2></div><button type="button" className="icon-button" aria-label={`Close ${title}`} onClick={onClose}><X size={15} /></button></div>; }
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }
 function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () => void; children: React.ReactNode; className?: string; ariaLabel?: string }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={ariaLabel}>{children}</div></div>; }
+
+const globalSearchSections: Array<{
+  key: keyof GlobalSearchResponse["groups"];
+  type: GlobalSearchEntityType;
+  label: string;
+}> = [
+  { key: "tasks", type: "task", label: "Tasks" },
+  { key: "projects", type: "project", label: "Projects" },
+  { key: "releases", type: "release", label: "Releases" },
+  { key: "views", type: "view", label: "Views" },
+];
+
+function GlobalSearchResultIcon({ type }: { type: GlobalSearchEntityType }) {
+  if (type === "task") return <CircleDot size={15} />;
+  if (type === "project") return <FolderKanban size={15} />;
+  if (type === "release") return <Rocket size={15} />;
+  return <Zap size={15} />;
+}
+
+export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
+  const [query, setQuery] = useState("");
+  const [response, setResponse] = useState<GlobalSearchResponse>(() => emptyGlobalSearchResponse());
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [highlighted, setHighlighted] = useState(0);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const queryRef = useRef("");
+  const results = flattenGlobalSearchResults(response);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      // A blank overlay is a prompt, not a request for an unbounded suggestion set.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setResponse(emptyGlobalSearchResponse());
+      setStatus("idle");
+      setHighlighted(0);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setStatus("loading");
+      void fetch(`/api/search?query=${encodeURIComponent(trimmed)}&limit=8`, {
+        cache: "no-store",
+        signal: controller.signal,
+      }).then(async (searchResponse) => {
+        const value = await searchResponse.json() as GlobalSearchResponse | { error?: string };
+        if (!searchResponse.ok || !("groups" in value)) {
+          throw new Error("Workspace search is temporarily unavailable");
+        }
+        setResponse(value);
+        setStatus(value.partialErrors.length === globalSearchSections.length ? "error" : "ready");
+        setHighlighted(0);
+      }).catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+        setResponse(emptyGlobalSearchResponse(trimmed));
+        setStatus("error");
+      });
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
+
+  async function loadMore() {
+    if (!response.nextCursor || loadingMore) return;
+    const requestedQuery = response.query;
+    setLoadingMore(true);
+    try {
+      const next = await fetch(
+        `/api/search?query=${encodeURIComponent(response.query)}&limit=8&cursor=${encodeURIComponent(response.nextCursor)}`,
+        { cache: "no-store" },
+      );
+      const value = await next.json() as GlobalSearchResponse | { error?: string };
+      if (!next.ok || !("groups" in value)) throw new Error("Search continuation failed");
+      if (queryRef.current === requestedQuery) {
+        setResponse((current) => current.query === requestedQuery
+          ? mergeGlobalSearchResponses(current, value)
+          : current);
+      }
+    } catch {
+      if (queryRef.current === requestedQuery) setStatus("error");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  function handleKey(event: ReactKeyboardEvent<HTMLDialogElement>) {
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlighted((current) => nextGlobalSearchHighlight(current, "next", results.length));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlighted((current) => nextGlobalSearchHighlight(current, "previous", results.length));
+      return;
+    }
+    if (event.key === "Enter" && results[highlighted]) {
+      event.preventDefault();
+      window.location.assign(results[highlighted].href);
+      return;
+    }
+    if (event.key === "Tab") {
+      const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
+        'input, a[href], button:not([disabled])',
+      ) ?? [])];
+      if (!focusable.length) return;
+      const first = focusable[0]!;
+      const last = focusable.at(-1)!;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
+  let resultIndex = -1;
+  return (
+    <div className="global-search-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <dialog ref={dialogRef} className="global-search-dialog" aria-modal="true" aria-label="Global search" open onKeyDown={handleKey}>
+        <header className="global-search-input-row">
+          <Search size={17} aria-hidden="true" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(event) => {
+              const nextQuery = event.target.value;
+              setQuery(nextQuery);
+              queryRef.current = nextQuery.trim().toLowerCase();
+              setResponse(emptyGlobalSearchResponse(queryRef.current));
+              setStatus(nextQuery.trim() ? "loading" : "idle");
+              setHighlighted(0);
+            }}
+            placeholder="Search tasks, projects, releases, and views…"
+            aria-label="Global search query"
+            role="combobox"
+            aria-expanded="true"
+            aria-autocomplete="list"
+            aria-controls="global-search-results"
+            aria-activedescendant={results[highlighted] ? `global-search-result-${results[highlighted].type}-${results[highlighted].id}` : undefined}
+            autoComplete="off"
+          />
+          {query && <button className="icon-button" type="button" aria-label="Clear global search" onClick={() => setQuery("")}><X size={15} /></button>}
+          <kbd>Esc</kbd>
+        </header>
+        <div className="global-search-results" id="global-search-results" role="listbox" aria-label="Global search results">
+          {status === "idle" && <div className="global-search-state"><Search size={22} /><b>Search your workspace</b><span>Tasks, Projects, Releases, and Views</span></div>}
+          {status === "loading" && <div className="global-search-state" aria-live="polite"><span className="global-search-spinner" /><b>Searching…</b></div>}
+          {status === "error" && <div className="global-search-state" role="alert"><CircleHelp size={22} /><b>Search is temporarily unavailable</b><span>Try again without changing your current view.</span></div>}
+          {status === "ready" && results.length === 0 && <div className="global-search-state"><Search size={22} /><b>No accessible results</b><span>Try another title or Task identifier.</span></div>}
+          {status === "ready" && response.partialErrors.length > 0 && <p className="global-search-partial" role="status">Some results could not be loaded. Available matches are shown below.</p>}
+          {status === "ready" && globalSearchSections.map((section) => {
+            const items = response.groups[section.key] as GlobalSearchResult[];
+            if (!items.length) return null;
+            return (
+              <section className="global-search-group" role="group" aria-label={section.label} key={section.key}>
+                <h2>{section.label}</h2>
+                {items.map((item) => {
+                  resultIndex += 1;
+                  const index = resultIndex;
+                  return (
+                    <a
+                      id={`global-search-result-${item.type}-${item.id}`}
+                      key={`${item.type}:${item.id}`}
+                      className={`global-search-result ${index === highlighted ? "highlighted" : ""}`}
+                      href={item.href}
+                      role="option"
+                      aria-selected={index === highlighted}
+                      onMouseEnter={() => setHighlighted(index)}
+                    >
+                      <span className="global-search-result-icon"><GlobalSearchResultIcon type={item.type} /></span>
+                      <span className="global-search-result-copy">
+                        <b>{item.type === "task" ? <><code>{item.identifier}</code><span>{item.title}</span></> : item.title}</b>
+                        <small>{item.context}</small>
+                      </span>
+                      <kbd>↵</kbd>
+                    </a>
+                  );
+                })}
+              </section>
+            );
+          })}
+        </div>
+        <footer className="global-search-footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          {response.nextCursor && <button className="button ghost" type="button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load more"}</button>}
+          <span><kbd>↵</kbd> Open</span>
+        </footer>
+      </dialog>
+    </div>
+  );
+}
 
 function WorkspaceOverviewSurface({
   data,
