@@ -5,7 +5,7 @@ import {
   parseTaskAttachmentReferences,
 } from "./task-description-format";
 
-type DescriptionAttachmentRequirement = {
+export type DescriptionAttachmentRequirement = {
   ref: string;
   imageRequired: boolean;
 };
@@ -63,7 +63,7 @@ export function taskDescriptionAttachmentPredicate(
   };
 }
 
-function descriptionAttachmentRequirements(description: string) {
+export function descriptionAttachmentRequirements(description: string) {
   const byRef = new Map<string, DescriptionAttachmentRequirement>();
   for (const reference of parseTaskAttachmentReferences(description)) {
     const current = byRef.get(reference.ref);

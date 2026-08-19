@@ -472,8 +472,13 @@ Viewer сохраняет read access. Reaction PUT принимает `emoji` �
 
 Body нормализует line endings, отбрасывает внешний whitespace, запрещает empty,
 unsupported control characters и размер больше 100 000 characters. Он остаётся
-Markdown-like text: transport не принимает raw rendered HTML. Reactions
-возвращаются как aggregate count + `reactedByCurrentUser`, без списка Users.
+Markdown-like text: transport не принимает raw rendered HTML. Executable
+`attachment:v1` image/file refs проходят тот же bounded parser и same-Task
+ready validation, что Task description; literal code/escaped examples не
+создают edge. Comment representation возвращает только `attachmentRefs` с
+opaque `ref` и `presentation=image|file`, без filename/object key/content URL.
+Reactions возвращаются как aggregate count + `reactedByCurrentUser`, без списка
+Users.
 
 ### 7.2 Native attachment commands
 

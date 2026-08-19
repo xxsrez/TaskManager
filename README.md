@@ -18,8 +18,9 @@ recoverable delete/restore. Готовые raster images можно безопа
 Markdown description через versioned private reference с общей server-side
 валидацией для UI, Agent API и MCP. Agent REST/MCP поддерживают native
 attachments, versioned Task relations и bounded read-only Task Activity;
-system/Project backup schema `10` переносит attachments, relation concurrency,
-append-only events и приватное migration evidence с legacy compatibility.
+system/Project backup schema `12` переносит attachments, relation concurrency,
+append-only events, comment attachment refs и приватное migration evidence с
+legacy compatibility.
 Runtime import UI/API и provider-specific external context удалены: historical
 comments и status history доступны через native Comments/Activity, а raw
 provenance остаётся только в backup/reconciliation слое.

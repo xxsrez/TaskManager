@@ -219,6 +219,11 @@ export type CommentReactionSummary = {
   reactedByCurrentUser: boolean;
 };
 
+export type CommentAttachmentReference = {
+  ref: string;
+  presentation: "image" | "file";
+};
+
 export type CommentRecord = {
   id: string;
   taskId: string;
@@ -228,6 +233,7 @@ export type CommentRecord = {
     kind: "user" | "historical";
   };
   body: string;
+  attachmentRefs: CommentAttachmentReference[];
   source: "native" | "historical";
   historical: {
     originalCreatedAt: string;
@@ -455,6 +461,7 @@ export type SystemBackupCounts = Record<
   | "attachments"
   | "attachment_migration_outcomes"
   | "comments"
+  | "comment_attachment_refs"
   | "comment_migration_outcomes"
   | "activity_events"
   | "activity_migration_outcomes"

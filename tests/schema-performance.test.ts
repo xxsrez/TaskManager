@@ -463,6 +463,23 @@ test("native attachments enforce task ownership shape and use lifecycle indexes"
   );
 });
 
+test("comment attachment refs have bounded lifecycle and attachment delete indexes", () => {
+  const database = migratedDatabase();
+  const foreignKeys = database.prepare(
+    "PRAGMA foreign_key_list(comment_attachment_refs)",
+  ).all() as Array<Record<string, unknown>>;
+  assert.deepEqual(
+    new Set(foreignKeys.map((row) => String(row.table))),
+    new Set(["attachments", "comments", "tasks"]),
+  );
+  assert.ok(
+    planDetails(
+      database,
+      "SELECT comment_id FROM comment_attachment_refs WHERE task_id = 'task-1' AND attachment_id = 'attachment-1' LIMIT 1",
+    ).some((detail) => detail.includes("idx_comment_attachment_refs_task_attachment")),
+  );
+});
+
 test("workspace synchronization has per-principal ordering and mutation triggers", () => {
   const database = migratedDatabase();
   const sequencePrimaryKey = database

@@ -77,6 +77,7 @@ export const backupTableNames = [
   "attachments",
   "attachment_migration_outcomes",
   "comments",
+  "comment_attachment_refs",
   "comment_migration_outcomes",
   "activity_events",
   "activity_migration_outcomes",
@@ -123,6 +124,7 @@ export const tableDefinitions = [
   definition("comments", ["id", "task_id", "author_user_id", "body", "source", "source_record_id", "source_comment_id", "source_parent_comment_id", "historical_author_name", "historical_created_at", "historical_updated_at", "historical_quoted_text", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"], "task_id, created_at, id", {
     author_user_id: { nullable: true }, source_record_id: { nullable: true }, source_comment_id: { nullable: true }, source_parent_comment_id: { nullable: true }, historical_author_name: { nullable: true }, historical_created_at: { nullable: true }, historical_updated_at: { nullable: true }, historical_quoted_text: { nullable: true }, parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
   }),
+  definition("comment_attachment_refs", ["comment_id", "task_id", "attachment_id", "created_at"], "comment_id, attachment_id"),
   definition("comment_migration_outcomes", ["id", "task_id", "source", "source_record_id", "source_comment_id", "source_index", "outcome", "reason", "comment_id", "raw_json", "reconciled_at"], "task_id, source_record_id, source_index", {
     source_comment_id: { nullable: true }, source_index: { number: true, integer: true }, reason: { nullable: true }, comment_id: { nullable: true },
   }),
@@ -170,6 +172,7 @@ const restoreTableOrder = [
   "external_records",
   "attachment_migration_outcomes",
   "comments",
+  "comment_attachment_refs",
   "comment_migration_outcomes",
   "activity_events",
   "activity_migration_outcomes",
@@ -258,6 +261,7 @@ const legacyCommentDefinition = definition(
 );
 
 export const liveTableDeleteOrder: BackupTableName[] = [
+  "comment_attachment_refs",
   "attachment_migration_outcomes",
   "activity_migration_outcomes",
   "activity_events",
@@ -343,6 +347,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const legacyAttachmentMigration = typeof schemaVersion === "number" && schemaVersion <= 10;
   const legacyLabelGroups = typeof schemaVersion === "number" && schemaVersion <= 11;
   const legacyUserSettings = typeof schemaVersion === "number" && schemaVersion <= 11;
+  const legacyCommentAttachmentRefs = typeof schemaVersion === "number" && schemaVersion <= 11;
   const supported = typeof schemaVersion === "number" && schemaVersion >= 2 && schemaVersion <= systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
@@ -363,7 +368,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
     !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
     !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
     !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
-    !(legacyLabelGroupsMissing && name === "label_groups"),
+    !(legacyLabelGroupsMissing && name === "label_groups") &&
+    !(legacyCommentAttachmentRefs && name === "comment_attachment_refs"),
   );
   assertOnlyKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as BackupTables;
@@ -375,7 +381,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
       (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
       (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes")) ||
       (legacyAttachmentMigration && table.name === "attachment_migration_outcomes") ||
-      (legacyLabelGroupsMissing && table.name === "label_groups")
+      (legacyLabelGroupsMissing && table.name === "label_groups") ||
+      (legacyCommentAttachmentRefs && table.name === "comment_attachment_refs")
         ? []
         : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += sourceRows.length;
@@ -423,7 +430,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   if (legacyHistoricalComments) tables = upgradeLegacySystemComments(tables);
   if (legacyUserSettings) tables = upgradeLegacySystemUsers(tables);
   const counts = countTables(tables);
-  validateRelationships(tables);
+  validateRelationships(tables, !legacyCommentAttachmentRefs);
   const objects = withoutAttachments
     ? []
     : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
@@ -442,10 +449,10 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
         }
       : {}),
     exportedAt,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings || legacyCommentAttachmentRefs
       ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
       : sourceCounts,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings || legacyCommentAttachmentRefs
       ? Object.fromEntries(
           sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
         )
@@ -498,7 +505,10 @@ export function normalizeDbRow(table: TableDefinition, value: Record<string, unk
   return row;
 }
 
-function validateRelationships(tables: BackupTables) {
+function validateRelationships(
+  tables: BackupTables,
+  validateCommentAttachmentRefs = true,
+) {
   const users = uniqueIndex(tables.users, ["id"], "users");
   uniqueIndex(tables.user_identities, ["provider", "provider_account_key"], "user identities");
   for (const user of tables.users) {
@@ -795,6 +805,61 @@ function validateRelationships(tables: BackupTables) {
     const actual = activeCommentsByTask.get(String(task.id)) ?? 0;
     if (task.comment_count !== actual) {
       throw new ValidationError("Task comment_count does not match unified comments");
+    }
+  }
+  uniqueIndex(
+    tables.comment_attachment_refs,
+    ["comment_id", "attachment_id"],
+    "comment attachment refs",
+  );
+  const commentAttachmentPairs = new Set<string>();
+  const commentAttachmentCounts = new Map<string, number>();
+  for (const ref of tables.comment_attachment_refs) {
+    const comment = requireReference(comments, ref.comment_id, "Comment attachment comment");
+    const task = requireReference(tasks, ref.task_id, "Comment attachment Task");
+    const attachment = requireReference(attachments, ref.attachment_id, "Comment attachment");
+    if (
+      comment.task_id !== task.id ||
+      attachment.task_id !== task.id ||
+      comment.source !== "native" ||
+      comment.deleted_at !== null ||
+      attachment.state !== "ready"
+    ) {
+      throw new ValidationError("Comment attachment ref violates its live Task scope");
+    }
+    const count = (commentAttachmentCounts.get(String(comment.id)) ?? 0) + 1;
+    if (count > 100) {
+      throw new ValidationError("Comment contains more than 100 attachment refs");
+    }
+    commentAttachmentCounts.set(String(comment.id), count);
+    commentAttachmentPairs.add(`${comment.id}\u0000${attachment.id}`);
+  }
+  if (validateCommentAttachmentRefs) {
+    const expectedPairs = new Set<string>();
+    for (const comment of tables.comments) {
+      if (comment.source !== "native" || comment.deleted_at !== null) continue;
+      const body = String(comment.body);
+      if (hasMalformedTaskAttachmentReference(body)) {
+        throw new ValidationError("Comment contains a malformed attachment reference");
+      }
+      for (const reference of parseTaskAttachmentReferences(body)) {
+        const attachment = attachmentsByPublicId.get(reference.ref);
+        if (
+          !attachment ||
+          attachment.task_id !== comment.task_id ||
+          attachment.state !== "ready" ||
+          (reference.kind === "image" && attachment.kind !== "image")
+        ) {
+          throw new ValidationError("Comment references an unavailable attachment");
+        }
+        expectedPairs.add(`${comment.id}\u0000${attachment.id}`);
+      }
+    }
+    if (
+      expectedPairs.size !== commentAttachmentPairs.size ||
+      [...expectedPairs].some((pair) => !commentAttachmentPairs.has(pair))
+    ) {
+      throw new ValidationError("Comment attachment body/index mismatch");
     }
   }
   uniqueIndex(

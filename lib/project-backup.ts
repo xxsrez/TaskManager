@@ -57,6 +57,11 @@ export async function exportProjectBackup(
       JOIN projects p ON p.id = t.project_id
       WHERE t.project_id = ? AND p.owner_user_id = ?
       ORDER BY c.task_id, c.created_at, c.id`).bind(projectId, currentUser.id),
+    db.prepare(`SELECT ${definition("comment_attachment_refs").columns.map((column) => `ref.${column}`).join(", ")}
+      FROM comment_attachment_refs ref JOIN tasks t ON t.id = ref.task_id
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.project_id = ? AND p.owner_user_id = ?
+      ORDER BY ref.comment_id, ref.attachment_id`).bind(projectId, currentUser.id),
     db.prepare(`SELECT ${definition("comment_migration_outcomes").columns.map((column) => `outcome.${column}`).join(", ")}
       FROM comment_migration_outcomes outcome JOIN tasks t ON t.id = outcome.task_id
       JOIN projects p ON p.id = t.project_id
@@ -154,19 +159,20 @@ export async function exportProjectBackup(
     releases: 2,
     tasks: 3,
     comments: 4,
-    comment_migration_outcomes: 5,
-    activity_events: 6,
-    activity_migration_outcomes: 7,
-    comment_reactions: 8,
-    label_groups: 9,
-    labels: 10,
-    task_labels: 11,
-    task_relations: 12,
-    saved_views: 13,
-    external_records: 14,
-    attachments: 15,
-    attachment_migration_outcomes: 16,
-    task_identifier_aliases: 17,
+    comment_attachment_refs: 5,
+    comment_migration_outcomes: 6,
+    activity_events: 7,
+    activity_migration_outcomes: 8,
+    comment_reactions: 9,
+    label_groups: 10,
+    labels: 11,
+    task_labels: 12,
+    task_relations: 13,
+    saved_views: 14,
+    external_records: 15,
+    attachments: 16,
+    attachment_migration_outcomes: 17,
+    task_identifier_aliases: 18,
   };
   projectBackupTableNames.forEach((name) => {
     const table = definition(name);
@@ -176,7 +182,7 @@ export async function exportProjectBackup(
     tables.attachments,
   );
   tables.attachments = attachmentData.rows;
-  const sharing = results[18].results.map((value) => {
+  const sharing = results[19].results.map((value) => {
     const row = value as DbRow;
     const permission = String(row.permission);
     if (permission !== "manager" && permission !== "editor" && permission !== "viewer") {
@@ -194,7 +200,7 @@ export async function exportProjectBackup(
     tables,
     objects: attachmentData.objects,
     sharing,
-    externalRelationsOmitted: Number((results[19].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted: Number((results[20].results[0] as DbRow | undefined)?.count ?? 0),
   });
 }
 
@@ -361,6 +367,9 @@ export async function applyProjectBackup(
   }
 
   const statements: D1PreparedStatement[] = [
+    db.prepare(`DELETE FROM comment_attachment_refs WHERE task_id IN (
+      SELECT id FROM tasks WHERE project_id = ?
+    )`).bind(session.project_id),
     db.prepare(`DELETE FROM attachment_migration_outcomes WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(session.project_id),
@@ -654,6 +663,7 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
     db.prepare("SELECT COUNT(*) AS count FROM releases WHERE project_id = ?").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM comments WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
+    db.prepare("SELECT COUNT(*) AS count FROM comment_attachment_refs WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM comment_migration_outcomes WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM activity_events WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
     db.prepare("SELECT COUNT(*) AS count FROM activity_migration_outcomes WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(projectId),
@@ -685,12 +695,13 @@ async function loadCurrentProjectCounts(db: D1Database, projectId: string) {
   const counts = results.map((result) => Number((result.results[0] as DbRow | undefined)?.count ?? 0));
   return {
     projects: counts[0], releases: counts[1], tasks: counts[2], comments: counts[3],
-    comment_migration_outcomes: counts[4], activity_events: counts[5],
-    activity_migration_outcomes: counts[6], comment_reactions: counts[7],
-    saved_views: counts[8], task_labels: counts[9], task_relations: counts[10],
-    external_records: counts[11], attachments: counts[12],
-    attachment_migration_outcomes: counts[13],
-    task_identifier_aliases: counts[14], sharing: counts[15],
+    comment_attachment_refs: counts[4],
+    comment_migration_outcomes: counts[5], activity_events: counts[6],
+    activity_migration_outcomes: counts[7], comment_reactions: counts[8],
+    saved_views: counts[9], task_labels: counts[10], task_relations: counts[11],
+    external_records: counts[12], attachments: counts[13],
+    attachment_migration_outcomes: counts[14],
+    task_identifier_aliases: counts[15], sharing: counts[16],
     workflow_statuses: 0, label_groups: 0, labels: 0,
   };
 }

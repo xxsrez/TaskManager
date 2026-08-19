@@ -30,6 +30,7 @@ export const projectBackupTableNames = [
   "attachments",
   "attachment_migration_outcomes",
   "comments",
+  "comment_attachment_refs",
   "comment_migration_outcomes",
   "activity_events",
   "activity_migration_outcomes",
@@ -215,6 +216,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const legacyActivity = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 9;
   const legacyAttachmentMigration = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 10;
   const legacyLabelGroups = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 11;
+  const legacyCommentAttachmentRefs = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 11;
   const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === 9 || payload.schemaVersion === 10 || payload.schemaVersion === 11 || payload.schemaVersion === projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
@@ -240,7 +242,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
     !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
     !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
-    !(legacyLabelGroupsMissing && name === "label_groups"),
+    !(legacyLabelGroupsMissing && name === "label_groups") &&
+    !(legacyCommentAttachmentRefs && name === "comment_attachment_refs"),
   );
   exactKeys(sourceTables, sourceTableNames, "tables");
   const sourceNormalizedTables = {} as ProjectBackupTables;
@@ -251,7 +254,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
       (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
       (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes")) ||
       (legacyAttachmentMigration && table.name === "attachment_migration_outcomes") ||
-      (legacyLabelGroupsMissing && table.name === "label_groups")
+      (legacyLabelGroupsMissing && table.name === "label_groups") ||
+      (legacyCommentAttachmentRefs && table.name === "comment_attachment_refs")
       ? []
       : array(sourceTables[table.name], `tables.${table.name}`);
     totalRows += values.length;
@@ -321,9 +325,10 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     if (legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) continue;
     if (legacyAttachmentMigration && name === "attachment_migration_outcomes") continue;
     if (legacyLabelGroupsMissing && name === "label_groups") continue;
+    if (legacyCommentAttachmentRefs && name === "comment_attachment_refs") continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
-  validateProjectRelationships(tables, sharing, body);
+  validateProjectRelationships(tables, sharing, body, !legacyCommentAttachmentRefs);
   const objects = withoutAttachments
     ? []
     : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
@@ -337,7 +342,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     projectPublicId: body.projectPublicId,
     projectName: body.projectName,
     ownerUserId: body.ownerUserId,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
+    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyCommentAttachmentRefs
       ? Object.fromEntries(
           Object.entries(body.counts).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
@@ -345,12 +350,13 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
             !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
             !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
             !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
-            !(legacyLabelGroupsMissing && name === "label_groups"),
+            !(legacyLabelGroupsMissing && name === "label_groups") &&
+            !(legacyCommentAttachmentRefs && name === "comment_attachment_refs"),
           ),
         )
       : body.counts,
     warnings: body.warnings,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing
+    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyCommentAttachmentRefs
       ? Object.fromEntries(
           Object.entries(sourceNormalizedTables).filter(([name]) =>
             !(withoutAttachments && name === "attachments") &&
@@ -358,7 +364,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
             !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
             !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
             !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
-            !(legacyLabelGroupsMissing && name === "label_groups"),
+            !(legacyLabelGroupsMissing && name === "label_groups") &&
+            !(legacyCommentAttachmentRefs && name === "comment_attachment_refs"),
           ),
         )
       : sourceNormalizedTables,
@@ -382,6 +389,7 @@ function validateProjectRelationships(
   tables: ProjectBackupTables,
   sharing: ProjectSharingDescriptor[],
   identity: { projectId: string; projectPublicId: string; projectName: string; ownerUserId: string },
+  validateCommentAttachmentRefs = true,
 ) {
   if (tables.projects.length !== 1) throw new ValidationError("Project backup must contain exactly one project");
   const project = tables.projects[0]!;
@@ -644,6 +652,63 @@ function validateProjectRelationships(
   for (const task of tables.tasks) {
     if (task.comment_count !== (activeComments.get(String(task.id)) ?? 0)) {
       throw new ValidationError("Task comment_count does not match project comments");
+    }
+  }
+  const commentAttachmentPairs = new Set<string>();
+  const commentAttachmentCounts = new Map<string, number>();
+  for (const ref of tables.comment_attachment_refs) {
+    const comment = comments.get(String(ref.comment_id));
+    const task = tasks.get(String(ref.task_id));
+    const attachment = attachments.get(String(ref.attachment_id));
+    const pair = `${String(ref.comment_id)}\u0000${String(ref.attachment_id)}`;
+    if (commentAttachmentPairs.has(pair)) {
+      throw new ValidationError("Duplicate project comment attachment ref");
+    }
+    if (
+      !comment ||
+      !task ||
+      !attachment ||
+      comment.task_id !== task.id ||
+      attachment.task_id !== task.id ||
+      comment.source !== "native" ||
+      comment.deleted_at !== null ||
+      attachment.state !== "ready"
+    ) {
+      throw new ValidationError("Project comment attachment ref violates its live Task scope");
+    }
+    const count = (commentAttachmentCounts.get(String(comment.id)) ?? 0) + 1;
+    if (count > 100) {
+      throw new ValidationError("Project comment contains more than 100 attachment refs");
+    }
+    commentAttachmentCounts.set(String(comment.id), count);
+    commentAttachmentPairs.add(pair);
+  }
+  if (validateCommentAttachmentRefs) {
+    const expectedPairs = new Set<string>();
+    for (const comment of tables.comments) {
+      if (comment.source !== "native" || comment.deleted_at !== null) continue;
+      const body = String(comment.body);
+      if (hasMalformedTaskAttachmentReference(body)) {
+        throw new ValidationError("Project comment contains a malformed attachment reference");
+      }
+      for (const reference of parseTaskAttachmentReferences(body)) {
+        const attachment = attachmentPublicIds.get(reference.ref);
+        if (
+          !attachment ||
+          attachment.task_id !== comment.task_id ||
+          attachment.state !== "ready" ||
+          (reference.kind === "image" && attachment.kind !== "image")
+        ) {
+          throw new ValidationError("Project comment references an unavailable attachment");
+        }
+        expectedPairs.add(`${String(comment.id)}\u0000${String(attachment.id)}`);
+      }
+    }
+    if (
+      expectedPairs.size !== commentAttachmentPairs.size ||
+      [...expectedPairs].some((pair) => !commentAttachmentPairs.has(pair))
+    ) {
+      throw new ValidationError("Project comment attachment body/index mismatch");
     }
   }
   const reactionKeys = new Set<string>();

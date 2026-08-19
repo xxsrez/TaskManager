@@ -758,7 +758,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "add_task_comment",
     {
       title: "Add task comment",
-      description: "Adds one native root comment as the authenticated user. Reuse the idempotency key when retrying the same write.",
+      description: "Adds one native root comment as the authenticated user. The body may reference ready attachments of the same Task with native image/file Markdown. Reuse the idempotency key when retrying the same write.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         body: z.string().min(1).max(100_000),
@@ -775,7 +775,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "reply_to_task_comment",
     {
       title: "Reply to task comment",
-      description: "Replies one level deep to a native root thread as the authenticated user and reopens a resolved thread.",
+      description: "Replies one level deep to a native or historical root thread as the authenticated user, accepts same-Task native attachment Markdown, and reopens a resolved thread.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         rootCommentRef: reference("Root comment ref."),
@@ -796,7 +796,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     "edit_task_comment",
     {
       title: "Edit task comment",
-      description: "Edits the authenticated author's native comment using its current version.",
+      description: "Edits the authenticated author's native comment and its attachment refs atomically using the current version.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         commentRef: reference("Comment ref."),

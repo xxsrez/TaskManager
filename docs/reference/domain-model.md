@@ -371,6 +371,23 @@ User `version`; schema `2`–`11` получает `system`, `expanded` и versi
 после проверки исходного checksum. Project backup остаётся на schema `11`,
 поскольку User records в Project bundle не входят.
 
+### CommentAttachmentRef
+
+`CommentAttachmentRef` — нормализованный bounded edge из live native Comment в
+ready Attachment той же Task. Composite identity `(comment_id, attachment_id)`
+не дублирует повторное появление одного token в body; `task_id` денормализован
+для ACL-scoped lifecycle/delete guard и проверяется вместе с обеими сторонами.
+Row содержит только opaque identities и `created_at`, не filename, body,
+object key или delivery URL.
+
+Create/edit Comment разбирает executable Markdown общим tokenizer с Task
+description, проверяет file/image semantics и атомарно заменяет exact edge set
+вместе с Comment, Activity и sync mutation. Soft-delete Comment удаляет edges,
+но не Attachment binary. Attachment delete допускается только при отсутствии
+description edge и `CommentAttachmentRef`; guarded predicates закрывают гонку
+с конкурентным comment create/edit. Logical backup schema `12` сохраняет и
+проверяет body/index equality; schema `2`–`11` нормализуется с пустым index.
+
 ### AttachmentMigrationOutcome
 
 Каждая позиция `metadata_json.attachments` task-scoped `ExternalRecord`
@@ -771,9 +788,12 @@ Editor-or-higher role и optimistic `version`; смена access scope допо�
 24. ActivityEvent принадлежит ровно одной Task, immutable после insert и
     создаётся атомарно с successful mutation. Historical actor snapshot не
     является User; retry, conflict и rollback не создают event.
+25. CommentAttachmentRef соединяет только live native Comment и ready
+    Attachment той же Task. Comment write, index replacement, Activity/sync и
+    delete guard атомарны; edge не даёт отдельного доступа к Comment или binary.
 
 ## Намеренно не моделируется
 
 `Team`, `Initiative`, `Cycle`, `Milestone`, `Roadmap`, `Document`,
-`CommentAttachment`, `Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
+`Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
 `Integration` не входят в начальную модель.

@@ -1717,6 +1717,7 @@ function agentComment(comment: import("./types").CommentRecord, currentUserId: s
       isCurrentUser: comment.author.id !== null && comment.author.id === currentUserId,
     },
     body: comment.body,
+    attachmentRefs: comment.attachmentRefs,
     source: comment.source,
     historical: comment.historical,
     createdAt: comment.createdAt,

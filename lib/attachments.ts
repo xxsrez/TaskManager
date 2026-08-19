@@ -480,6 +480,15 @@ export async function deleteAttachment(
       "Remove this attachment from the Task description before deleting it",
     );
   }
+  const commentReference = await getD1().prepare(
+    `SELECT 1 AS referenced FROM comment_attachment_refs
+     WHERE task_id = ? AND attachment_id = ? LIMIT 1`,
+  ).bind(task.id, current.id).first<{ referenced: number }>();
+  if (commentReference) {
+    throw new ValidationError(
+      "Remove this attachment from Task descriptions and comments before deleting it",
+    );
+  }
   const now = new Date().toISOString();
   const row = await getD1()
     .prepare(
@@ -491,6 +500,11 @@ export async function deleteAttachment(
            WHERE current_task.id = attachments.task_id
              AND current_task.version = ?
              AND COALESCE(current_task.description, '') = ?
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM comment_attachment_refs comment_ref
+           WHERE comment_ref.task_id = attachments.task_id
+             AND comment_ref.attachment_id = attachments.id
          )
        RETURNING *`,
     )

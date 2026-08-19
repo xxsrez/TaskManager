@@ -3,6 +3,7 @@ import { ConflictError, NotFoundError, PermissionError, ValidationError } from "
 import { getTask } from "./repository";
 import { getD1 } from "@/db";
 import type {
+  CommentAttachmentReference,
   CommentPage,
   CommentReactionSummary,
   CommentRecord,
@@ -10,13 +11,22 @@ import type {
   TaskRecord,
   UserRecord,
 } from "./types";
-import { activityEventAfterPreviousChange } from "./activity-write";
+import {
+  activityBatchAssertion,
+  activityEventAfterPreviousChange,
+} from "./activity-write";
+import {
+  descriptionAttachmentRequirements,
+  type DescriptionAttachmentRequirement,
+  validateTaskDescriptionAttachments,
+} from "./task-description-attachments";
 
 type DbRow = Record<string, unknown>;
 
 const MAX_COMMENT_BODY = 100_000;
 const MAX_ROOT_PAGE = 50;
 const MAX_REPLIES_PER_THREAD = 100;
+const MAX_COMMENT_ATTACHMENT_REFS = 100;
 const MONOTONIC_TASK_UPDATED_AT = `CASE
   WHEN updated_at >= ?
     THEN strftime('%Y-%m-%dT%H:%M:%fZ', updated_at, '+0.001 seconds')
@@ -138,6 +148,10 @@ export async function createComment(
       ? String(parent.parent_comment_id)
       : String(parent.id);
   }
+  const attachmentRequirements = await validateCommentAttachmentRequirements(
+    task.id,
+    body,
+  );
   const id = `comment_${crypto.randomUUID()}`;
   const now = laterTimestamp(task.updatedAt);
   const db = getD1();
@@ -147,13 +161,14 @@ export async function createComment(
     payload: { commentId: id, parentCommentId },
     createdAt: now,
   });
-  await db.batch([
-    db.prepare(
+  try {
+    await db.batch([
+      db.prepare(
       `INSERT OR IGNORE INTO comments
        (id, task_id, author_user_id, body, source, parent_comment_id,
         idempotency_key, created_at, updated_at, version)
        VALUES (?, ?, ?, ?, 'native', ?, ?, ?, ?, 1)`,
-    ).bind(
+      ).bind(
       id,
       task.id,
       currentUser.id,
@@ -162,22 +177,51 @@ export async function createComment(
       idempotencyKey,
       now,
       now,
-    ),
-    activity.statement,
-    db.prepare(
+      ),
+      ...commentAttachmentInsertStatements(
+        db,
+        id,
+        task.id,
+        body,
+        attachmentRequirements,
+        1,
+      ),
+      commentAttachmentBatchGuard(
+        db,
+        id,
+        task.id,
+        body,
+        attachmentRequirements.length,
+        1,
+      ),
+      activity.statement,
+      db.prepare(
       `UPDATE comments SET resolved_at = NULL, resolved_by_user_id = NULL,
          resolution_comment_id = NULL, version = version + 1, updated_at = ?
        WHERE id = ? AND task_id = ? AND resolved_at IS NOT NULL
          AND EXISTS (SELECT 1 FROM comments inserted WHERE inserted.id = ?)`,
-    ).bind(now, parentCommentId, task.id, id),
-    db.prepare(
+      ).bind(now, parentCommentId, task.id, id),
+      db.prepare(
       `UPDATE tasks SET
          comment_count = (SELECT COUNT(*) FROM comments
            WHERE task_id = ? AND deleted_at IS NULL),
          updated_at = ${MONOTONIC_TASK_UPDATED_AT}
        WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
-    ).bind(task.id, now, now, task.id, activity.id),
-  ]);
+      ).bind(task.id, now, now, task.id, activity.id),
+      activityBatchAssertion(
+        db,
+        `comment_attachment_assert_${crypto.randomUUID()}`,
+        now,
+      ),
+    ]);
+  } catch {
+    const retried = await db.prepare(
+      `SELECT id FROM comments
+       WHERE task_id = ? AND author_user_id = ? AND idempotency_key = ?`,
+    ).bind(task.id, currentUser.id, idempotencyKey).first<{ id: string }>();
+    if (retried) return getCommentRecord(currentUser, task, retried.id);
+    throw new ConflictError("Comment attachments changed in another session");
+  }
   const inserted = await getD1()
     .prepare(
       `SELECT id FROM comments
@@ -207,6 +251,10 @@ export async function editComment(
   assertVersion(input.version, comment.version);
   const body = normalizeCommentBody(input.body);
   if (body === String(comment.body)) return getCommentRecord(currentUser, task, commentId);
+  const attachmentRequirements = await validateCommentAttachmentRequirements(
+    task.id,
+    body,
+  );
   const now = laterTimestamp(String(comment.updated_at));
   const taskNow = laterTimestamp(task.updatedAt);
   const db = getD1();
@@ -216,20 +264,59 @@ export async function editComment(
     payload: { commentId },
     createdAt: taskNow,
   });
-  const result = await db.batch([
-    db.prepare(
+  const attachmentPredicate = commentAttachmentPredicate(attachmentRequirements);
+  try {
+    await db.batch([
+      db.prepare(
+        `DELETE FROM comment_attachment_refs
+         WHERE comment_id = ? AND task_id = ?
+           AND EXISTS (
+             SELECT 1 FROM comments current_comment
+             WHERE current_comment.id = comment_attachment_refs.comment_id
+               AND current_comment.task_id = comment_attachment_refs.task_id
+               AND current_comment.version = ?
+           )`,
+      ).bind(commentId, task.id, Number(comment.version)),
+      db.prepare(
       `UPDATE comments SET body = ?, updated_at = ?, version = version + 1
-       WHERE id = ? AND task_id = ? AND version = ?`,
-    ).bind(body, now, commentId, task.id, Number(comment.version)),
-    activity.statement,
-    db.prepare(
+       WHERE id = ? AND task_id = ? AND version = ?
+       ${attachmentPredicate.sql}`,
+      ).bind(
+        body,
+        now,
+        commentId,
+        task.id,
+        Number(comment.version),
+        ...attachmentPredicate.bindings,
+      ),
+      ...commentAttachmentInsertStatements(
+        db,
+        commentId,
+        task.id,
+        body,
+        attachmentRequirements,
+        Number(comment.version) + 1,
+      ),
+      commentAttachmentBatchGuard(
+        db,
+        commentId,
+        task.id,
+        body,
+        attachmentRequirements.length,
+        Number(comment.version) + 1,
+      ),
+      activity.statement,
+      db.prepare(
       `UPDATE tasks SET updated_at = ${MONOTONIC_TASK_UPDATED_AT}
        WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
-    ).bind(taskNow, taskNow, task.id, activity.id),
-  ]);
-  // D1 may include nested sync-trigger writes in meta.changes. The guarded
-  // primary-key update still touches at most one Comment row.
-  if ((result[0]?.meta.changes ?? 0) < 1) {
+      ).bind(taskNow, taskNow, task.id, activity.id),
+      activityBatchAssertion(
+        db,
+        `comment_attachment_assert_${crypto.randomUUID()}`,
+        taskNow,
+      ),
+    ]);
+  } catch {
     throw new ConflictError("Comment was changed in another session");
   }
   return getCommentRecord(currentUser, task, commentId);
@@ -262,21 +349,37 @@ export async function deleteComment(
     payload: { commentId },
     createdAt: taskNow,
   });
-  const result = await db.batch([
-    db.prepare(
+  try {
+    await db.batch([
+      db.prepare(
+        `DELETE FROM comment_attachment_refs
+         WHERE comment_id = ? AND task_id = ?
+           AND EXISTS (
+             SELECT 1 FROM comments current_comment
+             WHERE current_comment.id = comment_attachment_refs.comment_id
+               AND current_comment.task_id = comment_attachment_refs.task_id
+               AND current_comment.version = ?
+           )`,
+      ).bind(commentId, task.id, Number(comment.version)),
+      db.prepare(
       `UPDATE comments SET body = '', deleted_at = ?, updated_at = ?,
          version = version + 1
        WHERE id = ? AND task_id = ? AND version = ?`,
-    ).bind(now, now, commentId, task.id, Number(comment.version)),
-    activity.statement,
-    db.prepare(
+      ).bind(now, now, commentId, task.id, Number(comment.version)),
+      activity.statement,
+      db.prepare(
       `UPDATE tasks SET comment_count = (
          SELECT COUNT(*) FROM comments WHERE task_id = ? AND deleted_at IS NULL
        ), updated_at = ${MONOTONIC_TASK_UPDATED_AT}
        WHERE id = ? AND EXISTS (SELECT 1 FROM activity_events WHERE id = ?)`,
-    ).bind(task.id, taskNow, taskNow, task.id, activity.id),
-  ]);
-  if ((result[0]?.meta.changes ?? 0) < 1) {
+      ).bind(task.id, taskNow, taskNow, task.id, activity.id),
+      activityBatchAssertion(
+        db,
+        `comment_attachment_assert_${crypto.randomUUID()}`,
+        taskNow,
+      ),
+    ]);
+  } catch {
     throw new ConflictError("Comment was changed in another session");
   }
   return getCommentRecord(currentUser, task, commentId);
@@ -468,6 +571,7 @@ async function hydrateComments(
         ? { ...nativeAuthor!, kind: "user" as const }
         : { id: null, displayName: historicalAuthorName!, kind: "historical" as const },
       body: String(row.body),
+      attachmentRefs: commentAttachmentProjection(row),
       source: source === "native" ? "native" : "historical",
       historical: source === "native" ? null : {
         originalCreatedAt: String(row.historical_created_at),
@@ -492,6 +596,14 @@ async function hydrateComments(
       },
     };
   });
+}
+
+function commentAttachmentProjection(row: DbRow): CommentAttachmentReference[] {
+  if (row.source !== "native" || row.deleted_at) return [];
+  return descriptionAttachmentRequirements(String(row.body)).map((requirement) => ({
+    ref: requirement.ref,
+    presentation: requirement.imageRequired ? "image" : "file",
+  }));
 }
 
 async function getCommentRecord(
@@ -536,6 +648,103 @@ async function loadReactionMap(commentIds: string[], currentUserId: string) {
     result.set(commentId, values);
   }
   return result;
+}
+
+async function validateCommentAttachmentRequirements(taskId: string, body: string) {
+  const requirements = await validateTaskDescriptionAttachments(taskId, body);
+  if (requirements.length > MAX_COMMENT_ATTACHMENT_REFS) {
+    throw new ValidationError(
+      `A comment can reference at most ${MAX_COMMENT_ATTACHMENT_REFS} attachments`,
+    );
+  }
+  return requirements;
+}
+
+function commentAttachmentInsertStatements(
+  db: D1Database,
+  commentId: string,
+  taskId: string,
+  body: string,
+  requirements: DescriptionAttachmentRequirement[],
+  commentVersion: number,
+) {
+  return requirements.map((requirement) => db.prepare(
+    `INSERT INTO comment_attachment_refs
+      (comment_id, task_id, attachment_id)
+     SELECT ?, ?, attachment.id FROM attachments attachment
+     WHERE attachment.task_id = ? AND attachment.public_id = ?
+       AND attachment.state = 'ready'
+       AND (? = 0 OR attachment.kind = 'image')
+       AND EXISTS (
+         SELECT 1 FROM comments current_comment
+         WHERE current_comment.id = ? AND current_comment.task_id = ?
+           AND current_comment.body = ? AND current_comment.version = ?
+           AND current_comment.source = 'native'
+           AND current_comment.deleted_at IS NULL
+       )`,
+  ).bind(
+    commentId,
+    taskId,
+    taskId,
+    requirement.ref,
+    requirement.imageRequired ? 1 : 0,
+    commentId,
+    taskId,
+    body,
+    commentVersion,
+  ));
+}
+
+function commentAttachmentBatchGuard(
+  db: D1Database,
+  commentId: string,
+  taskId: string,
+  body: string,
+  expectedRefCount: number,
+  commentVersion: number,
+) {
+  return db.prepare(
+    `UPDATE comments SET updated_at = updated_at
+     WHERE id = ? AND task_id = ? AND body = ? AND version = ?
+       AND source = 'native' AND deleted_at IS NULL
+       AND (SELECT COUNT(*) FROM comment_attachment_refs ref
+            WHERE ref.comment_id = comments.id
+              AND ref.task_id = comments.task_id) = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM comment_attachment_refs ref
+         LEFT JOIN attachments attachment ON attachment.id = ref.attachment_id
+         WHERE ref.comment_id = comments.id
+           AND (ref.task_id <> comments.task_id
+             OR attachment.id IS NULL
+             OR attachment.task_id <> comments.task_id
+             OR attachment.state <> 'ready')
+       )`,
+  ).bind(
+    commentId,
+    taskId,
+    body,
+    commentVersion,
+    expectedRefCount,
+  );
+}
+
+function commentAttachmentPredicate(
+  requirements: DescriptionAttachmentRequirement[],
+) {
+  return {
+    sql: requirements.map(() => `
+      AND EXISTS (
+        SELECT 1 FROM attachments comment_attachment
+        WHERE comment_attachment.task_id = comments.task_id
+          AND comment_attachment.public_id = ?
+          AND comment_attachment.state = 'ready'
+          AND (? = 0 OR comment_attachment.kind = 'image')
+      )`).join(""),
+    bindings: requirements.flatMap((requirement) => [
+      requirement.ref,
+      requirement.imageRequired ? 1 : 0,
+    ]),
+  };
 }
 
 async function editableTask(currentUser: UserRecord, taskReference: string) {

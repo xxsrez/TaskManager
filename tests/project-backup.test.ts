@@ -136,7 +136,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
     exportedAt: now,
   });
   const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
+    Object.entries(current.tables).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
   );
   tables.comments = current.tables.comments.map(legacyCommentRow);
   tables.projects = current.tables.projects.map(legacyProjectRow);
@@ -144,7 +144,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   tables.labels = current.tables.labels.map(legacyLabelRow);
   const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
+    Object.entries(current.counts).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
   );
   const body = {
     format: current.format,
@@ -177,7 +177,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
     exportedAt: now,
   });
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     workflow_statuses: current.tables.workflow_statuses.map(legacyWorkflowRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
@@ -187,7 +187,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
   const body = {
     ...current,
     schemaVersion: 3,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
   };
   const unsigned = Object.fromEntries(
@@ -210,7 +210,7 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
     exportedAt: now,
   });
   const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     projects: current.tables.projects.map(legacyProjectRow),
     task_relations: current.tables.task_relations.map(legacyRelationRow),
     labels: current.tables.labels.map(legacyLabelRow),
@@ -219,7 +219,7 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
@@ -243,11 +243,11 @@ test("schema 6 project bundles upgrade Label catalog metadata and keep assignmen
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 6,
     tables: {
-      ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+      ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
       labels: current.tables.labels.map(legacyLabelRow),
       comments: current.tables.comments.map(legacyCommentRow),
     },
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
+    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
   };
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
@@ -269,10 +269,10 @@ test("schema 10 project bundles remain importable with empty attachment migratio
     exportedAt: now,
   });
   const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => name !== "attachment_migration_outcomes"),
+    Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
   );
   const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => name !== "attachment_migration_outcomes"),
+    Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
   );
   const body = {
     format: current.format,
@@ -295,6 +295,44 @@ test("schema 10 project bundles remain importable with empty attachment migratio
   assert.equal(validated.schemaVersion, 10);
   assert.deepEqual(validated.tables.attachment_migration_outcomes, []);
   assert.deepEqual(validated.tables.activity_events, current.tables.activity_events);
+});
+
+test("schema 11 project bundles remain importable with an empty comment attachment index", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const tables = Object.fromEntries(
+    Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
+  );
+  const counts = Object.fromEntries(
+    Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
+  );
+  const body = {
+    format: current.format,
+    version: current.version,
+    schemaVersion: 11,
+    siteOrigin: current.siteOrigin,
+    exportedAt: current.exportedAt,
+    projectId: current.projectId,
+    projectPublicId: current.projectPublicId,
+    projectName: current.projectName,
+    ownerUserId: current.ownerUserId,
+    counts,
+    warnings: current.warnings,
+    tables,
+    objects: current.objects,
+    sharing: current.sharing,
+  };
+  const validated = await validateProjectBackup({
+    ...body,
+    sha256: await checksum(JSON.stringify(body)),
+  });
+  assert.equal(validated.schemaVersion, 11);
+  assert.deepEqual(validated.tables.comment_attachment_refs, []);
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -430,6 +468,7 @@ function validProjectTables(): ProjectBackupTables {
       deleted_at: null, resolved_at: null, resolved_by_user_id: null,
       resolution_comment_id: null, version: 1,
     }],
+    comment_attachment_refs: [],
     comment_migration_outcomes: [],
     activity_events: [],
     activity_migration_outcomes: [],

@@ -505,6 +505,16 @@ Native и historical comment bodies не входят в bootstrap или Task d
 edit/delete/reparent; reply/reaction/resolve используют тот же ACL и thread
 contract, что native discussions.
 
+Executable attachment tokens live native Comment разбираются тем же Markdown
+tokenizer, что Task description. Repository до write разрешает только ready
+Attachment той же Task, затем одной D1 batch заменяет normalized
+`comment_attachment_refs`, пишет Comment/Activity/sync и проверяет guarded
+count. Attachment delete сначала использует indexed lookup для безопасной
+ошибки, а atomic update повторяет `NOT EXISTS` guard; поэтому concurrent
+comment write/delete не оставляет dangling edge. Projections публикуют только
+opaque ref и presentation, а reconciliation сравнивает bounded body/index
+sets без body, filename, object key или existence detail.
+
 Append-only change history запрашивается независимо через
 `/api/tasks/{id}/activity`. Repository сначала разрешает текущую Task ACL, затем
 читает descending keyset page `(created_at, id)` и отдельный count. Native
@@ -643,7 +653,10 @@ User preferences.
 12. Schema `12` переносит LabelGroup topology, а в system backup также
     versioned User `theme`, `sidebar_preference` и `version`; schema `2`–`11`
     получает пустой LabelGroup catalog, deterministic `system`/`expanded`
-    preferences и User version `1` после проверки исходного checksum.
+    preferences и User version `1` после проверки исходного checksum. Та же
+    schema переносит `comment_attachment_refs` и валидирует exact body/index
+    equality для live native comments; schema `2`–`11` получает пустой index,
+    не сканируя legacy bodies в restore edge set.
 
 ### Project backup и restore
 
@@ -662,8 +675,8 @@ User preferences.
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
 6. Current schema `12` сохраняет historical comments, Activity,
-   LabelGroup topology и
-   comment/activity/attachment reconciliation outcomes;
+   LabelGroup topology, comment/activity/attachment reconciliation outcomes и
+   normalized live Comment attachment refs;
    schema `2`–`8` получает deterministic legacy upgrades после проверки
    исходного checksum и до записи staging rows.
 

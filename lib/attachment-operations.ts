@@ -23,6 +23,18 @@ export type AttachmentIntegrityReport = {
   staleFailedRefs: string[];
   expiredDeletedRefs: string[];
   brokenDescriptionRefs: Array<{ taskRef: string; attachmentRef: string }>;
+  brokenCommentRefs: Array<{
+    taskRef: string;
+    commentRef: string;
+    attachmentRef: string;
+    reason: "missing" | "cross_task" | "unavailable" | "incompatible";
+  }>;
+  commentRefIndexMismatches: Array<{
+    taskRef: string;
+    commentRef: string;
+    attachmentRef: string;
+    reason: "missing_index" | "unexpected_index";
+  }>;
   ownerUsage: Array<{
     ownerUserId: string;
     attachmentCount: number;
@@ -61,6 +73,24 @@ export async function reconcileAttachmentStorage(
     db.prepare(`SELECT id, public_id, description FROM tasks
       WHERE instr(description, 'attachment:v1:') > 0 ORDER BY id LIMIT ?`)
       .bind(maxObjects + 1),
+    db.prepare(`SELECT c.id AS comment_ref, c.task_id, t.public_id AS task_ref,
+      c.body FROM comments c JOIN tasks t ON t.id = c.task_id
+      WHERE c.source = 'native' AND c.deleted_at IS NULL
+        AND (instr(c.body, 'attachment:v1:') > 0 OR EXISTS (
+          SELECT 1 FROM comment_attachment_refs ref WHERE ref.comment_id = c.id
+        ))
+      ORDER BY c.id LIMIT ?`).bind(maxObjects + 1),
+    db.prepare(`SELECT ref.comment_id AS comment_ref,
+      ref.task_id AS ref_task_id, ref.attachment_id,
+      comment.task_id AS comment_task_id,
+      task.public_id AS task_ref, attachment.public_id AS attachment_ref,
+      attachment.task_id AS attachment_task_id, attachment.kind,
+      attachment.state
+      FROM comment_attachment_refs ref
+      LEFT JOIN comments comment ON comment.id = ref.comment_id
+      LEFT JOIN tasks task ON task.id = comment.task_id
+      LEFT JOIN attachments attachment ON attachment.id = ref.attachment_id
+      ORDER BY ref.comment_id, ref.attachment_id LIMIT ?`).bind(maxObjects + 1),
     db.prepare(`SELECT COALESCE(p.owner_user_id, t.owner_user_id) AS owner_user_id,
       COUNT(*) AS attachment_count, COALESCE(SUM(a.byte_size), 0) AS total_bytes
       FROM attachments a JOIN tasks t ON t.id = a.task_id
@@ -77,7 +107,14 @@ export async function reconcileAttachmentStorage(
     ]),
     scanAttachmentStorageOwnership(db, maxObjects),
   ]);
-  const [attachments, tasks, ownerUsageRows, projectUsageRows] = results;
+  const [
+    attachments,
+    tasks,
+    comments,
+    commentRefRows,
+    ownerUsageRows,
+    projectUsageRows,
+  ] = results;
 
   const metadataRows = (attachments.results as DbRow[]).slice(0, maxObjects);
   const missingObjectRefs: string[] = [];
@@ -134,11 +171,82 @@ export async function reconcileAttachmentStorage(
     }
   }
 
+  const indexedByComment = new Map<string, Set<string>>();
+  const brokenCommentRefs: AttachmentIntegrityReport["brokenCommentRefs"] = [];
+  for (const row of (commentRefRows.results as DbRow[]).slice(0, maxObjects)) {
+    const commentRef = String(row.comment_ref);
+    const attachmentRef = row.attachment_ref == null
+      ? `missing:${String(row.attachment_id ?? "unknown")}`
+      : String(row.attachment_ref);
+    const indexed = indexedByComment.get(commentRef) ?? new Set<string>();
+    indexed.add(attachmentRef);
+    indexedByComment.set(commentRef, indexed);
+    const taskRef = String(row.task_ref ?? "missing-task");
+    const reason = row.attachment_ref == null || row.comment_task_id == null
+      ? "missing"
+      : row.ref_task_id !== row.comment_task_id ||
+          row.attachment_task_id !== row.comment_task_id
+        ? "cross_task"
+        : row.state !== "ready"
+          ? "unavailable"
+          : null;
+    if (reason) {
+      brokenCommentRefs.push({ taskRef, commentRef, attachmentRef, reason });
+    }
+  }
+  const commentRefIndexMismatches: AttachmentIntegrityReport["commentRefIndexMismatches"] = [];
+  for (const comment of (comments.results as DbRow[]).slice(0, maxObjects)) {
+    const commentRef = String(comment.comment_ref);
+    const taskRef = String(comment.task_ref);
+    const expected = new Map(
+      parseTaskAttachmentReferences(String(comment.body)).map((reference) => [
+        reference.ref,
+        reference,
+      ]),
+    );
+    const indexed = indexedByComment.get(commentRef) ?? new Set<string>();
+    for (const [attachmentRef, reference] of expected) {
+      if (!indexed.has(attachmentRef)) {
+        commentRefIndexMismatches.push({
+          taskRef,
+          commentRef,
+          attachmentRef,
+          reason: "missing_index",
+        });
+      }
+      const attachment = attachmentsByTask
+        .get(String(comment.task_id))
+        ?.get(attachmentRef);
+      const reason = !attachment
+        ? "missing"
+        : attachment.state !== "ready"
+          ? "unavailable"
+          : reference.kind === "image" && attachment.kind !== "image"
+            ? "incompatible"
+            : null;
+      if (reason) {
+        brokenCommentRefs.push({ taskRef, commentRef, attachmentRef, reason });
+      }
+    }
+    for (const attachmentRef of indexed) {
+      if (!expected.has(attachmentRef)) {
+        commentRefIndexMismatches.push({
+          taskRef,
+          commentRef,
+          attachmentRef,
+          reason: "unexpected_index",
+        });
+      }
+    }
+  }
+
   return {
     generatedAt: now.toISOString(),
     truncated:
       attachments.results.length > maxObjects ||
       tasks.results.length > maxObjects ||
+      comments.results.length > maxObjects ||
+      commentRefRows.results.length > maxObjects ||
       ownerUsageRows.results.length > maxObjects ||
       projectUsageRows.results.length > maxObjects ||
       storage.truncated,
@@ -179,6 +287,8 @@ export async function reconcileAttachmentStorage(
       )
       .map((row) => String(row.public_id)),
     brokenDescriptionRefs,
+    brokenCommentRefs,
+    commentRefIndexMismatches,
     ownerUsage: (ownerUsageRows.results as DbRow[])
       .slice(0, maxObjects)
       .map((row) => ({

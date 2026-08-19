@@ -597,6 +597,30 @@ export const attachments = sqliteTable(
   ],
 );
 
+export const commentAttachmentRefs = sqliteTable(
+  "comment_attachment_refs",
+  {
+    commentId: text("comment_id")
+      .notNull()
+      .references(() => comments.id, { onDelete: "cascade" }),
+    taskId: text("task_id")
+      .notNull()
+      .references(() => tasks.id, { onDelete: "cascade" }),
+    attachmentId: text("attachment_id")
+      .notNull()
+      .references(() => attachments.id),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.commentId, table.attachmentId] }),
+    index("idx_comment_attachment_refs_task_attachment").on(
+      table.taskId,
+      table.attachmentId,
+      table.commentId,
+    ),
+  ],
+);
+
 export const attachmentMigrationOutcomes = sqliteTable(
   "attachment_migration_outcomes",
   {

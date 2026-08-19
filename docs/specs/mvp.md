@@ -315,7 +315,15 @@ immutable ID и может группировать Tasks по значения�
   ACL-scoped вызовом при открытии Activity.
 - Body хранится как ограниченный plain Markdown-like text. UI безопасно
   отрисовывает форматирование без raw HTML и разрешает ссылки только схем
-  `http`, `https` и `mailto`.
+  `http`, `https`, `mailto` и native `attachment:v1`.
+- Native comment может ссылаться на готовый Attachment той же Task через тот
+  же executable Markdown contract, что description: raster image использует
+  `![alt](attachment:v1:<public-ref> "caption")`, downloadable file —
+  `[label](attachment:v1:<public-ref>)`. Inline/fenced code и escaped examples
+  остаются literal. Create/edit атомарно проверяет и нормализует bounded index
+  ссылок; guessed, cross-Task, deleted/pending и несовместимый image ref
+  отклоняются без existence leak. Historical body immutable, но native reply
+  на historical root может содержать такие ссылки.
 - Импортированный comment становится historical `Comment` той же Task с
   snapshot имени автора и исходных timestamps/quote. Он не получает
   `author_user_id`, не impersonates текущего User и сохраняет source identity.
@@ -328,8 +336,8 @@ immutable ID и может группировать Tasks по значения�
   `exception`. Offline migration planner не дублирует Comment; runtime import
   route и provider-specific public contract отсутствуют.
 - Локальный draft изолирован ключом current User + Task + optional thread.
-  Mentions, attachments именно к comment, notifications и subscriptions не
-  входят в этот срез.
+  Mentions, отдельный binary upload без Task Attachment, notifications и
+  subscriptions не входят в этот срез.
 
 ### 5.6 Task Activity
 
@@ -360,7 +368,9 @@ immutable ID и может группировать Tasks по значения�
 - Project/system backup schema `12` сохраняет LabelGroup topology, events,
   attachment migration outcomes и reconciliation evidence. System backup
   дополнительно сохраняет versioned profile preferences; schema `11` получает
-  deterministic defaults для новых User fields и пустого LabelGroup catalog.
+  deterministic defaults для новых User fields, пустого LabelGroup catalog и
+  пустого comment attachment index. Current schema также сохраняет normalized
+  live Comment attachment refs.
   Activity хранится до удаления Task; отдельного retention deletion нет.
   Logical export ограничен 5 000 rows на таблицу и общим размером package,
   поэтому превышение останавливает export явно, а не обрезает историю.
@@ -398,8 +408,9 @@ immutable ID и может группировать Tasks по значения�
   дополнительно требует `kind=image`. Тот же repository invariant действует
   для UI, REST Agent API и MCP и повторяется в guarded write. Чужой, угаданный,
   удалённый или незавершённый Attachment отклоняется без раскрытия его
-  существования. Attachment нельзя удалить, пока актуальная description
-  ссылается на него image token или file link.
+  существования. Attachment нельзя удалить, пока актуальная description или
+  live native Comment ссылается на него image token/file link; delete guard
+  использует normalized indexes и повторяется в атомарном write predicate.
 - Read-only Markdown renderer лениво получает только ACL-scoped metadata,
   показывает responsive image/optional caption и компактную file link, строит
   private preview/download route после авторизации и при недоступности
@@ -503,6 +514,9 @@ immutable ID и может группировать Tasks по значения�
   schema `6` добавляет Project task code/sequence и aliases прежних Task
   identifiers. Legacy schema `2`–`5` импортируются детерминированно, но Task без
   Project требует явного mapping.
+- Schema `12` включает `comment_attachment_refs`; schema `2`–`11` после
+  проверки исходного checksum получает пустой index без попытки синтезировать
+  historical edges из legacy comment bodies.
 - Restore materializes новые environment-scoped R2 keys до атомарного D1
   cutover, удаляет старые objects только после success и компенсирует новые при
   failure. Cross-Site Project restore по-прежнему запрещён.
@@ -846,7 +860,8 @@ created/updated/started/completed/canceled dates и archived state.
     object или D1 cutover failure не меняет live originals; schema `2` без
     Attachments по-прежнему импортируется.
 34. Read-only reconciliation находит missing/orphan live или backup-staging
-    object, size/checksum mismatch, stale lifecycle и broken description ref.
+    object, size/checksum mismatch, stale lifecycle, broken description ref и
+    расхождение live native Comment body/index без публикации body/filename.
     Truncated scan не публикует неточный orphan count. Admin overview содержит
     только metadata/object counts, bytes, staging/orphan/states; per-Task,
     current-owner и Project quotas
@@ -924,3 +939,6 @@ created/updated/started/completed/canceled dates и archived state.
     non-binary/skipped/blocked outcomes и backup/restore schema `12`.
 22. Versioned Profile/Settings, User-scoped appearance/sidebar preferences и
     system backup/restore schema `12`.
+23. Native Comment attachment refs: normalized bounded index, атомарные
+    create/edit/delete, ACL-safe Agent/MCP projection, race-safe Attachment
+    delete guard, reconciliation и backup/restore schema `12`.

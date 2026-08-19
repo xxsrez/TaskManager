@@ -20,6 +20,9 @@ import/external-context contract не возвращается.
 Markdown file links. Canonical body по-прежнему хранит только opaque ref и
 пользовательский label; private original разрешается через current Task ACL.
 
+Дополнение 2026-08-19: live native Comments используют тот же Markdown contract
+и normalized `comment_attachment_refs`; backup schema `12` переносит index.
+
 ## Контекст
 
 D1 хранит структурированные данные, но binary body не должен попадать в D1,
@@ -80,6 +83,13 @@ bootstrap или публичный URL. Attachment обязан менять д
     namespaces проверяются отдельно; truncated scan возвращает unknown orphan
     count. Derived thumbnail не хранится в R2: он создаётся bounded IMAGES
     transform на чтении, поэтому отдельного variant object lifecycle нет.
+13. Live native Comment использует тот же executable Markdown contract для
+    image/file refs, но хранит normalized edge в `comment_attachment_refs`.
+    Comment create/edit/delete, Task Activity/sync и exact edge replacement
+    выполняются одной D1 batch; Attachment delete повторяет indexed
+    `NOT EXISTS` guard в atomic update. Historical bodies не переписываются,
+    reply на historical root остаётся native. Backup schema `12` переносит и
+    проверяет index, а schema `2`–`11` получает пустой edge set.
 
 ## Последствия
 

@@ -1200,12 +1200,25 @@ export const agentApiOpenApi = {
       },
       Comment: {
         type: "object",
-        required: ["ref", "author", "body", "source", "historical", "createdAt", "updatedAt", "version", "reactions", "permissions"],
+        required: ["ref", "author", "body", "attachmentRefs", "source", "historical", "createdAt", "updatedAt", "version", "reactions", "permissions"],
         properties: {
           ref: { type: "string" },
           parentCommentRef: { type: ["string", "null"] },
           author: { type: "object" },
           body: { type: "string" },
+          attachmentRefs: {
+            type: "array",
+            maxItems: 100,
+            items: {
+              type: "object",
+              required: ["ref", "presentation"],
+              properties: {
+                ref: { type: "string" },
+                presentation: { enum: ["image", "file"] },
+              },
+              additionalProperties: false,
+            },
+          },
           source: { enum: ["native", "historical"] },
           historical: { type: ["object", "null"] },
           createdAt: { type: "string", format: "date-time" },
