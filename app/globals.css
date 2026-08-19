@@ -86,6 +86,7 @@ table { border-collapse: collapse; border-color: inherit; text-indent: 0; }
 :where(img, video) { max-width: 100%; height: auto; }
 [hidden] { display: none !important; }
 button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset: 1px; }
+.task-row:focus-visible, .task-card:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent); outline-offset: -2px; }
 kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; padding: 0 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-subtle); color: var(--muted); font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .visually-hidden { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 
@@ -305,6 +306,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .row-check span, .card-check span { width: 13px; height: 13px; border: 1px solid var(--border-strong); border-radius: 4px; opacity: 0; }
 .task-row:hover .row-check span, .task-row.highlighted .row-check span, .task-card:hover .card-check span { opacity: 1; }
 .task-card:focus-within .card-check span, .card-check:focus-visible span { opacity: 1; }
+.task-card.highlighted .card-check span { opacity: 1; }
 .row-check.checked, .card-check.checked { background: var(--accent); border-color: var(--accent); }
 .priority-icon { width: 18px; height: 14px; display: inline-flex; flex: 0 0 18px; align-items: flex-end; justify-content: center; gap: 1px; overflow: hidden; color: var(--muted); }
 .priority-bar { width: 3px; border: 1px solid currentColor; border-radius: 1px; opacity: .36; }
@@ -339,7 +341,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .column-header small { color: var(--muted); font-weight: 400; }
 .column-cards { display: flex; flex-direction: column; gap: 7px; min-height: 20px; }
 .task-card { position: relative; min-height: 82px; flex: 0 0 auto; padding: 10px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); box-shadow: 0 1px 1px rgba(0,0,0,.04); cursor: pointer; transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease; }
-.task-card:hover { border-color: var(--border-strong); box-shadow: 0 4px 12px rgba(0,0,0,.07); transform: translateY(-1px); }
+.task-card:hover, .task-card.highlighted { border-color: var(--border-strong); box-shadow: 0 4px 12px rgba(0,0,0,.07); transform: translateY(-1px); }
 .task-card:active { cursor: grabbing; }
 .task-card.selected { background: color-mix(in srgb, var(--selected) 55%, var(--raised)); border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); }
 .task-card.drop-before { border-top-color: var(--accent); box-shadow: 0 -2px var(--accent), 0 1px 1px rgba(0,0,0,.04); }

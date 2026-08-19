@@ -143,6 +143,19 @@ test("board cards reuse the metadata corner for selection and keep the title ful
   );
 });
 
+test("list and board expose the same keyboard highlight and selection semantics", () => {
+  assert.match(taskTracker, /data-task-keyboard-id=\{task\.id\}/);
+  assert.match(taskTracker, /aria-pressed=\{selected\}/);
+  assert.match(taskTracker, /aria-current=\{highlighted \? "true" : undefined\}/);
+  assert.match(taskTracker, /onSelect\(event\.shiftKey\)/);
+  assert.match(taskTracker, /TASK_KEYBOARD_COMMAND_EVENT/);
+  assert.match(taskTracker, /addEventListener\("keydown", handleKey\)/);
+  assert.match(taskTracker, /previousFocus\?\.isConnected/);
+  assert.match(taskTracker, /closest\("\[role='dialog'\]\[aria-modal='true'\]"\)/);
+  assert.match(declarations(".task-card:hover, .task-card.highlighted"), /border-color:\s*var\(--border-strong\)\s*;/);
+  assert.match(declarations(".task-row:focus-visible, .task-card:focus-visible"), /outline:\s*2px\s+solid/);
+});
+
 test("mobile drawer logic centralizes dismissal and restores focus", () => {
   assert.match(taskTracker, /function closeMobileSidebar\(/);
   assert.match(taskTracker, /mobileMenuRef\.current\?\.focus\(\)/);

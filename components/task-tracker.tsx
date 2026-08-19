@@ -125,6 +125,15 @@ import {
   parseTaskImageLine,
   parseTaskMarkdownLines,
 } from "@/lib/task-description-format";
+import {
+  TASK_KEYBOARD_COMMAND_EVENT,
+  keyboardCommandFor,
+  moveTaskHighlight,
+  reconcileTaskInteraction,
+  selectTaskRange,
+  type TaskKeyboardIntegrationDetail,
+  toggleTaskSelection,
+} from "@/lib/task-keyboard";
 import type {
   AdminOverview,
   AccessRole,
@@ -941,7 +950,9 @@ export function TaskTracker({
   );
   const [peekTaskId, setPeekTaskId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [highlighted, setHighlighted] = useState(0);
+  const [highlightedTaskId, setHighlightedTaskId] = useState<string | null>(null);
+  const selectionAnchorRef = useRef<string | null>(null);
+  const previousKeyboardTaskIdsRef = useRef<string[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -967,6 +978,8 @@ export function TaskTracker({
   const accountMenuRef = useRef<HTMLDivElement>(null);
   const mobileActionsRef = useRef<HTMLDivElement>(null);
   const accountTriggerRef = useRef<HTMLButtonElement>(null);
+  const filterTriggerRef = useRef<HTMLButtonElement>(null);
+  const displayTriggerRef = useRef<HTMLButtonElement>(null);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const mobileSidebarCloseRef = useRef<HTMLButtonElement>(null);
   const globalSearchReturnFocus = useRef<HTMLElement | null>(null);
@@ -1606,9 +1619,17 @@ export function TaskTracker({
       draggingTaskId !== null,
     ),
   });
-  const keyboardTasks = layout === "list" && currentGroupBy !== "none"
-    ? tasksInGroupOrder(taskGroups, collapsedGroups)
+  const keyboardTasks = currentGroupBy !== "none"
+    ? tasksInGroupOrder(taskGroups, layout === "list" ? collapsedGroups : new Set())
     : visibleTasks;
+  const keyboardTaskIds = keyboardTasks.map((task) => task.id);
+  const selectableTaskIds = new Set(
+    keyboardTasks
+      .filter((task) => canEditContent(task.accessRole))
+      .map((task) => task.id),
+  );
+  const keyboardTaskIdsKey = keyboardTaskIds.join("\u0000");
+  const selectableTaskIdsKey = [...selectableTaskIds].join("\u0000");
   const currentShareTarget = shareTarget(surface, activeTask, data);
   const canCreateTask = contextProjectRecord
     ? !contextProjectRecord.archivedAt && canEditContent(contextProjectRecord.accessRole)
@@ -2129,14 +2150,22 @@ export function TaskTracker({
     });
   }
 
-  function toggleSelection(id: string, additive = true) {
+  function toggleSelection(id: string, extendRange = false) {
     const task = data.tasks.find((item) => item.id === id);
     if (!task || !canEditContent(task.accessRole)) return;
+    setHighlightedTaskId(id);
     setSelected((current) => {
-      const next = additive ? new Set(current) : new Set<string>();
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
+      const result = extendRange
+        ? selectTaskRange(
+            current,
+            selectionAnchorRef.current,
+            id,
+            keyboardTaskIds,
+            selectableTaskIds,
+          )
+        : toggleTaskSelection(current, selectionAnchorRef.current, id);
+      selectionAnchorRef.current = result.anchorId;
+      return result.selected as Set<string>;
     });
   }
 
@@ -2164,63 +2193,141 @@ export function TaskTracker({
 
   useEffect(() => {
     function handleKey(event: KeyboardEvent) {
-      if (event.defaultPrevented) return;
       const target = event.target as HTMLElement;
       const typing = ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
-      if (event.key === "Escape") {
+      const searchShortcut = resolveSearchShortcut(event, {
+        typing,
+        localSearchAvailable: !isCollectionSurface(surface) && surface !== "admin" && surface !== "workspace",
+      });
+      if (searchShortcut === "local") {
+        event.preventDefault();
+        focusLocalSearch();
+        return;
+      }
+      const layerOwnsKeyboard = Boolean(
+        globalSearchOpen || mobileActionsOpen || mobileSidebarOpen ||
+        accountMenuOpen || pendingProjectMove || dialog || peekTaskId ||
+        filterOpen || displayOpen,
+      );
+      const command = keyboardCommandFor(event, { layerOwnsKeyboard });
+      if (!command) return;
+      if (
+        command === "escape" &&
+        activeTaskId &&
+        !dialog &&
+        event.target instanceof Element &&
+        event.target.closest("[role='dialog'][aria-modal='true']")
+      ) {
+        return;
+      }
+      if (activeTaskId && command !== "escape" && command !== "toggle-details") return;
+
+      const focusHighlightedTask = () => {
+        const taskId = highlightedTaskId;
+        if (!taskId) return;
+        window.setTimeout(() => {
+          document.querySelector<HTMLElement>(`[data-task-keyboard-id="${CSS.escape(taskId)}"]`)?.focus();
+        }, 0);
+      };
+
+      if (command === "escape") {
+        let handled = true;
         if (globalSearchOpen) closeGlobalSearch();
+        else if (pendingProjectMove) {
+          if (!busy) setPendingProjectMove(null);
+          else handled = false;
+        }
+        else if (dialog) {
+          if (!systemBackupBusy) setDialog(null);
+          else handled = false;
+        }
+        else if (activeTaskId) {
+          closeTask();
+          focusHighlightedTask();
+        }
+        else if (peekTaskId) {
+          setPeekTaskId(null);
+          focusHighlightedTask();
+        }
+        else if (displayOpen) {
+          setDisplayOpen(false);
+          displayTriggerRef.current?.focus();
+        }
+        else if (filterOpen) {
+          setFilterOpen(false);
+          filterTriggerRef.current?.focus();
+        }
         else if (mobileActionsOpen) setMobileActionsOpen(false);
         else if (mobileSidebarOpen) closeMobileSidebar();
         else if (accountMenuOpen) {
           setAccountMenuOpen(false);
           accountTriggerRef.current?.focus();
         }
-        else if (pendingProjectMove && !busy) setPendingProjectMove(null);
-        else if (dialog && !systemBackupBusy) setDialog(null);
-        else if (activeTaskId) {
-          setActiveTaskId(null);
-          const target = parseNavigationPath(taskReturnPath.current);
-          const next = target ? resolveNavigationTarget(target, data) : null;
-          window.history.replaceState(
-            next ? navigationHistoryState(next) : null,
-            "",
-            taskReturnPath.current,
-          );
+        else if (selected.size) {
+          setSelected(new Set());
+          selectionAnchorRef.current = null;
         }
-        else if (peekTaskId) setPeekTaskId(null);
-        else if (selected.size) setSelected(new Set());
+        else handled = false;
+        if (handled) event.preventDefault();
         return;
       }
-      const searchShortcut = resolveSearchShortcut(event, {
-        typing,
-        localSearchAvailable: !isCollectionSurface(surface) && surface !== "admin" && surface !== "workspace",
-      });
-      if (searchShortcut === "global") {
+      if (command === "global-search") {
+        const claimed = !window.dispatchEvent(new CustomEvent<TaskKeyboardIntegrationDetail>(
+          TASK_KEYBOARD_COMMAND_EVENT,
+          {
+            cancelable: true,
+            detail: {
+              command,
+              taskId: highlightedTaskId ?? keyboardTaskIds[0] ?? null,
+              selectedTaskIds: [...selected],
+              surface,
+            },
+          },
+        ));
         event.preventDefault();
-        openGlobalSearch();
+        if (!claimed) openGlobalSearch();
         return;
       }
-      if (searchShortcut === "local") {
-        event.preventDefault();
-        focusLocalSearch();
-        return;
-      }
-      if (typing) return;
       if (surface === "admin") return;
-      if (surface === "workspace") {
-        if (event.key.toLowerCase() === "c") {
-          event.preventDefault();
-          openCreate();
-        }
+      if (command === "compose") {
+        if (!canCreateTask) return;
+        event.preventDefault();
+        openCreate();
         return;
       }
-      if (event.key.toLowerCase() === "c") {
+
+      const taskSurface = !isCollectionSurface(surface);
+      if (!taskSurface) return;
+      const integrationTaskId = highlightedTaskId ?? keyboardTaskIds[0] ?? null;
+      if (command === "contextual-actions") {
+        const claimed = !window.dispatchEvent(new CustomEvent<TaskKeyboardIntegrationDetail>(
+          TASK_KEYBOARD_COMMAND_EVENT,
+          {
+            cancelable: true,
+            detail: {
+              command,
+              taskId: integrationTaskId,
+              selectedTaskIds: [...selected],
+              surface,
+            },
+          },
+        ));
+        if (claimed) event.preventDefault();
+      } else if (command === "filter") {
         event.preventDefault();
-        if (canCreateTask) openCreate();
-      } else if (event.key.toLowerCase() === "f" && !event.metaKey && !event.ctrlKey) {
+        setDisplayOpen(false);
+        setFilterOpen(true);
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLInputElement>(".filter-popover input")?.focus();
+        });
+      } else if (command === "display") {
         event.preventDefault();
-        setFilterOpen((value) => !value);
-      } else if (event.key.toLowerCase() === "b" && (event.metaKey || event.ctrlKey)) {
+        setFilterOpen(false);
+        setDisplayOpen(true);
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLElement>(".display-anchor .popover select, .display-anchor .popover button")?.focus();
+        });
+      } else if (command === "toggle-layout") {
         event.preventDefault();
         const nextLayout = layout === "list" ? "board" : "list";
         const next: ResolvedNavigation = { surface, layout: nextLayout, taskId: null };
@@ -2232,23 +2339,43 @@ export function TaskTracker({
           "",
           navigationPath(next, data),
         );
-      } else if (["j", "ArrowDown"].includes(event.key)) {
+      } else if (command === "highlight-next" || command === "highlight-previous") {
         event.preventDefault();
-        setHighlighted((value) =>
-          Math.min(value + 1, Math.max(0, keyboardTasks.length - 1)),
+        const next = moveTaskHighlight(
+          highlightedTaskId,
+          keyboardTaskIds,
+          command === "highlight-next" ? 1 : -1,
         );
-      } else if (["k", "ArrowUp"].includes(event.key)) {
+        setHighlightedTaskId(next);
+        if (next) {
+          window.requestAnimationFrame(() => {
+            document.querySelector<HTMLElement>(`[data-task-keyboard-id="${CSS.escape(next)}"]`)
+              ?.scrollIntoView({ block: "nearest" });
+          });
+        }
+      } else if ((command === "toggle-selection" || command === "extend-selection") && integrationTaskId) {
         event.preventDefault();
-        setHighlighted((value) => Math.max(0, value - 1));
-      } else if (event.key.toLowerCase() === "x" && keyboardTasks[highlighted]) {
+        toggleSelection(integrationTaskId, command === "extend-selection");
+      } else if (command === "peek" && integrationTaskId) {
         event.preventDefault();
-        toggleSelection(keyboardTasks[highlighted].id);
-      } else if (event.key === " " && keyboardTasks[highlighted]) {
+        setHighlightedTaskId(integrationTaskId);
+        setPeekTaskId(integrationTaskId);
+      } else if (command === "open" && integrationTaskId) {
         event.preventDefault();
-        setPeekTaskId(keyboardTasks[highlighted].id);
-      } else if (event.key.toLowerCase() === "a" && (event.metaKey || event.ctrlKey)) {
+        setHighlightedTaskId(integrationTaskId);
+        openTask(integrationTaskId);
+      } else if (command === "select-visible") {
         event.preventDefault();
-        setSelected(new Set(visibleTasks.filter((task) => canEditContent(task.accessRole)).map((task) => task.id)));
+        setSelected(new Set(keyboardTaskIds.filter((id) => selectableTaskIds.has(id))));
+        selectionAnchorRef.current = integrationTaskId;
+      } else if (command === "toggle-details" && activeTaskId) {
+        event.preventDefault();
+        closeTask();
+        focusHighlightedTask();
+      } else if (command === "toggle-details" && integrationTaskId) {
+        event.preventDefault();
+        setHighlightedTaskId(integrationTaskId);
+        openTask(integrationTaskId);
       }
     }
     window.addEventListener("keydown", handleKey);
@@ -2256,14 +2383,15 @@ export function TaskTracker({
     // The handlers close over the state listed below; adding the local wrapper
     // functions themselves would recreate this listener on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, data, dialog, globalSearchOpen, highlighted, keyboardTasks, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, selected.size, surface, systemBackupBusy, visibleTasks]);
+  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, data, dialog, displayOpen, filterOpen, globalSearchOpen, highlightedTaskId, keyboardTaskIdsKey, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, selectableTaskIdsKey, selected, surface, systemBackupBusy]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setHighlighted(0);
+    setHighlightedTaskId(null);
     setSelected(new Set());
     setPendingProjectMove(null);
+    selectionAnchorRef.current = null;
   }, [surface, search, temporaryQuery]);
 
   const pendingMoveTask = pendingProjectMove
@@ -2281,6 +2409,30 @@ export function TaskTracker({
   const pendingMoveSubtasks = pendingMoveTask
     ? data.tasks.filter((task) => task.parentTaskId === pendingMoveTask.id)
     : [];
+
+  useEffect(() => {
+    const result = reconcileTaskInteraction(
+      {
+        highlightedId: highlightedTaskId,
+        selected,
+        anchorId: selectionAnchorRef.current,
+      },
+      keyboardTaskIds,
+      selectableTaskIds,
+      previousKeyboardTaskIdsRef.current,
+    );
+    previousKeyboardTaskIdsRef.current = keyboardTaskIds;
+    selectionAnchorRef.current = result.anchorId;
+    if (result.highlightedId !== highlightedTaskId) {
+      setHighlightedTaskId(result.highlightedId);
+    }
+    if (!setsEqual(result.selected, selected)) {
+      setSelected(new Set(result.selected));
+    }
+    // Stable ID keys intentionally represent the derived arrays without making
+    // this reconciliation effect run merely because TaskGroup objects re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightedTaskId, keyboardTaskIdsKey, selectableTaskIdsKey, selected]);
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
@@ -2553,16 +2705,16 @@ export function TaskTracker({
                     {search && <button onClick={() => setSearch("")}><X size={12} /></button>}
                   </div>
                   <div className="popover-anchor">
-                    <button className={`button ghost ${filterOpen ? "active" : ""}`} onClick={() => setFilterOpen((value) => !value)}><ListFilter size={14} />Filter{canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}</button>
-                    {filterOpen && <FilterPopover data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onClose={() => setFilterOpen(false)} />}
+                    <button ref={filterTriggerRef} className={`button ghost ${filterOpen ? "active" : ""}`} aria-keyshortcuts="F" title="Filter (F)" onClick={() => { setDisplayOpen(false); setFilterOpen((value) => !value); }}><ListFilter size={14} />Filter{canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}</button>
+                    {filterOpen && <FilterPopover data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onClose={() => { setFilterOpen(false); filterTriggerRef.current?.focus(); }} />}
                   </div>
                   <div className="segmented" aria-label="Layout">
-                    <button className={layout === "list" ? "active" : ""} onClick={() => changeLayout("list")} title="List"><LayoutList size={14} /></button>
-                    <button className={layout === "board" ? "active" : ""} onClick={() => changeLayout("board")} title="Board"><Columns3 size={14} /></button>
+                    <button className={layout === "list" ? "active" : ""} aria-keyshortcuts="Meta+B Control+B" onClick={() => changeLayout("list")} title="List (⌘/Ctrl+B)"><LayoutList size={14} /></button>
+                    <button className={layout === "board" ? "active" : ""} aria-keyshortcuts="Meta+B Control+B" onClick={() => changeLayout("board")} title="Board (⌘/Ctrl+B)"><Columns3 size={14} /></button>
                   </div>
                   <div className="popover-anchor display-anchor">
-                    <button className={`button ghost ${displayOpen ? "active" : ""}`} onClick={() => setDisplayOpen((value) => !value)}><SlidersHorizontal size={14} />Display</button>
-                    {displayOpen && <DisplayPopover display={currentDisplay} onLayout={changeLayout} onDisplay={changeDisplay} onClose={() => setDisplayOpen(false)} />}
+                    <button ref={displayTriggerRef} className={`button ghost ${displayOpen ? "active" : ""}`} aria-keyshortcuts="Shift+V" title="Display (Shift+V)" onClick={() => { setFilterOpen(false); setDisplayOpen((value) => !value); }}><SlidersHorizontal size={14} />Display</button>
+                    {displayOpen && <DisplayPopover display={currentDisplay} onLayout={changeLayout} onDisplay={changeDisplay} onClose={() => { setDisplayOpen(false); displayTriggerRef.current?.focus(); }} />}
                   </div>
                   {activeSavedView && canSaveView && hasViewChanges && <button className="button ghost save-view" onClick={() => void saveCurrentView()}><Save size={13} />Save</button>}
                   {activeSavedView && hasViewChanges && <button className="button ghost" onClick={cancelViewChanges}><X size={13} />Cancel</button>}
@@ -2664,9 +2816,9 @@ export function TaskTracker({
         ) : taskSearchStatus ? (
           <TaskSearchNotice status={taskSearchStatus} />
         ) : layout === "board" ? (
-          <><TaskBoard tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
+          <><TaskBoard tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} statuses={statusMap} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlightedTaskId={highlightedTaskId} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} onSelect={toggleSelection} onHighlight={setHighlightedTaskId} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
         ) : (
-          <><TaskList tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlighted={highlighted} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} pullRefreshing={pullRefreshing} pullRefreshError={pullRefreshError} pullRefreshDisabled={busy || taskWindowLoading} onRefresh={refreshTaskList} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlighted} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onStatusChange={(task, statusId) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: taskMutationVersion(task), statusId })} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
+          <><TaskList tasks={visibleTasks} hierarchyTasks={data.tasks} groups={taskGroups} statuses={statusMap} groupBy={currentGroupBy} visibleFields={currentDisplay.visibleFields} canReorder={currentDisplay.orderBy === "manual"} canMoveGroups={currentGroupBy !== "none"} projects={projectMap} releases={releaseMap} users={userMap} labelContext={data} selected={selected} highlightedTaskId={highlightedTaskId} collapsed={collapsedGroups} canCreate={canCreateTask} createOwnerUserId={contextProjectRecord?.ownerUserId ?? data.user.id} createAssigneeUserIds={createAssigneeUserIds} pullRefreshing={pullRefreshing} pullRefreshError={pullRefreshError} pullRefreshDisabled={busy || taskWindowLoading} onRefresh={refreshTaskList} onToggleGroup={(id) => setCollapsedGroups((current) => toggleSet(current, id))} onSelect={toggleSelection} onHighlight={setHighlightedTaskId} onOpen={openTask} onCreate={(defaults) => openCreate(defaults)} onMove={moveTaskToGroup} onStatusChange={(task, statusId) => mutate(`/api/tasks/${task.id}`, "PATCH", { version: taskMutationVersion(task), statusId })} onDragState={setDraggingTaskId} />{taskSearch?.query === taskQueryKey && taskSearch.page?.hasMore && <TaskQueryPagination busy={taskQueryPaging} onMore={() => void loadMoreFilteredTasks()} />}</>
         )}
       </section>
 
@@ -2731,7 +2883,7 @@ function SidebarSection({ title, action, children }: { title: string; action: ()
   return <section className="sidebar-section"><div className="section-label"><span>{title}</span><button onClick={action} title={`Add ${title.toLowerCase()}`}><Plus size={12} /></button></div>{children}</section>;
 }
 
-function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFields, canReorder, canMoveGroups, projects, releases, users, labelContext, selected, highlighted, collapsed, canCreate, createOwnerUserId, createAssigneeUserIds, pullRefreshing, pullRefreshError, pullRefreshDisabled, onRefresh, onToggleGroup, onSelect, onHighlight, onOpen, onCreate, onMove, onStatusChange, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; highlighted: number; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; pullRefreshing: boolean; pullRefreshError: string; pullRefreshDisabled: boolean; onRefresh: () => Promise<AppSnapshot>; onToggleGroup: (id: string) => void; onSelect: (id: string) => void; onHighlight: (index: number) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onStatusChange: (task: TaskRecord, statusId: string) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
+function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFields, canReorder, canMoveGroups, projects, releases, users, labelContext, selected, highlightedTaskId, collapsed, canCreate, createOwnerUserId, createAssigneeUserIds, pullRefreshing, pullRefreshError, pullRefreshDisabled, onRefresh, onToggleGroup, onSelect, onHighlight, onOpen, onCreate, onMove, onStatusChange, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; statuses: Map<string, WorkflowStatusRecord>; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; highlightedTaskId: string | null; collapsed: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; pullRefreshing: boolean; pullRefreshError: string; pullRefreshDisabled: boolean; onRefresh: () => Promise<AppSnapshot>; onToggleGroup: (id: string) => void; onSelect: (id: string, extendRange?: boolean) => void; onHighlight: (taskId: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onStatusChange: (task: TaskRecord, statusId: string) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
   const [over, setOver] = useState<string | null>(null);
   const hierarchySummaries = useMemo(
     () => buildTaskHierarchySummaries(hierarchyTasks),
@@ -2812,12 +2964,11 @@ function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFie
   if (!tasks.length) {
     content = <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   } else if (groupBy === "none") {
-    content = tasks.map((task, index) => {
+    content = tasks.map((task) => {
       const status = statuses.get(task.statusId);
-      return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlighted === index} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null;
+      return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null;
     });
   } else {
-    let flatIndex = -1;
     content = groups.map((group) => {
       const isCollapsed = collapsed.has(group.id);
       const groupCanCreate = canCreateInTaskGroup(group, canCreate, createOwnerUserId, createAssigneeUserIds);
@@ -2842,12 +2993,14 @@ function TaskList({ tasks, hierarchyTasks, groups, statuses, groupBy, visibleFie
           onDragState(null);
           if (task) moveFromDrop(task.id, group, group.tasks, null);
         }}
-      ><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(group.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><TaskGroupIcon group={group} /><span>{group.label}</span><small>{group.tasks.length}</small></button>{groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)} title={`Add to ${group.label}`}><Plus size={13} /></button>}</div>{!isCollapsed && group.tasks.map((task) => { flatIndex += 1; const index = flatIndex; const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus={groupBy !== "status"} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlighted === index} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={() => onSelect(task.id)} onHighlight={() => onHighlight(index)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null; })}</section>;
+      ><div className="group-header"><button className="group-title" onClick={() => onToggleGroup(group.id)}><ChevronDown size={13} className={isCollapsed ? "rotated" : ""} /><TaskGroupIcon group={group} /><span>{group.label}</span><small>{group.tasks.length}</small></button>{groupCanCreate && <button className="icon-button quiet" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)} title={`Add to ${group.label}`}><Plus size={13} /></button>}</div>{!isCollapsed && group.tasks.map((task) => { const status = statuses.get(task.statusId); return status ? <TaskRow key={task.id} task={task} status={status} statusOptions={taskStatusOptions(task, statuses)} showStatus={groupBy !== "status"} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} onStatusChange={(statusId) => onStatusChange(task, statusId)} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} /> : null; })}</section>;
     });
   }
 
   return <div
     ref={pullListRef}
+    role="list"
+    aria-label="Tasks"
     className={`task-list ${groupBy === "none" ? "ungrouped" : ""} ${over === "end:none" ? "drag-over" : ""}`}
     onDragOver={(event) => {
       if (groupBy !== "none" || !canReorder) return;
@@ -2910,7 +3063,7 @@ function PullRefreshIndicator({ distance, refreshing, error, onRetry }: {
   </div>;
 }
 
-function TaskRow({ task, status, statusOptions, showStatus, project, release, assignee, labels, hierarchy, visibleFields, selected, highlighted, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, onStatusChange, onSelect, onHighlight, onOpen, onDragState }: { task: TaskRecord; status: WorkflowStatusRecord; statusOptions: WorkflowStatusRecord[]; showStatus: boolean; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; selected: boolean; highlighted: boolean; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; onStatusChange: (statusId: string) => Promise<unknown>; onSelect: () => void; onHighlight: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
+function TaskRow({ task, status, statusOptions, showStatus, project, release, assignee, labels, hierarchy, visibleFields, selected, highlighted, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, onStatusChange, onSelect, onHighlight, onOpen, onDragState }: { task: TaskRecord; status: WorkflowStatusRecord; statusOptions: WorkflowStatusRecord[]; showStatus: boolean; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; selected: boolean; highlighted: boolean; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; onStatusChange: (statusId: string) => Promise<unknown>; onSelect: (extendRange?: boolean) => void; onHighlight: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
   const editable = canEditContent(task.accessRole);
   const draggable = editable && canDrag;
   const reorderTitle = editable
@@ -2920,10 +3073,10 @@ function TaskRow({ task, status, statusOptions, showStatus, project, release, as
         ? `Drag to change ${dragGroupLabel}; Priority order remains authoritative`
         : "Choose Manual order to reorder Tasks"
     : undefined;
-  return <div role="button" tabIndex={editable ? 0 : undefined} title={reorderTitle} className={`task-row ${showStatus ? "show-status" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={(event) => { if (event.target === event.currentTarget) onOpen(); }} onKeyDown={(event) => { const reorderDirection = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (reorderDirection) { event.preventDefault(); onKeyboardMove(reorderDirection); return; } if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); onOpen(); } }} onMouseEnter={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}{visibleFields.includes("priority") ? <PriorityIcon priority={task.priority} /> : <span className="priority-icon-placeholder" />}<a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a>{showStatus && <TaskStatusControl status={status} statuses={statusOptions} onChange={editable ? onStatusChange : undefined} />}<a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{labels.slice(0, 3).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 3 && <span className="label-overflow">+{labels.length - 3}</span>}<TaskHierarchyChip hierarchy={hierarchy} />{visibleFields.includes("project") && project && <span className="metadata-chip" title={project.name}><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip" title={release.name}><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}{editable && <button className="row-more" type="button" aria-label="Open task details" title="Open task details" onClick={(event) => { event.stopPropagation(); onOpen(); }}><MoreHorizontal size={14} /></button>}</div></div>;
+  return <div role="button" tabIndex={0} data-task-keyboard-id={task.id} aria-pressed={selected} aria-current={highlighted ? "true" : undefined} title={reorderTitle} className={`task-row ${showStatus ? "show-status" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={(event) => { if (event.target === event.currentTarget) onOpen(); }} onKeyDown={(event) => { const reorderDirection = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (reorderDirection) { event.preventDefault(); onKeyboardMove(reorderDirection); return; } if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); onOpen(); } }} onMouseEnter={onHighlight} onFocus={onHighlight}>{editable ? <button className={`row-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={12} /> : <span />}</button> : <span className="row-check-spacer" />}{visibleFields.includes("priority") ? <PriorityIcon priority={task.priority} /> : <span className="priority-icon-placeholder" />}<a className="task-identity" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>{task.identifier}</a>{showStatus && <TaskStatusControl status={status} statuses={statusOptions} onChange={editable ? onStatusChange : undefined} />}<a className="task-title" href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)} title={task.title}>{task.title}</a><div className="row-metadata">{labels.slice(0, 3).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 3 && <span className="label-overflow">+{labels.length - 3}</span>}<TaskHierarchyChip hierarchy={hierarchy} />{visibleFields.includes("project") && project && <span className="metadata-chip" title={project.name}><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip" title={release.name}><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}{editable && <button className="row-more" type="button" aria-label="Open task details" title="Open task details" onClick={(event) => { event.stopPropagation(); onOpen(); }}><MoreHorizontal size={14} /></button>}</div></div>;
 }
 
-function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canReorder, canMoveGroups, statuses, projects, releases, users, labelContext, selected, canCreate, createOwnerUserId, createAssigneeUserIds, onSelect, onOpen, onCreate, onMove, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onSelect: (id: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
+function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canReorder, canMoveGroups, statuses, projects, releases, users, labelContext, selected, highlightedTaskId, canCreate, createOwnerUserId, createAssigneeUserIds, onSelect, onHighlight, onOpen, onCreate, onMove, onDragState }: { tasks: TaskRecord[]; hierarchyTasks: TaskRecord[]; groups: TaskGroup[]; groupBy: ViewDisplay["groupBy"]; visibleFields: ViewDisplay["visibleFields"]; canReorder: boolean; canMoveGroups: boolean; statuses: Map<string, WorkflowStatusRecord>; projects: Map<string, ProjectRecord>; releases: Map<string, ReleaseRecord>; users: Map<string, UserRecord>; labelContext: Pick<AppSnapshot, "labels" | "taskLabels">; selected: Set<string>; highlightedTaskId: string | null; canCreate: boolean; createOwnerUserId: string; createAssigneeUserIds: ReadonlySet<string>; onSelect: (id: string, extendRange?: boolean) => void; onHighlight: (taskId: string) => void; onOpen: (id: string) => void; onCreate: (defaults?: TaskCreateDefaults) => void; onMove: (task: TaskRecord, group: TaskGroup | null, previousTaskId: string | null, nextTaskId: string | null) => Promise<unknown>; onDragState: (taskId: string | null) => void }) {
   const [over, setOver] = useState<string | null>(null);
   const hierarchySummaries = useMemo(
     () => buildTaskHierarchySummaries(hierarchyTasks),
@@ -2944,10 +3097,10 @@ function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canR
   }
   if (!tasks.length) return <EmptyState onCreate={canCreate ? () => onCreate() : undefined} />;
   if (groupBy === "none") {
-    return <div className="board"><section className={`board-column ${over === "end:none" ? "drag-over" : ""}`} onDragOver={(event) => { if (!canReorder) return; event.preventDefault(); setOver("end:none"); }} onDragLeave={() => setOver(null)} onDrop={(event) => { if (!canReorder) return; event.preventDefault(); const draggedId = event.dataTransfer.getData("text/task-id"); setOver(null); onDragState(null); if (draggedId) moveFromDrop(draggedId, null, tasks, null); }}><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} showStatus showAssignee selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
+    return <div className="board" role="list" aria-label="Tasks"><section className={`board-column ${over === "end:none" ? "drag-over" : ""}`} onDragOver={(event) => { if (!canReorder) return; event.preventDefault(); setOver("end:none"); }} onDragLeave={() => setOver(null)} onDrop={(event) => { if (!canReorder) return; event.preventDefault(); const draggedId = event.dataTransfer.getData("text/task-id"); setOver(null); onDragState(null); if (draggedId) moveFromDrop(draggedId, null, tasks, null); }}><div className="column-header"><div><LayoutList size={14} /><span>Tasks</span><small>{tasks.length}</small></div>{canCreate && <button className="icon-button quiet" onClick={() => onCreate()}><Plus size={13} /></button>}</div><div className="column-cards">{tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={canReorder && selected.size <= 1} reorderEnabled={canReorder} dropBefore={over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, null, tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, null, tasks, direction)} showStatus showAssignee selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}</div>{canCreate && <button className="add-card" onClick={() => onCreate()}><Plus size={13} />Add task</button>}</section></div>;
   }
   return (
-    <div className="board">
+    <div className="board" role="list" aria-label="Tasks">
       {groups.map((group) => {
         const groupCanCreate = canCreateInTaskGroup(group, canCreate, createOwnerUserId, createAssigneeUserIds);
         return (
@@ -2981,7 +3134,7 @@ function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canR
               </button>}
             </div>
             <div className="column-cards">
-              {group.tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} showStatus={group.kind !== "status"} showAssignee={group.kind !== "assignee"} selected={selected.has(task.id)} onSelect={() => onSelect(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}
+              {group.tasks.map((task) => <TaskBoardCard key={task.id} task={task} status={statuses.get(task.statusId)} project={task.projectId ? projects.get(task.projectId) : undefined} release={task.releaseId ? releases.get(task.releaseId) : undefined} assignee={task.assigneeUserId ? users.get(task.assigneeUserId) : undefined} labels={labelsForTask(labelContext, task.id)} hierarchy={hierarchySummaries.get(task.id) ?? EMPTY_TASK_HIERARCHY_SUMMARY} visibleFields={visibleFields} canDrag={(canReorder || canMoveGroups) && selected.size <= 1} reorderEnabled={canReorder} dragGroupLabel={displayLabel(group.kind)} dropBefore={canReorder && over === `before:${task.id}`} onDragTarget={(active) => setOver(active ? `before:${task.id}` : null)} onDropBefore={(draggedId) => moveFromDrop(draggedId, group, group.tasks, task.id)} onKeyboardMove={(direction) => moveFromKeyboard(task, group, group.tasks, direction)} showStatus={group.kind !== "status"} showAssignee={group.kind !== "assignee"} selected={selected.has(task.id)} highlighted={highlightedTaskId === task.id} onSelect={(extendRange) => onSelect(task.id, extendRange)} onHighlight={() => onHighlight(task.id)} onOpen={() => onOpen(task.id)} onDragState={onDragState} />)}
             </div>
             {groupCanCreate && <button className="add-card" onClick={() => onCreate(taskGroupCreateDefaults(group) as TaskCreateDefaults)}>
               <Plus size={13} />Add task
@@ -2993,7 +3146,7 @@ function TaskBoard({ tasks, hierarchyTasks, groups, groupBy, visibleFields, canR
   );
 }
 
-function TaskBoardCard({ task, status, project, release, assignee, labels, hierarchy, visibleFields, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, showStatus, showAssignee, selected, onSelect, onOpen, onDragState }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; showStatus: boolean; showAssignee: boolean; selected: boolean; onSelect: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
+function TaskBoardCard({ task, status, project, release, assignee, labels, hierarchy, visibleFields, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, showStatus, showAssignee, selected, highlighted, onSelect, onHighlight, onOpen, onDragState }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; showStatus: boolean; showAssignee: boolean; selected: boolean; highlighted: boolean; onSelect: (extendRange?: boolean) => void; onHighlight: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
   const editable = canEditContent(task.accessRole);
   const draggable = editable && canDrag;
   const reorderTitle = editable
@@ -3003,7 +3156,7 @@ function TaskBoardCard({ task, status, project, release, assignee, labels, hiera
         ? `Drag to change ${dragGroupLabel}; Priority order remains authoritative`
         : "Choose Manual order to reorder Tasks"
     : undefined;
-  return <div role="button" tabIndex={0} title={reorderTitle} className={`task-card ${editable ? "editable" : ""} ${selected ? "selected" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={onOpen} onKeyDown={(event) => { const direction = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (direction) { event.preventDefault(); onKeyboardMove(direction); return; } if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3>{labels.length > 0 && <div className="card-labels">{labels.slice(0, 4).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 4 && <span className="label-overflow">+{labels.length - 4}</span>}</div>}<div className="card-meta"><span className="card-identifier">{task.identifier}</span>{visibleFields.includes("priority") && <PriorityIcon priority={task.priority} />}<TaskHierarchyChip hierarchy={hierarchy} />{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{visibleFields.includes("project") && project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${status && isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
+  return <div role="button" tabIndex={0} data-task-keyboard-id={task.id} aria-pressed={selected} aria-current={highlighted ? "true" : undefined} title={reorderTitle} className={`task-card ${editable ? "editable" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""} ${dropBefore ? "drop-before" : ""}`} draggable={draggable} onDragStart={(event) => { if (!draggable) return; event.dataTransfer.setData("text/task-id", task.id); event.dataTransfer.effectAllowed = "move"; onDragState(task.id); }} onDragEnd={() => { onDragTarget(false); onDragState(null); }} onDragOver={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); onDragTarget(true); }} onDragLeave={() => onDragTarget(false)} onDrop={(event) => { if (!reorderEnabled) return; event.preventDefault(); event.stopPropagation(); const draggedId = event.dataTransfer.getData("text/task-id"); onDragTarget(false); onDragState(null); if (draggedId) onDropBefore(draggedId); }} onClick={onOpen} onMouseEnter={onHighlight} onFocus={onHighlight} onKeyDown={(event) => { const direction = taskRowReorderDirection({ draggable, reorderEnabled, altKey: event.altKey, key: event.key, targetIsRow: event.target === event.currentTarget }); if (direction) { event.preventDefault(); onKeyboardMove(direction); return; } if (event.target === event.currentTarget && event.key === "Enter") { event.preventDefault(); onOpen(); } }}>{editable && <button className={`card-check ${selected ? "checked" : ""}`} onClick={(event) => { event.stopPropagation(); onSelect(event.shiftKey); }} aria-label={selected ? "Deselect task" : "Select task"}>{selected ? <Check size={11} /> : <span />}</button>}<a href={taskPath(task.publicId)} onClick={(event) => { event.stopPropagation(); handleLocalLink(event, onOpen); }}><h3>{task.title}</h3>{labels.length > 0 && <div className="card-labels">{labels.slice(0, 4).map((label) => <LabelChip key={label.id} label={label} />)}{labels.length > 4 && <span className="label-overflow">+{labels.length - 4}</span>}</div>}<div className="card-meta"><span className="card-identifier">{task.identifier}</span>{visibleFields.includes("priority") && <PriorityIcon priority={task.priority} />}<TaskHierarchyChip hierarchy={hierarchy} />{showStatus && status && <span className="metadata-chip"><StatusIcon status={status} />{status.name}</span>}{visibleFields.includes("project") && project && <span className="metadata-chip"><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}{visibleFields.includes("release") && release && <span className="metadata-chip"><Rocket size={12} />{release.name}</span>}{visibleFields.includes("dueDate") && task.dueDate && <span className={`metadata-chip ${status && isOverdue(task.dueDate, status.category) ? "overdue" : ""}`}><CalendarDays size={12} />{shortDate(task.dueDate)}</span>}{visibleFields.includes("assignee") && showAssignee && assignee && <span className="avatar" title={assignee.displayName}>{initials(assignee.displayName)}</span>}</div></a></div>;
 }
 
 function TaskGroupIcon({ group }: { group: TaskGroup }) {
@@ -5451,7 +5604,41 @@ function SetupCopyBlock({ value, label, copied, multiline = false, onCopy }: { v
 
 function DialogHeader({ title, icon, onClose }: { title: string; icon: React.ReactNode; onClose: () => void }) { return <div className="dialog-header"><div>{icon}<h2>{title}</h2></div><button type="button" className="icon-button" aria-label={`Close ${title}`} onClick={onClose}><X size={15} /></button></div>; }
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }
-function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () => void; children: React.ReactNode; className?: string; ariaLabel?: string }) { return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={ariaLabel}>{children}</div></div>; }
+const FOCUSABLE_SELECTOR = "button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1'])";
+function trapFocus(event: Pick<KeyboardEvent, "key" | "shiftKey" | "preventDefault">, container: HTMLElement | null) {
+  if (event.key !== "Tab" || !container) return;
+  const focusable = [...container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)]
+    .filter((element) => element.getClientRects().length > 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () => void; children: React.ReactNode; className?: string; ariaLabel?: string }) {
+  const modalRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const modal = modalRef.current;
+    const handleKey = (event: KeyboardEvent) => trapFocus(event, modal);
+    modal?.addEventListener("keydown", handleKey);
+    const frame = window.requestAnimationFrame(() => {
+      if (!modal || modal.contains(document.activeElement)) return;
+      modal.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
+    });
+    return () => {
+      modal?.removeEventListener("keydown", handleKey);
+      window.cancelAnimationFrame(frame);
+      if (previousFocus?.isConnected) previousFocus.focus();
+    };
+  }, []);
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div ref={modalRef} className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={ariaLabel} tabIndex={-1}>{children}</div></div>;
+}
 
 const globalSearchSections: Array<{
   key: keyof GlobalSearchResponse["groups"];
@@ -6130,7 +6317,7 @@ function TaskHierarchyChip({ hierarchy }: { hierarchy: TaskHierarchySummary }) {
   return null;
 }
 
-function Peek({ task, status, project, labels, hierarchy, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; onClose: () => void; onOpen: () => void }) { return <div className="peek"><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description === null ? "Loading preview…" : task.description || "No description"}</p>{labels.length > 0 && <div className="card-labels">{labels.map((label) => <LabelChip key={label.id} label={label} />)}</div>}{(hierarchy.parent || hierarchy.subtaskCount > 0) && <div className="peek-hierarchy"><TaskHierarchyChip hierarchy={hierarchy} /></div>}<footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}<span><MessageSquare size={12} />{task.commentCount}</span></footer></div>; }
+function Peek({ task, status, project, labels, hierarchy, onClose, onOpen }: { task: TaskRecord; status?: WorkflowStatusRecord; project?: ProjectRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; onClose: () => void; onOpen: () => void }) { return <div className="peek" role="dialog" aria-label={`Preview ${task.identifier}`}><header><span>{task.identifier}</span><div><a href={taskPath(task.publicId)} onClick={(event) => handleLocalLink(event, onOpen)}>Open</a><button onClick={onClose}><X size={13} /></button></div></header><h2>{task.title}</h2><p>{task.description === null ? "Loading preview…" : task.description || "No description"}</p>{labels.length > 0 && <div className="card-labels">{labels.map((label) => <LabelChip key={label.id} label={label} />)}</div>}{(hierarchy.parent || hierarchy.subtaskCount > 0) && <div className="peek-hierarchy"><TaskHierarchyChip hierarchy={hierarchy} /></div>}<footer>{status && <span><StatusIcon status={status} />{status.name}</span>}{project && <span><span className="project-dot" style={{ background: project.color }} />{project.name}</span>}<span><MessageSquare size={12} />{task.commentCount}</span></footer></div>; }
 
 export function BulkProjectDialog({ data, tasks, busy, onClose, onSubmit, initialTargetProjectId = "" }: { data: AppSnapshot; tasks: TaskRecord[]; busy: boolean; onClose: () => void; onSubmit: (input: { targetProjectId: string; clearRelease: boolean; clearAssignee: boolean; confirmReleasedComposition: boolean }) => Promise<unknown>; initialTargetProjectId?: string }) {
   const [targetProjectId, setTargetProjectId] = useState(initialTargetProjectId);
@@ -6432,6 +6619,7 @@ function displayLabel(value: string) {
 function taskCountForView(id: string, data: AppSnapshot, statusMap: Map<string, WorkflowStatusRecord>) { if (id === "mine") return data.tasks.filter((task) => !task.archivedAt && task.assigneeUserId === data.user.id).length; if (id === "archived") return data.tasks.filter((task) => task.archivedAt).length; if (id === "backlog") return data.tasks.filter((task) => !task.archivedAt && statusMap.get(task.statusId)?.category === "backlog").length; if (id === "active") return data.tasks.filter((task) => !task.archivedAt && ["unstarted", "started"].includes(statusMap.get(task.statusId)?.category ?? "")).length; return data.tasks.filter((task) => !task.archivedAt).length; }
 function completion(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const statusMap = new Map(statuses.map((status) => [status.id, status])); const eligible = tasks.filter((task) => statusMap.get(task.statusId)?.category !== "canceled"); if (!eligible.length) return 0; return Math.round((eligible.filter((task) => statusMap.get(task.statusId)?.category === "completed").length / eligible.length) * 100); }
 function toggleSet(current: Set<string>, value: string) { const next = new Set(current); if (next.has(value)) next.delete(value); else next.add(value); return next; }
+function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>) { return left.size === right.size && [...left].every((value) => right.has(value)); }
 function suggestProjectTaskCode(value: string) { const words = value.toUpperCase().match(/[A-Z]+/g) ?? []; const initials = words.map((word) => word[0]).join("").slice(0, 3); if (initials.length >= 2) return initials; const compact = words.join("").slice(0, 3); return compact.length >= 2 ? compact : "PR"; }
 function initials(value: string) { return value.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase(); }
 function shortDate(value: string) { return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(new Date(`${value}T00:00:00`)); }
