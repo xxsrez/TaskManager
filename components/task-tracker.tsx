@@ -151,7 +151,10 @@ type ShareTarget = {
 };
 
 type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "bulkProject" | "bulkRelease" | null;
-type CodexSetupMode = "desktop" | "cli";
+export type CodexSetupMode = "desktop" | "cli";
+export type CodexSetupModeAction =
+  | { type: "select"; mode: CodexSetupMode }
+  | { type: "open_cli_fallback" };
 type TaskCreateDefaults = Partial<{
   statusId: string;
   priority: Priority;
@@ -182,6 +185,14 @@ export const TASK_MANAGER_DIAGNOSTIC_PROMPT = [
   "Collect: OS and ChatGPT/Codex version; output of `codex plugin marketplace list`; output of `codex plugin list`; the final redirect domain or URL with query parameters and fragments removed; visible error or confirmation messages; and screenshots of Plugins → Personal and Plugins → Installed.",
   "Identify whether the failure is marketplace discovery, plugin installation, OAuth connection, account/workspace mismatch, or stale client state. Do not claim the platform install bug is fixed.",
 ].join("\n\n");
+
+export function nextCodexSetupMode(
+  currentMode: CodexSetupMode,
+  action: CodexSetupModeAction,
+): CodexSetupMode {
+  if (action.type === "open_cli_fallback") return "cli";
+  return action.mode === currentMode ? currentMode : action.mode;
+}
 
 export function commentDraftStorageKey(
   userId: string,
@@ -5006,6 +5017,16 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
   const [mode, setMode] = useState<CodexSetupMode>(initialMode);
   const [copied, setCopied] = useState<"marketplace" | "commands" | "diagnostic" | null>(null);
 
+  function selectCodexSetupMode(nextMode: CodexSetupMode) {
+    setMode((currentMode) => nextCodexSetupMode(currentMode, { type: "select", mode: nextMode }));
+    setCopied(null);
+  }
+
+  function openCodexCliFallback() {
+    setMode((currentMode) => nextCodexSetupMode(currentMode, { type: "open_cli_fallback" }));
+    setCopied(null);
+  }
+
   async function copySetup(value: string, target: "marketplace" | "commands" | "diagnostic") {
     try {
       await navigator.clipboard.writeText(value);
@@ -5034,7 +5055,7 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
             aria-selected={mode === "desktop"}
             aria-controls="codex-setup-desktop"
             className={mode === "desktop" ? "active" : ""}
-            onClick={() => { setMode("desktop"); setCopied(null); }}
+            onClick={() => selectCodexSetupMode("desktop")}
           >
             Codex Desktop
           </button>
@@ -5045,7 +5066,7 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
             aria-selected={mode === "cli"}
             aria-controls="codex-setup-cli"
             className={mode === "cli" ? "active" : ""}
-            onClick={() => { setMode("cli"); setCopied(null); }}
+            onClick={() => selectCodexSetupMode("cli")}
           >
             Codex CLI
           </button>
@@ -5113,7 +5134,7 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
                   <li>Restart Desktop once, then check <b>Personal</b> and <b>Installed</b> again.</li>
                   <li>Use the Codex CLI fallback below if the plugin is still missing.</li>
                 </ol>
-                <button className="button secondary codex-cli-fallback" type="button" onClick={() => { setMode("cli"); setCopied(null); }}>
+                <button className="button secondary codex-cli-fallback" type="button" onClick={openCodexCliFallback}>
                   Open CLI fallback
                 </button>
                 <p>If it still fails, give an agent this bounded diagnostic prompt:</p>

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { act, createElement } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import {
   CodexSetupDialog,
   canStartPullRefresh,
@@ -14,6 +13,7 @@ import {
   BulkReleaseDialog,
   mergeDeferredSnapshot,
   nextTaskActivityInvalidationCursor,
+  nextCodexSetupMode,
   mergeSearchTaskSummaries,
   pullRefreshDistance,
   reconcileTaskDetail,
@@ -46,12 +46,6 @@ import {
 import type { AppSnapshot } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
-(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-
-function testRendererText(node: ReactTestInstance): string {
-  return node.children.map((child) => typeof child === "string" ? child : testRendererText(child)).join("");
-}
-
 const snapshot: AppSnapshot = {
   user: {
     id: "user-1",
@@ -1994,37 +1988,24 @@ test("Codex CLI setup exposes verified plugin commands and recovery steps", () =
   assert.match(markup, /do not begin with a bulk migration/);
 });
 
-test("Open CLI fallback switches the active tab and rendered panel", async () => {
-  let renderer: ReactTestRenderer | undefined;
-  await act(async () => {
-    renderer = create(createElement(CodexSetupDialog, { onClose: () => undefined }));
-  });
+test("Open CLI fallback action selects the CLI tab and panel contract", () => {
+  assert.equal(nextCodexSetupMode("desktop", { type: "open_cli_fallback" }), "cli");
+  assert.equal(nextCodexSetupMode("cli", { type: "open_cli_fallback" }), "cli");
+  assert.equal(nextCodexSetupMode("cli", { type: "select", mode: "desktop" }), "desktop");
 
-  assert.ok(renderer);
-  const fallback = renderer.root.findByProps({ className: "button secondary codex-cli-fallback" });
-  assert.equal(testRendererText(fallback), "Open CLI fallback");
-
-  await act(async () => {
-    fallback.props.onClick();
-  });
-
-  const desktopTab = renderer.root.findByProps({ id: "codex-setup-tab-desktop" });
-  const cliTab = renderer.root.findByProps({ id: "codex-setup-tab-cli" });
-  assert.equal(desktopTab.props["aria-selected"], false);
-  assert.equal(desktopTab.props.className, "");
-  assert.equal(cliTab.props["aria-selected"], true);
-  assert.equal(cliTab.props.className, "active");
-  assert.throws(() => renderer?.root.findByProps({ id: "codex-setup-desktop" }));
-
-  const cliPanel = renderer.root.findByProps({ id: "codex-setup-cli" });
-  assert.equal(cliPanel.props.role, "tabpanel");
-  assert.equal(cliPanel.props["aria-labelledby"], "codex-setup-tab-cli");
-  assert.match(testRendererText(cliPanel), /codex plugin marketplace add xxsrez\/marketplace/);
-  assert.match(testRendererText(cliPanel), /\/plugins → Task Manager → Authenticate/);
-
-  await act(async () => {
-    renderer?.unmount();
-  });
+  const markup = renderToStaticMarkup(
+    createElement(CodexSetupDialog, { onClose: () => undefined, initialMode: "cli" }),
+  );
+  const desktopTab = markup.match(/<button id="codex-setup-tab-desktop"[\s\S]*?<\/button>/)?.[0] ?? "";
+  const cliTab = markup.match(/<button id="codex-setup-tab-cli"[\s\S]*?<\/button>/)?.[0] ?? "";
+  assert.match(desktopTab, /aria-selected="false"/);
+  assert.doesNotMatch(desktopTab, /class="active"/);
+  assert.match(cliTab, /aria-selected="true"/);
+  assert.match(cliTab, /class="active"/);
+  assert.doesNotMatch(markup, /id="codex-setup-desktop"/);
+  assert.match(markup, /<section id="codex-setup-cli" role="tabpanel" aria-labelledby="codex-setup-tab-cli">/);
+  assert.match(markup, /codex plugin marketplace add xxsrez\/marketplace/);
+  assert.match(markup, /\/plugins → Task Manager → Authenticate/);
 });
 
 test("workspace controls navigate to the overview without a false dropdown affordance", () => {

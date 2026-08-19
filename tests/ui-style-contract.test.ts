@@ -265,6 +265,14 @@ test("Codex setup hands mobile users to Desktop or CLI without horizontal overfl
   );
   assert.match(taskTracker, /Installing from a phone\?/);
   assert.match(taskTracker, /These checks do not fix the platform install redirect bug/);
+  assert.match(
+    taskTracker,
+    /function openCodexCliFallback\(\)[\s\S]{0,240}nextCodexSetupMode\(currentMode, \{ type: "open_cli_fallback" \}\)/,
+  );
+  assert.match(
+    taskTracker,
+    /className="button secondary codex-cli-fallback"[^>]*onClick=\{openCodexCliFallback\}/,
+  );
 });
 
 test("task rows do not attach a hidden double-click action", () => {
