@@ -8,11 +8,14 @@ import {
   TASK_IMAGE_WIDTH_PRESETS,
   TASK_IMAGE_WIDTH_STEP,
   parseTaskImageReferences,
-  replaceTaskImageWidth,
   type TaskImageReference,
 } from "@/lib/task-description-format";
-
-type ImageChoice = TaskImageReference & { key: string };
+import {
+  createTaskImageSelection,
+  replaceSelectedTaskImageWidth,
+  resolveTaskImageSelection,
+  type TaskImageSelection,
+} from "@/lib/task-image-selection";
 
 export function NativeImageWidthEditor({
   taskId,
@@ -30,24 +33,53 @@ export function NativeImageWidthEditor({
     valueRef.current = value;
   }, [value]);
   const choices = useMemo(() => imageChoices(value), [value]);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const selected = choices.find((choice) => choice.key === selectedKey) ?? choices[0] ?? null;
-  const drag = useRef<{ pointerId: number; originX: number; originWidth: number } | null>(null);
+  const [selection, setSelection] = useState<TaskImageSelection | null>(null);
+  const selectionRef = useRef(selection);
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
+  const selected = selection
+    ? resolveTaskImageSelection(value, selection) ?? choices[0] ?? null
+    : choices[0] ?? null;
+  const drag = useRef<{
+    pointerId: number;
+    originX: number;
+    originWidth: number;
+    selection: TaskImageSelection;
+  } | null>(null);
 
   if (!selected) return null;
 
-  function applyWidth(width: number | null) {
-    if (!selected || disabled) return;
-    const current = imageChoices(valueRef.current).find((choice) => choice.key === selected.key);
-    if (!current) return;
-    const next = replaceTaskImageWidth(valueRef.current, current.start, current.end, width);
-    valueRef.current = next;
-    onChange(next);
+  function select(reference: TaskImageReference) {
+    const next = createTaskImageSelection(valueRef.current, reference);
+    selectionRef.current = next;
+    setSelection(next);
+    return next;
+  }
+
+  function applyWidth(width: number | null, requested = selectionRef.current) {
+    if (disabled) return null;
+    const body = valueRef.current;
+    const currentSelection = requested ?? (() => {
+      const first = imageChoices(body)[0];
+      return first ? createTaskImageSelection(body, first) : null;
+    })();
+    if (!currentSelection) return null;
+    const result = replaceSelectedTaskImageWidth(body, currentSelection, width);
+    if (!result) return null;
+    valueRef.current = result.value;
+    selectionRef.current = result.selection;
+    setSelection(result.selection);
+    onChange(result.value);
+    return result.selection;
   }
 
   function changeBy(delta: number) {
     const current = selected?.width ?? 480;
-    applyWidth(clampWidth(current + delta));
+    applyWidth(
+      clampWidth(current + delta),
+      selected ? createTaskImageSelection(valueRef.current, selected) : null,
+    );
   }
 
   function onHandleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -80,12 +112,17 @@ export function NativeImageWidthEditor({
       originWidth: selected.width ?? Math.round(
         event.currentTarget.parentElement?.getBoundingClientRect().width ?? 480,
       ),
+      selection: select(selected),
     };
   }
 
   function onPointerMove(event: PointerEvent<HTMLDivElement>) {
     if (!drag.current || drag.current.pointerId !== event.pointerId) return;
-    applyWidth(clampWidth(drag.current.originWidth + event.clientX - drag.current.originX));
+    const nextSelection = applyWidth(
+      clampWidth(drag.current.originWidth + event.clientX - drag.current.originX),
+      drag.current.selection,
+    );
+    if (nextSelection) drag.current.selection = nextSelection;
   }
 
   function endPointer(event: PointerEvent<HTMLDivElement>) {
@@ -98,11 +135,11 @@ export function NativeImageWidthEditor({
         <div className="native-image-width-tabs" role="list" aria-label="Images in this draft">
           {choices.map((choice, index) => (
             <button
-              key={choice.key}
+              key={`${choice.ref}:${choice.start}`}
               type="button"
-              className={choice.key === selected.key ? "active" : ""}
-              aria-pressed={choice.key === selected.key}
-              onClick={() => setSelectedKey(choice.key)}
+              className={choice.start === selected.start ? "active" : ""}
+              aria-pressed={choice.start === selected.start}
+              onClick={() => select(choice)}
             >Image {index + 1}</button>
           ))}
         </div>
@@ -151,13 +188,8 @@ export function NativeImageWidthEditor({
   );
 }
 
-function imageChoices(value: string): ImageChoice[] {
-  const occurrences = new Map<string, number>();
-  return parseTaskImageReferences(value).map((reference) => {
-    const occurrence = occurrences.get(reference.ref) ?? 0;
-    occurrences.set(reference.ref, occurrence + 1);
-    return { ...reference, key: `${reference.ref}:${occurrence}` };
-  });
+function imageChoices(value: string) {
+  return parseTaskImageReferences(value);
 }
 
 function clampWidth(value: number) {

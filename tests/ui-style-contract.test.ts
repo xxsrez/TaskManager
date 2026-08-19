@@ -449,7 +449,10 @@ test("native description attachments use private refs, cursor upload, and respon
 
 test("description and comment authoring share accessible bounded image resize controls", () => {
   assert.match(commentAttachmentAuthoring, /NativeImageWidthEditor/);
-  assert.match(nativeImageWidthEditor, /replaceTaskImageWidth/);
+  assert.match(nativeImageWidthEditor, /replaceSelectedTaskImageWidth/);
+  assert.match(nativeImageWidthEditor, /resolveTaskImageSelection/);
+  assert.match(nativeImageWidthEditor, /drag\.current\.selection/);
+  assert.doesNotMatch(nativeImageWidthEditor, /occurrence/);
   assert.match(nativeImageWidthEditor, /role="slider"/);
   assert.match(nativeImageWidthEditor, /aria-valuemin=\{TASK_IMAGE_WIDTH_MIN\}/);
   assert.match(nativeImageWidthEditor, /onPointerMove=\{onPointerMove\}/);
