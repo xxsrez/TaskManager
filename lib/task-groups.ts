@@ -164,7 +164,7 @@ export function canMoveTaskToGroup(task: TaskRecord, group: TaskGroup): boolean 
   if (task.accessRole === "viewer") return false;
   if (group.status) return group.status.ownerUserId === task.ownerUserId;
   if (group.project) {
-    return group.value === task.projectId && group.project.accessRole !== "viewer";
+    return group.project.accessRole !== "viewer";
   }
   if (group.kind === "project" && group.value === null) {
     return task.accessRole === "owner";

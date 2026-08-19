@@ -542,9 +542,10 @@ created/updated/started/completed/canceled dates и archived state.
   используют один authoritative набор Task IDs; description и другие bodies
   не входят в результат. Reference values проверяются в том же ACL scope и не
   раскрывают существование недоступной записи.
-- `POST /api/tasks/query` ограничивает page до 2000 записей и продолжает
-  выдачу keyset cursor по `(updated_at, id)`; UI загружает следующие страницы
-  явно, не выполняя unbounded full-workspace fetch.
+- `POST /api/tasks/query` ограничивает page до 2000 записей, применяет
+  выбранный Display order ко всему ACL-scoped result до pagination и продолжает
+  выдачу keyset cursor по `(sort value, manual rank, public_id)`; UI загружает
+  следующие страницы явно, не выполняя unbounded full-workspace fetch.
 - Identity view/project/release/task кодируется отдельным стабильным публичным
   UUID, не раскрывающим внутренний или Linear source ID. Layout `list|board`
   кодируется стабильными path segments по контракту
@@ -557,6 +558,10 @@ created/updated/started/completed/canceled dates и archived state.
 - Group by: `status`, `priority`, `assignee`, `project`, `release` или none.
 - Order by: manual rank, priority, created, updated, due date или title.
 - Direction: ascending/descending, кроме manual.
+- Если отдельный Saved View order не задан, list и board используют priority
+  order `urgent → high → medium → low → none`; равный priority разрешается по
+  manual rank, затем по immutable `public_id`. Явный Saved View order остаётся
+  authoritative.
 - Пользователь выбирает видимые metadata fields и показ пустых групп для
   группировок по `priority`, `assignee`, `project` и `release`. При группировке
   по `status` группы с нулевым числом задач не показываются независимо от

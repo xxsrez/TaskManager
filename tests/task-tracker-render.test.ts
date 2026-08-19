@@ -31,6 +31,7 @@ import {
   shouldTriggerPullRefresh,
   StatusIcon,
   taskRowReorderDirection,
+  sortTasks,
   taskMutationVersion,
   taskNeedsDetailRefresh,
   taskDraftSyncMode,
@@ -129,6 +130,31 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+test("task ordering uses priority by default with rank and immutable id tie-breakers", () => {
+  const base = snapshot.tasks[0]!;
+  const tasks = [
+    { ...base, id: "none", publicId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", title: "Bravo", priority: "none" as const, rank: 1 },
+    { ...base, id: "high-b", publicId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", title: "Delta", priority: "high" as const, rank: 4 },
+    { ...base, id: "urgent", publicId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", title: "Charlie", priority: "urgent" as const, rank: 5 },
+    { ...base, id: "high-a", publicId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab", title: "Alpha", priority: "high" as const, rank: 4 },
+  ];
+
+  assert.deepEqual(sortTasks(tasks).map((task) => task.id), [
+    "urgent",
+    "high-a",
+    "high-b",
+    "none",
+  ]);
+  assert.deepEqual(sortTasks(tasks, {
+    layout: "list",
+    groupBy: "status",
+    orderBy: "title",
+    direction: "desc",
+    showEmptyGroups: false,
+    visibleFields: [],
+  }).map((task) => task.id), ["high-b", "urgent", "none", "high-a"]);
+});
 
 test("local Task changes invalidate an already loaded Activity projection", () => {
   const retained = {
@@ -1450,7 +1476,7 @@ test("a saved assignee grouping is rendered consistently in list and board", () 
   }
 });
 
-test("editable status-grouped list rows expose the same drag affordance as board cards", () => {
+test("default priority order keeps cross-group drag while disabling vertical reordering", () => {
   const listMarkup = renderToStaticMarkup(
     createElement(TaskTracker, {
       initialData: snapshot,
@@ -1469,6 +1495,8 @@ test("editable status-grouped list rows expose the same drag affordance as board
   assert.match(listMarkup, /class="task-row[^>]*draggable="true"/);
   assert.match(listMarkup, /data-drop-target="status"/);
   assert.match(boardMarkup, /class="task-card editable[^>]*draggable="true"/);
+  assert.match(listMarkup, /Drag to change Status; Priority order remains authoritative/);
+  assert.doesNotMatch(listMarkup, /drop-before/);
 });
 
 function listViewSnapshot(
@@ -1581,7 +1609,7 @@ test("current workflow statuses have non-color-only icon variants", () => {
   }
 });
 
-test("non-manual ordering disables pointer and keyboard reordering in list and board", () => {
+test("non-manual ordering disables vertical reordering but preserves grouped moves", () => {
   const sortedSnapshot: AppSnapshot = {
     ...snapshot,
     views: [{
@@ -1617,8 +1645,9 @@ test("non-manual ordering disables pointer and keyboard reordering in list and b
       }),
     );
 
-    assert.doesNotMatch(markup, /draggable="true"/);
-    assert.match(markup, /Choose Manual order to reorder Tasks/);
+    assert.match(markup, /draggable="true"/);
+    assert.match(markup, /Drag to change Status; Priority order remains authoritative/);
+    assert.doesNotMatch(markup, /Option\+Arrow Up or Down/);
   }
 });
 

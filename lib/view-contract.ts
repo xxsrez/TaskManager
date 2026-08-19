@@ -130,7 +130,7 @@ export function defaultViewDisplay(): ViewDisplay {
   return {
     layout: "list",
     groupBy: "status",
-    orderBy: "manual",
+    orderBy: "priority",
     direction: "asc",
     showEmptyGroups: true,
     visibleFields: [...visibleFields],

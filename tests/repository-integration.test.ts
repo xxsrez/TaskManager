@@ -1363,6 +1363,67 @@ test("Agent task cursor remains stable when earlier rows are inserted", async ()
   assert.equal(nonPrefix.data.some((task) => task.title.startsWith("Cursor")), false);
 });
 
+test("UI task query orders the ACL-scoped result by priority before cursor pagination", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const project = await ensureRepositoryTestProject(owner);
+  const marker = `Priority page ${crypto.randomUUID()}`;
+  const created = await Promise.all([
+    createTask(owner, { title: `${marker} none`, projectId: project.id, priority: "none" }),
+    createTask(owner, { title: `${marker} low`, projectId: project.id, priority: "low" }),
+    createTask(owner, { title: `${marker} medium`, projectId: project.id, priority: "medium" }),
+    createTask(owner, { title: `${marker} high`, projectId: project.id, priority: "high" }),
+    createTask(owner, { title: `${marker} urgent`, projectId: project.id, priority: "urgent" }),
+  ]);
+
+  const display = {
+    layout: "list" as const,
+    groupBy: "status" as const,
+    orderBy: "priority" as const,
+    direction: "asc" as const,
+    showEmptyGroups: false,
+    visibleFields: ["priority" as const],
+  };
+  const taskIds: string[] = [];
+  let after: Awaited<ReturnType<typeof queryTaskSummaries>>["page"]["next"] = null;
+  do {
+    const page = await queryTaskSummaries(owner, {
+      query: { version: 1, op: "all", conditions: [], search: marker },
+      surface: `project:${project.id}`,
+      display,
+      limit: 2,
+      after,
+    });
+    taskIds.push(...page.taskIds);
+    after = page.page.next;
+  } while (after);
+
+  const createdIds = new Set(created.map((task) => task.id));
+  const byId = new Map(
+    (await getSnapshot(owner)).tasks
+      .filter((task) => createdIds.has(task.id))
+      .map((task) => [task.id, task.priority]),
+  );
+  assert.deepEqual(taskIds.map((id) => byId.get(id)), [
+    "urgent",
+    "high",
+    "medium",
+    "low",
+    "none",
+  ]);
+  assert.equal(new Set(taskIds).size, created.length);
+
+  const explicitTitleOrder = await queryTaskSummaries(owner, {
+    query: { version: 1, op: "all", conditions: [], search: marker },
+    surface: `project:${project.id}`,
+    display: { ...display, orderBy: "title", direction: "desc" },
+    limit: 10,
+  });
+  assert.deepEqual(
+    explicitTitleOrder.tasks.map((task) => task.title.slice(marker.length + 1)),
+    ["urgent", "none", "medium", "low", "high"],
+  );
+});
+
 test("Project codes drive allocation and legacy aliases resolve safely", async () => {
   const owner = await getOrCreateUser({
     ...ownerActor,

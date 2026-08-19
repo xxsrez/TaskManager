@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ValidationError } from "../lib/domain";
 import {
+  defaultViewDisplay,
   validateViewDisplay,
   validateViewQuery,
 } from "../lib/view-contract";
@@ -31,6 +32,17 @@ test("saved view input accepts the supported query and display contract", () => 
   );
   assert.equal(validateViewDisplay({ layout: "board" }).layout, "board");
   assert.equal(validateViewDisplay({ groupBy: "assignee" }).groupBy, "assignee");
+});
+
+test("built-in task surfaces default to priority order", () => {
+  assert.deepEqual(defaultViewDisplay(), {
+    layout: "list",
+    groupBy: "status",
+    orderBy: "priority",
+    direction: "asc",
+    showEmptyGroups: true,
+    visibleFields: ["priority", "project", "release", "dueDate", "assignee"],
+  });
 });
 
 test("saved view input validates every canonical filter family and reserves the query version", () => {

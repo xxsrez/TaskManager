@@ -338,6 +338,27 @@ test("group moves fail closed across owner and edit boundaries", () => {
     showEmptyGroups: true,
   })[0]!;
   assert.equal(canMoveTaskToGroup(baseTask, statusGroup), false);
+
+  const editableTarget = {
+    ...projects[0]!,
+    id: "project-2",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    name: "Beta",
+    accessRole: "editor" as const,
+  };
+  const targetGroup = buildTaskGroups({
+    tasks: [baseTask],
+    statuses,
+    projects: [...projects, editableTarget],
+    releases,
+    groupBy: "project",
+    showEmptyGroups: true,
+  }).find((group) => group.value === editableTarget.id)!;
+  assert.equal(canMoveTaskToGroup(baseTask, targetGroup), true);
+  assert.equal(canMoveTaskToGroup(baseTask, {
+    ...targetGroup,
+    project: { ...editableTarget, accessRole: "viewer" },
+  }), false);
 });
 
 test("manual rank allocation is deterministic between exact neighbors", () => {

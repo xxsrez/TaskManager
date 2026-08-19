@@ -45,6 +45,7 @@ import type {
   TaskRelationRecord,
   TaskRecord,
   UserRecord,
+  ViewDisplay,
   ViewFilterCondition,
   ViewQuery,
   WorkflowStatusRecord,
@@ -935,8 +936,15 @@ export type TaskQueryInput = {
   query?: ViewQuery;
   surface?: string;
   scopeProjectId?: string | null;
+  display?: ViewDisplay;
   limit?: number;
-  after?: { updatedAt: string; id: string } | null;
+  after?: TaskQueryCursor | null;
+};
+
+export type TaskQueryCursor = {
+  sortValue: string | number;
+  rank: number;
+  publicId: string;
 };
 
 export async function queryTaskSummaries(
@@ -951,16 +959,20 @@ export async function queryTaskSummaries(
     throw new ValidationError("Task query limit must be a positive integer");
   }
   const limit = Math.min(Number(input.limit ?? 500), MAX_UI_SNAPSHOT_TASKS);
+  const display = validateViewDisplay(input.display);
   if (input.after !== undefined && input.after !== null && (
     typeof input.after !== "object" ||
-    typeof input.after.updatedAt !== "string" ||
-    !input.after.updatedAt ||
-    typeof input.after.id !== "string" ||
-    !input.after.id
+    !["string", "number"].includes(typeof input.after.sortValue) ||
+    (typeof input.after.sortValue === "number" && !Number.isFinite(input.after.sortValue)) ||
+    typeof input.after.rank !== "number" ||
+    !Number.isFinite(input.after.rank) ||
+    typeof input.after.publicId !== "string" ||
+    !input.after.publicId
   )) {
     throw new ValidationError("Task query cursor is invalid");
   }
   const after = input.after ?? null;
+  const orderDirection = display.orderBy === "manual" ? "asc" : display.direction;
   const scopeProject = input.scopeProjectId
     ? await loadAccessibleProject(currentUser.id, String(input.scopeProjectId))
     : null;
@@ -1021,10 +1033,8 @@ export async function queryTaskSummaries(
   } else if (!queryExplicitlyFiltersArchived(query)) {
     predicates.push("v.archived_at IS NULL");
   }
-  if (after) {
-    predicates.push("(v.updated_at < ? OR (v.updated_at = ? AND v.id < ?))");
-    parameters.push(after.updatedAt, after.updatedAt, after.id);
-  }
+  const order = taskQueryOrder(display.orderBy);
+  if (after) appendTaskQueryCursor(predicates, parameters, order, orderDirection, after);
   parameters.push(limit + 1);
 
   const rows = await getD1().prepare(
@@ -1068,10 +1078,11 @@ export async function queryTaskSummaries(
        v.estimate, v.due_date, v.parent_task_id, v.rank,
        v.started_at, v.completed_at, v.canceled_at, v.archived_at,
        v.comment_count, v.version, v.created_at, v.updated_at,
-       v.access_role
+       v.access_role, ${order} AS cursor_sort_value
      FROM visible_tasks v
      WHERE ${predicates.join(" AND ")}
-     ORDER BY v.updated_at DESC, v.id DESC
+     ORDER BY ${order} ${orderDirection === "asc" ? "ASC" : "DESC"},
+       v.rank ASC, v.public_id ASC
      LIMIT ?`,
   ).bind(...parameters).all<DbRow>();
 
@@ -1083,11 +1094,57 @@ export async function queryTaskSummaries(
     page: {
       hasMore: rows.results.length > limit,
       next: rows.results.length > limit && last
-        ? { updatedAt: String(last.updated_at), id: String(last.id) }
+        ? {
+            sortValue: taskQueryCursorValue(last.cursor_sort_value),
+            rank: Number(last.rank),
+            publicId: String(last.public_id),
+          }
         : null,
     },
     referenceTime: new Date().toISOString(),
   };
+}
+
+function taskQueryOrder(orderBy: ViewDisplay["orderBy"]) {
+  if (orderBy === "manual") return "v.rank";
+  if (orderBy === "priority") {
+    return `CASE v.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1
+      WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
+  }
+  if (orderBy === "created") return "v.created_at";
+  if (orderBy === "updated") return "v.updated_at";
+  if (orderBy === "due") return "COALESCE(v.due_date, '9999-12-31')";
+  return "lower(v.title)";
+}
+
+function appendTaskQueryCursor(
+  predicates: string[],
+  parameters: unknown[],
+  order: string,
+  direction: ViewDisplay["direction"],
+  after: TaskQueryCursor,
+) {
+  const comparison = direction === "asc" ? ">" : "<";
+  predicates.push(`(
+    ${order} ${comparison} ?
+    OR (${order} = ? AND v.rank > ?)
+    OR (${order} = ? AND v.rank = ? AND v.public_id > ?)
+  )`);
+  parameters.push(
+    after.sortValue,
+    after.sortValue,
+    after.rank,
+    after.sortValue,
+    after.rank,
+    after.publicId,
+  );
+}
+
+function taskQueryCursorValue(value: unknown): string | number {
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new Error("Task query cursor value is invalid");
+  }
+  return value;
 }
 
 export async function getAdminOverview(
