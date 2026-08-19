@@ -179,6 +179,32 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     agentApiOpenApi.paths["/tasks/{ref}/comments"].post.operationId,
     "createTaskComment",
   );
+  const commentExamples = agentApiOpenApi.paths["/tasks/{ref}/comments"].post
+    .requestBody.content["application/json"].examples as Record<
+      string,
+      { value: Record<string, unknown> }
+    >;
+  assert.match(String(commentExamples.rootWithImage?.value.body), /!\[Architecture diagram\]\(attachment:v1:/);
+  assert.match(String(commentExamples.replyWithFile?.value.body), /\[Review packet\.pdf\]\(attachment:v1:/);
+  assert.equal(commentExamples.replyWithFile?.value.parentCommentRef, "comment_root_01");
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/comments/{commentRef}"].patch.requestBody
+      .content["application/json"].examples?.replaceAttachment?.value.version,
+    3,
+  );
+  const commentErrorExamples = agentApiOpenApi.components.responses.CommentWriteError
+    .content["application/json"].examples;
+  assert.deepEqual(Object.keys(commentErrorExamples).sort(), [
+    "crossTaskAttachment",
+    "forbidden",
+    "malformedAttachment",
+    "versionConflict",
+  ]);
+  assert.equal(commentErrorExamples.crossTaskAttachment.value.error.code, "invalid_argument");
+  assert.doesNotMatch(
+    commentErrorExamples.crossTaskAttachment.value.error.message,
+    /attachment_[a-z0-9_-]+/i,
+  );
   assert.equal(
     agentApiOpenApi.paths["/tasks/{ref}/activity"].get.operationId,
     "listTaskActivity",

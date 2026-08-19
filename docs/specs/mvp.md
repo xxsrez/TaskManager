@@ -416,7 +416,9 @@ immutable ID и может группировать Tasks по значения�
 - Attachment bodies, object keys и delivery URLs не входят в bootstrap, sync,
   compact task list или Agent Task collection. Metadata загружается отдельным
   ACL-scoped endpoint после открытия Task details. Agent REST/MCP возвращают
-  только bounded metadata и bearer-protected Agent content URLs.
+  только bounded metadata и bearer-protected Agent content URLs. MCP download
+  является отдельным explicit read tool и возвращает resource link, а не
+  unbounded base64/object bytes.
 - Details показывает lazy attachment count/list, XHR upload progress,
   retry/cancel, safe download, recoverable delete/restore и Viewer read-only
   state. Raster list использует отдельный authenticated server thumbnail;

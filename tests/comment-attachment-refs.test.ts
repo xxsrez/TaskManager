@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { GET as listAttachmentsRoute } from "../app/api/tasks/[id]/attachments/route";
+import {
+  GET as listAgentCommentsRoute,
+  POST as createAgentCommentRoute,
+} from "../app/api/agent/v1/tasks/[ref]/comments/route";
+import {
+  PATCH as editAgentCommentRoute,
+} from "../app/api/agent/v1/tasks/[ref]/comments/[commentRef]/route";
 import { POST as mcpPost } from "../app/api/mcp/route";
-import { issueApiCredential } from "../lib/api-credentials";
+import { issueApiCredential, revokeApiCredential } from "../lib/api-credentials";
 import { reconcileAttachmentStorage } from "../lib/attachment-operations";
 import {
   createAgentTaskComment,
@@ -330,6 +337,126 @@ test("native reply to historical root carries refs and Agent/MCP projections exp
   ]);
 });
 
+test("Agent REST composes root and reply refs with scope, version, and existence-leak guards", async () => {
+  const { owner, project, task } = await setup("Comment refs Agent REST");
+  const other = await createTask(owner, { title: "Foreign REST task", projectId: project.id });
+  const image = await readyFile(owner, task.id, "agent-rest-image");
+  await database.prepare(
+    "UPDATE attachments SET kind = 'image', media_type = 'image/png' WHERE id = ?",
+  ).bind(image.id).run();
+  const file = await readyFile(owner, task.id, "agent-rest-file");
+  const foreign = await readyFile(owner, other.id, "agent-rest-foreign");
+  const writeCredential = await issueApiCredential(owner, {
+    name: "comment-rest-write",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const readCredential = await issueApiCredential(owner, {
+    name: "comment-rest-read",
+    scopes: ["api:read"],
+    expiresInDays: 1,
+  });
+  const endpoint = `https://example.test/api/agent/v1/tasks/${task.publicId}/comments`;
+  const context = { params: Promise.resolve({ ref: task.publicId }) };
+  const writeHeaders = {
+    authorization: `Bearer ${writeCredential.token}`,
+    "content-type": "application/json",
+  };
+
+  const rootResponse = await createAgentCommentRoute(new Request(endpoint, {
+    method: "POST",
+    headers: writeHeaders,
+    body: JSON.stringify({
+      body: [
+        buildTaskImageToken(image.publicId, "Architecture diagram"),
+        buildTaskFileLink(file.publicId, "Review packet.pdf"),
+      ].join("\n\n"),
+      idempotencyKey: "agent-rest-root",
+    }),
+  }), context);
+  assert.equal(rootResponse.status, 201);
+  const root = (await rootResponse.json()) as {
+    data: { ref: string; version: number; attachmentRefs: unknown[] };
+  };
+  assert.deepEqual(root.data.attachmentRefs, [
+    { ref: image.publicId, presentation: "image" },
+    { ref: file.publicId, presentation: "file" },
+  ]);
+
+  const replyResponse = await createAgentCommentRoute(new Request(endpoint, {
+    method: "POST",
+    headers: writeHeaders,
+    body: JSON.stringify({
+      body: buildTaskFileLink(file.publicId, "Reply packet.pdf"),
+      parentCommentRef: root.data.ref,
+      idempotencyKey: "agent-rest-reply",
+    }),
+  }), context);
+  assert.equal(replyResponse.status, 201);
+  const reply = (await replyResponse.json()) as {
+    data: { ref: string; parentCommentRef: string; attachmentRefs: unknown[] };
+  };
+  assert.equal(reply.data.parentCommentRef, root.data.ref);
+  assert.deepEqual(reply.data.attachmentRefs, [
+    { ref: file.publicId, presentation: "file" },
+  ]);
+
+  const editContext = {
+    params: Promise.resolve({ ref: task.publicId, commentRef: root.data.ref }),
+  };
+  const editedResponse = await editAgentCommentRoute(new Request(
+    `${endpoint}/${root.data.ref}`,
+    {
+      method: "PATCH",
+      headers: writeHeaders,
+      body: JSON.stringify({ version: root.data.version, body: "Refs removed" }),
+    },
+  ), editContext);
+  assert.equal(editedResponse.status, 200);
+  assert.deepEqual(((await editedResponse.json()) as {
+    data: { attachmentRefs: unknown[] };
+  }).data.attachmentRefs, []);
+  const stale = await editAgentCommentRoute(new Request(
+    `${endpoint}/${root.data.ref}`,
+    {
+      method: "PATCH",
+      headers: writeHeaders,
+      body: JSON.stringify({ version: root.data.version, body: "Stale edit" }),
+    },
+  ), editContext);
+  assert.equal(stale.status, 409);
+  assert.equal(((await stale.json()) as { error: { code: string } }).error.code, "version_conflict");
+
+  const foreignResponse = await createAgentCommentRoute(new Request(endpoint, {
+    method: "POST",
+    headers: writeHeaders,
+    body: JSON.stringify({
+      body: buildTaskFileLink(foreign.publicId, "Foreign.pdf"),
+      idempotencyKey: "agent-rest-cross-task",
+    }),
+  }), context);
+  assert.equal(foreignResponse.status, 400);
+  const foreignError = await foreignResponse.text();
+  assert.doesNotMatch(foreignError, new RegExp(foreign.publicId));
+
+  const readOnly = await createAgentCommentRoute(new Request(endpoint, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${readCredential.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ body: "Denied", idempotencyKey: "read-only" }),
+  }), context);
+  assert.equal(readOnly.status, 403);
+  assert.match(readOnly.headers.get("www-authenticate") ?? "", /api:write/);
+
+  await revokeApiCredential(owner, writeCredential.credential.id);
+  const revoked = await listAgentCommentsRoute(new Request(endpoint, {
+    headers: { authorization: `Bearer ${writeCredential.token}` },
+  }), context);
+  assert.equal(revoked.status, 401);
+});
+
 test("concurrent comment create and attachment delete never leave a dangling live ref", async () => {
   const { owner, task } = await setup("Comment refs D");
   const file = await readyFile(owner, task.id, "delete-race");
@@ -388,6 +515,23 @@ test("attachment reconciliation reports comment body/index drift without body or
   const serialized = JSON.stringify(report);
   assert.equal(serialized.includes("private-filename.pdf"), false);
   assert.equal(serialized.includes("reconcile-foreign.pdf"), false);
+
+  await database.batch([
+    database.prepare(
+      "DELETE FROM comment_attachment_refs WHERE comment_id = ?",
+    ).bind(comment.id),
+    database.prepare(
+      `INSERT INTO comment_attachment_refs (comment_id, task_id, attachment_id)
+       VALUES (?, ?, ?)`,
+    ).bind(comment.id, task.id, local.id),
+    database.prepare(
+      "UPDATE attachments SET state = 'deleted', deleted_at = CURRENT_TIMESTAMP WHERE id = ?",
+    ).bind(local.id),
+  ]);
+  const unavailable = await reconcileAttachmentStorage(owner, { maxObjects: 200 });
+  assert.ok(unavailable.brokenCommentRefs.some((value) =>
+    value.commentRef === comment.id && value.attachmentRef === local.publicId &&
+    value.reason === "unavailable"));
 });
 
 async function mcpResult(response: Response) {

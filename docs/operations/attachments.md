@@ -25,7 +25,7 @@ metadata не редактируется вручную. Любое provision/mi
 
 1. Проверить, что target hosting binding соответствует среде, `r2` равен
    `ATTACHMENTS`, Worker имеет `IMAGES`, а D1 содержит migrations `0014` и
-   `0015`.
+   `0015` для native storage/sync и `0029` для `comment_attachment_refs`.
 2. Через Task details и composer загрузить небольшой PDF и несколько PNG от
    Owner/Editor; проверить progress/retry, metadata, SHA-256, `ready`, thumbnail
    WebP и отсутствие filename в object key.
@@ -50,11 +50,24 @@ metadata не редактируется вручную. Любое provision/mi
    delete/restore. Проверить отсутствие internal IDs/object key в JSON и
    немедленный `404` после ACL revoke.
 10. `tools/list` должен объявлять `list_task_attachments`,
-   `get_task_attachment`, `upload_task_attachment` и `delete_task_attachment`,
+   `get_task_attachment`, `download_task_attachment`, `upload_task_attachment`
+   и `delete_task_attachment`,
    `api:read`/`api:write` security schemes и
    `_meta["openai/fileParams"]=["file"]` для upload. Полный MCP upload smoke
    выполнять только клиентом, который передаёт нативный OpenAI file object;
    base64, local path и произвольный URL не являются fallback transport.
+11. Через Agent REST и fresh MCP client загрузить небольшой PNG и PDF, получить
+    opaque refs и создать root Comment с image token и reply с file link.
+    Read-back обязан вернуть только body + `attachmentRefs`; edit заменяет ref,
+    затем удаляет token без удаления gallery Attachment. Отдельный
+    `download_task_attachment` возвращает bearer-protected `resource_link`, не
+    base64. Во второй открытой сессии должны обновиться mounted comments,
+    Activity и только необходимая attachment metadata, а local draft/upload
+    progress остаются неизменными.
+12. Повторить negative cases: Viewer/read-only token, revoke, guessed и
+    cross-Task ref, malformed token, stale Comment version и oversized upload.
+    Guessed/foreign/deleted refs должны выглядеть одинаково и не раскрывать
+    filename, object key или сам факт существования.
 
 Fresh-chat smoke установленного marketplace plugin направлен в production и
 выполняется только после отдельно разрешённого production Site/plugin release.
@@ -69,14 +82,16 @@ UAT-проверка не переключает production plugin на `task-ma
 - Missing object для `ready` — integrity incident: route отвечает `404`, restore
   запрещён. Не создавайте replacement по старому key; повторите upload с новым
   idempotency key после расследования.
-- System backup schema `3` использует общий 10 MB bounded JSON container,
+- System backup schema `3` впервые добавила общий 10 MB bounded JSON container,
   Project schema `3` — 25 MB. Каждый original представлен один раз по
   `sha256:<digest>` внутри package; row не раскрывает live object key. Schema
-  `2` импортируется только как legacy no-attachment state. Current schema `11`
-  дополнительно переносит writable-relation, comments/activity и attachment
-  migration outcomes; это не меняет R2 object contract.
+  `2` импортируется только как legacy no-attachment state. Current schema `13`
+  дополнительно переносит writable relations, comments/activity, attachment
+  migration outcomes и exact `comment_attachment_refs`; schema `2`–`12`
+  импортируется с пустым comment ref index. Это не меняет R2 object contract.
 - Validate проверяет package checksum, object size/SHA-256, Attachment↔Task и
-  description refs до staging. Restore пишет `backup-staging`, копирует в новые
+  description/comment body↔index refs до staging. Restore пишет
+  `backup-staging`, копирует в новые
   environment-scoped keys, выполняет D1 cutover и затем удаляет прежние/staged
   objects. До commit failure удаляет новые keys; после commit cleanup failure
   считается orphan incident и обнаруживается reconciliation.
@@ -90,5 +105,9 @@ UAT-проверка не переключает production plugin на `task-ma
   unknown, а report помечается `truncated`, чтобы не выдавать partial scan за
   точный. Purge/repair остаются
   отдельными explicit actions; production deletion требует отдельной команды.
+- Reconciliation отдельно перечисляет body/index mismatch, missing object и
+  missing/cross-Task/deleted/incompatible Comment ref только по opaque refs.
+  Cleanup/purge не удаляет binary, пока live description либо Comment edge
+  продолжает на него ссылаться.
 - Не пытайтесь обходить package limit ручным D1 export. State больше лимита
   требует новой chunked/streaming schema; unbounded base64 запрещён.

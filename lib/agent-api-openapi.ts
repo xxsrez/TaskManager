@@ -27,6 +27,46 @@ const errorResponses = {
   "409": { $ref: "#/components/responses/Error" },
 } as const;
 
+const commentWriteErrorResponses = {
+  "400": { $ref: "#/components/responses/CommentWriteError" },
+  "401": { $ref: "#/components/responses/Error" },
+  "403": { $ref: "#/components/responses/CommentWriteError" },
+  "404": { $ref: "#/components/responses/Error" },
+  "409": { $ref: "#/components/responses/CommentWriteError" },
+} as const;
+
+const commentCreateExamples = {
+  rootWithImage: {
+    summary: "Root comment with a ready same-Task raster image",
+    value: {
+      body: "Review this diagram:\n\n![Architecture diagram](attachment:v1:11111111-1111-4111-8111-111111111111 \"Request flow\")",
+      idempotencyKey: "comment-root-20260819-01",
+    },
+  },
+  replyWithFile: {
+    summary: "Reply with a ready same-Task downloadable file",
+    value: {
+      body: "The signed-off packet is attached: [Review packet.pdf](attachment:v1:22222222-2222-4222-8222-222222222222)",
+      idempotencyKey: "comment-reply-20260819-01",
+      parentCommentRef: "comment_root_01",
+    },
+  },
+} as const;
+
+const commentEditExamples = {
+  replaceAttachment: {
+    summary: "Replace the attachment reference using the current Comment version",
+    value: {
+      version: 3,
+      body: "Updated packet: [Review packet v2.pdf](attachment:v1:33333333-3333-4333-8333-333333333333)",
+    },
+  },
+  removeAttachment: {
+    summary: "Remove an attachment ref without deleting the Task attachment",
+    value: { version: 3, body: "The packet is no longer part of this comment." },
+  },
+} as const;
+
 const listParameters = [
   {
     name: "limit",
@@ -616,10 +656,10 @@ export const agentApiOpenApi = {
         summary: "Create a native root comment or reply as the authenticated user",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter()],
-        requestBody: jsonRequest("#/components/schemas/CommentCreate"),
+        requestBody: jsonRequest("#/components/schemas/CommentCreate", commentCreateExamples),
         responses: {
           "201": envelopeResponse("Created native comment", { $ref: "#/components/schemas/Comment" }),
-          ...errorResponses,
+          ...commentWriteErrorResponses,
         },
       },
     },
@@ -638,10 +678,10 @@ export const agentApiOpenApi = {
         summary: "Edit the authenticated author's comment with optimistic versioning",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter(), commentReferenceParameter()],
-        requestBody: jsonRequest("#/components/schemas/CommentEdit"),
+        requestBody: jsonRequest("#/components/schemas/CommentEdit", commentEditExamples),
         responses: {
           "200": envelopeResponse("Edited comment", { $ref: "#/components/schemas/Comment" }),
-          ...errorResponses,
+          ...commentWriteErrorResponses,
         },
       },
       delete: {
@@ -701,6 +741,32 @@ export const agentApiOpenApi = {
         content: {
           "application/json": {
             schema: { $ref: "#/components/schemas/ErrorEnvelope" },
+          },
+        },
+      },
+      CommentWriteError: {
+        description: "Comment write rejected without disclosing inaccessible attachments",
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/ErrorEnvelope" },
+            examples: {
+              malformedAttachment: {
+                summary: "Malformed native attachment token",
+                value: { error: { code: "invalid_argument", message: "Native attachment reference is malformed", requestId: "req_example" } },
+              },
+              crossTaskAttachment: {
+                summary: "Foreign, guessed, deleted, or otherwise unavailable attachment",
+                value: { error: { code: "invalid_argument", message: "Every native reference must be a compatible ready attachment of this Task", requestId: "req_example" } },
+              },
+              forbidden: {
+                summary: "Token or Task role is read-only",
+                value: { error: { code: "forbidden", message: "Editor access is required", requestId: "req_example" } },
+              },
+              versionConflict: {
+                summary: "Stale Comment version",
+                value: { error: { code: "version_conflict", message: "Comment was changed in another session", requestId: "req_example" } },
+              },
+            },
           },
         },
       },
@@ -1326,11 +1392,17 @@ function requiredHeader(name: string, description: string) {
   } as const;
 }
 
-function jsonRequest(schemaReference: string) {
+function jsonRequest(
+  schemaReference: string,
+  examples?: Record<string, { summary: string; value: Record<string, unknown> }>,
+) {
   return {
     required: true,
     content: {
-      "application/json": { schema: { $ref: schemaReference } },
+      "application/json": {
+        schema: { $ref: schemaReference },
+        ...(examples ? { examples } : {}),
+      },
     },
   } as const;
 }

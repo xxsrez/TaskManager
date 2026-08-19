@@ -213,6 +213,11 @@ export async function createComment(
         `comment_attachment_assert_${crypto.randomUUID()}`,
         now,
       ),
+      ...commentAttachmentInvalidationStatements(
+        db,
+        task.id,
+        attachmentRequirements.length > 0,
+      ),
     ]);
   } catch {
     const retried = await db.prepare(
@@ -265,6 +270,10 @@ export async function editComment(
     createdAt: taskNow,
   });
   const attachmentPredicate = commentAttachmentPredicate(attachmentRequirements);
+  const attachmentRefsChanged = commentAttachmentRequirementsChanged(
+    String(comment.body),
+    attachmentRequirements,
+  );
   try {
     await db.batch([
       db.prepare(
@@ -315,6 +324,11 @@ export async function editComment(
         `comment_attachment_assert_${crypto.randomUUID()}`,
         taskNow,
       ),
+      ...commentAttachmentInvalidationStatements(
+        db,
+        task.id,
+        attachmentRefsChanged,
+      ),
     ]);
   } catch {
     throw new ConflictError("Comment was changed in another session");
@@ -349,6 +363,9 @@ export async function deleteComment(
     payload: { commentId },
     createdAt: taskNow,
   });
+  const hadAttachmentRefs = descriptionAttachmentRequirements(
+    String(comment.body),
+  ).length > 0;
   try {
     await db.batch([
       db.prepare(
@@ -377,6 +394,11 @@ export async function deleteComment(
         db,
         `comment_attachment_assert_${crypto.randomUUID()}`,
         taskNow,
+      ),
+      ...commentAttachmentInvalidationStatements(
+        db,
+        task.id,
+        hadAttachmentRefs,
       ),
     ]);
   } catch {
@@ -726,6 +748,35 @@ function commentAttachmentBatchGuard(
     commentVersion,
     expectedRefCount,
   );
+}
+
+function commentAttachmentInvalidationStatements(
+  db: D1Database,
+  taskId: string,
+  changed: boolean,
+) {
+  return changed
+    ? [db.prepare(
+        `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+         VALUES (?, 'task_attachments')`,
+      ).bind(taskId)]
+    : [];
+}
+
+function commentAttachmentRequirementsChanged(
+  previousBody: string,
+  next: DescriptionAttachmentRequirement[],
+) {
+  const previous = descriptionAttachmentRequirements(previousBody);
+  if (previous.length !== next.length) return true;
+  const nextKeys = new Set(next.map(attachmentRequirementKey));
+  return previous.some((requirement) => !nextKeys.has(
+    attachmentRequirementKey(requirement),
+  ));
+}
+
+function attachmentRequirementKey(requirement: DescriptionAttachmentRequirement) {
+  return `${requirement.ref}:${requirement.imageRequired ? "image" : "file"}`;
 }
 
 function commentAttachmentPredicate(

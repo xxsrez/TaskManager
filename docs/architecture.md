@@ -514,6 +514,10 @@ count. Attachment delete сначала использует indexed lookup дл
 comment write/delete не оставляет dangling edge. Projections публикуют только
 opaque ref и presentation, а reconciliation сравнивает bounded body/index
 sets без body, filename, object key или existence detail.
+Create/delete с непустым ref set и edit, реально меняющий ref/presentation set,
+добавляют `task_attachments` invalidation после Comment/Activity batch
+assertion. Обычный body-only edit оставляет attachment cache действительным;
+`task_comments` и `task_activity` продолжают приходить из своих triggers.
 
 Browser authoring вынесен в общий root/reply/edit wrapper над существующим XHR
 Attachment upload primitive. Он держит per-draft upload state и независимый
@@ -537,6 +541,12 @@ refs своего chunk; transient failure не помечает их missing, �
 invalidation перечитывает только видимые refs и не затрагивает comment drafts.
 Image/file presentation переиспользует private Task Attachment preview/download
 components.
+
+Agent MCP использует тот же upload primitive и Comment repository. Отдельный
+`download_task_attachment` не проксирует object bytes через JSON-RPC: после
+повторной Task ACL-проверки он возвращает один bearer-protected MCP
+`resource_link` на Agent original/thumbnail route. Local filesystem paths,
+arbitrary remote URLs и inline base64 не являются transport fallback.
 
 Append-only change history запрашивается независимо через
 `/api/tasks/{id}/activity`. Repository сначала разрешает текущую Task ACL, затем

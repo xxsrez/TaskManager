@@ -224,6 +224,7 @@ protocol revisions).
 | `create_task_relation` | `api:write` | Создать native relation с idempotency key |
 | `update_task_relation`, `delete_task_relation` | `api:write` | Изменить или удалить relation по current version |
 | `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |
+| `download_task_attachment` | `api:read` | Явно получить один bearer-protected MCP resource link original/thumbnail без binary/base64 в tool result |
 | `upload_task_attachment` | `api:write` | Принять native OpenAI file input и идемпотентно сохранить binary |
 | `delete_task_attachment` | `api:write` | Recoverable delete с optimistic version |
 | `list_task_comments`, `get_task_thread` | `api:read` | Читать unified native/historical threads отдельно от Task detail |
@@ -504,6 +505,12 @@ MCP `upload_task_attachment` следует актуальному OpenAI file-i
 После server fetch действуют те же content inspection, idempotency и Task ACL,
 что для REST/UI upload. Contract основан на официальном
 [OpenAI plugin reference](https://developers.openai.com/plugins/reference).
+После ready upload agent вставляет opaque ref в `add_task_comment`,
+`reply_to_task_comment` или `edit_task_comment`; remote Worker никогда не
+принимает local path либо base64 вместо file input. `download_task_attachment`
+повторяет Task ACL и возвращает только explicit `resource_link` на Agent content
+route. Original/thumbnail bytes загружаются отдельным bearer request, поэтому
+ни tool result, ни compact Task/comment collection не несут unbounded binary.
 
 ## 8. Errors и authorization
 
@@ -571,9 +578,14 @@ Authorization invariants:
     входят ни в Task detail, ни в отдельный public endpoint/tool.
 11. Agent REST upload/list/get/range/delete повторяет Task ACL, не публикует
     internal IDs/R2 keys и сохраняет стабильную attachment pagination. MCP
-    `tools/list` объявляет четыре attachment tools, а upload schema содержит
-    `_meta["openai/fileParams"]`; invalid/private redirect, oversized body,
+    `tools/list` объявляет пять attachment tools, включая explicit
+    `download_task_attachment`; upload schema содержит
+    `_meta["openai/fileParams"]`, а download возвращает bearer-protected
+    resource link без inline base64. Invalid/private redirect, oversized body,
     MIME mismatch и stale version отклоняются до небезопасной mutation.
+    Root/reply/edit Comment принимает ready image/file refs только той же Task,
+    read-back возвращает opaque `attachmentRefs`, а malformed/cross-Task,
+    read-only/revoked и stale-version cases не раскрывают чужой ref.
 12. Agent REST/MCP relation create retry сохраняет один stable relation ref;
     stale update/delete конфликтует, Viewer не пишет, ACL проверяется на обеих
     Tasks, а outgoing duplicate atomically меняет source status. `get_task`

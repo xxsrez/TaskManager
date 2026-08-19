@@ -241,6 +241,7 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     "resolve_task_thread",
     "list_task_attachments",
     "get_task_attachment",
+    "download_task_attachment",
     "upload_task_attachment",
     "delete_task_attachment",
     "create_task_relation",
@@ -321,6 +322,30 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     Object.keys(uploadTool?.inputSchema?.properties?.file?.properties ?? {}),
     ["download_url", "file_id", "mime_type", "file_name"],
   );
+  const downloadTool = listBody.result.tools.find(
+    (tool) => tool.name === "download_task_attachment",
+  ) as {
+    description?: string;
+    annotations?: Record<string, unknown>;
+    securitySchemes?: unknown;
+    _meta?: Record<string, unknown>;
+    inputSchema?: { properties?: Record<string, unknown> };
+  } | undefined;
+  assert.match(downloadTool?.description ?? "", /bearer-protected resource link/i);
+  assert.deepEqual(downloadTool?.annotations, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  });
+  assert.ok(downloadTool?.inputSchema?.properties?.attachmentRef);
+  assert.ok(downloadTool?.inputSchema?.properties?.variant);
+  assert.deepEqual(downloadTool?.securitySchemes, [
+    { type: "oauth2", scopes: ["api:read"] },
+  ]);
+  assert.deepEqual(downloadTool?._meta?.securitySchemes, [
+    { type: "oauth2", scopes: ["api:read"] },
+  ]);
 
   const callResponse = await mcpPost(
     new Request(endpoint, {

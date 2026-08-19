@@ -26,7 +26,14 @@ import {
 import { getWorkspaceSync } from "../lib/workspace-sync";
 import type { AppSnapshot, WorkspaceSyncResponse } from "../lib/types";
 import { createD1TestHarness } from "./helpers/d1";
-import { createComment, setCommentReaction } from "../lib/comments";
+import {
+  createComment,
+  deleteComment,
+  editComment,
+  setCommentReaction,
+} from "../lib/comments";
+import { createAttachment } from "../lib/attachments";
+import { buildTaskFileLink } from "../lib/task-description-format";
 
 const ownerActor = {
   provider: "chatgpt" as const,
@@ -51,7 +58,7 @@ let dispose: (() => Promise<void>) | undefined;
 let database: D1Database;
 
 before(async () => {
-  const harness = await createD1TestHarness();
+  const harness = await createD1TestHarness({}, { r2: true });
   database = harness.database;
   dispose = harness.dispose;
 });
@@ -735,6 +742,65 @@ test("native comments and reactions emit lazy comment invalidations", async () =
   assert.equal(reacted.changes.tasks.upsert[0]?.id, task.id);
   assert.equal(reacted.changes.tasks.upsert[0]?.description, null);
   assert.deepEqual(reacted.changes.invalidations.taskComments, [task.id]);
+});
+
+test("comment attachment ref changes emit only mounted comment, activity, and attachment invalidations", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-comment-attachments-owner",
+    email: "sync-comment-attachments-owner@example.test",
+  });
+  const project = await ensureSyncProject(owner);
+  const task = await createTask(owner, {
+    title: "Comment attachment invalidation task",
+    projectId: project.id,
+  });
+  const first = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\nfirst\n%%EOF"),
+    filename: "first.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "sync-comment-first",
+  });
+  const afterFirstUpload = await getSnapshot(owner);
+  const comment = await createComment(owner, task.id, {
+    body: buildTaskFileLink(first.publicId, "First.pdf"),
+    idempotencyKey: "sync-comment-ref-create",
+  });
+
+  const created = await getWorkspaceSync(owner, afterFirstUpload.syncCursor!);
+  assert.deepEqual(created.changes.invalidations.taskComments, [task.id]);
+  assert.deepEqual(created.changes.invalidations.taskActivities, [task.id]);
+  assert.deepEqual(created.changes.invalidations.taskAttachments, [task.id]);
+  assert.deepEqual(created.changes.invalidations.taskDetails, []);
+
+  const bodyOnly = await editComment(owner, task.id, comment.id, {
+    version: comment.version,
+    body: `Updated context\n\n${buildTaskFileLink(first.publicId, "First.pdf")}`,
+  });
+  const editedBody = await getWorkspaceSync(owner, created.cursor);
+  assert.deepEqual(editedBody.changes.invalidations.taskComments, [task.id]);
+  assert.deepEqual(editedBody.changes.invalidations.taskActivities, [task.id]);
+  assert.deepEqual(editedBody.changes.invalidations.taskAttachments, []);
+
+  const second = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\nsecond\n%%EOF"),
+    filename: "second.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: "sync-comment-second",
+  });
+  const uploadedSecond = await getWorkspaceSync(owner, editedBody.cursor);
+  const swapped = await editComment(owner, task.id, bodyOnly.id, {
+    version: bodyOnly.version,
+    body: buildTaskFileLink(second.publicId, "Second.pdf"),
+  });
+  const editedRefs = await getWorkspaceSync(owner, uploadedSecond.cursor);
+  assert.deepEqual(editedRefs.changes.invalidations.taskAttachments, [task.id]);
+
+  await deleteComment(owner, task.id, swapped.id, { version: swapped.version });
+  const deleted = await getWorkspaceSync(owner, editedRefs.cursor);
+  assert.deepEqual(deleted.changes.invalidations.taskComments, [task.id]);
+  assert.deepEqual(deleted.changes.invalidations.taskActivities, [task.id]);
+  assert.deepEqual(deleted.changes.invalidations.taskAttachments, [task.id]);
 });
 
 test("migration provenance changes stay out of the product sync contract", async () => {

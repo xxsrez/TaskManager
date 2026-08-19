@@ -643,6 +643,72 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
   );
 
   server.registerTool(
+    "download_task_attachment",
+    {
+      title: "Download native task attachment",
+      description:
+        "Returns one explicit bearer-protected resource link for an original or image thumbnail after rechecking Task ACL. The tool does not inline unbounded base64 or accept local filesystem paths.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical task ref."),
+        attachmentRef: reference("Attachment ref from list_task_attachments."),
+        variant: z.enum(["original", "thumbnail"]).default("original"),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ taskRef, attachmentRef, variant }) => {
+      try {
+        const attachment = await getAgentTaskAttachment(
+          context.user,
+          taskRef,
+          attachmentRef,
+          toolOrigin(context),
+        );
+        const uri = variant === "thumbnail"
+          ? attachment.links.thumbnail
+          : attachment.links.original;
+        if (!uri) {
+          throw new ValidationError(
+            variant === "thumbnail"
+              ? "A thumbnail is available only for a ready raster image"
+              : "The attachment original is unavailable",
+          );
+        }
+        const mimeType = variant === "original" ? attachment.mediaType : undefined;
+        const resource = {
+          type: "resource_link" as const,
+          uri,
+          name: variant === "thumbnail"
+            ? `Thumbnail: ${attachment.filename}`
+            : attachment.filename,
+          description: `${variant} for Task attachment ${attachment.ref}`,
+          ...(mimeType ? { mimeType } : {}),
+        };
+        const structuredContent = {
+          data: {
+            ref: attachment.ref,
+            variant,
+            mediaType: mimeType ?? null,
+            byteSize: attachment.byteSize,
+            checksumSha256: attachment.checksumSha256,
+            resource: {
+              uri: resource.uri,
+              name: resource.name,
+              ...(mimeType ? { mimeType } : {}),
+            },
+          },
+        };
+        return {
+          content: [resource],
+          structuredContent,
+        } satisfies CallToolResult;
+      } catch (error) {
+        return toolError(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "upload_task_attachment",
     {
       title: "Upload native task attachment",
@@ -921,13 +987,17 @@ async function toolCall(action: () => Promise<unknown>): Promise<CallToolResult>
       structuredContent,
     };
   } catch (error) {
-    const mapped = mapToolError(error);
-    return {
-      isError: true,
-      content: [{ type: "text", text: `${mapped.code}: ${mapped.message}` }],
-      structuredContent: { error: mapped },
-    };
+    return toolError(error);
   }
+}
+
+function toolError(error: unknown): CallToolResult {
+  const mapped = mapToolError(error);
+  return {
+    isError: true,
+    content: [{ type: "text", text: `${mapped.code}: ${mapped.message}` }],
+    structuredContent: { error: mapped },
+  };
 }
 
 function authenticationToolError(message: string, scope: ApiScope, resource: string | null): CallToolResult {

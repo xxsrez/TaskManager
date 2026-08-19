@@ -55,6 +55,7 @@ import {
 } from "../lib/system-backup";
 import { reconcileAttachmentStorage } from "../lib/attachment-operations";
 import { createSystemBackup } from "../lib/system-backup-format";
+import { createComment, getCommentThread } from "../lib/comments";
 import { getRuntimeEnvironment } from "../lib/runtime-environment";
 import { getWorkspaceSync } from "../lib/workspace-sync";
 import { createD1TestHarness } from "./helpers/d1";
@@ -998,6 +999,36 @@ test("Agent attachment routes and MCP tools preserve binary transport and bearer
     ref: string;
   }>;
   assert.ok(listedAttachments.some((attachment) => attachment.ref === uploaded.ref));
+
+  const mcpDownload = await mcpPost(
+    new Request(mcpEndpoint, {
+      method: "POST",
+      headers: mcpHeaders,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 12,
+        method: "tools/call",
+        params: {
+          name: "download_task_attachment",
+          arguments: {
+            taskRef: task.publicId,
+            attachmentRef: uploaded.ref,
+            variant: "original",
+          },
+        },
+      }),
+    }),
+  );
+  const downloadResult = await mcpResult(mcpDownload);
+  const resource = downloadResult.result.content.find(
+    (item) => item.type === "resource_link",
+  );
+  assert.ok(resource && resource.type === "resource_link");
+  assert.equal(resource.mimeType, "application/pdf");
+  assert.match(resource.uri, new RegExp(
+    `/api/agent/v1/tasks/${task.publicId}/attachments/${uploaded.ref}/content\\?variant=original$`,
+  ));
+  assert.equal(JSON.stringify(downloadResult).includes("%PDF-1.7"), false);
 });
 
 async function mcpResult(response: Response) {
@@ -1013,6 +1044,10 @@ async function mcpResult(response: Response) {
     result: {
       isError?: boolean;
       structuredContent: { data: unknown };
+      content: Array<
+        | { type: "text"; text: string }
+        | { type: "resource_link"; uri: string; name: string; mimeType?: string }
+      >;
     };
   };
 }
@@ -1230,6 +1265,10 @@ test("project and system restore stage attachment objects before exact D1 cutove
     claimedMediaType: "application/pdf",
     idempotencyKey: "restore-pdf",
   });
+  const comment = await createComment(owner, task.id, {
+    body: buildTaskFileLink(attachment.publicId, "Restore packet.pdf"),
+    idempotencyKey: "restore-comment-ref",
+  });
 
   const projectBackup = await exportProjectBackup(
     owner,
@@ -1263,6 +1302,14 @@ test("project and system restore stage attachment objects before exact D1 cutove
     bytes,
   );
   assert.notEqual(restoredProjectAttachment.objectKey, attachment.objectKey);
+  const projectThread = await getCommentThread(owner, task.id, comment.id);
+  assert.equal(projectThread.root.body, buildTaskFileLink(
+    attachment.publicId,
+    "Restore packet.pdf",
+  ));
+  assert.deepEqual(projectThread.root.attachmentRefs, [
+    { ref: attachment.publicId, presentation: "file" },
+  ]);
   assert.equal(
     (await getAttachmentContent(viewer, task.id, attachment.publicId, {
       preview: false,
@@ -1336,6 +1383,10 @@ test("project and system restore stage attachment objects before exact D1 cutove
   assert.notEqual(
     restoredSystemAttachment.objectKey,
     restoredProjectAttachment.objectKey,
+  );
+  assert.deepEqual(
+    (await getCommentThread(owner, task.id, comment.id)).root.attachmentRefs,
+    [{ ref: attachment.publicId, presentation: "file" }],
   );
   assert.equal(
     (await getAttachmentContent(viewer, task.id, attachment.publicId, {
