@@ -130,6 +130,11 @@ Desktop-first shell повторяет композицию Linear:
 - Collection surfaces `/views`, `/projects` и `/releases` не ограничены
   sidebar shortlist: они выполняют ACL-scoped search и догружают следующие
   deterministic keyset pages через явный `Load more`.
+- Sidebar shortlist является отдельной navigation projection и не служит
+  источником вариантов для Task composer, filters, Project/Release move,
+  bulk actions, Saved View scope или Release create. Перед открытием такого
+  picker UI лениво дочитывает все ACL-scoped keyset pages нужного каталога;
+  во время загрузки преждевременно неполный control не становится активным.
 - Copy-link action копирует текущий абсолютный deep link.
 - Legacy links `/tasks/{internal-id}`, `/releases/{internal-id}` и прежние
   `/views/{internal-id}`/`/projects/{internal-id}` разрешаются только после ACL

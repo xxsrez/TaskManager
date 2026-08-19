@@ -660,6 +660,12 @@ export async function getSnapshot(
     boundedTaskIds.has(String(row.task_id)),
   );
   const boundedLabelIds = new Set(boundedTaskLabels.map((row) => String(row.label_id)));
+  const projectRecords = projects.results.map(mapProject);
+  const releaseRecords = releases.results.map(mapRelease);
+  const viewRecords = collectionRows(views.results, navigationLimit).map(mapView);
+  const navigationProjectRecords = recentNavigationRecords(projectRecords, navigationLimit);
+  const navigationReleaseRecords = recentNavigationRecords(releaseRecords, navigationLimit);
+  const navigationViewRecords = recentNavigationRecords(viewRecords, navigationLimit);
 
   return {
     user,
@@ -667,8 +673,8 @@ export async function getSnapshot(
     admin,
     users: users.results.map(mapUser),
     statuses: statuses.results.map(mapStatus),
-    projects: projects.results.map(mapProject),
-    releases: releases.results.map(mapRelease),
+    projects: projectRecords,
+    releases: releaseRecords,
     tasks: boundedTaskRows.map(mapTask),
     taskWindow: { limit: taskLimit, truncated: tasks.results.length > taskLimit },
     labels: labels.results
@@ -678,11 +684,25 @@ export async function getSnapshot(
     relations: relations.results
       .filter((row) => boundedTaskIds.has(String(row.source_task_id)) && boundedTaskIds.has(String(row.target_task_id)))
       .map(mapRelation),
-    views: collectionRows(views.results, navigationLimit).map(mapView),
+    views: viewRecords,
     navigationCollections: {
-      projects: navigationCollectionState(projects.results, navigationLimit),
-      releases: navigationCollectionState(releases.results, navigationLimit),
-      views: navigationCollectionState(views.results, navigationLimit),
+      projects: {
+        items: navigationProjectRecords,
+        ...navigationCollectionState(projects.results, navigationLimit),
+      },
+      releases: {
+        items: navigationReleaseRecords,
+        ...navigationCollectionState(releases.results, navigationLimit),
+      },
+      views: {
+        items: navigationViewRecords,
+        ...navigationCollectionState(views.results, navigationLimit),
+      },
+    },
+    catalogCoverage: {
+      projects: navigationOnly ? "bounded" : "complete",
+      releases: navigationOnly ? "bounded" : "complete",
+      views: navigationOnly ? "bounded" : "complete",
     },
     collaborators: collaborators.results.map(mapCollaborator),
     syncCursor: encodeWorkspaceSyncCursor(
@@ -5354,6 +5374,20 @@ function navigationCollectionState(rows: DbRow[], limit: number | null) {
     total,
     hasMore: limit !== null && total > limit,
   };
+}
+
+function recentNavigationRecords<T extends { id: string; updatedAt?: string; archivedAt?: string | null }>(
+  records: T[],
+  limit: number | null,
+) {
+  const boundedLimit = limit ?? 3;
+  return records
+    .filter((record) => !record.archivedAt)
+    .sort((left, right) =>
+      (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "") ||
+        right.id.localeCompare(left.id),
+    )
+    .slice(0, boundedLimit);
 }
 
 function mapStatus(row: DbRow): WorkflowStatusRecord {

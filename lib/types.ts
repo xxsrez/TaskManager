@@ -485,9 +485,15 @@ export type AppSnapshot = {
   relations: TaskRelationRecord[];
   views: SavedViewRecord[];
   navigationCollections?: {
-    projects: { total: number; hasMore: boolean };
-    releases: { total: number; hasMore: boolean };
-    views: { total: number; hasMore: boolean };
+    projects: { items: ProjectRecord[]; total: number; hasMore: boolean };
+    releases: { items: ReleaseRecord[]; total: number; hasMore: boolean };
+    views: { items: SavedViewRecord[]; total: number; hasMore: boolean };
+  };
+  /** Whether absence from each snapshot collection proves inaccessible/removal. */
+  catalogCoverage?: {
+    projects: "bounded" | "complete";
+    releases: "bounded" | "complete";
+    views: "bounded" | "complete";
   };
   collaborators: CollaboratorRecord[];
   /** Opaque checkpoint for the authenticated principal's incremental UI feed. */

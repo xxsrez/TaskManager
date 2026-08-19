@@ -535,6 +535,9 @@ export function mergeDeferredSnapshot(
   );
   const retainedLabelIds = new Set(mergedTaskLabels.map((assignment) => assignment.labelId));
   const incomingLabelIds = new Set(incoming.labels.map((label) => label.id));
+  const projectCoverage = incoming.catalogCoverage?.projects ?? "complete";
+  const releaseCoverage = incoming.catalogCoverage?.releases ?? "complete";
+  const viewCoverage = incoming.catalogCoverage?.views ?? "complete";
 
   return {
     ...incoming,
@@ -543,24 +546,44 @@ export function mergeDeferredSnapshot(
     projects: mergeResetCollection(
       current.projects,
       incoming.projects,
-      options.projectIdsAtRequest,
+      projectCoverage === "complete" ? options.projectIdsAtRequest : undefined,
     ),
     releases: mergeResetCollection(
       current.releases,
       incoming.releases,
-      options.releaseIdsAtRequest,
+      releaseCoverage === "complete" ? options.releaseIdsAtRequest : undefined,
     ),
     views: mergeResetCollection(
       current.views,
       incoming.views,
-      options.viewIdsAtRequest,
+      viewCoverage === "complete" ? options.viewIdsAtRequest : undefined,
     ),
     labels: mergeUnique(incoming.labels, current.labels, (label) => label.id)
       .filter((label) => !options.taskIdsAtRequest ||
         incomingLabelIds.has(label.id) || retainedLabelIds.has(label.id)),
     taskLabels: mergedTaskLabels,
     relations: mergedRelations,
+    navigationCollections: incoming.navigationCollections ?? current.navigationCollections,
+    catalogCoverage: {
+      projects: mergeCatalogCoverage(current.catalogCoverage?.projects, projectCoverage),
+      releases: mergeCatalogCoverage(current.catalogCoverage?.releases, releaseCoverage),
+      views: mergeCatalogCoverage(current.catalogCoverage?.views, viewCoverage),
+    },
   };
+}
+
+function mergeCatalogCoverage(
+  current: "bounded" | "complete" | undefined,
+  incoming: "bounded" | "complete",
+) {
+  return current === "complete" || incoming === "complete" ? "complete" : "bounded";
+}
+
+export function snapshotProvesCollectionAbsence(
+  snapshot: AppSnapshot,
+  kind: WorkspaceCatalogKind,
+) {
+  return (snapshot.catalogCoverage?.[kind] ?? "complete") === "complete";
 }
 
 export const PULL_REFRESH_THRESHOLD = 72;
@@ -594,6 +617,53 @@ export async function fetchTaskSnapshot(fetcher: typeof fetch = fetch) {
     throw new Error("error" in value ? value.error : "Refresh failed");
   }
   return value;
+}
+
+export async function fetchCompleteWorkspaceCatalog(
+  kind: WorkspaceCatalogKind,
+  fetcher: typeof fetch = fetch,
+): Promise<WorkspaceCatalogPage> {
+  let cursor: string | null = null;
+  let complete: WorkspaceCatalogPage = {
+    kind,
+    projects: [],
+    releases: [],
+    views: [],
+    page: { hasMore: false, nextCursor: null },
+    total: 0,
+  };
+  const seenCursors = new Set<string>();
+  do {
+    const parameters = new URLSearchParams({
+      kind,
+      limit: "50",
+      order: "name",
+      direction: "asc",
+    });
+    if (kind !== "releases") parameters.set("active_only", "1");
+    if (cursor) parameters.set("cursor", cursor);
+    const response = await fetcher(`/api/catalog?${parameters}`, { cache: "no-store" });
+    const page = await response.json() as WorkspaceCatalogPage | { error: string };
+    if (!response.ok || "error" in page) {
+      throw new Error("error" in page ? page.error : "Catalog could not be loaded");
+    }
+    if (page.kind !== kind) throw new Error("Catalog kind did not match the request");
+    complete = {
+      ...page,
+      projects: mergeUnique(complete.projects, page.projects, (item) => item.id),
+      releases: mergeUnique(complete.releases, page.releases, (item) => item.id),
+      views: mergeUnique(complete.views, page.views, (item) => item.id),
+    };
+    cursor = page.page.hasMore ? page.page.nextCursor : null;
+    if (cursor) {
+      if (seenCursors.has(cursor)) throw new Error("Catalog pagination did not advance");
+      seenCursors.add(cursor);
+    }
+  } while (cursor);
+  return {
+    ...complete,
+    page: { hasMore: false, nextCursor: null },
+  };
 }
 
 export function runSingleFlight<T>(
@@ -1011,6 +1081,10 @@ export function TaskTracker({
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   const [catalogOrder, setCatalogOrder] = useState<"updated" | "name">("updated");
   const [catalogDirection, setCatalogDirection] = useState<"asc" | "desc">("desc");
+  const completeCatalogFlights = useRef<Partial<Record<
+    WorkspaceCatalogKind,
+    Promise<WorkspaceCatalogPage>
+  >>>({});
   const [theme, setTheme] = useState<"system" | "light" | "dark">("system");
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
@@ -1034,6 +1108,58 @@ export function TaskTracker({
     releaseIds: new Set(dataRef.current.releases.map((release) => release.id)),
     viewIds: new Set(dataRef.current.views.map((view) => view.id)),
   }), []);
+  const ensureCompleteCatalogs = useCallback(async (
+    kinds: readonly WorkspaceCatalogKind[],
+  ) => {
+    const pages = await Promise.all(kinds.map(async (kind) => {
+      if ((dataRef.current.catalogCoverage?.[kind] ?? "complete") === "complete") {
+        return null;
+      }
+      let flight = completeCatalogFlights.current[kind];
+      if (!flight) {
+        flight = fetchCompleteWorkspaceCatalog(kind).finally(() => {
+          delete completeCatalogFlights.current[kind];
+        });
+        completeCatalogFlights.current[kind] = flight;
+      }
+      return flight;
+    }));
+    const loaded = pages.filter((page): page is WorkspaceCatalogPage => page !== null);
+    if (!loaded.length) return;
+    setData((current) => {
+      const next = loaded.reduce((result, page) => {
+        const merged = mergeWorkspaceCatalogPage(result, page);
+        return {
+          ...merged,
+          catalogCoverage: {
+            ...(merged.catalogCoverage ?? {
+              projects: "bounded",
+              releases: "bounded",
+              views: "bounded",
+            }),
+            [page.kind]: "complete",
+          },
+        };
+      }, current);
+      dataRef.current = next;
+      return next;
+    });
+  }, []);
+  const openDialogWithCatalog = useCallback(async (
+    nextDialog: Exclude<Dialog, null>,
+    kinds: readonly WorkspaceCatalogKind[],
+  ) => {
+    setCatalogLoading(true);
+    setError("");
+    try {
+      await ensureCompleteCatalogs(kinds);
+      setDialog(nextDialog);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Catalog could not be loaded");
+    } finally {
+      setCatalogLoading(false);
+    }
+  }, [ensureCompleteCatalogs]);
   const returnToWorkspaceAfterRemoval = useCallback(() => {
     setSurface("workspace");
     setLayout("list");
@@ -1120,17 +1246,21 @@ export function TaskTracker({
     if (activeTaskId !== null) setForcedTaskDetailId(activeTaskId);
     const surfaceWasRemoved =
       (surface.startsWith("project:") &&
+        snapshotProvesCollectionAbsence(incoming, "projects") &&
         checkpoint.projectIds.has(surface.slice(8)) &&
         !incoming.projects.some((project) => project.id === surface.slice(8))) ||
       (surface.startsWith("project-releases:") &&
+        snapshotProvesCollectionAbsence(incoming, "projects") &&
         checkpoint.projectIds.has(surface.slice("project-releases:".length)) &&
         !incoming.projects.some(
           (project) => project.id === surface.slice("project-releases:".length),
         )) ||
       (surface.startsWith("release:") &&
+        snapshotProvesCollectionAbsence(incoming, "releases") &&
         checkpoint.releaseIds.has(surface.slice(8)) &&
         !incoming.releases.some((release) => release.id === surface.slice(8))) ||
       (surface.startsWith("view:") &&
+        snapshotProvesCollectionAbsence(incoming, "views") &&
         checkpoint.viewIds.has(surface.slice(5)) &&
         !incoming.views.some(
           (view) => view.id === surface.slice(5) && !view.archivedAt,
@@ -1157,19 +1287,46 @@ export function TaskTracker({
     () => new Map(data.releases.map((release) => [release.id, release])),
     [data.releases],
   );
-  const sidebarViews = useMemo(() => selectRecentNavigation(data.views, {
-    activeId: surface.startsWith("view:") ? surface.slice(5) : null,
-  }), [data.views, surface]);
-  const sidebarProjects = useMemo(() => selectRecentNavigation(data.projects, {
-    activeId: surface.startsWith("project:")
+  const sidebarViews = useMemo(() => {
+    const activeId = surface.startsWith("view:") ? surface.slice(5) : null;
+    const active = activeId ? data.views.find((view) => view.id === activeId) : undefined;
+    return selectRecentNavigation(
+      mergeUnique(
+        active ? [active] : [],
+        data.navigationCollections?.views.items ?? data.views,
+        (view) => view.id,
+      ),
+      { activeId },
+    );
+  }, [data.navigationCollections?.views.items, data.views, surface]);
+  const sidebarProjects = useMemo(() => {
+    const activeId = surface.startsWith("project:")
       ? surface.slice(8)
       : surface.startsWith("project-releases:")
         ? surface.slice("project-releases:".length)
-        : null,
-  }), [data.projects, surface]);
-  const sidebarReleases = useMemo(() => selectRecentNavigation(data.releases, {
-    activeId: surface.startsWith("release:") ? surface.slice(8) : null,
-  }), [data.releases, surface]);
+        : null;
+    const active = activeId ? data.projects.find((project) => project.id === activeId) : undefined;
+    return selectRecentNavigation(
+      mergeUnique(
+        active ? [active] : [],
+        data.navigationCollections?.projects.items ?? data.projects,
+        (project) => project.id,
+      ),
+      { activeId },
+    );
+  }, [data.navigationCollections?.projects.items, data.projects, surface]);
+  const sidebarReleases = useMemo(() => {
+    const activeId = surface.startsWith("release:") ? surface.slice(8) : null;
+    const active = activeId ? data.releases.find((release) => release.id === activeId) : undefined;
+    return selectRecentNavigation(
+      mergeUnique(
+        active ? [active] : [],
+        data.navigationCollections?.releases.items ?? data.releases,
+        (release) => release.id,
+      ),
+      { activeId },
+    );
+  }, [data.navigationCollections?.releases.items, data.releases, surface]);
   const userMap = useMemo(
     () => new Map([...data.users, data.user].map((user) => [user.id, user])),
     [data.user, data.users],
@@ -1236,14 +1393,18 @@ export function TaskTracker({
       .then((pages) => {
         setData((current) => pages.reduce(
           (next, page) => ({
-            ...mergeWorkspaceCatalogPage(next, page),
+            ...next,
             navigationCollections: {
               ...(next.navigationCollections ?? {
-                projects: { total: 0, hasMore: false },
-                releases: { total: 0, hasMore: false },
-                views: { total: 0, hasMore: false },
+                projects: { items: [], total: 0, hasMore: false },
+                releases: { items: [], total: 0, hasMore: false },
+                views: { items: [], total: 0, hasMore: false },
               }),
-              [page.kind]: { total: page.total, hasMore: page.page.hasMore },
+              [page.kind]: {
+                items: page[page.kind],
+                total: page.total,
+                hasMore: page.page.hasMore,
+              },
             },
           }),
           current,
@@ -1630,6 +1791,13 @@ export function TaskTracker({
   const taskDetailRequestId = forcedTaskDetailId ?? deferredTaskId;
 
   useEffect(() => {
+    if (!activeTaskId) return;
+    void ensureCompleteCatalogs(["projects", "releases"]).catch((requestError: unknown) => {
+      setError(requestError instanceof Error ? requestError.message : "Catalog could not be loaded");
+    });
+  }, [activeTaskId, ensureCompleteCatalogs]);
+
+  useEffect(() => {
     if (!taskDetailRequestId) return;
     const controller = new AbortController();
     void (async () => {
@@ -1679,6 +1847,9 @@ export function TaskTracker({
   const activeDetailsData = activeTask && taskDetail?.task.id === activeTask.id
     ? mergeTaskDetailContext(data, { ...taskDetail, task: activeTask })
     : data;
+  const taskPropertyCatalogReady =
+    (data.catalogCoverage?.projects ?? "complete") === "complete" &&
+    (data.catalogCoverage?.releases ?? "complete") === "complete";
   const selectedTasks = [...selected]
     .map((id) => data.tasks.find((task) => task.id === id))
     .filter(Boolean) as TaskRecord[];
@@ -2235,7 +2406,7 @@ export function TaskTracker({
 
   async function saveCurrentView() {
     if (!activeSavedView) {
-      setDialog("view");
+      await openDialogWithCatalog("view", ["projects"]);
       return;
     }
     const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", {
@@ -2278,12 +2449,34 @@ export function TaskTracker({
     await navigator.clipboard.writeText(window.location.href);
   }
 
-  function openCreate(defaults: TaskCreateDefaults = {}) {
+  async function openCreate(defaults: TaskCreateDefaults = {}) {
     if (!canCreateTask) return;
     setMobileSidebarOpen(false);
     setMobileActionsOpen(false);
     setCreateDefaults(defaults);
-    setDialog("task");
+    await openDialogWithCatalog("task", ["projects", "releases"]);
+  }
+
+  async function toggleFilters(focusEditor = false) {
+    if (filterOpen) {
+      setFilterOpen(false);
+      return;
+    }
+    setCatalogLoading(true);
+    setError("");
+    try {
+      await ensureCompleteCatalogs(["projects", "releases"]);
+      setFilterOpen(true);
+      if (focusEditor) {
+        window.requestAnimationFrame(() => {
+          document.querySelector<HTMLInputElement>(".filter-popover input")?.focus();
+        });
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Catalog could not be loaded");
+    } finally {
+      setCatalogLoading(false);
+    }
   }
 
   function openGlobalSearch() {
@@ -2640,7 +2833,7 @@ export function TaskTracker({
       if (command === "compose") {
         if (!canCreateTask) return;
         event.preventDefault();
-        openCreate();
+        void openCreate();
         return;
       }
 
@@ -2693,10 +2886,7 @@ export function TaskTracker({
       if (command === "filter") {
         event.preventDefault();
         setDisplayOpen(false);
-        setFilterOpen(true);
-        window.requestAnimationFrame(() => {
-          document.querySelector<HTMLInputElement>(".filter-popover input")?.focus();
-        });
+        void toggleFilters(true);
       } else if (command === "display") {
         event.preventDefault();
         setFilterOpen(false);
@@ -2873,7 +3063,7 @@ export function TaskTracker({
           <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
           {!sidebarCompact && (
             <>
-              <SidebarSection title="Views" action={() => setDialog("view")}>
+              <SidebarSection title="Views" action={() => void openDialogWithCatalog("view", ["projects"])}>
                 <NavItem compact={false} icon={<Boxes size={13} />} label="All views" active={surface === "views"} href="/views" onNavigate={() => navigateSurface("views", "list")} />
                 {builtInViews.filter((view) => view.id !== "mine").map((view) => (
                   <NavItem key={view.id} compact={false} icon={<Circle size={9} />} label={view.label} active={surface === view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(view.id, "list")} count={taskCountForView(view.id, data, statusMap)} />
@@ -2888,7 +3078,7 @@ export function TaskTracker({
                   <NavItem key={project.id} compact={false} icon={<span className="project-dot" style={{ background: project.color }} />} label={project.name} active={surface === `project:${project.id}`} href={navigationPath({ surface: `project:${project.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`project:${project.id}`, "list")} />
                 ))}
               </SidebarSection>
-              <SidebarSection title="Releases" action={() => setDialog("release")}>
+              <SidebarSection title="Releases" action={() => void openDialogWithCatalog("release", ["projects"])}>
                 <NavItem compact={false} icon={<Rocket size={13} />} label="All releases" active={surface === "releases"} href="/releases" onNavigate={() => navigateSurface("releases", "list")} />
                 {sidebarReleases.map((release) => (
                   <NavItem key={release.id} compact={false} icon={<CircleDot size={12} />} label={formatReleaseName(projectMap.get(release.projectId)?.name, release.name)} active={surface === `release:${release.id}`} href={navigationPath({ surface: `release:${release.id}`, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(`release:${release.id}`, "list")} />
@@ -3066,7 +3256,7 @@ export function TaskTracker({
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
-              {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => setDialog("viewEdit")}><Zap size={14} />Edit view</button>}
+              {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => void openDialogWithCatalog("viewEdit", ["projects"])}><Zap size={14} />Edit view</button>}
               {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
               {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
               {surfaceContextualEntity && <button className="icon-button" type="button" aria-label={`Open contextual actions for ${surfaceContextualEntity.label}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openContextualActions({ entities: [surfaceContextualEntity] }, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
@@ -3083,7 +3273,7 @@ export function TaskTracker({
                     {search && <button onClick={() => setSearch("")}><X size={12} /></button>}
                   </div>
                   <div className="popover-anchor">
-                    <button ref={filterTriggerRef} className={`button ghost ${filterOpen ? "active" : ""}`} aria-keyshortcuts="F" title="Filter (F)" onClick={() => { setDisplayOpen(false); setFilterOpen((value) => !value); }}><ListFilter size={14} />Filter{canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}</button>
+                    <button ref={filterTriggerRef} className={`button ghost ${filterOpen ? "active" : ""}`} aria-keyshortcuts="F" title="Filter (F)" onClick={() => { setDisplayOpen(false); void toggleFilters(); }}><ListFilter size={14} />Filter{canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}</button>
                     {filterOpen && <FilterPopover data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onClose={() => { setFilterOpen(false); filterTriggerRef.current?.focus(); }} />}
                   </div>
                   <div className="segmented" aria-label="Layout">
@@ -3096,9 +3286,9 @@ export function TaskTracker({
                   </div>
                   {activeSavedView && canSaveView && hasViewChanges && <button className="button ghost save-view" onClick={() => void saveCurrentView()}><Save size={13} />Save</button>}
                   {activeSavedView && hasViewChanges && <button className="button ghost" onClick={cancelViewChanges}><X size={13} />Cancel</button>}
-                  {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" onClick={() => setDialog("view")}><Copy size={13} />Save as</button>}
+                  {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" onClick={() => void openDialogWithCatalog("view", ["projects"])}><Copy size={13} />Save as</button>}
                 </div>
-                {canonicalTemporaryQuery.conditions.length > 0 && <FilterChips data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onEdit={() => setFilterOpen(true)} />}
+                {canonicalTemporaryQuery.conditions.length > 0 && <FilterChips data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onEdit={() => void toggleFilters()} />}
                 <div className="segmented mobile-layout-switcher" role="group" aria-label="Layout">
                   <button type="button" className={layout === "list" ? "active" : ""} aria-label="List view" aria-pressed={layout === "list"} onClick={() => changeLayout("list")}><LayoutList size={16} /></button>
                   <button type="button" className={layout === "board" ? "active" : ""} aria-label="Kanban view" aria-pressed={layout === "board"} onClick={() => changeLayout("board")}><Columns3 size={16} /></button>
@@ -3156,7 +3346,7 @@ export function TaskTracker({
                       <button className="button ghost" type="button" disabled={!canonicalTemporaryQuery.conditions.length} onClick={() => setTemporaryQuery(emptyViewQuery())}>Clear filters</button>
                       {activeSavedView && hasViewChanges && canSaveView && <button className="button secondary" type="button" onClick={() => { setMobileActionsOpen(false); void saveCurrentView(); }}><Save size={14} />Save</button>}
                       {activeSavedView && hasViewChanges && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); cancelViewChanges(); }}><X size={14} />Cancel</button>}
-                      {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); setDialog("view"); }}><Copy size={14} />Save as</button>}
+                      {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); void openDialogWithCatalog("view", ["projects"]); }}><Copy size={14} />Save as</button>}
                     </div>
                   </div>
                 </div>
@@ -3215,9 +3405,9 @@ export function TaskTracker({
             projectMap={projectMap}
             onOpen={(nextSurface, nextLayout = "list") => navigateSurface(nextSurface, nextLayout)}
             onOpenTask={openTask}
-            onCreateTask={() => openCreate()}
+            onCreateTask={() => void openCreate()}
             onCreateProject={() => setDialog("project")}
-            onCreateRelease={() => setDialog("release")}
+            onCreateRelease={() => void openDialogWithCatalog("release", ["projects"])}
           />
         ) : surface === "admin" && data.admin ? (
           <AdminSurface overview={data.admin} timeZone={data.user.timezone} />
@@ -3226,7 +3416,7 @@ export function TaskTracker({
         ) : surface === "projects" ? (
           <><ProjectsSurface projects={catalogPages.projects?.projects ?? data.projects} tasks={data.tasks} statuses={data.statuses} users={userMap} onOpen={(id) => navigateSurface(`project:${id}`, "list")} onContextActions={(project, x, y, focus) => openContextualActions({ entities: [projectContextualEntity(project)] }, x, y, focus)} onCreate={() => setDialog("project")} />{catalogPages.projects?.page.hasMore && <CatalogPagination busy={catalogLoading} onMore={() => void loadMoreCatalog("projects")} />}</>
         ) : surface === "releases" || projectReleaseSurfaceId ? (
-          <><ReleasesSurface releases={surface === "releases" ? (catalogPages.releases?.releases ?? data.releases) : scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onContextActions={(release, x, y, focus) => openContextualActions({ entities: [releaseContextualEntity(release)] }, x, y, focus)} onCreate={() => canCreateTask && setDialog("release")} />{surface === "releases" && catalogPages.releases?.page.hasMore && <CatalogPagination busy={catalogLoading} onMore={() => void loadMoreCatalog("releases")} />}</>
+          <><ReleasesSurface releases={surface === "releases" ? (catalogPages.releases?.releases ?? data.releases) : scopedReleases} projects={projectMap} tasks={data.tasks} statuses={data.statuses} onOpen={(id) => navigateSurface(`release:${id}`, "list")} onContextActions={(release, x, y, focus) => openContextualActions({ entities: [releaseContextualEntity(release)] }, x, y, focus)} onCreate={() => { if (canCreateTask) void openDialogWithCatalog("release", ["projects"]); }} />{surface === "releases" && catalogPages.releases?.page.hasMore && <CatalogPagination busy={catalogLoading} onMore={() => void loadMoreCatalog("releases")} />}</>
         ) : taskSearchStatus ? (
           <TaskSearchNotice status={taskSearchStatus} />
         ) : layout === "board" ? (
@@ -3237,7 +3427,7 @@ export function TaskTracker({
       </section>
 
       {selected.size > 0 && (
-        <BulkBar data={data} tasks={selectedTasks} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onAssignee={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "assigneeUserId", value }).then((ok) => ok && setSelected(new Set()))} onProject={() => setDialog("bulkProject")} onRelease={() => setDialog("bulkRelease")} onLabel={(labelId, active) => mutate("/api/tasks/labels/bulk", "POST", { ids: [...selected], labelId, active })} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
+        <BulkBar data={data} tasks={selectedTasks} statuses={statusGroupsForTasks(selectedTasks, data.statuses)} archiveAction={archiveAction} onStatus={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "statusId", value }).then((ok) => ok && setSelected(new Set()))} onPriority={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "priority", value }).then((ok) => ok && setSelected(new Set()))} onAssignee={(value) => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "assigneeUserId", value }).then((ok) => ok && setSelected(new Set()))} onProject={() => void openDialogWithCatalog("bulkProject", ["projects", "releases"])} onRelease={() => void openDialogWithCatalog("bulkRelease", ["releases"])} onLabel={(labelId, active) => mutate("/api/tasks/labels/bulk", "POST", { ids: [...selected], labelId, active })} onArchive={() => mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "archived", value: archiveAction.archived }).then((ok) => ok && setSelected(new Set()))} onClose={() => setSelected(new Set())} />
       )}
 
       {contextualMenu && (
@@ -3251,7 +3441,7 @@ export function TaskTracker({
         />
       )}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} catalogReady={taskPropertyCatalogReady} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {pendingMoveTask && pendingMoveSourceProject && pendingMoveTargetProject && (
         <TaskMoveDialog
           task={pendingMoveTask}
@@ -3887,7 +4077,7 @@ function RotateComposerIcon() {
   return <span aria-hidden="true">↻</span>;
 }
 
-function TaskDetails({ task, data, onClose, onOpenTask, onSave, onMove, onSetParent, onCreateSubtask, onSetLabel, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onMove: (input: Record<string, unknown>) => Promise<unknown>; onSetParent: (parentTaskId: string | null) => Promise<unknown>; onCreateSubtask: (title: string) => Promise<unknown>; onSetLabel: (labelId: string, active: boolean) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
+function TaskDetails({ task, data, catalogReady, onClose, onOpenTask, onSave, onMove, onSetParent, onCreateSubtask, onSetLabel, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; catalogReady: boolean; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onMove: (input: Record<string, unknown>) => Promise<unknown>; onSetParent: (parentTaskId: string | null) => Promise<unknown>; onCreateSubtask: (title: string) => Promise<unknown>; onSetLabel: (labelId: string, active: boolean) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [editingDescription, setEditingDescription] = useState(false);
@@ -4129,8 +4319,8 @@ function TaskDetails({ task, data, onClose, onOpenTask, onSave, onMove, onSetPar
             <PropertyRow label="Status" icon={<CircleDot size={14} />}><select value={task.statusId} disabled={hasVersionConflict} onChange={(event) => void onSave({ statusId: event.target.value })}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Priority" icon={<ArrowDownWideNarrow size={14} />}><select value={task.priority} disabled={hasVersionConflict} onChange={(event) => void onSave({ priority: event.target.value })}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select></PropertyRow>
             <PropertyRow label="Assignee" icon={<UsersRound size={14} />}><select value={task.assigneeUserId ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ assigneeUserId: event.target.value || null })}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</select></PropertyRow>
-            <PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId} disabled={hasVersionConflict || busy || moveTargets.length === 0} title={moveTargets.length ? "Move this Task to another Project" : "No other editable active Project"} onChange={(event) => setMoveTargetProjectId(event.target.value)}><option value={task.projectId}>{currentProject?.taskCode} · {currentProject?.name}</option>{moveTargets.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></PropertyRow>
-            <PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={hasVersionConflict || !task.projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow>
+            <PropertyRow label="Project" icon={<FolderKanban size={14} />}><select value={task.projectId} disabled={!catalogReady || hasVersionConflict || busy || moveTargets.length === 0} title={!catalogReady ? "Loading Projects…" : moveTargets.length ? "Move this Task to another Project" : "No other editable active Project"} onChange={(event) => setMoveTargetProjectId(event.target.value)}><option value={task.projectId}>{currentProject?.taskCode} · {currentProject?.name}</option>{moveTargets.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></PropertyRow>
+            <PropertyRow label="Release" icon={<Rocket size={14} />}><select value={task.releaseId ?? ""} onChange={(event) => void onSave({ releaseId: event.target.value || null })} disabled={!catalogReady || hasVersionConflict || !task.projectId}><option value="">{catalogReady ? "No release" : "Loading Releases…"}</option>{data.releases.filter((release) => release.projectId === task.projectId).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</select></PropertyRow>
             <PropertyRow label="Due date" icon={<CalendarDays size={14} />}><input type="date" value={task.dueDate ?? ""} disabled={hasVersionConflict} onChange={(event) => void onSave({ dueDate: event.target.value || null })} /></PropertyRow>
             <PropertyRow label="Estimate" icon={<Zap size={14} />}><input type="number" min="0" max="100" value={estimate} placeholder="No estimate" onChange={(event) => { const nextEstimate = event.target.value; setDirty((current) => ({ ...current, estimate: taskDraftValueChanged(nextEstimate, task.estimate?.toString() ?? "") })); setEstimate(nextEstimate); }} onBlur={() => { const value = estimate === "" ? null : Number(estimate); if (!hasVersionConflict && value !== task.estimate) void saveDraftField("estimate", { estimate: value }); }} /></PropertyRow>
           </div>
@@ -6391,9 +6581,15 @@ function WorkspaceOverviewSurface({
   const recentTasks = [...openTasks]
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 5);
-  const recentProjects = selectRecentNavigation(data.projects);
-  const recentReleases = selectRecentNavigation(data.releases);
-  const recentViews = selectRecentNavigation(data.views);
+  const recentProjects = selectRecentNavigation(
+    data.navigationCollections?.projects.items ?? data.projects,
+  );
+  const recentReleases = selectRecentNavigation(
+    data.navigationCollections?.releases.items ?? data.releases,
+  );
+  const recentViews = selectRecentNavigation(
+    data.navigationCollections?.views.items ?? data.views,
+  );
   const sharedProjects = data.projects.filter((project) => project.accessRole !== "owner");
   const sharedTasks = openTasks.filter(
     (task) => task.projectId === null && task.accessRole !== "owner",

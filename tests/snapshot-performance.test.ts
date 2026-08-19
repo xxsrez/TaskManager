@@ -68,13 +68,34 @@ test("workspace bootstrap bounds navigation catalogs and reports accessible tota
   assert.equal(result.projects.length, 3);
   assert.equal(result.releases.length, 3);
   assert.equal(result.views.length, 3);
-  assert.deepEqual(result.navigationCollections, {
-    projects: { total: 6, hasMore: true },
-    releases: { total: 6, hasMore: true },
-    views: { total: 6, hasMore: true },
+  assert.equal(result.navigationCollections?.projects.items.length, 3);
+  assert.equal(result.navigationCollections?.releases.items.length, 3);
+  assert.equal(result.navigationCollections?.views.items.length, 3);
+  assert.deepEqual(result.catalogCoverage, {
+    projects: "bounded",
+    releases: "bounded",
+    views: "bounded",
   });
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(result.navigationCollections ?? {}).map(
+      ([kind, collection]) => [kind, {
+        total: collection.total,
+        hasMore: collection.hasMore,
+      }],
+    )),
+    {
+      projects: { total: 6, hasMore: true },
+      releases: { total: 6, hasMore: true },
+      views: { total: 6, hasMore: true },
+    },
+  );
 
   const all = await getSnapshot(user);
+  assert.deepEqual(all.catalogCoverage, {
+    projects: "complete",
+    releases: "complete",
+    views: "complete",
+  });
   const recentProjectIds = new Set(result.projects.map((project) => project.id));
   const outsideProject = all.projects.find((project) => !recentProjectIds.has(project.id))!;
   const outsideRelease = all.releases.find(

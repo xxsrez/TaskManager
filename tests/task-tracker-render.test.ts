@@ -9,6 +9,7 @@ import {
   fetchTaskSnapshot,
   GlobalSearchContinuationWarning,
   GlobalSearchOverlay,
+  fetchCompleteWorkspaceCatalog,
   applyMutationResult,
   bulkAssigneeOptions,
   BulkProjectDialog,
@@ -36,6 +37,7 @@ import {
   StatusIcon,
   taskRowReorderDirection,
   sortTasks,
+  snapshotProvesCollectionAbsence,
   taskMutationVersion,
   taskNeedsDetailRefresh,
   taskDraftSyncMode,
@@ -1014,7 +1016,16 @@ test("a full deferred snapshot also drops removed projects, releases, and views 
 
   const merged = mergeDeferredSnapshot(
     { ...snapshot, projects: [project], releases: [release], views: [view] },
-    { ...snapshot, projects: [], tasks: [] },
+    {
+      ...snapshot,
+      projects: [],
+      tasks: [],
+      catalogCoverage: {
+        projects: "complete",
+        releases: "complete",
+        views: "complete",
+      },
+    },
     {
       projectIdsAtRequest: new Set([project.id]),
       releaseIdsAtRequest: new Set([release.id]),
@@ -1025,6 +1036,191 @@ test("a full deferred snapshot also drops removed projects, releases, and views 
   assert.deepEqual(merged.projects, []);
   assert.deepEqual(merged.releases, []);
   assert.deepEqual(merged.views, []);
+});
+
+test("a bounded pull refresh preserves a loaded catalog and an older direct route", () => {
+  const projects = Array.from({ length: 5 }, (_, index) => ({
+    ...snapshot.projects[0]!,
+    id: `project-${index + 1}`,
+    publicId: `44444444-4444-4444-8444-44444444444${index}`,
+    name: `Project ${index + 1}`,
+    taskCode: `P${index + 1}`,
+    updatedAt: `2026-08-14T09:0${index}:00.000Z`,
+  }));
+  const releases = projects.map((project, index) => ({
+    id: `release-${index + 1}`,
+    publicId: `66666666-6666-4666-8666-66666666666${index}`,
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    projectId: project.id,
+    name: `Release ${index + 1}`,
+    description: "",
+    status: "planned" as const,
+    startDate: null,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    archivedAt: null,
+    version: 1,
+    createdAt: now,
+    updatedAt: project.updatedAt,
+    accessRole: "owner" as const,
+  }));
+  const current: AppSnapshot = {
+    ...snapshot,
+    projects,
+    releases,
+    catalogCoverage: {
+      projects: "complete",
+      releases: "complete",
+      views: "complete",
+    },
+  };
+  const incoming: AppSnapshot = {
+    ...snapshot,
+    projects: projects.slice(2),
+    releases: releases.slice(2),
+    navigationCollections: {
+      projects: { items: projects.slice(2), total: 5, hasMore: true },
+      releases: { items: releases.slice(2), total: 5, hasMore: true },
+      views: { items: [], total: 0, hasMore: false },
+    },
+    catalogCoverage: {
+      projects: "bounded",
+      releases: "bounded",
+      views: "bounded",
+    },
+  };
+
+  const merged = mergeDeferredSnapshot(current, incoming, {
+    projectIdsAtRequest: new Set(projects.map((project) => project.id)),
+    releaseIdsAtRequest: new Set(releases.map((release) => release.id)),
+  });
+
+  assert.deepEqual(new Set(merged.projects.map((project) => project.id)), new Set(projects.map((project) => project.id)));
+  assert.deepEqual(new Set(merged.releases.map((release) => release.id)), new Set(releases.map((release) => release.id)));
+  assert.equal(merged.projects.find((project) => project.id === "project-1")?.name, "Project 1");
+  assert.equal(merged.catalogCoverage?.projects, "complete");
+  assert.deepEqual(merged.navigationCollections?.projects.items.map((project) => project.id), [
+    "project-3",
+    "project-4",
+    "project-5",
+  ]);
+});
+
+test("a bounded sync reset cannot infer that an omitted direct route was revoked", () => {
+  const bounded: AppSnapshot = {
+    ...snapshot,
+    projects: [],
+    releases: [],
+    views: [],
+    catalogCoverage: {
+      projects: "bounded",
+      releases: "bounded",
+      views: "bounded",
+    },
+  };
+  const authoritative: AppSnapshot = {
+    ...bounded,
+    catalogCoverage: {
+      projects: "complete",
+      releases: "complete",
+      views: "complete",
+    },
+  };
+
+  assert.equal(snapshotProvesCollectionAbsence(bounded, "projects"), false);
+  assert.equal(snapshotProvesCollectionAbsence(bounded, "releases"), false);
+  assert.equal(snapshotProvesCollectionAbsence(bounded, "views"), false);
+  assert.equal(snapshotProvesCollectionAbsence(authoritative, "projects"), true);
+});
+
+test("lazy picker catalog drains every page before exposing choices", async () => {
+  const projects = Array.from({ length: 5 }, (_, index) => ({
+    ...snapshot.projects[0]!,
+    id: `picker-project-${index + 1}`,
+    publicId: `55555555-5555-4555-8555-55555555555${index}`,
+    name: `Picker Project ${index + 1}`,
+    taskCode: `Q${index + 1}`,
+  }));
+  const releases = Array.from({ length: 5 }, (_, index) => ({
+    id: `picker-release-${index + 1}`,
+    publicId: `77777777-7777-4777-8777-77777777777${index}`,
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    projectId: projects[0]!.id,
+    name: `Picker Release ${index + 1}`,
+    description: "",
+    status: "planned" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  }));
+  const requests: string[] = [];
+  const projectPage = (items: typeof projects, nextCursor: string | null) => ({
+    kind: "projects" as const,
+    projects: items,
+    releases: [],
+    views: [],
+    page: { hasMore: nextCursor !== null, nextCursor },
+    total: 5,
+  });
+  const releasePage = (items: typeof releases, nextCursor: string | null) => ({
+    kind: "releases" as const,
+    projects: [],
+    releases: items,
+    views: [],
+    page: { hasMore: nextCursor !== null, nextCursor },
+    total: 5,
+  });
+  const fetcher = async (input: string | URL | Request) => {
+    const url = String(input);
+    requests.push(url);
+    const continuation = url.includes("cursor=next");
+    const responsePage = url.includes("kind=releases")
+      ? releasePage(continuation ? releases.slice(3) : releases.slice(0, 3), continuation ? null : "next")
+      : projectPage(continuation ? projects.slice(3) : projects.slice(0, 3), continuation ? null : "next");
+    return new Response(JSON.stringify(
+      responsePage,
+    ), { status: 200, headers: { "content-type": "application/json" } });
+  };
+
+  const completeProjects = await fetchCompleteWorkspaceCatalog("projects", fetcher as typeof fetch);
+  const completeReleases = await fetchCompleteWorkspaceCatalog("releases", fetcher as typeof fetch);
+  const pickerData: AppSnapshot = {
+    ...snapshot,
+    projects: completeProjects.projects,
+    releases: completeReleases.releases,
+    tasks: [{ ...snapshot.tasks[0]!, projectId: projects[0]!.id }],
+  };
+  const projectMarkup = renderToStaticMarkup(createElement(BulkProjectDialog, {
+    data: pickerData,
+    tasks: pickerData.tasks,
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+  }));
+  const releaseMarkup = renderToStaticMarkup(createElement(BulkReleaseDialog, {
+    data: pickerData,
+    tasks: pickerData.tasks,
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+  }));
+
+  assert.equal(requests.length, 4);
+  assert.match(requests[0]!, /kind=projects/);
+  assert.match(requests[1]!, /cursor=next/);
+  assert.match(requests[2]!, /kind=releases/);
+  assert.match(requests[3]!, /cursor=next/);
+  assert.equal(completeProjects.projects.length, 5);
+  assert.equal(completeReleases.releases.length, 5);
+  assert.match(projectMarkup, /Picker Project 5/);
+  assert.match(releaseMarkup, /Picker Release 5/);
 });
 
 test("task detail reconciliation replaces synced labels and relations without keeping stale context", () => {
@@ -2243,7 +2439,22 @@ test("sidebar keeps collection links and at most three recent records with activ
   }));
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
-      initialData: { ...snapshot, projects, releases, views },
+      initialData: {
+        ...snapshot,
+        projects: [projects[0]!, ...projects.slice(-3)],
+        releases: releases.slice(-3),
+        views: views.slice(-3),
+        navigationCollections: {
+          projects: { items: projects.slice(-3), total: 100, hasMore: true },
+          releases: { items: releases.slice(-3), total: 100, hasMore: true },
+          views: { items: views.slice(-3), total: 100, hasMore: true },
+        },
+        catalogCoverage: {
+          projects: "bounded",
+          releases: "bounded",
+          views: "bounded",
+        },
+      },
       initialNavigation: {
         surface: "project:project-0",
         layout: "list",

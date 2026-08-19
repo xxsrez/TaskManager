@@ -110,6 +110,13 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Recent Projects, Releases и SavedViews используют тот же bounded contract,
   что sidebar: максимум три записи в порядке `updatedAt DESC, id DESC`; полные
   ACL-scoped коллекции остаются доступны через свои index surfaces.
+- Bounded navigation projection не является каталогом picker-ов. Composer,
+  filters, move/bulk dialogs, Saved View scope и Release create лениво
+  дочитывают полный ACL-scoped Project/Release catalog по keyset pages.
+- Bootstrap/sync reset явно сообщает bounded либо complete coverage. Отсутствие
+  record в bounded payload не означает revoke/delete и не удаляет уже
+  загруженный direct-route/catalog context; removal требует explicit change,
+  targeted not-found либо authoritative complete snapshot.
 - Overview строится из того же server-authorized ACL-scoped snapshot. Он не
   загружает task descriptions, labels, relations, unified comments,
   migration metadata или admin aggregates и не вводит отдельный unscoped query.
