@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createElement } from "react";
+import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import {
   CodexSetupDialog,
   canStartPullRefresh,
@@ -45,6 +46,12 @@ import {
 import type { AppSnapshot } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+function testRendererText(node: ReactTestInstance): string {
+  return node.children.map((child) => typeof child === "string" ? child : testRendererText(child)).join("");
+}
+
 const snapshot: AppSnapshot = {
   user: {
     id: "user-1",
@@ -1942,9 +1949,12 @@ test("Codex Desktop setup separates install stages and exposes bounded recovery"
   assert.match(markup, new RegExp(TASK_MANAGER_MARKETPLACE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(markup, /Plugins → Personal/);
   assert.match(markup, /Plugins → Installed/);
+  assert.match(markup, /Installed shows Task Manager present and enabled/);
+  assert.doesNotMatch(markup, /Installed shows Task Manager as connected/);
   assert.match(markup, /same ChatGPT account and workspace as Desktop/);
   assert.match(markup, /new plugin snapshot/);
   assert.match(markup, /Show my tasks in Task Manager/);
+  assert.match(markup, /successful response proves the account connection/);
   assert.match(markup, /Do not start a bulk migration or write flow/);
   assert.match(markup, /Stop after one failed Install attempt/);
   assert.match(markup, /Restart Desktop once/);
@@ -1982,6 +1992,39 @@ test("Codex CLI setup exposes verified plugin commands and recovery steps", () =
   assert.match(markup, /Show my tasks in Task Manager/);
   assert.match(markup, /without making a write/);
   assert.match(markup, /do not begin with a bulk migration/);
+});
+
+test("Open CLI fallback switches the active tab and rendered panel", async () => {
+  let renderer: ReactTestRenderer | undefined;
+  await act(async () => {
+    renderer = create(createElement(CodexSetupDialog, { onClose: () => undefined }));
+  });
+
+  assert.ok(renderer);
+  const fallback = renderer.root.findByProps({ className: "button secondary codex-cli-fallback" });
+  assert.equal(testRendererText(fallback), "Open CLI fallback");
+
+  await act(async () => {
+    fallback.props.onClick();
+  });
+
+  const desktopTab = renderer.root.findByProps({ id: "codex-setup-tab-desktop" });
+  const cliTab = renderer.root.findByProps({ id: "codex-setup-tab-cli" });
+  assert.equal(desktopTab.props["aria-selected"], false);
+  assert.equal(desktopTab.props.className, "");
+  assert.equal(cliTab.props["aria-selected"], true);
+  assert.equal(cliTab.props.className, "active");
+  assert.throws(() => renderer?.root.findByProps({ id: "codex-setup-desktop" }));
+
+  const cliPanel = renderer.root.findByProps({ id: "codex-setup-cli" });
+  assert.equal(cliPanel.props.role, "tabpanel");
+  assert.equal(cliPanel.props["aria-labelledby"], "codex-setup-tab-cli");
+  assert.match(testRendererText(cliPanel), /codex plugin marketplace add xxsrez\/marketplace/);
+  assert.match(testRendererText(cliPanel), /\/plugins → Task Manager → Authenticate/);
+
+  await act(async () => {
+    renderer?.unmount();
+  });
 });
 
 test("workspace controls navigate to the overview without a false dropdown affordance", () => {

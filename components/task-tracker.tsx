@@ -5081,7 +5081,7 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
                 number={3}
                 title="Authenticate / Connect Task Manager account"
                 location="Codex Desktop + browser"
-                success="Task Manager consent completes; return to Codex for the definitive Installed check."
+                success="Task Manager consent completes; return to Codex for the Installed check."
               >
                 Choose <b>Authenticate</b> or <b>Connect</b>. In the browser, confirm you are signed in to the same ChatGPT account and workspace as Desktop. On the Task Manager consent page, check the account and choose <b>Connect</b>.
               </SetupStep>
@@ -5089,9 +5089,9 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
                 number={4}
                 title="Return to Codex and open Installed"
                 location="Codex Desktop · Plugins → Installed"
-                success="Installed shows Task Manager as connected."
+                success="Installed shows Task Manager present and enabled."
               >
-                Return to Desktop yourself if the browser remains open. <b>Installed</b> is where already installed plugins are checked; confirm <b>Task Manager</b> is present there.
+                Return to Desktop yourself if the browser remains open. <b>Installed</b> is where already installed plugins are checked; confirm <b>Task Manager</b> is present and enabled there.
               </SetupStep>
               <SetupStep
                 number={5}
@@ -5099,7 +5099,7 @@ export function CodexSetupDialog({ onClose, initialMode = "desktop" }: { onClose
                 location="Codex Desktop · New task"
                 success="Codex returns your Task Manager task summaries without making a write."
               >
-                Start a <b>New task</b> so Codex loads the new plugin snapshot, then ask: <q>Show my tasks in Task Manager.</q> Do not start a bulk migration or write flow before this read check passes.
+                Start a <b>New task</b> so Codex loads the new plugin snapshot, then ask: <q>Show my tasks in Task Manager.</q> A successful response proves the account connection. Do not start a bulk migration or write flow before this read check passes.
               </SetupStep>
             </ol>
 
