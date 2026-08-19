@@ -38,7 +38,7 @@ import {
   taskDraftSyncMode,
   taskDraftValueChanged,
   taskMatchesSearch,
-  taskKeyboardReorderDirection,
+  taskRowReorderDirection,
   taskRelationPresentations,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_DIAGNOSTIC_PROMPT,
@@ -288,24 +288,39 @@ test("Task move confirmation previews identity and requires explicit dependent e
 });
 
 test("Alt+Arrow only performs a vertical move in manual ordering", () => {
-  assert.equal(taskKeyboardReorderDirection({
+  assert.equal(taskRowReorderDirection({
     draggable: true,
     reorderEnabled: false,
     altKey: true,
     key: "ArrowUp",
+    targetIsRow: true,
   }), null);
-  assert.equal(taskKeyboardReorderDirection({
+  assert.equal(taskRowReorderDirection({
     draggable: true,
     reorderEnabled: true,
     altKey: true,
     key: "ArrowDown",
+    targetIsRow: true,
   }), "down");
-  assert.equal(taskKeyboardReorderDirection({
+  assert.equal(taskRowReorderDirection({
     draggable: true,
     reorderEnabled: true,
     altKey: false,
     key: "ArrowDown",
+    targetIsRow: true,
   }), null);
+});
+
+test("bubbled Alt+Arrow from interactive task descendants does not reorder", () => {
+  for (const descendant of ["checkbox", "link", "select"]) {
+    assert.equal(taskRowReorderDirection({
+      draggable: true,
+      reorderEnabled: true,
+      altKey: true,
+      key: "ArrowUp",
+      targetIsRow: false,
+    }), null, descendant);
+  }
 });
 
 test("task relations are grouped by relative direction and resolved blockers move to Related", () => {
