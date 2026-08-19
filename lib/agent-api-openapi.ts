@@ -886,7 +886,7 @@ export const agentApiOpenApi = {
         required: ["title", "projectRef"],
         properties: {
           title: { type: "string", minLength: 1, maxLength: 500 },
-          description: { type: "string", maxLength: 50000 },
+          description: { type: "string", maxLength: 50000, description: "Markdown. Native refs are valid only after Task creation: use ![alt](attachment:v1:<ref>) for a ready raster embed or [label](attachment:v1:<ref>) for a ready downloadable attachment." },
           statusRef: { type: "string" },
           priority: { enum: ["urgent", "high", "medium", "low", "none"] },
           projectRef: { type: "string", minLength: 1 },
@@ -903,7 +903,7 @@ export const agentApiOpenApi = {
         properties: {
           version: { type: "integer", minimum: 1 },
           title: { type: "string", minLength: 1, maxLength: 500 },
-          description: { type: "string", maxLength: 50000 },
+          description: { type: "string", maxLength: 50000, description: "Markdown. A ready same-Task attachment can be referenced as ![alt](attachment:v1:<ref>) for raster preview or [label](attachment:v1:<ref>) for ACL-scoped original download." },
           statusRef: { type: "string" },
           priority: { enum: ["urgent", "high", "medium", "low", "none"] },
           projectRef: { type: "string", minLength: 1 },
@@ -955,7 +955,7 @@ export const agentApiOpenApi = {
         properties: {
           version: { type: "integer", minimum: 1 },
           title: { type: "string", minLength: 1, maxLength: 500 },
-          description: { type: "string", maxLength: 50000 },
+          description: { type: "string", maxLength: 50000, description: "Markdown; native attachment refs are unavailable until the subtask exists." },
           statusRef: { type: "string" },
           priority: { enum: ["urgent", "high", "medium", "low", "none"] },
           releaseRef: { type: ["string", "null"] },

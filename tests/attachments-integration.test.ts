@@ -39,7 +39,7 @@ import {
   revokeAccess,
   updateTask,
 } from "../lib/repository";
-import { buildTaskImageToken } from "../lib/task-description-format";
+import { buildTaskFileLink, buildTaskImageToken } from "../lib/task-description-format";
 import { updateAgentTask } from "../lib/agent-api-repository";
 import { getAgentTaskDetail } from "../lib/agent-api-repository";
 import { issueApiCredential } from "../lib/api-credentials";
@@ -334,7 +334,7 @@ test("attachment mutations emit a bounded lazy invalidation for other sessions",
   assert.deepEqual(response.changes.invalidations.taskDetails, []);
 });
 
-test("Task descriptions accept only ready same-Task images and block deletion while referenced", async () => {
+test("Task descriptions accept ready same-Task image embeds and file links and block deletion while referenced", async () => {
   const { owner, project, task } = await setupSharedTask("Description images");
   const imageBytes = Uint8Array.from([
     0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
@@ -399,6 +399,48 @@ test("Task descriptions accept only ready same-Task images and block deletion wh
     }),
     ValidationError,
   );
+
+  const fileLink = buildTaskFileLink(document.publicId, "Download design notes");
+  detail = await updateTask(owner, detail.id, {
+    version: detail.version,
+    description: `The original is available as ${fileLink}.`,
+  });
+  assert.equal(detail.description, `The original is available as ${fileLink}.`);
+  await assert.rejects(
+    deleteAttachment(owner, task.id, document.publicId, document.version),
+    (error: unknown) => error instanceof ValidationError && /description/.test(error.message),
+  );
+  await assert.rejects(
+    updateTask(owner, otherTask.id, {
+      version: otherDetail.version,
+      description: fileLink,
+    }),
+    ValidationError,
+  );
+  await assert.rejects(
+    updateTask(owner, detail.id, {
+      version: detail.version,
+      description: "[Missing](attachment:v1:guessed-reference)",
+    }),
+    ValidationError,
+  );
+
+  detail = await updateTask(owner, detail.id, {
+    version: detail.version,
+    description: [
+      `Literal \`${fileLink}\` remains code.`,
+      "```md",
+      fileLink,
+      "```",
+    ].join("\n"),
+  });
+  const deletedLiteral = await deleteAttachment(
+    owner,
+    task.id,
+    document.publicId,
+    document.version,
+  );
+  assert.equal(deletedLiteral.state, "deleted");
 
   detail = await updateTask(owner, detail.id, {
     version: detail.version,
@@ -830,11 +872,16 @@ async function mcpResult(response: Response) {
 
 test("attachment-aware logical backups include scoped metadata and verified originals", async () => {
   const { owner, project, task } = await setupSharedTask("Attachment backup guard");
-  await createAttachment(owner, task.id, {
+  const attachment = await createAttachment(owner, task.id, {
     body: new TextEncoder().encode("%PDF-1.7\nbackup guard\n%%EOF"),
     filename: "guard.pdf",
     claimedMediaType: "application/pdf",
     idempotencyKey: "backup-guard",
+  });
+  const detail = await getTask(owner, task.id);
+  await updateTask(owner, task.id, {
+    version: detail.version,
+    description: buildTaskFileLink(attachment.publicId, "Backup guard PDF"),
   });
   const projectBackup = await exportProjectBackup(
     owner,
@@ -845,7 +892,10 @@ test("attachment-aware logical backups include scoped metadata and verified orig
   assert.equal(projectBackup.tables.attachments.length, 1);
   assert.equal(projectBackup.objects.length, 1);
   assert.match(String(projectBackup.tables.attachments[0]?.object_key), /^sha256:/);
+  assert.match(String(projectBackup.tables.tasks[0]?.description), /\[Backup guard PDF\]\(attachment:v1:/);
   assert.equal(JSON.stringify(projectBackup).includes("uat/attachments/"), false);
+  const validPreview = await stageProjectBackup(owner, projectBackup, "https://example.test");
+  assert.equal(validPreview.counts.attachments, 1);
   const corrupted = structuredClone(projectBackup);
   corrupted.objects[0]!.data = `${corrupted.objects[0]!.data.slice(0, -4)}AAAA`;
   await assert.rejects(

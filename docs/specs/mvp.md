@@ -357,20 +357,24 @@ commands задают желаемое состояние идемпотентн
   retry/cancel, safe download, recoverable delete/restore и Viewer read-only
   state. Raster list использует отдельный authenticated server thumbnail;
   full-size original загружается только в preview/download.
-- Markdown description может встроить только готовый raster Attachment той же
-  Task через версионированный стабильный token
-  `![alt](attachment:v1:<public-ref> "caption")`. Token хранит непрозрачный
-  reference, а не R2 key, public URL или signed URL. Editor вставляет image из
+- Markdown description встраивает готовый raster Attachment той же Task через
+  `![alt](attachment:v1:<public-ref> "caption")`, а любой готовый Attachment —
+  как скачиваемую ссылку `[label](attachment:v1:<public-ref>)`. Оба вида token
+  хранят только непрозрачный reference и пользовательский текст, но не R2 key,
+  filename, public URL или signed URL. Editor вставляет image/file из
   picker/drop/paste в текущую позицию курсора, показывает progress/retry/cancel
-  и оставляет alt/caption редактируемыми как текст.
-- При каждом create/update description server проверяет синтаксис token,
-  текущую Task, `kind=image` и `state=ready`; тот же repository invariant
-  действует для UI, REST Agent API и MCP. Чужой, угаданный, удалённый,
-  незавершённый или non-image Attachment отклоняется без раскрытия его
-  существования. Attachment нельзя удалить, пока description на него ссылается.
+  и оставляет alt/caption/label редактируемыми как текст.
+- При каждом create/update description server проверяет исполняемый Markdown,
+  игнорируя inline/fenced code, same-Task ownership и `state=ready`; image token
+  дополнительно требует `kind=image`. Тот же repository invariant действует
+  для UI, REST Agent API и MCP и повторяется в guarded write. Чужой, угаданный,
+  удалённый или незавершённый Attachment отклоняется без раскрытия его
+  существования. Attachment нельзя удалить, пока актуальная description
+  ссылается на него image token или file link.
 - Read-only Markdown renderer лениво получает только ACL-scoped metadata,
-  показывает responsive image/optional caption, открывает private full preview
-  и при недоступности использует безопасный placeholder без утечки URL.
+  показывает responsive image/optional caption и компактную file link, строит
+  private preview/download route после авторизации и при недоступности
+  использует безопасный placeholder без утечки URL или чужой metadata.
 - Composer сначала создаёт Task и лишь затем загружает выбранные files с
   устойчивыми idempotency keys. Partial failure оставляет созданную Task и
   успешные Attachment records видимыми, явно предлагает retry и не создаёт

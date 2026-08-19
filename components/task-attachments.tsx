@@ -359,7 +359,7 @@ export function TaskAttachments({
               onPreview={() => setPreviewRef(attachment.ref)}
               onDelete={() => {
                 if (usedInDescription) {
-                  setError("Remove this image from the description before removing the attachment.");
+                  setError("Remove this attachment from the description before removing it.");
                 } else {
                   void mutateAttachment(attachment, "delete");
                 }
@@ -436,6 +436,48 @@ export function TaskDescriptionImage({
         />
       )}
     </figure>
+  );
+}
+
+export function TaskDescriptionFileLink({
+  taskId,
+  attachment,
+  label,
+}: {
+  taskId: string;
+  attachment: PublicAttachmentRecord | null | undefined;
+  label: string;
+}) {
+  if (attachment === undefined) {
+    return (
+      <span className="task-description-file-link unavailable" role="status">
+        <FileText size={13} aria-hidden="true" />Loading {label}…
+      </span>
+    );
+  }
+  if (!attachment || attachment.state !== "ready") {
+    return (
+      <span
+        className="task-description-file-link unavailable"
+        role="link"
+        aria-disabled="true"
+        aria-label={`${label} unavailable`}
+      >
+        <FileText size={13} aria-hidden="true" />{label}
+      </span>
+    );
+  }
+  return (
+    <a
+      className="task-description-file-link"
+      href={attachmentContentPath(taskId, attachment.ref)}
+      download={attachment.filename}
+      aria-label={`Download ${label}`}
+      title={`${attachment.filename} · ${formatBytes(attachment.byteSize)}`}
+    >
+      <FileText size={13} aria-hidden="true" />
+      <span>{label}</span>
+    </a>
   );
 }
 

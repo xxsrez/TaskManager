@@ -3,7 +3,7 @@ import { assertAdmin } from "./admin";
 import { attachmentLimits } from "./attachments";
 import { scanAttachmentStorageOwnership } from "./attachment-storage-audit";
 import { getRuntimeEnvironment } from "./runtime-environment";
-import { parseTaskImageReferences } from "./task-description-format";
+import { parseTaskAttachmentReferences } from "./task-description-format";
 import type { UserRecord } from "./types";
 
 type DbRow = Record<string, unknown>;
@@ -117,14 +117,14 @@ export async function reconcileAttachmentStorage(
     attachmentRef: string;
   }> = [];
   for (const task of (tasks.results as DbRow[]).slice(0, maxObjects)) {
-    for (const reference of parseTaskImageReferences(String(task.description))) {
+    for (const reference of parseTaskAttachmentReferences(String(task.description))) {
       const attachment = attachmentsByTask
         .get(String(task.id))
         ?.get(reference.ref);
       if (
         !attachment ||
         attachment.state !== "ready" ||
-        attachment.kind !== "image"
+        (reference.kind === "image" && attachment.kind !== "image")
       ) {
         brokenDescriptionRefs.push({
           taskRef: String(task.public_id),

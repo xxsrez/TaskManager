@@ -16,6 +16,10 @@ description refs. Restore никогда не повторно использу�
 admin-only bounded reconciler через явный HTTPS host allowlist; public Linear
 import/external-context contract не возвращается.
 
+Дополнение 2026-08-19: `attachment:v1:` также поддерживает downloadable
+Markdown file links. Canonical body по-прежнему хранит только opaque ref и
+пользовательский label; private original разрешается через current Task ACL.
+
 ## Контекст
 
 D1 хранит структурированные данные, но binary body не должен попадать в D1,
@@ -53,6 +57,9 @@ bootstrap или публичный URL. Attachment обязан менять д
    для UI, Agent REST и MCP требует ready raster Attachment той же Task и
    блокирует delete, пока reference используется. Renderer лениво разрешает
    reference через текущий Task ACL и никогда не сохраняет content URL.
+   Downloadable file link использует `[label](attachment:v1:<public-ref>)`,
+   допускает ready file/image той же Task и ведёт на тот же ACL-scoped original
+   с `Content-Disposition: attachment`. Literal code reference не создаёт edge.
 9. Agent REST предоставляет отдельные paginated metadata, raw binary upload,
    metadata/content и recoverable delete/restore routes. Response публикует
    только `public_id`, проверенную metadata и bearer-protected API URLs; internal

@@ -367,18 +367,22 @@ test("attachment UI has bounded cards, authenticated thumbnails, and mobile touc
   );
 });
 
-test("native description images use private refs, cursor upload, and responsive rendering", () => {
+test("native description attachments use private refs, cursor upload, and responsive rendering", () => {
   assert.match(taskDescriptionEditor, /startTaskAttachmentUpload/);
   assert.match(taskDescriptionEditor, /event\.clipboardData\.files/);
   assert.match(taskDescriptionEditor, /event\.dataTransfer\.files/);
   assert.match(taskDescriptionEditor, /selectionStart/);
   assert.match(taskDescriptionEditor, /buildTaskImageToken/);
+  assert.match(taskDescriptionEditor, /buildTaskFileLink/);
+  assert.match(taskDescriptionEditor, /Insert file/);
   assert.doesNotMatch(taskDescriptionEditor, /https?:\/\//);
   assert.match(taskAttachments, /Used in description/);
   assert.match(taskAttachments, /Remove from description first/);
   assert.match(taskAttachments, /TaskDescriptionImage/);
+  assert.match(taskAttachments, /TaskDescriptionFileLink/);
   assert.match(declarations(".task-description-image"), /width:\s*min\(100%,\s*620px\)\s*;/);
   assert.match(declarations(".task-description-image img"), /max-width:\s*100%\s*;/);
+  assert.match(declarations(".task-description-file-link"), /max-width:\s*100%\s*;/);
   assert.match(
     css,
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.task-description-upload \.icon-button\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;/,

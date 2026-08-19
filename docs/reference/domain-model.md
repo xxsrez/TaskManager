@@ -254,7 +254,7 @@ journal rows старше 30 дней удаляются не чаще раза 
 | `owner_user_id` | UUID | да | Владелец и tenant scope записи |
 | `identifier` | string | да | Текущий human ID `<project.task_code>-<sequence_number>`, например `TM-123`; меняется только атомарным move |
 | `title` | string | да | Непустой заголовок |
-| `description` | Markdown/text | нет | Подробный контекст; native raster image использует versioned token `![alt](attachment:v1:<public-ref> "caption")` |
+| `description` | Markdown/text | нет | Подробный контекст; native raster image использует `![alt](attachment:v1:<public-ref> "caption")`, ready Attachment — `[label](attachment:v1:<public-ref>)` |
 | `status_id` | UUID | да | Ссылка на `WorkflowStatus` |
 | `priority` | enum | да | `none`, `low`, `medium`, `high`, `urgent` |
 | `assignee_id` | UUID | нет | User с доступом к Task |
@@ -323,14 +323,17 @@ Viewer читает metadata/content, Editor и более сильные projec
 Изменение Attachment публикует отдельную lazy-инвалидацию Task ID; это не
 меняет `Task.version` и не заставляет перечитывать её description/relations.
 
-`attachment:v1:` — versioned reference scheme внутри Task description. В token
-допустим только `public_id` готового `kind=image` Attachment той же Task; R2 key
-и delivery URL не сохраняются. Repository проверяет этот invariant до
-description write и повторяет его в SQL predicate, чтобы concurrent delete не
-создал битую ссылку. Delete Attachment симметрично отклоняется, пока актуальная
-description содержит его token. Alt обязателен, caption optional; оба остаются
-пользовательским Markdown text. Один Attachment может встречаться в description
-несколько раз и по-прежнему имеет один lifecycle record.
+`attachment:v1:` — versioned reference scheme внутри Task description. Image
+token допускает только `public_id` готового `kind=image` Attachment той же Task;
+обычная Markdown link допускает ready `file` или `image`. R2 key, filename и
+delivery URL не сохраняются. Repository разбирает только исполняемый Markdown,
+проверяет invariant до write и повторяет его в SQL predicate, чтобы concurrent
+delete не создал битую ссылку. Delete симметрично сверяет точную current Task
+version/description и отклоняется, пока актуальный image token или file link
+ссылается на Attachment. Literal inline/fenced code reference не создаёт edge.
+Alt/label обязательны и bounded, caption optional; это пользовательский
+Markdown text. Один Attachment может встречаться несколько раз и по-прежнему
+имеет один lifecycle record.
 
 Logical backup schema `3` переносит Attachment row и original одним bounded
 container: row ссылается на `sha256:<digest>`, object set содержит size,

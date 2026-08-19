@@ -9,10 +9,7 @@ import {
 import { getTask } from "./repository";
 import { getRuntimeEnvironment } from "./runtime-environment";
 import { attachmentStorageScope } from "./attachment-storage";
-import {
-  TASK_IMAGE_REFERENCE_SCHEME,
-  taskDescriptionUsesAttachment,
-} from "./task-description-format";
+import { taskDescriptionUsesAttachment } from "./task-description-format";
 import type {
   AttachmentKind,
   AttachmentRecord,
@@ -480,7 +477,7 @@ export async function deleteAttachment(
   }
   if (taskDescriptionUsesAttachment(task.description, current.publicId)) {
     throw new ValidationError(
-      "Remove this image from the Task description before deleting it",
+      "Remove this attachment from the Task description before deleting it",
     );
   }
   const now = new Date().toISOString();
@@ -489,10 +486,11 @@ export async function deleteAttachment(
       `UPDATE attachments
        SET state = 'deleted', deleted_at = ?, version = version + 1, updated_at = ?
        WHERE id = ? AND task_id = ? AND version = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM tasks embedded_task
-           WHERE embedded_task.id = attachments.task_id
-             AND instr(embedded_task.description, ?) > 0
+         AND EXISTS (
+           SELECT 1 FROM tasks current_task
+           WHERE current_task.id = attachments.task_id
+             AND current_task.version = ?
+             AND current_task.description = ?
          )
        RETURNING *`,
     )
@@ -502,7 +500,8 @@ export async function deleteAttachment(
       current.id,
       task.id,
       expectedVersion,
-      `${TASK_IMAGE_REFERENCE_SCHEME}${current.publicId}`,
+      task.version,
+      task.description ?? "",
     )
     .first<DbRow>();
   if (!row) throw new ConflictError("Attachment was changed in another session");

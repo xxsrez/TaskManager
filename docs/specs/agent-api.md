@@ -361,14 +361,16 @@ archived target отклоняются. Desired state, уже применённ
 retry не создаёт duplicate. MCP `create_subtask` использует те же canonical
 refs и возвращает authoritative child `TaskDetail`.
 
-`description` может содержать native raster reference только в формате
-`![alt](attachment:v1:<public-ref> "optional caption")`. Сначала image должен
-стать готовым Attachment этой же Task через Agent REST upload или MCP
-`upload_task_attachment`; затем ref вставляется обычным versioned Task update.
-Общий repository path для REST, MCP и UI отклоняет malformed, cross-Task,
-non-image, deleted или неготовый reference; ошибка не подтверждает существование
-недоступного resource. Task create с native reference отклоняется, потому что
-Attachment ещё не может принадлежать создаваемой Task.
+`description` может содержать native raster embed
+`![alt](attachment:v1:<public-ref> "optional caption")` и downloadable file link
+`[label](attachment:v1:<public-ref>)`. Сначала Attachment должен стать `ready`
+в этой же Task через Agent REST upload или MCP `upload_task_attachment`, затем
+ref вставляется обычным versioned Task update. Image embed дополнительно требует
+`kind=image`; file link допускает ready file/image. Общий repository path для
+REST, MCP и UI игнорирует literal inline/fenced code и отклоняет malformed,
+cross-Task, incompatible, deleted или неготовый reference без подтверждения
+существования недоступного resource. Task create с native reference отклоняется,
+потому что Attachment ещё не может принадлежать создаваемой Task.
 
 ```json
 {

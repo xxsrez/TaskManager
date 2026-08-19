@@ -409,16 +409,21 @@ List повторяет плотную grouped-list модель Linear.
   subtasks и relations. Description переходит в editor только по явному действию
   `Edit description`; режим чтения не обрезает длинный текст и поддерживает
   headings, lists, checklists, links, code и перенос длинных строк.
-- Description editor содержит `Insert image` и принимает PNG/JPEG/GIF через
-  picker, drop или paste. Upload показывает progress, cancel и retry; после
-  успеха в текущую позицию курсора вставляется стабильный native image token с
-  filename-derived alt. Пользователь может редактировать alt, optional caption
-  и перемещать или удалить token как обычный Markdown block. Пока upload активен,
-  сохранение description недоступно.
+- Description editor содержит `Insert image` и `Insert file`, принимает file
+  через picker, drop или paste. Upload показывает progress, cancel и retry;
+  после успеха в текущую позицию курсора вставляется стабильный native image
+  token с filename-derived alt либо скачиваемая Markdown link с label.
+  Пользователь может редактировать alt/caption/label и перемещать или удалить
+  token как обычный Markdown. Пока upload активен, сохранение description
+  недоступно; удаление token не удаляет Attachment.
 - Native image в режиме чтения занимает доступную ширину без горизонтального
   overflow, сохраняет aspect ratio, показывает caption и открывает тот же
   private full-preview contract, что Attachment gallery. Loading, invalid и
   недоступный reference имеют локальный placeholder без публичного URL.
+- Native file link в режиме чтения остаётся компактной inline-ссылкой с
+  переносимым label и keyboard focus. Она скачивает original через текущий
+  ACL-scoped content route; loading/missing/forbidden/deleted ref становится
+  disabled placeholder без раскрытия filename или существования чужого файла.
 - Metadata располагаются компактной полосой под title и/или правой property
   column; один property не дублируется одновременно в двух местах.
 - Labels используют тот же chip и searchable multi-select в composer, details,

@@ -568,7 +568,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Upload native task attachment",
       description:
-        "Uploads one OpenAI-provided file into the selected Task's private storage. Reuse idempotencyKey only when retrying the identical file. To embed a raster image, insert its attachment:v1 ref with update_task after upload succeeds.",
+        "Uploads one OpenAI-provided file into the selected Task's private storage. Reuse idempotencyKey only when retrying the identical file. After upload, update the Task description with ![alt](attachment:v1:<ref>) for a raster embed or [label](attachment:v1:<ref>) for an ACL-scoped download; never use a local path or base64.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         file: mcpFileInputSchema,
@@ -605,7 +605,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Delete native task attachment",
       description:
-        "Soft-deletes one unreferenced native attachment using its current version. Remove any description image token first; recovery remains available through the REST API during the grace period.",
+        "Soft-deletes one unreferenced native attachment using its current version. Remove every description image token or file link first; recovery remains available through the REST API during the grace period.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         attachmentRef: reference("Attachment ref from list_task_attachments."),

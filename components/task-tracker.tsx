@@ -104,10 +104,15 @@ import {
   type PublicAttachmentRecord,
   startTaskAttachmentUpload,
   TaskAttachments,
+  TaskDescriptionFileLink,
   TaskDescriptionImage,
 } from "@/components/task-attachments";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
-import { parseTaskImageLine } from "@/lib/task-description-format";
+import {
+  parseTaskAttachmentReferences,
+  parseTaskFileToken,
+  parseTaskImageLine,
+} from "@/lib/task-description-format";
 import type {
   AdminOverview,
   AccessRole,
@@ -4100,17 +4105,14 @@ function TaskDescriptionMarkdown({
     key: string;
     records: Map<string, PublicAttachmentRecord>;
   }>({ key: "", records: new Map() });
-  const imageRefKey = [...new Set(
-    body
-      .split("\n")
-      .map((line) => parseTaskImageLine(line)?.ref)
-      .filter((ref): ref is string => Boolean(ref)),
+  const attachmentRefKey = [...new Set(
+    parseTaskAttachmentReferences(body).map((reference) => reference.ref),
   )].sort().join(",");
 
   useEffect(() => {
-    if (!imageRefKey) return;
+    if (!attachmentRefKey) return;
     const controller = new AbortController();
-    const requestedRefs = new Set(imageRefKey.split(","));
+    const requestedRefs = new Set(attachmentRefKey.split(","));
     void fetch(`/api/tasks/${encodeURIComponent(task.id)}/attachments`, {
       cache: "no-store",
       signal: controller.signal,
@@ -4120,10 +4122,10 @@ function TaskDescriptionMarkdown({
           | { attachments: PublicAttachmentRecord[] }
           | { error?: string };
         if (!response.ok || !("attachments" in value)) {
-          throw new Error("Native images could not be loaded");
+          throw new Error("Native attachments could not be loaded");
         }
         setAttachmentState({
-          key: imageRefKey,
+          key: attachmentRefKey,
           records: new Map(value.attachments
             .filter((attachment) => requestedRefs.has(attachment.ref))
             .map((attachment) => [attachment.ref, attachment])),
@@ -4131,12 +4133,12 @@ function TaskDescriptionMarkdown({
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
-        setAttachmentState({ key: imageRefKey, records: new Map() });
+        setAttachmentState({ key: attachmentRefKey, records: new Map() });
       });
     return () => controller.abort();
-  }, [imageRefKey, task.id, task.attachmentInvalidationCursor]);
+  }, [attachmentRefKey, task.id, task.attachmentInvalidationCursor]);
 
-  const attachments = attachmentState.key === imageRefKey
+  const attachments = attachmentState.key === attachmentRefKey
     ? attachmentState.records
     : null;
   return <MarkdownBody body={body} className={className} taskId={task.id} attachments={attachments} />;
@@ -4212,21 +4214,21 @@ function MarkdownBody({
     const bullet = line.match(/^[-*]\s+(.+)$/);
     const ordered = line.match(/^\d+[.)]\s+(.+)$/);
     if (checklist) {
-      appendListItem(false, <label className="markdown-checklist-item"><input type="checkbox" checked={checklist[1].toLowerCase() === "x"} readOnly disabled /><span>{renderMarkdownInline(checklist[2])}</span></label>, index);
+      appendListItem(false, <label className="markdown-checklist-item"><input type="checkbox" checked={checklist[1].toLowerCase() === "x"} readOnly disabled /><span>{renderMarkdownInline(checklist[2], taskId, attachments)}</span></label>, index);
     } else if (bullet) {
-      appendListItem(false, renderMarkdownInline(bullet[1]), index);
+      appendListItem(false, renderMarkdownInline(bullet[1], taskId, attachments), index);
     } else if (ordered) {
-      appendListItem(true, renderMarkdownInline(ordered[1]), index);
+      appendListItem(true, renderMarkdownInline(ordered[1], taskId, attachments), index);
     } else {
       flushList();
       if (heading) {
-        if (heading[1].length === 1) blocks.push(<h2 key={index}>{renderMarkdownInline(heading[2])}</h2>);
-        else if (heading[1].length === 2) blocks.push(<h3 key={index}>{renderMarkdownInline(heading[2])}</h3>);
-        else blocks.push(<h4 key={index}>{renderMarkdownInline(heading[2])}</h4>);
+        if (heading[1].length === 1) blocks.push(<h2 key={index}>{renderMarkdownInline(heading[2], taskId, attachments)}</h2>);
+        else if (heading[1].length === 2) blocks.push(<h3 key={index}>{renderMarkdownInline(heading[2], taskId, attachments)}</h3>);
+        else blocks.push(<h4 key={index}>{renderMarkdownInline(heading[2], taskId, attachments)}</h4>);
       } else if (line.startsWith("> ")) {
-        blocks.push(<blockquote key={index}>{renderMarkdownInline(line.slice(2))}</blockquote>);
+        blocks.push(<blockquote key={index}>{renderMarkdownInline(line.slice(2), taskId, attachments)}</blockquote>);
       } else if (line.trim()) {
-        blocks.push(<p key={index}>{renderMarkdownInline(line)}</p>);
+        blocks.push(<p key={index}>{renderMarkdownInline(line, taskId, attachments)}</p>);
       }
     }
   }
@@ -4235,7 +4237,11 @@ function MarkdownBody({
   return <div className={className}>{blocks}</div>;
 }
 
-function renderMarkdownInline(value: string) {
+function renderMarkdownInline(
+  value: string,
+  taskId?: string,
+  attachments?: Map<string, PublicAttachmentRecord> | null,
+) {
   const pattern = /(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g;
   const nodes: React.ReactNode[] = [];
   let offset = 0;
@@ -4244,8 +4250,22 @@ function renderMarkdownInline(value: string) {
     const token = match[0];
     const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (link) {
-      const href = safeMarkdownHref(link[2]);
-      nodes.push(href ? <a key={match.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : token);
+      const nativeFile = taskId ? parseTaskFileToken(token) : null;
+      if (nativeFile) {
+        nodes.push(
+          <TaskDescriptionFileLink
+            key={match.index}
+            taskId={taskId!}
+            attachment={attachments === null || attachments === undefined
+              ? undefined
+              : attachments.get(nativeFile.ref) ?? null}
+            label={nativeFile.label}
+          />,
+        );
+      } else {
+        const href = safeMarkdownHref(link[2]);
+        nodes.push(href ? <a key={match.index} href={href} target="_blank" rel="noreferrer">{link[1]}</a> : token);
+      }
     } else if (token.startsWith("`")) nodes.push(<code key={match.index}>{token.slice(1, -1)}</code>);
     else if (token.startsWith("**")) nodes.push(<strong key={match.index}>{token.slice(2, -2)}</strong>);
     else nodes.push(<em key={match.index}>{token.slice(1, -1)}</em>);

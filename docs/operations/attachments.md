@@ -34,18 +34,22 @@ metadata не редактируется вручную. Любое provision/mi
 4. Проверить `Content-Disposition`, `private, no-store`, `nosniff`; PDF не
    становится inline. HTML/SVG, MIME mismatch, oversized/corrupted image
    получают bounded `400` без R2 orphan.
-5. Delete сохраняет object до grace; restore возвращает `ready`. Cleanup после
+5. Вставить PDF как `[label](attachment:v1:<public-ref>)` в середину Task
+   description: Viewer после reload видит compact link и скачивает byte-identical
+   original. Image embed остаётся preview; literal refs в inline/fenced code не
+   валидируются как edges. Referenced file/image delete отклоняется.
+6. Delete сохраняет object до grace; restore возвращает `ready`. Cleanup после
    cutoff удаляет object и metadata. В UAT используются только synthetic files.
-6. Открыть ту же Task во второй сессии: `task_attachments` invalidation должна
+7. Открыть ту же Task во второй сессии: `task_attachments` invalidation должна
    обновить только attachment list, не полный bootstrap и не текущий local
    upload progress.
-7. После deploy повторно проверить access policy Site. R2 bucket policy не
+8. После deploy повторно проверить access policy Site. R2 bucket policy не
    должна становиться public.
-8. Через UAT personal bearer credential вызвать Agent REST: list с двумя
+9. Через UAT personal bearer credential вызвать Agent REST: list с двумя
    страницами, raw upload, metadata, original Range, thumbnail и versioned
    delete/restore. Проверить отсутствие internal IDs/object key в JSON и
    немедленный `404` после ACL revoke.
-9. `tools/list` должен объявлять `list_task_attachments`,
+10. `tools/list` должен объявлять `list_task_attachments`,
    `get_task_attachment`, `upload_task_attachment` и `delete_task_attachment`,
    `api:read`/`api:write` security schemes и
    `_meta["openai/fileParams"]=["file"]` для upload. Полный MCP upload smoke

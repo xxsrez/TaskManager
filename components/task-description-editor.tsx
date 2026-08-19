@@ -1,15 +1,20 @@
 "use client";
 
-import { ImagePlus, RotateCcw, X } from "lucide-react";
+import { FilePlus2, ImagePlus, RotateCcw, X } from "lucide-react";
 import {
   notifyTaskAttachmentChanged,
   startTaskAttachmentUpload,
+  type PublicAttachmentRecord,
 } from "@/components/task-attachments";
-import { buildTaskImageToken } from "@/lib/task-description-format";
+import {
+  buildTaskFileLink,
+  buildTaskImageToken,
+} from "@/lib/task-description-format";
 import { useEffect, useRef, useState } from "react";
 
-type ImageUpload = {
+type DescriptionUpload = {
   file: File;
+  mode: "image" | "file";
   idempotencyKey: string;
   insertionPoint: number;
   progress: number;
@@ -31,30 +36,78 @@ export function TaskDescriptionEditor({
   disabled: boolean;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pickerInsertionPointRef = useRef(value.length);
   const cancelUploadRef = useRef<(() => void) | null>(null);
   const valueRef = useRef(value);
   valueRef.current = value;
-  const [upload, setUpload] = useState<ImageUpload | null>(null);
+  const [upload, setUpload] = useState<DescriptionUpload | null>(null);
   const [dragActive, setDragActive] = useState(false);
+  const [readyAttachments, setReadyAttachments] = useState<PublicAttachmentRecord[]>([]);
+  const [selectedAttachmentRef, setSelectedAttachmentRef] = useState("");
 
   useEffect(() => () => cancelUploadRef.current?.(), []);
   useEffect(() => {
     onUploadActiveChange?.(upload?.status === "uploading");
   }, [onUploadActiveChange, upload?.status]);
   useEffect(() => () => onUploadActiveChange?.(false), [onUploadActiveChange]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(`/api/tasks/${encodeURIComponent(taskId)}/attachments`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const value = await response.json() as { attachments?: PublicAttachmentRecord[] };
+        if (!response.ok || !value.attachments) return;
+        const ready = value.attachments.filter((attachment) => attachment.state === "ready");
+        setReadyAttachments(ready);
+        setSelectedAttachmentRef((current) => current || ready[0]?.ref || "");
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [taskId]);
 
   function selectImage() {
+    if (disabled || upload?.status === "uploading") return;
+    pickerInsertionPointRef.current = insertionPoint();
+    imageInputRef.current?.click();
+  }
+
+  function selectFile() {
     if (disabled || upload?.status === "uploading") return;
     pickerInsertionPointRef.current = insertionPoint();
     fileInputRef.current?.click();
   }
 
-  function acceptImage(file: File, insertionPoint: number) {
-    if (!isSupportedRasterImage(file)) {
+  function insertExistingFile() {
+    if (disabled || upload?.status === "uploading") return;
+    const attachment = readyAttachments.find(
+      (candidate) => candidate.ref === selectedAttachmentRef,
+    );
+    if (!attachment) return;
+    const inserted = insertFileLink(
+      valueRef.current,
+      insertionPoint(),
+      buildTaskFileLink(attachment.ref, filenameLinkLabel(attachment.filename)),
+    );
+    onChange(inserted.value);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(inserted.cursor, inserted.cursor);
+    });
+  }
+
+  function acceptFile(
+    file: File,
+    insertionPoint: number,
+    mode: "image" | "file",
+  ) {
+    if (mode === "image" && !isSupportedRasterImage(file)) {
       setUpload({
         file,
+        mode,
         idempotencyKey: `task-description-image:${crypto.randomUUID()}`,
         insertionPoint,
         progress: 0,
@@ -63,9 +116,10 @@ export function TaskDescriptionEditor({
       });
       return;
     }
-    const next: ImageUpload = {
+    const next: DescriptionUpload = {
       file,
-      idempotencyKey: `task-description-image:${crypto.randomUUID()}`,
+      mode,
+      idempotencyKey: `task-description-${mode}:${crypto.randomUUID()}`,
       insertionPoint,
       progress: 0,
       status: "uploading",
@@ -75,7 +129,7 @@ export function TaskDescriptionEditor({
     void runUpload(next);
   }
 
-  async function runUpload(candidate: ImageUpload) {
+  async function runUpload(candidate: DescriptionUpload) {
     setUpload({ ...candidate, status: "uploading", error: null });
     const running = startTaskAttachmentUpload(
       taskId,
@@ -89,9 +143,12 @@ export function TaskDescriptionEditor({
     cancelUploadRef.current = running.cancel;
     try {
       const attachment = await running.promise;
-      const alt = filenameAlt(candidate.file.name);
-      const token = buildTaskImageToken(attachment.ref, alt);
-      const inserted = insertImageToken(valueRef.current, candidate.insertionPoint, token);
+      const token = candidate.mode === "image"
+        ? buildTaskImageToken(attachment.ref, filenameAlt(candidate.file.name))
+        : buildTaskFileLink(attachment.ref, filenameLinkLabel(candidate.file.name));
+      const inserted = candidate.mode === "image"
+        ? insertImageToken(valueRef.current, candidate.insertionPoint, token)
+        : insertFileLink(valueRef.current, candidate.insertionPoint, token);
       onChange(inserted.value);
       notifyTaskAttachmentChanged(taskId);
       setUpload(null);
@@ -139,24 +196,58 @@ export function TaskDescriptionEditor({
         if (!event.dataTransfer.files.length) return;
         event.preventDefault();
         setDragActive(false);
-        acceptImage(event.dataTransfer.files[0]!, insertionPoint());
+        const file = event.dataTransfer.files[0]!;
+        acceptFile(
+          file,
+          insertionPoint(),
+          isSupportedRasterImage(file) ? "image" : "file",
+        );
       }}
     >
       <div className="task-description-editor-toolbar">
         <button className="button ghost" type="button" disabled={disabled || upload?.status === "uploading"} onClick={selectImage}>
           <ImagePlus size={14} />Insert image
         </button>
-        <span>PNG, JPEG, or GIF · inserted at the cursor</span>
+        <button className="button ghost" type="button" disabled={disabled || upload?.status === "uploading"} onClick={selectFile}>
+          <FilePlus2 size={14} />Insert file
+        </button>
+        {readyAttachments.length > 0 && <>
+          <select
+            aria-label="Ready Task attachment"
+            value={selectedAttachmentRef}
+            disabled={disabled || upload?.status === "uploading"}
+            onChange={(event) => setSelectedAttachmentRef(event.target.value)}
+          >
+            {readyAttachments.map((attachment) => (
+              <option key={attachment.ref} value={attachment.ref}>{attachment.filename}</option>
+            ))}
+          </select>
+          <button className="button ghost" type="button" disabled={disabled || upload?.status === "uploading"} onClick={insertExistingFile}>
+            Link selected
+          </button>
+        </>}
+        <span>Private attachment · inserted at the cursor</span>
       </div>
       <input
-        ref={fileInputRef}
+        ref={imageInputRef}
         className="visually-hidden"
         type="file"
         accept="image/png,image/jpeg,image/gif"
         aria-label="Choose an image for the Task description"
         onChange={(event) => {
           const file = event.target.files?.[0];
-          if (file) acceptImage(file, pickerInsertionPointRef.current);
+          if (file) acceptFile(file, pickerInsertionPointRef.current, "image");
+          event.target.value = "";
+        }}
+      />
+      <input
+        ref={fileInputRef}
+        className="visually-hidden"
+        type="file"
+        aria-label="Choose a file for the Task description"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) acceptFile(file, pickerInsertionPointRef.current, "file");
           event.target.value = "";
         }}
       />
@@ -169,14 +260,18 @@ export function TaskDescriptionEditor({
           const file = event.clipboardData.files[0];
           if (!file) return;
           event.preventDefault();
-          acceptImage(file, event.currentTarget.selectionStart);
+          acceptFile(
+            file,
+            event.currentTarget.selectionStart,
+            isSupportedRasterImage(file) ? "image" : "file",
+          );
         }}
         placeholder="Add description…"
         rows={12}
         autoFocus
         disabled={disabled}
       />
-      {dragActive && <span className="task-description-drop-message" role="status">Drop an image to upload and insert</span>}
+      {dragActive && <span className="task-description-drop-message" role="status">Drop a file to upload and insert</span>}
       {upload && (
         <div className={`task-description-upload ${upload.status}`} role="status" aria-live="polite">
           <div>
@@ -188,13 +283,13 @@ export function TaskDescriptionEditor({
             <button className="icon-button" type="button" aria-label={`Cancel ${upload.file.name}`} onClick={() => cancelUploadRef.current?.()}><X size={14} /></button>
           ) : (
             <>
-              <button className="button ghost" type="button" disabled={!isSupportedRasterImage(upload.file)} onClick={() => void runUpload(upload)}><RotateCcw size={13} />Retry</button>
+              <button className="button ghost" type="button" disabled={upload.mode === "image" && !isSupportedRasterImage(upload.file)} onClick={() => void runUpload(upload)}><RotateCcw size={13} />Retry</button>
               <button className="icon-button" type="button" aria-label={`Dismiss ${upload.file.name}`} onClick={() => setUpload(null)}><X size={14} /></button>
             </>
           )}
         </div>
       )}
-      <p className="task-description-image-help">Native image tokens keep only a private attachment ref. Edit the text inside <code>![alt]</code> to change its accessible label; removing the token does not remove the file.</p>
+      <p className="task-description-image-help">Native image and file links keep only a private attachment ref. Edit the Markdown label to rename it; removing the token does not remove the file.</p>
     </div>
   );
 }
@@ -209,12 +304,29 @@ function filenameAlt(filename: string) {
   return withoutExtension || "Attached image";
 }
 
+function filenameLinkLabel(filename: string) {
+  return filename.trim() || "Attached file";
+}
+
 export function insertImageToken(value: string, point: number, token: string) {
   const cursor = Math.max(0, Math.min(value.length, point));
   const before = value.slice(0, cursor);
   const after = value.slice(cursor);
   const prefix = before && !before.endsWith("\n") ? "\n" : "";
   const suffix = after && !after.startsWith("\n") ? "\n" : "";
+  const insertion = `${prefix}${token}${suffix}`;
+  return {
+    value: `${before}${insertion}${after}`,
+    cursor: before.length + insertion.length,
+  };
+}
+
+export function insertFileLink(value: string, point: number, token: string) {
+  const cursor = Math.max(0, Math.min(value.length, point));
+  const before = value.slice(0, cursor);
+  const after = value.slice(cursor);
+  const prefix = before && !/[\s(]$/.test(before) ? " " : "";
+  const suffix = after && !/^[\s.,;:!?)]/.test(after) ? " " : "";
   const insertion = `${prefix}${token}${suffix}`;
   return {
     value: `${before}${insertion}${after}`,

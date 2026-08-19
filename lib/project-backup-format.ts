@@ -10,8 +10,8 @@ import {
   type AttachmentBackupObject,
 } from "./attachment-backup";
 import {
-  hasMalformedTaskImageReference,
-  parseTaskImageReferences,
+  hasMalformedTaskAttachmentReference,
+  parseTaskAttachmentReferences,
 } from "./task-description-format";
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
@@ -501,17 +501,17 @@ function validateProjectRelationships(
   void attachments;
   for (const task of tables.tasks) {
     const description = String(task.description ?? "");
-    if (hasMalformedTaskImageReference(description)) {
+    if (hasMalformedTaskAttachmentReference(description)) {
       throw new ValidationError(
         "Task description contains a malformed attachment reference",
       );
     }
-    for (const reference of parseTaskImageReferences(description)) {
+    for (const reference of parseTaskAttachmentReferences(description)) {
       const attachment = attachmentPublicIds.get(reference.ref);
       if (
         !attachment ||
         attachment.task_id !== task.id ||
-        attachment.kind !== "image" ||
+        (reference.kind === "image" && attachment.kind !== "image") ||
         attachment.state !== "ready"
       ) {
         throw new ValidationError(

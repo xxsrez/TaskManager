@@ -439,13 +439,15 @@ content принудительно скачивается. Для raster list ro
 metadata, не вызывая bootstrap или Task-detail rebase. Контракт принят в
 [ADR-0011](decisions/0011-native-attachments-and-r2.md).
 
-Description хранит native raster embed как versioned opaque reference
-`attachment:v1:<public-id>`, но не object key или content URL. Все Task-write
-entrypoints сходятся в repository validator: он требует ready image той же Task
-и добавляет race-safe `EXISTS` predicates в update. Attachment delete применяет
-обратный guard по актуальной description. Renderer распознаёт только отдельный
-Markdown image block, лениво читает ACL-scoped metadata и строит private content
-route уже после server authorization; stale reference становится placeholder.
+Description хранит native raster embed и downloadable file link как versioned
+opaque reference `attachment:v1:<public-id>`, но не object key, filename или
+content URL. Все Task-write entrypoints сходятся в repository validator: он
+различает image/file presentation, игнорирует literal code, требует ready
+Attachment той же Task и добавляет race-safe `EXISTS` predicates в update.
+Attachment delete применяет обратный guard по точной current Task
+version/description. Renderer отдельно разрешает image block и compact inline
+file link, лениво читает ACL-scoped metadata и строит private content route уже
+после server authorization; stale reference становится placeholder.
 
 Agent REST повторяет эту boundary через `/api/agent/v1/tasks/{ref}/attachments`:
 metadata использует Task-bound keyset cursor, upload читает raw body только после
