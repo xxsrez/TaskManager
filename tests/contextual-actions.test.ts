@@ -8,6 +8,7 @@ import {
   contextualActionIds,
   nextContextualActionIndex,
   resolveContextualActions,
+  resolveTaskTriggerContext,
   type ContextualActionEntity,
 } from "@/lib/contextual-actions";
 
@@ -144,6 +145,55 @@ test("exposes only existing MVP actions for Project, Release, and Saved View con
     "share",
     "archive",
   ]);
+});
+
+test("an explicit unselected Task trigger never acts on a hidden multi-selection", () => {
+  const tasks = [
+    entity({ id: "task-a" }),
+    entity({ id: "task-b" }),
+    entity({ id: "task-c" }),
+  ];
+  const selected = new Set(["task-a", "task-b"]);
+
+  assert.deepEqual(
+    resolveTaskTriggerContext(tasks, selected, "task-c", null).map((task) => task.id),
+    ["task-c"],
+  );
+  assert.deepEqual(
+    resolveTaskTriggerContext(tasks, selected, "task-a", null).map((task) => task.id),
+    ["task-a", "task-b"],
+  );
+});
+
+test("keyboard context prefers a focused Task, then selection, then highlight", () => {
+  const tasks = [
+    entity({ id: "task-a" }),
+    entity({ id: "task-b" }),
+    entity({ id: "task-c" }),
+  ];
+  const selected = new Set(["task-a", "task-b"]);
+
+  assert.deepEqual(
+    resolveTaskTriggerContext(tasks, selected, "task-c", "task-b").map((task) => task.id),
+    ["task-c"],
+  );
+  assert.deepEqual(
+    resolveTaskTriggerContext(tasks, selected, null, "task-c").map((task) => task.id),
+    ["task-a", "task-b"],
+  );
+  assert.deepEqual(
+    resolveTaskTriggerContext(tasks, new Set(), null, "task-c").map((task) => task.id),
+    ["task-c"],
+  );
+});
+
+test("an archived Saved View exposes only its valid Restore lifecycle action", () => {
+  const archivedView = entity({
+    kind: "saved_view",
+    archivedAt: "2026-08-19T12:00:00Z",
+  });
+
+  assert.deepEqual(contextualActionIds({ entities: [archivedView] }), ["restore"]);
 });
 
 test("keyboard navigation wraps and skips disabled actions", () => {

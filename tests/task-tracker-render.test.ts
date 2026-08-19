@@ -583,6 +583,23 @@ test("global search resolves catalog results locally and exposes continuation re
   assert.match(warning, />Retry</);
 });
 
+test("Task rows and overflow controls expose the focused contextual entity", () => {
+  const markup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: { surface: "all", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+
+  assert.match(
+    markup,
+    /data-context-entity-kind="task" data-context-entity-id="task-1"[^>]*class="task-row/,
+  );
+  assert.match(
+    markup,
+    /class="row-more"[^>]*data-context-entity-kind="task" data-context-entity-id="task-1"/,
+  );
+});
+
 test("workspace overview counts only accessible top-level shared resources", () => {
   const sharedProject = {
     id: "project-shared",

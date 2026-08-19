@@ -109,6 +109,17 @@ function taskActions(context: ContextualActionContext): ResolvedContextualAction
 
 function singleEntityActions(context: ContextualActionContext): ResolvedContextualAction[] {
   const entity = context.entities[0]!;
+  if (entity.kind === "saved_view" && entity.archivedAt !== null) {
+    return [action(context, {
+      id: "restore",
+      label: "Restore",
+      icon: "restore",
+      shortcut: null,
+      destructive: false,
+      disabledReason: editReason(entity),
+      confirmation: null,
+    })];
+  }
   const common: ResolvedContextualAction[] = [action(context, {
     id: "open",
     label: "Open",
@@ -168,6 +179,25 @@ export function contextualActionIds(
   context: ContextualActionContext,
 ): ContextualActionId[] {
   return resolveContextualActions(context).map((item) => item.id);
+}
+
+export function resolveTaskTriggerContext(
+  entities: ContextualActionEntity[],
+  selectedIds: ReadonlySet<string>,
+  triggerTaskId: string | null,
+  fallbackTaskId: string | null,
+): ContextualActionEntity[] {
+  const tasks = entities.filter((entity) => entity.kind === "task");
+  const byId = new Map(tasks.map((entity) => [entity.id, entity]));
+  const selected = tasks.filter((entity) => selectedIds.has(entity.id));
+  if (triggerTaskId) {
+    const trigger = byId.get(triggerTaskId);
+    if (!trigger) return [];
+    return selectedIds.has(triggerTaskId) ? selected : [trigger];
+  }
+  if (selected.length) return selected;
+  const fallback = fallbackTaskId ? byId.get(fallbackTaskId) : undefined;
+  return fallback ? [fallback] : [];
 }
 
 export function nextContextualActionIndex(

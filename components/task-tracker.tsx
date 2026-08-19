@@ -137,6 +137,7 @@ import {
 import {
   buildTaskArchiveCommand,
   resolveContextualActions,
+  resolveTaskTriggerContext,
   type ContextualActionContext,
   type ContextualActionEntity,
   type ResolvedContextualAction,
@@ -2207,31 +2208,18 @@ export function TaskTracker({
     y: number,
     restoreFocus: HTMLElement | null,
   ) {
-    const tasks = taskContextualEntities(task.id, null);
+    const tasks = resolveTaskTriggerContext(
+      data.tasks.map(taskContextualEntity),
+      selected,
+      task.id,
+      null,
+    );
     openContextualActions(
       { entities: tasks },
       x,
       y,
       restoreFocus,
     );
-  }
-
-  function taskContextualEntities(
-    triggerTaskId: string | null,
-    fallbackTaskId: string | null,
-  ): ContextualActionEntity[] {
-    const entities = data.tasks.map(taskContextualEntity);
-    const selectedEntities = entities.filter((entity) => selected.has(entity.id));
-    if (triggerTaskId) {
-      const trigger = entities.find((entity) => entity.id === triggerTaskId);
-      if (!trigger) return [];
-      return selected.has(triggerTaskId) ? selectedEntities : [trigger];
-    }
-    if (selectedEntities.length) return selectedEntities;
-    const fallback = fallbackTaskId
-      ? entities.find((entity) => entity.id === fallbackTaskId)
-      : undefined;
-    return fallback ? [fallback] : [];
   }
 
   function closeContextualActions() {
@@ -2489,7 +2477,9 @@ export function TaskTracker({
       const integrationTaskId = highlightedTaskId ?? keyboardTaskIds[0] ?? null;
       if (command === "contextual-actions") {
         const focusedEntity = focusedContextualActionEntity(target);
-        const taskEntities = taskContextualEntities(
+        const taskEntities = resolveTaskTriggerContext(
+          data.tasks.map(taskContextualEntity),
+          selected,
           focusedEntity?.kind === "task" ? focusedEntity.id : null,
           integrationTaskId,
         );
