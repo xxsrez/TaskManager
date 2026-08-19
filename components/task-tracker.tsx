@@ -450,6 +450,7 @@ export function mergeDeferredSnapshot(
 
   return {
     ...incoming,
+    admin: incoming.isAdmin ? incoming.admin ?? current.admin : null,
     tasks: mergedTasks,
     projects: mergeResetCollection(
       current.projects,

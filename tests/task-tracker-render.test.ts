@@ -569,6 +569,52 @@ test("deferred task loading expands the window without discarding newer or loade
   assert.deepEqual(merged.taskWindow, { limit: 2_000, truncated: false });
 });
 
+test("account-menu Administration remains rendered after deferred bootstrap", () => {
+  const admin = {
+    registeredUserCount: 1,
+    activeUserCount: 1,
+    taskCount: 1,
+    projectCount: 0,
+    releaseCount: 0,
+    viewCount: 2,
+    attachmentCount: 0,
+    attachmentBytes: 0,
+    attachmentObjectCount: 0,
+    attachmentObjectBytes: 0,
+    stagingAttachmentObjectCount: 0,
+    orphanAttachmentObjectCount: 0,
+    attachmentStorageTruncated: false,
+    pendingAttachmentCount: 0,
+    failedAttachmentCount: 0,
+    deletedAttachmentCount: 0,
+    users: [],
+  };
+  const current = { ...snapshot, isAdmin: true, admin };
+  const incoming = { ...snapshot, isAdmin: true, admin: null };
+  const hydrated = mergeDeferredSnapshot(current, incoming);
+
+  assert.equal(hydrated.admin, admin);
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: hydrated,
+      initialNavigation: {
+        surface: "admin",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+  assert.match(markup, /class="admin-surface"/);
+  assert.doesNotMatch(markup, /class="task-list/);
+
+  const revoked = mergeDeferredSnapshot(
+    current,
+    { ...incoming, isAdmin: false },
+  );
+  assert.equal(revoked.admin, null);
+});
+
 test("a newer deferred summary keeps loaded content without masking its optimistic version", () => {
   const loadedTask = {
     ...snapshot.tasks[0]!,
