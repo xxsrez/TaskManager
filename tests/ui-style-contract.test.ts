@@ -60,6 +60,13 @@ test("global search stays bounded, focus-safe, and overflow-free across phone or
   );
   assert.match(taskTracker, /globalSearchReturnFocus/);
   assert.match(taskTracker, /queryRef\.current === requestedQuery/);
+  assert.match(taskTracker, /applyNavigation\(next, "push", false, result\.href\)/);
+  assert.match(taskTracker, /setForcedTaskDetailId\(result\.id\)/);
+  assert.doesNotMatch(taskTracker, /window\.location\.assign\(results\[highlighted\]\.href\)/);
+  assert.match(taskTracker, /onOpen\(results\[highlighted\]\)/);
+  assert.match(taskTracker, /handleLocalLink\(event, \(\) => onOpen\(item\)\)/);
+  assert.match(taskTracker, /setContinuationError\(\{ query: requestedQuery, cursor: requestedCursor \}\)/);
+  assert.doesNotMatch(taskTracker, /catch \{[\s\S]{0,120}setStatus\("error"\)/);
 });
 
 test("board cards do not shrink their content through the bottom padding", () => {

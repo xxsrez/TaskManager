@@ -1930,13 +1930,16 @@ export function TaskTracker({
     next: ResolvedNavigation,
     historyMode: "push" | "replace" | "none" = "push",
     preserveTemporaryFilter = false,
+    canonicalPath?: string,
   ) {
-    const nextPath = preserveTemporaryFilter
-      ? navigationPathWithTemporaryFilter(
-          navigationPath(next, data),
-          window.location.href,
-        )
-      : navigationPath(next, data);
+    const nextPath = canonicalPath ?? (
+      preserveTemporaryFilter
+        ? navigationPathWithTemporaryFilter(
+            navigationPath(next, data),
+            window.location.href,
+          )
+        : navigationPath(next, data)
+    );
     setSurface(next.surface);
     setLayout(next.layout);
     setActiveTaskId(next.taskId);
@@ -2088,6 +2091,32 @@ export function TaskTracker({
       if (target?.isConnected) target.focus();
       else mobileMenuRef.current?.focus();
     });
+  }
+
+  function openGlobalSearchResult(result: GlobalSearchResult) {
+    const next = resolveGlobalSearchNavigation(result, data, {
+      surface,
+      layout,
+      taskId: activeTaskId,
+    });
+    setGlobalSearchOpen(false);
+    if (!next) {
+      window.location.assign(result.href);
+      return;
+    }
+    if (result.type === "task") {
+      if (!activeTaskId) {
+        taskReturnPath.current = navigationPathWithTemporaryFilter(
+          navigationPath({ surface, layout, taskId: null }, data),
+          window.location.href,
+        );
+      }
+      setTaskDetail((current) => current?.task.id === result.id ? current : null);
+      if (!data.tasks.some((task) => task.id === result.id)) {
+        setForcedTaskDetailId(result.id);
+      }
+    }
+    applyNavigation(next, "push", false, result.href);
   }
 
   function focusLocalSearch() {
@@ -2255,7 +2284,12 @@ export function TaskTracker({
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${mobileSidebarOpen ? "mobile-sidebar-open" : ""}`}>
-      {globalSearchOpen && <GlobalSearchOverlay onClose={closeGlobalSearch} />}
+      {globalSearchOpen && (
+        <GlobalSearchOverlay
+          onClose={closeGlobalSearch}
+          onOpen={openGlobalSearchResult}
+        />
+      )}
       {mobileSidebarOpen && (
         <button
           className="mobile-sidebar-backdrop"
@@ -5437,11 +5471,62 @@ function GlobalSearchResultIcon({ type }: { type: GlobalSearchEntityType }) {
   return <Zap size={15} />;
 }
 
-export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
+export function resolveGlobalSearchNavigation(
+  result: GlobalSearchResult,
+  data: Pick<AppSnapshot, "projects" | "releases" | "views">,
+  current: ResolvedNavigation,
+): ResolvedNavigation | null {
+  if (result.type === "task") {
+    return { ...current, taskId: result.id };
+  }
+  if (result.type === "project") {
+    return data.projects.some((project) => project.id === result.id)
+      ? { surface: `project:${result.id}`, layout: "list", taskId: null }
+      : null;
+  }
+  if (result.type === "release") {
+    return data.releases.some((release) => release.id === result.id)
+      ? { surface: `release:${result.id}`, layout: "list", taskId: null }
+      : null;
+  }
+  const view = data.views.find((item) => item.id === result.id && !item.archivedAt);
+  return view
+    ? { surface: `view:${view.id}`, layout: view.display.layout, taskId: null }
+    : null;
+}
+
+export function GlobalSearchContinuationWarning({
+  busy,
+  onRetry,
+}: {
+  busy: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div className="global-search-partial continuation" role="alert">
+      <span>Couldn’t load more results. Loaded matches are still available.</span>
+      <button className="button ghost" type="button" disabled={busy} onClick={onRetry}>
+        {busy ? "Retrying…" : "Retry"}
+      </button>
+    </div>
+  );
+}
+
+export function GlobalSearchOverlay({
+  onClose,
+  onOpen,
+}: {
+  onClose: () => void;
+  onOpen: (result: GlobalSearchResult) => void;
+}) {
   const [query, setQuery] = useState("");
   const [response, setResponse] = useState<GlobalSearchResponse>(() => emptyGlobalSearchResponse());
   const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [loadingMore, setLoadingMore] = useState(false);
+  const [continuationError, setContinuationError] = useState<{
+    query: string;
+    cursor: string;
+  } | null>(null);
   const [highlighted, setHighlighted] = useState(0);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -5459,6 +5544,7 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setResponse(emptyGlobalSearchResponse());
       setStatus("idle");
+      setContinuationError(null);
       setHighlighted(0);
       return;
     }
@@ -5475,11 +5561,13 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
         }
         setResponse(value);
         setStatus(value.partialErrors.length === globalSearchSections.length ? "error" : "ready");
+        setContinuationError(null);
         setHighlighted(0);
       }).catch((requestError: unknown) => {
         if (requestError instanceof DOMException && requestError.name === "AbortError") return;
         setResponse(emptyGlobalSearchResponse(trimmed));
         setStatus("error");
+        setContinuationError(null);
       });
     }, 180);
     return () => {
@@ -5488,13 +5576,15 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
     };
   }, [query]);
 
-  async function loadMore() {
-    if (!response.nextCursor || loadingMore) return;
+  async function loadMore(cursor = response.nextCursor) {
+    if (!cursor || loadingMore) return;
     const requestedQuery = response.query;
+    const requestedCursor = cursor;
+    setContinuationError(null);
     setLoadingMore(true);
     try {
       const next = await fetch(
-        `/api/search?query=${encodeURIComponent(response.query)}&limit=8&cursor=${encodeURIComponent(response.nextCursor)}`,
+        `/api/search?query=${encodeURIComponent(requestedQuery)}&limit=8&cursor=${encodeURIComponent(requestedCursor)}`,
         { cache: "no-store" },
       );
       const value = await next.json() as GlobalSearchResponse | { error?: string };
@@ -5503,9 +5593,12 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
         setResponse((current) => current.query === requestedQuery
           ? mergeGlobalSearchResponses(current, value)
           : current);
+        setContinuationError(null);
       }
     } catch {
-      if (queryRef.current === requestedQuery) setStatus("error");
+      if (queryRef.current === requestedQuery) {
+        setContinuationError({ query: requestedQuery, cursor: requestedCursor });
+      }
     } finally {
       setLoadingMore(false);
     }
@@ -5530,7 +5623,7 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
     }
     if (event.key === "Enter" && results[highlighted]) {
       event.preventDefault();
-      window.location.assign(results[highlighted].href);
+      onOpen(results[highlighted]);
       return;
     }
     if (event.key === "Tab") {
@@ -5565,6 +5658,7 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
               queryRef.current = nextQuery.trim().toLowerCase();
               setResponse(emptyGlobalSearchResponse(queryRef.current));
               setStatus(nextQuery.trim() ? "loading" : "idle");
+              setContinuationError(null);
               setHighlighted(0);
             }}
             placeholder="Search tasks, projects, releases, and views…"
@@ -5585,6 +5679,12 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
           {status === "error" && <div className="global-search-state" role="alert"><CircleHelp size={22} /><b>Search is temporarily unavailable</b><span>Try again without changing your current view.</span></div>}
           {status === "ready" && results.length === 0 && <div className="global-search-state"><Search size={22} /><b>No accessible results</b><span>Try another title or Task identifier.</span></div>}
           {status === "ready" && response.partialErrors.length > 0 && <p className="global-search-partial" role="status">Some results could not be loaded. Available matches are shown below.</p>}
+          {status === "ready" && continuationError?.query === response.query && (
+            <GlobalSearchContinuationWarning
+              busy={loadingMore}
+              onRetry={() => void loadMore(continuationError.cursor)}
+            />
+          )}
           {status === "ready" && globalSearchSections.map((section) => {
             const items = response.groups[section.key] as GlobalSearchResult[];
             if (!items.length) return null;
@@ -5603,6 +5703,7 @@ export function GlobalSearchOverlay({ onClose }: { onClose: () => void }) {
                       role="option"
                       aria-selected={index === highlighted}
                       onMouseEnter={() => setHighlighted(index)}
+                      onClick={(event) => handleLocalLink(event, () => onOpen(item))}
                     >
                       <span className="global-search-result-icon"><GlobalSearchResultIcon type={item.type} /></span>
                       <span className="global-search-result-copy">

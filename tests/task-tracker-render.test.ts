@@ -7,6 +7,7 @@ import {
   canStartPullRefresh,
   commentDraftStorageKey,
   fetchTaskSnapshot,
+  GlobalSearchContinuationWarning,
   GlobalSearchOverlay,
   applyMutationResult,
   bulkAssigneeOptions,
@@ -28,6 +29,7 @@ import {
   projectGroupMovePreview,
   ReleaseDialog,
   ReleaseOverview,
+  resolveGlobalSearchNavigation,
   resolveArchiveBulkAction,
   runSingleFlight,
   shouldTriggerPullRefresh,
@@ -506,6 +508,7 @@ test("workspace overview is a distinct linked surface", () => {
 test("global search renders an accessible overlay without replacing local task search", () => {
   const overlay = renderToStaticMarkup(createElement(GlobalSearchOverlay, {
     onClose: () => undefined,
+    onOpen: () => undefined,
   }));
   assert.match(overlay, /<dialog[^>]*aria-modal="true" aria-label="Global search"[^>]*open=""/);
   assert.match(overlay, /aria-label="Global search query"/);
@@ -520,6 +523,64 @@ test("global search renders an accessible overlay without replacing local task s
   }));
   assert.match(tracker, /<button class="sidebar-search"/);
   assert.match(tracker, /Search tasks…/);
+});
+
+test("global search keeps the current saved-view context when opening a task", () => {
+  const result = {
+    type: "task" as const,
+    id: "task-outside-window",
+    publicId: "44444444-4444-4444-8444-444444444444",
+    identifier: "TM-254",
+    title: "Global search",
+    context: "Task Manager",
+    href: "/issues/44444444-4444-4444-8444-444444444444",
+  };
+
+  assert.deepEqual(
+    resolveGlobalSearchNavigation(result, snapshot, {
+      surface: "view:saved-view",
+      layout: "board",
+      taskId: null,
+    }),
+    {
+      surface: "view:saved-view",
+      layout: "board",
+      taskId: "task-outside-window",
+    },
+  );
+});
+
+test("global search resolves catalog results locally and exposes continuation retry", () => {
+  const project = snapshot.projects[0]!;
+  assert.deepEqual(
+    resolveGlobalSearchNavigation({
+      type: "project",
+      id: project.id,
+      publicId: project.publicId,
+      title: project.name,
+      context: "Active project",
+      href: `/projects/${project.publicId}`,
+    }, snapshot, { surface: "mine", layout: "list", taskId: null }),
+    { surface: `project:${project.id}`, layout: "list", taskId: null },
+  );
+  assert.equal(
+    resolveGlobalSearchNavigation({
+      type: "project",
+      id: "missing-project",
+      publicId: "55555555-5555-4555-8555-555555555555",
+      title: "Missing",
+      context: "Active project",
+      href: "/projects/55555555-5555-4555-8555-555555555555",
+    }, snapshot, { surface: "mine", layout: "list", taskId: null }),
+    null,
+  );
+
+  const warning = renderToStaticMarkup(createElement(GlobalSearchContinuationWarning, {
+    busy: false,
+    onRetry: () => undefined,
+  }));
+  assert.match(warning, /Loaded matches are still available/);
+  assert.match(warning, />Retry</);
 });
 
 test("workspace overview counts only accessible top-level shared resources", () => {
