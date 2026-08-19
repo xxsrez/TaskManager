@@ -135,6 +135,9 @@ Desktop-first shell повторяет композицию Linear:
   bulk actions, Saved View scope или Release create. Перед открытием такого
   picker UI лениво дочитывает все ACL-scoped keyset pages нужного каталога;
   во время загрузки преждевременно неполный control не становится активным.
+  Это же правило действует для mobile `View controls` и открытия mobile search:
+  панель появляется после полной Project/Release hydration, а ошибка оставляет
+  trigger доступным для повторной попытки.
 - Copy-link action копирует текущий абсолютный deep link.
 - Legacy links `/tasks/{internal-id}`, `/releases/{internal-id}` и прежние
   `/views/{internal-id}`/`/projects/{internal-id}` разрешаются только после ACL

@@ -2526,14 +2526,36 @@ export function TaskTracker({
     applyNavigation(next, "push", false, result.href);
   }
 
+  async function toggleMobileViewControls(focusMobileSearch = false) {
+    setMobileSidebarOpen(false);
+    if (mobileActionsOpen) {
+      if (focusMobileSearch) mobileSearchRef.current?.focus();
+      else setMobileActionsOpen(false);
+      return;
+    }
+    setCatalogLoading(true);
+    setError("");
+    try {
+      await ensureCompleteCatalogs(["projects", "releases"]);
+      setMobileActionsOpen(true);
+      if (focusMobileSearch) {
+        window.requestAnimationFrame(() => mobileSearchRef.current?.focus());
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Catalog could not be loaded");
+    } finally {
+      setCatalogLoading(false);
+    }
+  }
+
   function focusLocalSearch() {
     const mobile = window.matchMedia("(max-width: 900px)").matches;
     setMobileSidebarOpen(false);
-    if (mobile) setMobileActionsOpen(true);
-    window.requestAnimationFrame(() => {
-      const target = mobile ? mobileSearchRef.current : searchRef.current;
-      target?.focus();
-    });
+    if (mobile) {
+      void toggleMobileViewControls(true);
+      return;
+    }
+    window.requestAnimationFrame(() => searchRef.current?.focus());
   }
 
   function toggleSelection(id: string, extendRange = false) {
@@ -3301,10 +3323,8 @@ export function TaskTracker({
                     aria-expanded={mobileActionsOpen}
                     aria-haspopup="dialog"
                     aria-label="Open view controls"
-                    onClick={() => {
-                      setMobileActionsOpen((value) => !value);
-                      setMobileSidebarOpen(false);
-                    }}
+                    aria-busy={catalogLoading && !mobileActionsOpen}
+                    onClick={() => void toggleMobileViewControls()}
                   >
                     <SlidersHorizontal size={17} />
                     {canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}
@@ -5401,7 +5421,7 @@ function FilterPopover({ data, query, onQuery, onClose }: {
   return <Popover title="Filter" className="filter-popover" onClose={onClose}><FilterConditionEditor data={data} query={query} onQuery={onQuery} /></Popover>;
 }
 
-function FilterConditionEditor({ data, query, onQuery, compact = false }: {
+export function FilterConditionEditor({ data, query, onQuery, compact = false }: {
   data: AppSnapshot;
   query: ViewQuery;
   onQuery: (query: ViewQuery) => void;

@@ -10,6 +10,7 @@ import {
   GlobalSearchContinuationWarning,
   GlobalSearchOverlay,
   fetchCompleteWorkspaceCatalog,
+  FilterConditionEditor,
   applyMutationResult,
   bulkAssigneeOptions,
   BulkProjectDialog,
@@ -2642,6 +2643,60 @@ test("mobile shell exposes complete navigation and view controls", () => {
   assert.match(markup, />Properties</);
   assert.match(markup, />Show empty groups</);
   assert.match(markup, />New task</);
+});
+
+test("mobile filter controls expose every hydrated Project and Release beyond the shortlist", () => {
+  const projects = Array.from({ length: 5 }, (_, index) => ({
+    ...snapshot.projects[0]!,
+    id: `mobile-project-${index + 1}`,
+    publicId: `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa${index}`,
+    name: `Mobile Project ${index + 1}`,
+  }));
+  const releases = Array.from({ length: 5 }, (_, index) => ({
+    id: `mobile-release-${index + 1}`,
+    publicId: `bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb${index}`,
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    projectId: projects[0]!.id,
+    name: `Mobile Release ${index + 1}`,
+    description: "",
+    status: "planned" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  }));
+  const markup = renderToStaticMarkup(createElement(FilterConditionEditor, {
+    data: {
+      ...snapshot,
+      projects,
+      releases,
+      catalogCoverage: {
+        projects: "complete",
+        releases: "complete",
+        views: "bounded",
+      },
+    },
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [
+        { field: "project", operator: "in", value: projects.map((project) => project.id) },
+        { field: "release", operator: "in", value: releases.map((release) => release.id) },
+      ],
+    },
+    onQuery: () => undefined,
+    compact: true,
+  }));
+
+  assert.match(markup, /filter-builder compact/);
+  assert.equal(markup.match(/Mobile Project \d/g)?.length, 5);
+  assert.equal(markup.match(/Mobile Release \d/g)?.length, 5);
+  assert.match(markup, /Mobile Project 5/);
+  assert.match(markup, /Mobile Release 5/);
 });
 
 test("sidebar release and view labels expose the full name while truncating visually", () => {
