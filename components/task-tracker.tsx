@@ -150,6 +150,10 @@ import {
   type ContextualActionEntity,
   type ResolvedContextualAction,
 } from "@/lib/contextual-actions";
+import {
+  createUserPreferenceSaveQueue,
+  type UserPreferenceChanges,
+} from "@/lib/user-preference-save";
 import type {
   AdminOverview,
   AccessRole,
@@ -551,9 +555,18 @@ export function mergeDeferredSnapshot(
   const projectCoverage = incoming.catalogCoverage?.projects ?? "complete";
   const releaseCoverage = incoming.catalogCoverage?.releases ?? "complete";
   const viewCoverage = incoming.catalogCoverage?.views ?? "complete";
+  const preserveCurrentProfile = current.user.id === incoming.user.id &&
+    Number(current.userProfile?.user.version ?? current.user.version ?? 0) >=
+      Number(incoming.userProfile?.user.version ?? incoming.user.version ?? 0);
 
   return {
     ...incoming,
+    user: preserveCurrentProfile ? current.user : incoming.user,
+    userProfile: preserveCurrentProfile
+      ? current.userProfile ?? (incoming.userProfile
+        ? { ...incoming.userProfile, user: current.user as UserProfile["user"] }
+        : undefined)
+      : incoming.userProfile,
     admin: incoming.isAdmin ? incoming.admin ?? current.admin : null,
     tasks: mergedTasks,
     projects: mergeResetCollection(
@@ -598,6 +611,43 @@ export function snapshotProvesCollectionAbsence(
   kind: WorkspaceCatalogKind,
 ) {
   return (snapshot.catalogCoverage?.[kind] ?? "complete") === "complete";
+}
+
+class ProfileRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+async function patchUserPreferences(
+  version: number,
+  changes: UserPreferenceChanges,
+): Promise<UserProfile> {
+  const response = await fetch("/api/settings/profile", {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ version, ...changes }),
+  });
+  const value = await response.json() as UserProfile | { error: string };
+  if (!response.ok || "error" in value) {
+    throw new ProfileRequestError(
+      "error" in value ? value.error : "Preference could not be saved",
+      response.status,
+    );
+  }
+  return value;
+}
+
+async function fetchUserProfile(): Promise<UserProfile> {
+  const response = await fetch("/api/settings/profile", { cache: "no-store" });
+  const value = await response.json() as UserProfile | { error: string };
+  if (!response.ok || "error" in value) {
+    throw new ProfileRequestError(
+      "error" in value ? value.error : "Profile could not be refreshed",
+      response.status,
+    );
+  }
+  return value;
 }
 
 export const PULL_REFRESH_THRESHOLD = 72;
@@ -1105,6 +1155,7 @@ export function TaskTracker({
   const [theme, setTheme] = useState<"system" | "light" | "dark">(
     initialData.user.theme ?? "system",
   );
+  const preferenceSaveQueueRef = useRef<ReturnType<typeof createUserPreferenceSaveQueue> | null>(null);
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
   const mobileSearchRef = useRef<HTMLInputElement>(null);
@@ -1120,6 +1171,20 @@ export function TaskTracker({
   const taskReturnPath = useRef(
     navigationPath({ ...initialNavigation, taskId: null }, initialData),
   );
+  if (!preferenceSaveQueueRef.current) {
+    preferenceSaveQueueRef.current = createUserPreferenceSaveQueue({
+      current: currentUserProfile,
+      save: patchUserPreferences,
+      refresh: fetchUserProfile,
+      isConflict: (requestError) =>
+        requestError instanceof ProfileRequestError && requestError.status === 409,
+      optimistic: applyOptimisticPreferences,
+      apply: applyUserProfile,
+      error: (requestError) => setError(
+        requestError instanceof Error ? requestError.message : "Preference could not be saved",
+      ),
+    });
+  }
 
   const captureSyncCheckpoint = useCallback((): WorkspaceSyncCheckpoint => ({
     taskIds: new Set(dataRef.current.tasks.map((task) => task.id)),
@@ -2476,51 +2541,44 @@ export function TaskTracker({
     await navigator.clipboard.writeText(window.location.href);
   }
 
-  function applyUserProfile(profile: UserProfile) {
+  function currentUserProfile(): UserProfile {
+    const current = dataRef.current;
+    return current.userProfile ?? {
+      user: {
+        ...current.user,
+        version: current.user.version ?? 1,
+        theme: current.user.theme ?? "system",
+        sidebarPreference: current.user.sidebarPreference ?? "expanded",
+      },
+      identities: [{ provider: "chatgpt", verifiedEmail: current.user.email }],
+    };
+  }
+
+  function applyOptimisticPreferences(changes: UserPreferenceChanges) {
+    if (changes.theme) setTheme(changes.theme);
+    if (changes.sidebarPreference) {
+      setSidebarCollapsed(changes.sidebarPreference === "collapsed");
+    }
+  }
+
+  function applyUserProfile(
+    profile: UserProfile,
+    pendingPreferences: UserPreferenceChanges | null = null,
+  ) {
     dataRef.current = {
       ...dataRef.current,
       user: profile.user,
       userProfile: profile,
     };
     setData((current) => ({ ...current, user: profile.user, userProfile: profile }));
-    setTheme(profile.user.theme);
-    setSidebarCollapsed(profile.user.sidebarPreference === "collapsed");
+    setTheme(pendingPreferences?.theme ?? profile.user.theme);
+    setSidebarCollapsed(
+      (pendingPreferences?.sidebarPreference ?? profile.user.sidebarPreference) === "collapsed",
+    );
   }
 
-  async function saveUserPreferences(changes: {
-    theme?: "system" | "light" | "dark";
-    sidebarPreference?: "expanded" | "collapsed";
-  }) {
-    const previous = dataRef.current.user;
-    if (changes.theme) setTheme(changes.theme);
-    if (changes.sidebarPreference) {
-      setSidebarCollapsed(changes.sidebarPreference === "collapsed");
-    }
-    try {
-      const response = await fetch("/api/settings/profile", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ version: previous.version ?? 1, ...changes }),
-      });
-      const value = await response.json() as UserProfile | { error: string };
-      if (!response.ok || "error" in value) {
-        if (response.status === 409) {
-          const refreshed = await fetch("/api/settings/profile", { cache: "no-store" });
-          const latest = await refreshed.json() as UserProfile | { error: string };
-          if (refreshed.ok && !("error" in latest)) {
-            applyUserProfile(latest);
-            setError("Preferences changed in another session; the latest values were loaded.");
-            return;
-          }
-        }
-        throw new Error("error" in value ? value.error : "Preference could not be saved");
-      }
-      applyUserProfile(value);
-    } catch (requestError) {
-      setTheme(previous.theme ?? "system");
-      setSidebarCollapsed(previous.sidebarPreference === "collapsed");
-      setError(requestError instanceof Error ? requestError.message : "Preference could not be saved");
-    }
+  function saveUserPreferences(changes: UserPreferenceChanges) {
+    return preferenceSaveQueueRef.current!.enqueue(changes);
   }
 
   async function openCreate(defaults: TaskCreateDefaults = {}) {

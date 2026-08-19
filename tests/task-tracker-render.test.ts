@@ -836,6 +836,52 @@ test("account-menu Administration remains rendered after deferred bootstrap", ()
   assert.equal(revoked.admin, null);
 });
 
+test("an older deferred snapshot cannot regress a saved profile or preferences", () => {
+  const currentProfile = {
+    user: {
+      ...snapshot.user,
+      displayName: "Saved locally",
+      timezone: "Atlantic/Madeira",
+      theme: "dark" as const,
+      sidebarPreference: "collapsed" as const,
+      version: 4,
+    },
+    identities: [{ provider: "chatgpt" as const, verifiedEmail: snapshot.user.email }],
+  };
+  const staleProfile = {
+    user: {
+      ...snapshot.user,
+      displayName: "Before save",
+      timezone: "UTC",
+      theme: "light" as const,
+      sidebarPreference: "expanded" as const,
+      version: 3,
+    },
+    identities: [{ provider: "chatgpt" as const, verifiedEmail: snapshot.user.email }],
+  };
+
+  const merged = mergeDeferredSnapshot(
+    { ...snapshot, user: currentProfile.user, userProfile: currentProfile },
+    { ...snapshot, user: staleProfile.user, userProfile: staleProfile },
+  );
+
+  assert.equal(merged.user, currentProfile.user);
+  assert.equal(merged.userProfile, currentProfile);
+  assert.equal(merged.user.version, 4);
+  assert.equal(merged.user.theme, "dark");
+
+  const newerProfile = {
+    ...staleProfile,
+    user: { ...staleProfile.user, displayName: "Newer server value", version: 5 },
+  };
+  const advanced = mergeDeferredSnapshot(
+    { ...snapshot, user: currentProfile.user, userProfile: currentProfile },
+    { ...snapshot, user: newerProfile.user, userProfile: newerProfile },
+  );
+  assert.equal(advanced.user, newerProfile.user);
+  assert.equal(advanced.userProfile, newerProfile);
+});
+
 test("a newer deferred summary keeps loaded content without masking its optimistic version", () => {
   const loadedTask = {
     ...snapshot.tasks[0]!,
