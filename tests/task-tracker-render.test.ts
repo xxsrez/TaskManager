@@ -38,7 +38,6 @@ import {
   taskDraftSyncMode,
   taskDraftValueChanged,
   taskMatchesSearch,
-  taskRowReorderDirection,
   taskRelationPresentations,
   TASK_MANAGER_CLI_SETUP,
   TASK_MANAGER_DIAGNOSTIC_PROMPT,
@@ -1393,24 +1392,28 @@ test("StatusIcon semantics are opt-in when visible text already names the status
 test("row reordering ignores Alt+Arrow from interactive descendants", () => {
   assert.equal(taskRowReorderDirection({
     draggable: true,
+    reorderEnabled: true,
     altKey: true,
     key: "ArrowUp",
     targetIsRow: true,
   }), "up");
   assert.equal(taskRowReorderDirection({
     draggable: true,
+    reorderEnabled: true,
     altKey: true,
     key: "ArrowDown",
     targetIsRow: true,
   }), "down");
   assert.equal(taskRowReorderDirection({
     draggable: true,
+    reorderEnabled: true,
     altKey: true,
     key: "ArrowUp",
     targetIsRow: false,
   }), null);
   assert.equal(taskRowReorderDirection({
     draggable: true,
+    reorderEnabled: true,
     altKey: false,
     key: "ArrowUp",
     targetIsRow: true,

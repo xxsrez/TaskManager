@@ -2824,19 +2824,6 @@ function PullRefreshIndicator({ distance, refreshing, error, onRetry }: {
   </div>;
 }
 
-export function taskRowReorderDirection({ draggable, reorderEnabled, altKey, key, targetIsRow }: {
-  draggable: boolean;
-  reorderEnabled: boolean;
-  altKey: boolean;
-  key: string;
-  targetIsRow: boolean;
-}): "up" | "down" | null {
-  if (!targetIsRow || !draggable || !reorderEnabled || !altKey) return null;
-  if (key === "ArrowUp") return "up";
-  if (key === "ArrowDown") return "down";
-  return null;
-}
-
 function TaskRow({ task, status, statusOptions, showStatus, project, release, assignee, labels, hierarchy, visibleFields, selected, highlighted, canDrag, reorderEnabled, dragGroupLabel, dropBefore, onDragTarget, onDropBefore, onKeyboardMove, onStatusChange, onSelect, onHighlight, onOpen, onDragState }: { task: TaskRecord; status: WorkflowStatusRecord; statusOptions: WorkflowStatusRecord[]; showStatus: boolean; project?: ProjectRecord; release?: ReleaseRecord; assignee?: UserRecord; labels: LabelRecord[]; hierarchy: TaskHierarchySummary; visibleFields: ViewDisplay["visibleFields"]; selected: boolean; highlighted: boolean; canDrag: boolean; reorderEnabled: boolean; dragGroupLabel?: string; dropBefore: boolean; onDragTarget: (active: boolean) => void; onDropBefore: (draggedTaskId: string) => void; onKeyboardMove: (direction: "up" | "down") => void; onStatusChange: (statusId: string) => Promise<unknown>; onSelect: () => void; onHighlight: () => void; onOpen: () => void; onDragState: (taskId: string | null) => void }) {
   const editable = canEditContent(task.accessRole);
   const draggable = editable && canDrag;
