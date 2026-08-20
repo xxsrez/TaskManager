@@ -29,6 +29,33 @@ test("MCP file input fetches a bounded HTTPS body without forwarding credentials
   assert.equal(seen[0]?.headers.get("authorization"), null);
 });
 
+test("MCP file input accepts signed ChatGPT estuary URLs from native Codex tasks", async () => {
+  const downloadUrl =
+    "https://chatgpt.com/backend-api/estuary/content?id=file_123&ts=123&p=fs&cid=1&sig=signed&v=0";
+  const seen: Request[] = [];
+  const result = await fetchMcpFileInput(
+    {
+      ...input,
+      download_url: downloadUrl,
+      mime_type: "image/png",
+      file_name: "clipboard.png",
+    },
+    {
+      maxBytes: 64,
+      fetcher: async (request) => {
+        seen.push(request);
+        return new Response("png", {
+          headers: { "content-type": "image/png" },
+        });
+      },
+    },
+  );
+
+  assert.equal(seen[0]?.url, downloadUrl);
+  assert.equal(result.filename, "clipboard.png");
+  assert.equal(result.mediaType, "image/png");
+});
+
 test("MCP file input rejects local URLs and revalidates redirects", async () => {
   for (const download_url of [
     "http://files.openaiusercontent.com/file",
@@ -36,6 +63,7 @@ test("MCP file input rejects local URLs and revalidates redirects", async () => 
     "https://[::1]/file",
     "https://metadata.google.internal/file",
     "https://user:secret@files.openaiusercontent.com/file",
+    "https://evilchatgpt.com/file",
   ]) {
     await assert.rejects(
       fetchMcpFileInput({ ...input, download_url }, {

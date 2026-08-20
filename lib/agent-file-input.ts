@@ -14,6 +14,7 @@ type FetchFileOptions = {
 
 const MAX_REDIRECTS = 3;
 const ALLOWED_HOST_SUFFIXES = [
+  "chatgpt.com",
   "openai.com",
   "openaiusercontent.com",
   "oaiusercontent.com",
