@@ -25,6 +25,8 @@ export type CommentUploadCandidate = {
   insertionPoint: number;
   progress: number;
   status: CommentUploadStatus;
+  stagedFileRef: string | null;
+  stagedFileVersion: number | null;
   error: string | null;
   token: string | null;
 };
@@ -145,6 +147,8 @@ export function createCommentUploadCandidate(
     insertionPoint,
     progress: 0,
     status: "queued",
+    stagedFileRef: null,
+    stagedFileVersion: null,
     error: null,
     token: null,
   };

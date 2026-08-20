@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
+import { POST as createBrowserStoredFile } from "../app/api/files/route";
+import {
+  DELETE as deleteBrowserStoredFile,
+  GET as getBrowserStoredFile,
+} from "../app/api/files/[fileRef]/route";
+import { POST as bindBrowserStoredFile } from "../app/api/tasks/[id]/attachments/route";
 import {
   bindStoredFileToTask,
   createStoredFile,
@@ -8,6 +14,7 @@ import {
   purgeStoredFileGarbage,
 } from "../lib/attachments";
 import { ConflictError, NotFoundError, ValidationError } from "../lib/domain";
+import { configureActorResolverForTests } from "../lib/auth";
 import {
   createProject,
   createTask,
@@ -115,6 +122,85 @@ test("StoredFile upload is uploader-scoped, byte-idempotent, and uses opaque sto
     ConflictError,
   );
   await assert.rejects(getStoredFile(outsider, created.publicId), NotFoundError);
+});
+
+test("session-authenticated web routes stage, recover, bind, and delete StoredFiles", async () => {
+  const { first } = await setupProject("Stored web", "SFW");
+  configureActorResolverForTests(async () => ownerActor);
+
+  const createdResponse = await createBrowserStoredFile(new Request(
+    "https://example.test/api/files",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/pdf",
+        "idempotency-key": "stored-web-upload",
+        "x-file-filename": encodeURIComponent("web.pdf"),
+      },
+      body: pdf("web"),
+    },
+  ));
+  assert.equal(createdResponse.status, 201);
+  const created = await createdResponse.json() as {
+    file: { ref: string; version: number; state: string; checksumSha256: string };
+  };
+  assert.equal(created.file.state, "ready");
+  assert.equal(created.file.checksumSha256.length, 64);
+
+  const recovered = await getBrowserStoredFile(
+    new Request(`https://example.test/api/files/${created.file.ref}`),
+    { params: Promise.resolve({ fileRef: created.file.ref }) },
+  );
+  assert.equal(recovered.status, 200);
+
+  const boundResponse = await bindBrowserStoredFile(new Request(
+    `https://example.test/api/tasks/${first.id}/attachments`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        fileRef: created.file.ref,
+        idempotencyKey: "stored-web-bind",
+      }),
+    },
+  ), { params: Promise.resolve({ id: first.id }) });
+  assert.equal(boundResponse.status, 201);
+  const bound = await boundResponse.json() as {
+    attachment: { state: string; checksumSha256: string };
+  };
+  assert.equal(bound.attachment.state, "ready");
+  assert.equal(bound.attachment.checksumSha256, created.file.checksumSha256);
+
+  const hiddenAfterBind = await getBrowserStoredFile(
+    new Request(`https://example.test/api/files/${created.file.ref}`),
+    { params: Promise.resolve({ fileRef: created.file.ref }) },
+  );
+  assert.equal(hiddenAfterBind.status, 404);
+
+  const disposableResponse = await createBrowserStoredFile(new Request(
+    "https://example.test/api/files",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/pdf",
+        "idempotency-key": "stored-web-delete-upload",
+        "x-file-filename": "delete.pdf",
+      },
+      body: pdf("delete"),
+    },
+  ));
+  const disposable = await disposableResponse.json() as {
+    file: { ref: string; version: number };
+  };
+  const deleted = await deleteBrowserStoredFile(
+    new Request(`https://example.test/api/files/${disposable.file.ref}`, {
+      method: "DELETE",
+      headers: { "x-file-version": String(disposable.file.version) },
+    }),
+    { params: Promise.resolve({ fileRef: disposable.file.ref }) },
+  );
+  assert.equal(deleted.status, 200);
+  assert.equal((await deleted.json() as { file: { state: string } }).file.state, "deleted");
 });
 
 test("binding transfers StoredFile to Task ACL and enforces one v1 binding", async () => {

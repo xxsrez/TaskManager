@@ -13,6 +13,7 @@ import {
   startTaskAttachmentUpload,
   type PublicAttachmentRecord,
 } from "@/components/task-attachments";
+import { deleteStoredFile } from "@/lib/staged-file-upload";
 import {
   commentUploadBlocksSubmit,
   createCommentUploadCandidate,
@@ -166,6 +167,10 @@ export function CommentAttachmentAuthoring({
       candidate.file,
       candidate.idempotencyKey,
       (progress) => updateUpload(candidate.id, { progress }),
+      (stored) => updateUpload(candidate.id, {
+        stagedFileRef: stored.ref,
+        stagedFileVersion: stored.version,
+      }),
     );
     activeUploads.current.set(candidate.id, running.cancel);
     try {
@@ -235,7 +240,7 @@ export function CommentAttachmentAuthoring({
     void runUpload(upload);
   }
 
-  function removeUpload(upload: CommentUploadCandidate) {
+  async function removeUpload(upload: CommentUploadCandidate) {
     if (upload.status === "uploading" || upload.status === "processing") {
       cancelUpload(upload);
       return;
@@ -253,6 +258,21 @@ export function CommentAttachmentAuthoring({
       if (removed.removed) {
         adoptValue(removed.value);
         focusAt(Math.min(removed.value.length, insertion?.start ?? upload.insertionPoint));
+      }
+    }
+    if (
+      upload.status !== "ready" &&
+      upload.stagedFileRef &&
+      upload.stagedFileVersion
+    ) {
+      try {
+        await deleteStoredFile(upload.stagedFileRef, upload.stagedFileVersion);
+      } catch (requestError) {
+        updateUpload(upload.id, {
+          status: "failed",
+          error: requestError instanceof Error ? requestError.message : "Staged file could not be deleted",
+        });
+        return;
       }
     }
     setUploads((current) => current.filter((candidate) => candidate.id !== upload.id));
@@ -384,7 +404,7 @@ export function CommentAttachmentAuthoring({
                   type="button"
                   aria-label={`${upload.status === "ready" ? "Remove from draft" : upload.status === "uploading" || upload.status === "processing" ? "Cancel" : "Remove"} ${upload.file.name}`}
                   title={upload.status === "ready" ? "Remove from draft" : "Cancel or remove upload"}
-                  onClick={() => removeUpload(upload)}
+                  onClick={() => void removeUpload(upload)}
                 ><X size={13} /></button>
               </div>
             </article>

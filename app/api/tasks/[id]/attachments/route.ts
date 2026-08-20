@@ -1,5 +1,6 @@
 import {
   attachmentLimits,
+  bindStoredFileToTask,
   createAttachment,
   listTaskAttachments,
   publicAttachment,
@@ -7,7 +8,7 @@ import {
   resolveTaskAttachments,
 } from "@/lib/attachments";
 import { ValidationError } from "@/lib/domain";
-import { withUser, withUserResponse } from "@/lib/http";
+import { readJson, withUser, withUserResponse } from "@/lib/http";
 
 export async function GET(
   request: Request,
@@ -40,6 +41,22 @@ export async function POST(
 ) {
   const { id } = await context.params;
   return withUserResponse(async (user) => {
+    if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "application/json") {
+      const input = await readJson(request);
+      const fileRef = requiredText(input.fileRef, "fileRef", 200);
+      const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey", 200);
+      const displayName = input.displayName == null
+        ? null
+        : requiredText(input.displayName, "displayName", 512);
+      const attachment = await bindStoredFileToTask(user, id, fileRef, {
+        idempotencyKey,
+        displayName,
+      });
+      return Response.json(
+        { attachment: publicAttachment(attachment) },
+        { status: 201 },
+      );
+    }
     const encodedFilename = request.headers.get("x-attachment-filename");
     const idempotencyKey = request.headers.get("idempotency-key");
     if (!encodedFilename) throw new ValidationError("X-Attachment-Filename is required");
@@ -59,4 +76,13 @@ export async function POST(
     });
     return Response.json({ attachment: publicAttachment(attachment) }, { status: 201 });
   });
+}
+
+function requiredText(value: unknown, name: string, maximum: number) {
+  if (typeof value !== "string") throw new ValidationError(`${name} is required`);
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximum) {
+    throw new ValidationError(`${name} is invalid`);
+  }
+  return normalized;
 }

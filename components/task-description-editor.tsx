@@ -7,6 +7,7 @@ import {
   startTaskAttachmentUpload,
   type PublicAttachmentRecord,
 } from "@/components/task-attachments";
+import { deleteStoredFile } from "@/lib/staged-file-upload";
 import {
   buildTaskFileLink,
   buildTaskImageToken,
@@ -20,6 +21,8 @@ type DescriptionUpload = {
   insertionPoint: number;
   progress: number;
   status: "uploading" | "failed" | "canceled";
+  stagedFileRef: string | null;
+  stagedFileVersion: number | null;
   error: string | null;
 };
 
@@ -113,6 +116,8 @@ export function TaskDescriptionEditor({
         insertionPoint,
         progress: 0,
         status: "failed",
+        stagedFileRef: null,
+        stagedFileVersion: null,
         error: "Choose a PNG, JPEG, or GIF image.",
       });
       return;
@@ -124,6 +129,8 @@ export function TaskDescriptionEditor({
       insertionPoint,
       progress: 0,
       status: "uploading",
+      stagedFileRef: null,
+      stagedFileVersion: null,
       error: null,
     };
     setUpload(next);
@@ -139,6 +146,10 @@ export function TaskDescriptionEditor({
       (progress) => setUpload((current) => current &&
         current.idempotencyKey === candidate.idempotencyKey
         ? { ...current, progress }
+        : current),
+      (stored) => setUpload((current) => current &&
+        current.idempotencyKey === candidate.idempotencyKey
+        ? { ...current, stagedFileRef: stored.ref, stagedFileVersion: stored.version }
         : current),
     );
     cancelUploadRef.current = running.cancel;
@@ -173,6 +184,25 @@ export function TaskDescriptionEditor({
         : current);
     } finally {
       cancelUploadRef.current = null;
+    }
+  }
+
+  async function dismissUpload(candidate: DescriptionUpload) {
+    if (!candidate.stagedFileRef || !candidate.stagedFileVersion) {
+      setUpload(null);
+      return;
+    }
+    try {
+      await deleteStoredFile(candidate.stagedFileRef, candidate.stagedFileVersion);
+      setUpload(null);
+    } catch (requestError) {
+      setUpload((current) => current && current.idempotencyKey === candidate.idempotencyKey
+        ? {
+            ...current,
+            status: "failed",
+            error: requestError instanceof Error ? requestError.message : "Staged file could not be deleted",
+          }
+        : current);
     }
   }
 
@@ -285,7 +315,7 @@ export function TaskDescriptionEditor({
           ) : (
             <>
               <button className="button ghost" type="button" disabled={upload.mode === "image" && !isSupportedRasterImage(upload.file)} onClick={() => void runUpload(upload)}><RotateCcw size={13} />Retry</button>
-              <button className="icon-button" type="button" aria-label={`Dismiss ${upload.file.name}`} onClick={() => setUpload(null)}><X size={14} /></button>
+              <button className="icon-button" type="button" aria-label={`Delete staged ${upload.file.name}`} onClick={() => void dismissUpload(upload)}><X size={14} /></button>
             </>
           )}
         </div>

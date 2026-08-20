@@ -11,6 +11,10 @@ const taskAttachments = readFileSync(
   new URL("../components/task-attachments.tsx", import.meta.url),
   "utf8",
 );
+const stagedFileUpload = readFileSync(
+  new URL("../lib/staged-file-upload.ts", import.meta.url),
+  "utf8",
+);
 const taskDescriptionEditor = readFileSync(
   new URL("../components/task-description-editor.tsx", import.meta.url),
   "utf8",
@@ -402,8 +406,11 @@ test("attachment UI has bounded cards, authenticated thumbnails, and mobile touc
   assert.match(taskAttachments, /\?variant=thumbnail&disposition=inline/);
   assert.match(taskAttachments, /thumbnailFailed \? original : thumbnail/);
   assert.match(taskAttachments, /if \(!thumbnailFailed\) setThumbnailFailed\(true\)/);
-  assert.match(taskAttachments, /new XMLHttpRequest\(\)/);
-  assert.match(taskAttachments, /Idempotency-Key/);
+  assert.match(stagedFileUpload, /new XMLHttpRequest\(\)/);
+  assert.match(stagedFileUpload, /X-File-Filename/);
+  assert.match(stagedFileUpload, /Idempotency-Key/);
+  assert.match(stagedFileUpload, /fileRef, idempotencyKey/);
+  assert.match(taskAttachments, /startStagedTaskAttachmentUpload/);
   assert.match(taskAttachments, /role="dialog" aria-modal="true"/);
   assert.match(taskAttachments, /event\.key === "Escape"/);
   assert.match(declarations(".attachment-card"), /grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\)\s+auto\s*;/);
@@ -421,6 +428,20 @@ test("attachment UI has bounded cards, authenticated thumbnails, and mobile touc
     css,
     /@media\s*\(max-width:\s*640px\)[\s\S]*?\.composer-attachments > div:first-child \.button\s*\{[^}]*min-height:\s*44px\s*;/,
   );
+  assert.match(
+    css,
+    /@media\s*\(max-height:\s*520px\)[\s\S]*?\.modal\.composer-modal\s*\{[^}]*max-height:\s*100dvh\s*;[^}]*overflow-y:\s*auto\s*;/,
+  );
+});
+
+test("Task composer stages safe refs before creation and preserves recoverable bind state", () => {
+  assert.match(taskTracker, /startStoredFileUpload/);
+  assert.match(taskTracker, /bindStoredFileToTask/);
+  assert.match(taskTracker, /tm:task-composer-staged:/);
+  assert.match(taskTracker, /Staged files are still available for retry or deletion until their TTL expires/);
+  assert.match(taskTracker, /failed to bind/);
+  assert.match(taskTracker, /deleteStoredFile/);
+  assert.doesNotMatch(taskTracker, /localStorage\.setItem\([^\n]+file:/);
 });
 
 test("native description attachments use private refs, cursor upload, and responsive rendering", () => {

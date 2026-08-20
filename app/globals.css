@@ -516,6 +516,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .composer-attachment-list b { overflow: hidden; color: var(--text-secondary); font-size: 10px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-list small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-list progress { width: min(200px, 100%); height: 3px; margin-top: 3px; accent-color: var(--accent); }
+.composer-attachment-actions { min-width: 0; display: flex !important; align-items: center; justify-content: flex-end; gap: 2px !important; }
 .composer-upload-error { margin: 0; padding: 8px 14px; border-top: 1px solid color-mix(in srgb, var(--danger) 20%, var(--border)); background: color-mix(in srgb, var(--danger) 7%, transparent); color: var(--danger); font-size: 10px; }
 .property-bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 14px; border-top: 1px solid var(--border); }
 .property-select { height: 28px; display: flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); }
@@ -1392,6 +1393,11 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .share-input select { width: 100%; }
   .access-row { grid-template-columns: 28px minmax(0, 1fr) auto; }
   .access-row .access-actions { grid-column: 2 / -1; justify-content: flex-end; }
+}
+
+@media (max-height: 520px) {
+  .modal-backdrop:has(.composer-modal) { padding-block: 0; overflow-y: auto; }
+  .modal.composer-modal { max-height: 100dvh; overflow-y: auto; }
 }
 
 @media (max-width: 900px) {

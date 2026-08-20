@@ -412,9 +412,12 @@ List повторяет плотную grouped-list модель Linear.
   загружает их как uploader-only staged StoredFiles. Submit доступен после
   `ready`; server создаёт Task и bind-ит `fileRef` с отдельными неизменяемыми
   idempotency keys. При частичном bind modal остаётся открыт, называет созданную
-  Task и даёт retry/cancel по каждому файлу. Close/remove удаляет unbound file
-  recoverably; TTL очищает abandoned drafts.
-- Полноценная система persisted drafts и templates не входит в MVP.
+  Task и даёт retry/cancel по каждому файлу. Close сохраняет только безопасные
+  staged refs/metadata/operation keys для повторного открытия; явный remove
+  удаляет unbound file recoverably, а TTL очищает abandoned drafts. Local path,
+  browser `File`, binary и object URL в draft не сохраняются.
+- Полноценная система persisted content drafts и templates не входит в MVP;
+  bounded recovery staged-file операций является частью attachment workflow.
 
 ### 8.2 Task details
 

@@ -118,11 +118,17 @@ import {
 } from "@/components/workspace-sync-coordinator";
 import {
   type PublicAttachmentRecord,
-  startTaskAttachmentUpload,
   TaskAttachments,
   TaskDescriptionFileLink,
   TaskDescriptionImage,
 } from "@/components/task-attachments";
+import {
+  bindStoredFileToTask,
+  deleteStoredFile,
+  getStoredFile,
+  startStoredFileUpload,
+  type PublicStoredFileRecord,
+} from "@/lib/staged-file-upload";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
 import { CommentAttachmentAuthoring } from "@/components/comment-attachment-authoring";
 import {
@@ -4137,11 +4143,37 @@ function TaskStatusControl({ status, statuses, onChange }: { status: WorkflowSta
 
 type ComposerAttachment = {
   id: string;
-  key: string;
-  file: File;
+  uploadKey: string;
+  bindKey: string;
+  file: File | null;
+  fileRef: string | null;
+  fileVersion: number | null;
+  filename: string;
+  mediaType: string;
+  byteSize: number;
+  checksumSha256: string | null;
+  readyExpiresAt: string | null;
   progress: number;
-  status: "queued" | "uploading" | "failed" | "canceled" | "complete";
+  status: "uploading" | "staged" | "binding" | "failed" | "canceled" | "complete";
+  failedPhase: "upload" | "bind" | "delete" | null;
   error: string | null;
+};
+
+type ComposerRecoveryState = {
+  version: 1;
+  createdTask: { id: string; identifier: string } | null;
+  files: Array<{
+    id: string;
+    uploadKey: string;
+    bindKey: string;
+    fileRef: string;
+    fileVersion: number;
+    filename: string;
+    mediaType: string;
+    byteSize: number;
+    checksumSha256: string;
+    readyExpiresAt: string | null;
+  }>;
 };
 
 function TaskComposer({ data, contextProject, contextRelease, defaults, onClose, onSubmit, busy }: { data: AppSnapshot; contextProject: string | null; contextRelease: string | null; defaults: TaskCreateDefaults; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<TaskRecord | null>; busy: boolean }) {
@@ -4180,16 +4212,72 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
     new Set(defaults.labelId ? [defaults.labelId] : []),
   );
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [createdTask, setCreatedTask] = useState<TaskRecord | null>(null);
+  const [createdTask, setCreatedTask] = useState<{ id: string; identifier: string } | null>(null);
+  const [recoveryHydrated, setRecoveryHydrated] = useState(false);
   const [composerError, setComposerError] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const activeUploads = useRef(new Map<string, () => void>());
+  const recoveryKey = `tm:task-composer-staged:${data.user.id}`;
 
   useEffect(() => () => {
     for (const cancel of activeUploads.current.values()) cancel();
     activeUploads.current.clear();
   }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    const timer = window.setTimeout(() => {
+      const saved = readComposerRecoveryState(window.localStorage.getItem(recoveryKey));
+      if (!saved) {
+        setRecoveryHydrated(true);
+        return;
+      }
+      setCreatedTask(saved.createdTask);
+      void Promise.all(saved.files.map(async (file) => {
+        try {
+          const current = await getStoredFile(file.fileRef);
+          return recoveredComposerAttachment(file, current);
+        } catch {
+          return null;
+        }
+      })).then((files) => {
+        if (stopped) return;
+        setAttachments(files.filter((file): file is ComposerAttachment => file !== null));
+        setRecoveryHydrated(true);
+      });
+    }, 0);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [recoveryKey]);
+
+  useEffect(() => {
+    if (!recoveryHydrated) return;
+    const files = attachments.flatMap((attachment) =>
+      attachment.fileRef && attachment.fileVersion && attachment.checksumSha256 && attachment.status !== "complete"
+        ? [{
+            id: attachment.id,
+            uploadKey: attachment.uploadKey,
+            bindKey: attachment.bindKey,
+            fileRef: attachment.fileRef,
+            fileVersion: attachment.fileVersion,
+            filename: attachment.filename,
+            mediaType: attachment.mediaType,
+            byteSize: attachment.byteSize,
+            checksumSha256: attachment.checksumSha256,
+            readyExpiresAt: attachment.readyExpiresAt,
+          }]
+        : [],
+    );
+    if (!createdTask && files.length === 0) {
+      window.localStorage.removeItem(recoveryKey);
+      return;
+    }
+    const state: ComposerRecoveryState = { version: 1, createdTask, files };
+    window.localStorage.setItem(recoveryKey, JSON.stringify(state));
+  }, [attachments, createdTask, recoveryHydrated, recoveryKey]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -4217,39 +4305,119 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
   }
 
   function addFiles(files: FileList | File[]) {
-    const additions = Array.from(files).map((file) => ({
-      id: crypto.randomUUID(),
-      key: `task-composer-attachment:${crypto.randomUUID()}`,
-      file,
-      progress: 0,
-      status: "queued" as const,
-      error: null,
-    }));
+    if (createdTask) return;
+    const additions = Array.from(files).map((file) => {
+      const id = crypto.randomUUID();
+      return {
+        id,
+        uploadKey: `task-composer-file:${id}`,
+        bindKey: `task-composer-bind:${id}`,
+        file,
+        fileRef: null,
+        fileVersion: null,
+        filename: file.name,
+        mediaType: file.type || "application/octet-stream",
+        byteSize: file.size,
+        checksumSha256: null,
+        readyExpiresAt: null,
+        progress: 0,
+        status: "uploading" as const,
+        failedPhase: null,
+        error: null,
+      };
+    });
     setAttachments((current) => [...current, ...additions]);
+    for (const attachment of additions) void stageOne(attachment);
   }
 
-  async function uploadOne(task: TaskRecord, attachment: ComposerAttachment) {
-    patchAttachment(attachment.id, { status: "uploading", progress: 0, error: null });
-    const running = startTaskAttachmentUpload(
-      task.id,
+  async function stageOne(attachment: ComposerAttachment) {
+    if (!attachment.file) {
+      patchAttachment(attachment.id, {
+        status: "failed",
+        failedPhase: "upload",
+        error: "Choose the local file again to retry this upload.",
+      });
+      return null;
+    }
+    patchAttachment(attachment.id, {
+      status: "uploading",
+      failedPhase: null,
+      progress: 0,
+      error: null,
+    });
+    const running = startStoredFileUpload(
       attachment.file,
-      attachment.key,
+      attachment.uploadKey,
       (progress) => patchAttachment(attachment.id, { progress }),
     );
     activeUploads.current.set(attachment.id, running.cancel);
     try {
-      await running.promise;
-      patchAttachment(attachment.id, { status: "complete", progress: 100, error: null });
-      return true;
+      const stored = await running.promise;
+      patchAttachment(attachment.id, {
+        fileRef: stored.ref,
+        fileVersion: stored.version,
+        filename: stored.filename,
+        mediaType: stored.mediaType,
+        byteSize: stored.byteSize,
+        checksumSha256: stored.checksumSha256,
+        readyExpiresAt: stored.readyExpiresAt,
+        status: "staged",
+        failedPhase: null,
+        progress: 100,
+        error: null,
+      });
+      return stored;
     } catch (requestError) {
       const canceled = requestError instanceof DOMException && requestError.name === "AbortError";
       patchAttachment(attachment.id, {
         status: canceled ? "canceled" : "failed",
+        failedPhase: "upload",
         error: canceled
           ? "Upload canceled"
           : requestError instanceof Error
             ? requestError.message
             : "Upload failed",
+      });
+      return null;
+    } finally {
+      activeUploads.current.delete(attachment.id);
+    }
+  }
+
+  async function bindOne(
+    task: { id: string; identifier: string },
+    attachment: ComposerAttachment,
+  ) {
+    if (!attachment.fileRef) return false;
+    patchAttachment(attachment.id, {
+      status: "binding",
+      failedPhase: null,
+      progress: 100,
+      error: null,
+    });
+    const controller = new AbortController();
+    activeUploads.current.set(attachment.id, () => controller.abort());
+    try {
+      await bindStoredFileToTask(
+        task.id,
+        attachment.fileRef,
+        attachment.bindKey,
+        controller.signal,
+      );
+      patchAttachment(attachment.id, {
+        status: "complete",
+        failedPhase: null,
+        error: null,
+      });
+      return true;
+    } catch (requestError) {
+      const canceled = requestError instanceof DOMException && requestError.name === "AbortError";
+      patchAttachment(attachment.id, {
+        status: canceled ? "canceled" : "failed",
+        failedPhase: "bind",
+        error: `${task.identifier}: ${canceled
+          ? "binding canceled"
+          : requestError instanceof Error ? requestError.message : "binding failed"}`,
       });
       return false;
     } finally {
@@ -4257,13 +4425,60 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
     }
   }
 
+  async function retryAttachment(attachment: ComposerAttachment) {
+    if (attachment.failedPhase === "delete") {
+      await removeAttachment(attachment);
+      return;
+    }
+    if (attachment.fileRef) {
+      if (createdTask) await bindOne(createdTask, attachment);
+      else patchAttachment(attachment.id, { status: "staged", failedPhase: null, error: null });
+      return;
+    }
+    await stageOne(attachment);
+  }
+
+  async function removeAttachment(attachment: ComposerAttachment) {
+    activeUploads.current.get(attachment.id)?.();
+    if (!attachment.fileRef) {
+      setAttachments((current) => current.filter((item) => item.id !== attachment.id));
+      return;
+    }
+    try {
+      await deleteStoredFile(attachment.fileRef, attachment.fileVersion ?? 0);
+      setAttachments((current) => current.filter((item) => item.id !== attachment.id));
+    } catch (requestError) {
+      patchAttachment(attachment.id, {
+        status: "failed",
+        failedPhase: "delete",
+        error: requestError instanceof Error ? requestError.message : "Staged file could not be deleted",
+      });
+    }
+  }
+
   async function submit(event?: FormEvent) {
     event?.preventDefault();
-    if (!title.trim() || !projectId || busy) return;
+    if ((!createdTask && (!title.trim() || !projectId)) || busy) return;
     setComposerError("");
     const selectedRelease = data.releases.find((release) => release.id === releaseId);
-    const confirmReleasedComposition = selectedRelease?.status === "released";
+    const confirmReleasedComposition = !createdTask && selectedRelease?.status === "released";
     if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return;
+    let bindCandidates = [...attachments];
+    let stagingFailed = 0;
+    for (const attachment of bindCandidates.filter((item) => !item.fileRef && item.status !== "complete")) {
+      const stored = await stageOne(attachment);
+      if (!stored) {
+        stagingFailed += 1;
+        continue;
+      }
+      bindCandidates = bindCandidates.map((item) => item.id === attachment.id
+        ? composerAttachmentWithStoredFile(item, stored)
+        : item);
+    }
+    if (stagingFailed > 0) {
+      setComposerError(`${stagingFailed} file${stagingFailed === 1 ? "" : "s"} could not be staged. Retry or remove them before creating the Task.`);
+      return;
+    }
     const task = createdTask ?? await onSubmit({
       title,
       description,
@@ -4276,17 +4491,22 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
       ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}),
     });
     if (!task) {
-      setComposerError("Task was not created. No files were uploaded.");
+      setComposerError("Task was not created. Staged files are still available for retry or deletion until their TTL expires.");
       return;
     }
-    setCreatedTask(task);
-    const pending = attachments.filter((item) => item.status !== "complete");
+    const taskIdentity = { id: task.id, identifier: task.identifier };
+    setCreatedTask(taskIdentity);
+    const pending = bindCandidates.filter((item) => item.status !== "complete");
     let failed = 0;
     for (const attachment of pending) {
-      if (!(await uploadOne(task, attachment))) failed += 1;
+      if (!(await bindOne(taskIdentity, attachment))) failed += 1;
     }
-    if (failed === 0) onClose();
-    else setComposerError(`${task.identifier} was created, but ${failed} file${failed === 1 ? "" : "s"} still need retry.`);
+    if (failed === 0) {
+      window.localStorage.removeItem(recoveryKey);
+      onClose();
+    } else {
+      setComposerError(`${task.identifier} was created, but ${failed} staged file${failed === 1 ? "" : "s"} failed to bind. Each file remains available for a stable-key retry.`);
+    }
   }
 
   function closeComposer() {
@@ -4295,7 +4515,155 @@ function TaskComposer({ data, contextProject, contextRelease, defaults, onClose,
   }
 
   const pendingCount = attachments.filter((item) => item.status !== "complete").length;
-  return <Modal onClose={closeComposer} className="composer-modal"><form onSubmit={submit}><div className="modal-title-row"><span className="muted">{createdTask ? `${createdTask.identifier} created` : "New task"}</span><button type="button" className="icon-button" onClick={closeComposer}><X size={15} /></button></div><fieldset className="composer-fields" disabled={Boolean(createdTask)}><input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus /><textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submit(); }} /><div className="property-bar"><PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect><PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect><PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect><PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); setSelectedLabelIds(new Set()); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="" disabled>Select project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</PropertySelect><PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect></div><LabelPicker labels={labelCatalog} selected={selectedLabelIds} onToggle={(labelId) => setSelectedLabelIds((current) => toggleLabelSelection(current, labelId, labelCatalog))} disabled={Boolean(createdTask)} label="Task labels" /></fieldset>{!editableProjects.length && <p className="inline-note">Create an editable Project before adding a Task.</p>}<section className={`composer-attachments ${dragActive ? "drag-active" : ""}`} aria-label="Task attachments" onDragEnter={(event) => { event.preventDefault(); setDragActive(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false); }} onDrop={(event) => { event.preventDefault(); setDragActive(false); addFiles(event.dataTransfer.files); }} onPaste={(event) => { if (!event.clipboardData.files.length) return; event.preventDefault(); addFiles(event.clipboardData.files); }}><div><button className="button ghost" type="button" disabled={Boolean(createdTask)} onClick={() => fileInputRef.current?.click()}><Paperclip size={14} />Add files</button><span>{attachments.length ? `${attachments.length} selected` : "Files upload after Task creation"}</span></div><input ref={fileInputRef} className="visually-hidden" type="file" multiple aria-label="Choose files for the new task" disabled={Boolean(createdTask)} onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.target.value = ""; }} />{attachments.length > 0 && <div className="composer-attachment-list" aria-live="polite">{attachments.map((attachment) => <article key={attachment.id}><FileAttachmentIcon filename={attachment.file.name} /><div><b title={attachment.file.name}>{attachment.file.name}</b><small>{attachment.status === "uploading" ? `${attachment.progress}% uploaded` : attachment.status === "complete" ? "Attached" : attachment.error ?? attachment.status}</small>{attachment.status === "uploading" && <progress value={attachment.progress} max="100" aria-label={`Upload progress for ${attachment.file.name}`} />}</div>{attachment.status === "uploading" ? <button className="icon-button" type="button" aria-label={`Cancel ${attachment.file.name}`} onClick={() => activeUploads.current.get(attachment.id)?.()}><X size={14} /></button> : attachment.status === "failed" || attachment.status === "canceled" ? <button className="icon-button" type="button" aria-label={`Retry ${attachment.file.name}`} onClick={() => createdTask && void uploadOne(createdTask, attachment)}><RotateComposerIcon /></button> : !createdTask ? <button className="icon-button" type="button" aria-label={`Remove ${attachment.file.name}`} onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={14} /></button> : null}</article>)}</div>}</section>{composerError && <p className="composer-upload-error" role="alert">{composerError}</p>}<div className="modal-footer"><span className="shortcut-hint">{createdTask ? "The Task is saved; closing never leaves orphan files." : <><kbd>⌘</kbd><kbd>Enter</kbd> to create</>}</span><button className="button primary" disabled={busy || !title.trim() || !projectId || attachments.some((item) => item.status === "uploading")}>{busy ? "Creating…" : createdTask ? pendingCount ? `Retry ${pendingCount} file${pendingCount === 1 ? "" : "s"}` : "Done" : attachments.length ? "Create and upload" : "Create task"}</button></div></form></Modal>;
+  const fileWorkActive = attachments.some((item) => item.status === "uploading" || item.status === "binding");
+  return (
+    <Modal onClose={closeComposer} className="composer-modal">
+      <form onSubmit={submit}>
+        <div className="modal-title-row">
+          <span className="muted">{createdTask ? `${createdTask.identifier} created` : "New task"}</span>
+          <button type="button" className="icon-button" onClick={closeComposer}><X size={15} /></button>
+        </div>
+        <fieldset className="composer-fields" disabled={Boolean(createdTask)}>
+          <input className="composer-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task title" autoFocus />
+          <textarea className="composer-description" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Add description…" rows={4} onKeyDown={(event: ReactKeyboardEvent<HTMLTextAreaElement>) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submit(); }} />
+          <div className="property-bar">
+            <PropertySelect icon={<CircleDot size={13} />} value={statusId} onChange={setStatusId}>{statuses.map((status) => <option key={status.id} value={status.id}>{status.name}</option>)}</PropertySelect>
+            <PropertySelect icon={<ArrowDownWideNarrow size={13} />} value={priority} onChange={(value) => setPriority(value as Priority)}>{Object.entries(priorityMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</PropertySelect>
+            <PropertySelect icon={<UsersRound size={13} />} value={assigneeUserId} onChange={setAssigneeUserId}><option value="">No assignee</option>{assignees.map((assignee) => <option key={assignee.id} value={assignee.id}>{assignee.displayName}</option>)}</PropertySelect>
+            <PropertySelect icon={<FolderKanban size={13} />} value={projectId} onChange={(value) => { setProjectId(value); setReleaseId(""); setSelectedLabelIds(new Set()); const nextOwner = data.projects.find((project) => project.id === value)?.ownerUserId ?? data.user.id; const nextAssignees = taskAssigneeOptions(data, value || null); setAssigneeUserId((current) => current === "" || nextAssignees.some((assignee) => assignee.id === current) ? current : data.user.id); setStatusId(data.statuses.find((status) => status.ownerUserId === nextOwner && status.isDefault)?.id ?? data.statuses.find((status) => status.ownerUserId === nextOwner)?.id ?? ""); }}><option value="" disabled>Select project</option>{editableProjects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</PropertySelect>
+            <PropertySelect icon={<Rocket size={13} />} value={releaseId} onChange={setReleaseId} disabled={!projectId}><option value="">No release</option>{data.releases.filter((release) => release.projectId === projectId && canEditContent(release.accessRole)).map((release) => <option key={release.id} value={release.id}>{release.name}</option>)}</PropertySelect>
+          </div>
+          <LabelPicker labels={labelCatalog} selected={selectedLabelIds} onToggle={(labelId) => setSelectedLabelIds((current) => toggleLabelSelection(current, labelId, labelCatalog))} disabled={Boolean(createdTask)} label="Task labels" />
+        </fieldset>
+        {!editableProjects.length && <p className="inline-note">Create an editable Project before adding a Task.</p>}
+        <section
+          className={`composer-attachments ${dragActive ? "drag-active" : ""}`}
+          aria-label="Task attachments"
+          onDragEnter={(event) => { if (!createdTask) { event.preventDefault(); setDragActive(true); } }}
+          onDragOver={(event) => { if (!createdTask) event.preventDefault(); }}
+          onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragActive(false); }}
+          onDrop={(event) => { if (createdTask) return; event.preventDefault(); setDragActive(false); addFiles(event.dataTransfer.files); }}
+          onPaste={(event) => { if (createdTask || !event.clipboardData.files.length) return; event.preventDefault(); addFiles(event.clipboardData.files); }}
+        >
+          <div>
+            <button className="button ghost" type="button" disabled={Boolean(createdTask)} onClick={() => fileInputRef.current?.click()}><Paperclip size={14} />Add files</button>
+            <span>{attachments.length ? `${attachments.length} file${attachments.length === 1 ? "" : "s"} · staged before Task creation` : "Files are staged before Task creation"}</span>
+          </div>
+          <input ref={fileInputRef} className="visually-hidden" type="file" multiple aria-label="Choose files for the new task" disabled={Boolean(createdTask)} onChange={(event) => { if (event.target.files) addFiles(event.target.files); event.target.value = ""; }} />
+          {attachments.length > 0 && (
+            <div className="composer-attachment-list" aria-live="polite">
+              {attachments.map((attachment) => (
+                <article key={attachment.id} data-upload-state={attachment.status}>
+                  <FileAttachmentIcon filename={attachment.filename} />
+                  <div>
+                    <b title={attachment.filename}>{attachment.filename}</b>
+                    <small>{composerAttachmentStatus(attachment)}</small>
+                    {attachment.status === "uploading" && <progress value={attachment.progress} max="100" aria-label={`Upload progress for ${attachment.filename}`} />}
+                  </div>
+                  <div className="composer-attachment-actions">
+                    {(attachment.status === "uploading" || attachment.status === "binding") && <button className="icon-button" type="button" aria-label={`Cancel ${attachment.filename}`} onClick={() => activeUploads.current.get(attachment.id)?.()}><X size={14} /></button>}
+                    {(attachment.status === "failed" || attachment.status === "canceled") && <button className="icon-button" type="button" aria-label={`Retry ${attachment.filename}`} onClick={() => void retryAttachment(attachment)}><RotateComposerIcon /></button>}
+                    {attachment.status !== "complete" && attachment.status !== "uploading" && attachment.status !== "binding" && <button className="icon-button" type="button" aria-label={`Delete staged ${attachment.filename}`} onClick={() => void removeAttachment(attachment)}><X size={14} /></button>}
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+        {composerError && <p className="composer-upload-error" role="alert">{composerError}</p>}
+        <div className="modal-footer">
+          <span className="shortcut-hint">{createdTask ? "Unbound staged files remain recoverable until their TTL expires." : <><kbd>⌘</kbd><kbd>Enter</kbd> to create</>}</span>
+          <button className="button primary" disabled={busy || (!createdTask && (!title.trim() || !projectId)) || fileWorkActive || !recoveryHydrated}>{busy || fileWorkActive ? "Working…" : createdTask ? pendingCount ? `Retry ${pendingCount} file${pendingCount === 1 ? "" : "s"}` : "Done" : attachments.length ? "Create and attach" : "Create task"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function composerAttachmentWithStoredFile(
+  attachment: ComposerAttachment,
+  stored: PublicStoredFileRecord,
+): ComposerAttachment {
+  return {
+    ...attachment,
+    fileRef: stored.ref,
+    fileVersion: stored.version,
+    filename: stored.filename,
+    mediaType: stored.mediaType,
+    byteSize: stored.byteSize,
+    checksumSha256: stored.checksumSha256,
+    readyExpiresAt: stored.readyExpiresAt,
+    progress: 100,
+    status: "staged",
+    failedPhase: null,
+    error: null,
+  };
+}
+
+function recoveredComposerAttachment(
+  saved: ComposerRecoveryState["files"][number],
+  stored: PublicStoredFileRecord,
+): ComposerAttachment {
+  return composerAttachmentWithStoredFile({
+    id: saved.id,
+    uploadKey: saved.uploadKey,
+    bindKey: saved.bindKey,
+    file: null,
+    fileRef: saved.fileRef,
+    fileVersion: saved.fileVersion,
+    filename: saved.filename,
+    mediaType: saved.mediaType,
+    byteSize: saved.byteSize,
+    checksumSha256: saved.checksumSha256,
+    readyExpiresAt: saved.readyExpiresAt,
+    progress: 100,
+    status: "staged",
+    failedPhase: null,
+    error: null,
+  }, stored);
+}
+
+function readComposerRecoveryState(value: string | null): ComposerRecoveryState | null {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<ComposerRecoveryState>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.files)) return null;
+    const createdTask = parsed.createdTask &&
+      typeof parsed.createdTask.id === "string" &&
+      typeof parsed.createdTask.identifier === "string"
+      ? { id: parsed.createdTask.id, identifier: parsed.createdTask.identifier }
+      : null;
+    const files = parsed.files.filter((file) =>
+      file &&
+      typeof file.id === "string" &&
+      typeof file.uploadKey === "string" &&
+      typeof file.bindKey === "string" &&
+      typeof file.fileRef === "string" &&
+      Number.isSafeInteger(file.fileVersion) &&
+      typeof file.filename === "string" &&
+      typeof file.mediaType === "string" &&
+      Number.isSafeInteger(file.byteSize) &&
+      typeof file.checksumSha256 === "string" &&
+      (file.readyExpiresAt === null || typeof file.readyExpiresAt === "string"),
+    );
+    return { version: 1, createdTask, files };
+  } catch {
+    return null;
+  }
+}
+
+function composerAttachmentStatus(attachment: ComposerAttachment) {
+  if (attachment.status === "uploading") return `${attachment.progress}% uploaded to staging`;
+  if (attachment.status === "staged") return `Staged · ${formatComposerBytes(attachment.byteSize)} · ready to attach`;
+  if (attachment.status === "binding") return "Attaching to Task…";
+  if (attachment.status === "complete") return "Attached";
+  return attachment.error ?? (attachment.status === "canceled" ? "Canceled" : "Failed");
+}
+
+function formatComposerBytes(bytes: number) {
+  if (bytes < 1_024) return `${bytes} B`;
+  if (bytes < 1_048_576) return `${(bytes / 1_024).toFixed(bytes < 10_240 ? 1 : 0)} KB`;
+  return `${(bytes / 1_048_576).toFixed(bytes < 10_485_760 ? 1 : 0)} MB`;
 }
 
 function FileAttachmentIcon({ filename }: { filename: string }) {

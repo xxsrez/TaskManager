@@ -24,28 +24,16 @@ import {
 } from "react";
 import type { TaskRecord, UserRecord } from "@/lib/types";
 import { taskDescriptionUsesAttachment } from "@/lib/task-description-format";
+import {
+  deleteStoredFile,
+  startStagedTaskAttachmentUpload,
+  type PublicAttachmentRecord,
+  type PublicStoredFileRecord,
+} from "@/lib/staged-file-upload";
+
+export type { PublicAttachmentRecord } from "@/lib/staged-file-upload";
 
 const taskAttachmentChangedEvent = "task-manager:attachment-changed";
-
-export type PublicAttachmentRecord = {
-  ref: string;
-  taskId: string;
-  uploaderUserId: string;
-  filename: string;
-  mediaType: string;
-  byteSize: number;
-  checksumSha256: string;
-  kind: "file" | "image";
-  state: "pending" | "uploading" | "ready" | "failed" | "deleted";
-  imageWidth: number | null;
-  imageHeight: number | null;
-  variants: Record<string, unknown>;
-  failureCode: string | null;
-  version: number;
-  createdAt: string;
-  updatedAt: string;
-  deletedAt: string | null;
-};
 
 type UploadProgress = (percent: number) => void;
 
@@ -54,37 +42,15 @@ export function startTaskAttachmentUpload(
   file: File,
   idempotencyKey: string,
   onProgress: UploadProgress = () => undefined,
+  onStaged: (file: PublicStoredFileRecord) => void = () => undefined,
 ) {
-  const request = new XMLHttpRequest();
-  const promise = new Promise<PublicAttachmentRecord>((resolve, reject) => {
-    request.open("POST", attachmentCollectionPath(taskId));
-    request.responseType = "json";
-    request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-    request.setRequestHeader("Idempotency-Key", idempotencyKey);
-    request.setRequestHeader("X-Attachment-Filename", encodeURIComponent(file.name));
-    request.upload.addEventListener("progress", (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
-      }
-    });
-    request.addEventListener("load", () => {
-      const value = request.response as
-        | { attachment: PublicAttachmentRecord }
-        | { error?: string }
-        | null;
-      if (request.status >= 200 && request.status < 300 && value && "attachment" in value) {
-        onProgress(100);
-        resolve(value.attachment);
-      } else {
-        const message = value && "error" in value ? value.error : undefined;
-        reject(new Error(message || `Upload failed (${request.status})`));
-      }
-    });
-    request.addEventListener("error", () => reject(new Error("Network connection lost during upload")));
-    request.addEventListener("abort", () => reject(new DOMException("Upload canceled", "AbortError")));
-    request.send(file);
-  });
-  return { promise, cancel: () => request.abort() };
+  return startStagedTaskAttachmentUpload(
+    taskId,
+    file,
+    idempotencyKey,
+    onProgress,
+    onStaged,
+  );
 }
 
 export function notifyTaskAttachmentChanged(taskId: string) {
@@ -99,6 +65,8 @@ type LocalUpload = {
   file: File;
   progress: number;
   status: "queued" | "uploading" | "failed" | "canceled";
+  stagedFileRef: string | null;
+  stagedFileVersion: number | null;
   error: string | null;
 };
 
@@ -188,6 +156,8 @@ export function TaskAttachments({
       file,
       progress: 0,
       status: "queued" as const,
+      stagedFileRef: null,
+      stagedFileVersion: null,
       error: null,
     }));
     if (!additions.length) return;
@@ -205,6 +175,10 @@ export function TaskAttachments({
       upload.file,
       upload.key,
       (progress) => setUploads((current) => updateUpload(current, upload.id, { progress })),
+      (stored) => setUploads((current) => updateUpload(current, upload.id, {
+        stagedFileRef: stored.ref,
+        stagedFileVersion: stored.version,
+      })),
     );
     activeUploads.current.set(upload.id, running.cancel);
     try {
@@ -225,6 +199,22 @@ export function TaskAttachments({
       }));
     } finally {
       activeUploads.current.delete(upload.id);
+    }
+  }
+
+  async function discardUpload(upload: LocalUpload) {
+    if (!upload.stagedFileRef || !upload.stagedFileVersion) {
+      setUploads((current) => current.filter((item) => item.id !== upload.id));
+      return;
+    }
+    try {
+      await deleteStoredFile(upload.stagedFileRef, upload.stagedFileVersion);
+      setUploads((current) => current.filter((item) => item.id !== upload.id));
+    } catch (requestError) {
+      setUploads((current) => updateUpload(current, upload.id, {
+        error: requestError instanceof Error ? requestError.message : "Staged file could not be deleted",
+      }));
+      await load();
     }
   }
 
@@ -338,7 +328,7 @@ export function TaskAttachments({
                 <button type="button" className="icon-button" title="Cancel upload" aria-label={`Cancel ${upload.file.name}`} onClick={() => activeUploads.current.get(upload.id)?.()}><X size={14} /></button>
               )}
               {upload.status !== "uploading" && (
-                <button type="button" className="icon-button" title="Remove from queue" aria-label={`Remove ${upload.file.name}`} onClick={() => setUploads((current) => current.filter((item) => item.id !== upload.id))}><Trash2 size={14} /></button>
+                <button type="button" className="icon-button" title="Delete staged file or remove from queue" aria-label={`Remove ${upload.file.name}`} onClick={() => void discardUpload(upload)}><Trash2 size={14} /></button>
               )}
             </div>
           </article>

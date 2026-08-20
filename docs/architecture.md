@@ -522,6 +522,16 @@ R2 identity, Activity или logs. После fetch общий repository сно
 magic, claim, pixels, checksum и upload idempotency; bind отдельно проверяет
 effective Editor role, expiry, quotas и single-binding guard.
 
+Session-authenticated web authoring использует `/api/files` для create/get/
+recoverable delete StoredFile и JSON-вариант
+`/api/tasks/{id}/attachments` для bind. Existing Task attachment gallery,
+description и Comment composers проходят общий client pipeline stage→bind;
+quick composer выполняет stage до создания Task. Для reload/multi-session
+recovery browser storage содержит только opaque refs, verified metadata,
+optimistic version и operation keys, но не `File`, binary, local path или
+content URL. Bind failure не удаляет StoredFile: retry повторяет тот же key,
+явный remove применяет recoverable delete, abandoned state ограничен TTL.
+
 Native и historical comment bodies не входят в bootstrap или Task detail. UI
 отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,
 а comment mutations обновляют Task timestamp и производный `comment_count` в

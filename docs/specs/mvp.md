@@ -413,6 +413,11 @@ immutable ID и может группировать Tasks по значения�
   `upload_file/get_file/delete_file/attach_file_to_task`. Existing raw-body REST
   upload и `upload_task_attachment` остаются compatibility wrappers upload+bind.
   Hosted surfaces не принимают local path, base64 или arbitrary URL.
+- Session-authenticated web UI использует эквивалентные `/api/files` и
+  `/api/tasks/{id}/attachments` JSON bind routes. Quick composer хранит для
+  recovery только `fileRef`, verified metadata, optimistic version и устойчивые
+  operation keys; browser draft не хранит local path, `File`, binary или object
+  URL.
 - Установленный plugin может добавить отдельный local stdio companion:
   `upload_local_file` читает один exact host-authorized absolute path, безопасно
   snapshot-ит только regular file и вызывает тот же Agent REST `POST /files`.
@@ -465,8 +470,10 @@ immutable ID и может группировать Tasks по значения�
 - Composer загружает выбранные files как staged StoredFiles до submit, затем
   создаёт Task и bind-ит готовые `fileRef` с независимыми устойчивыми
   idempotency keys. Partial bind failure оставляет созданную Task и явно
-  предлагает retry; удалённый draft освобождает unbound file recoverably, а TTL
-  убирает abandoned staged objects.
+  предлагает retry с per-file outcome. Закрытие composer сохраняет безопасное
+  recovery-состояние; явный remove освобождает unbound file recoverably, а TTL
+  убирает abandoned staged objects. Уже bound binary управляется только через
+  lifecycle TaskAttachment.
 - Attachment insert/update/delete создают ID-only `task_attachments`
   invalidation. Открытый lazy consumer перечитывает только metadata; локальный
   progress и обычный workspace snapshot не заменяются.
