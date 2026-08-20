@@ -128,7 +128,7 @@ session: он выдаёт только opaque `client_id` для провере
 metadata и не предоставляет доступ к данным до отдельного consent пользователя.
 
 Task Manager plugin дополнительно поставляет local stdio MCP companion для
-filesystem ingress. Его единственный tool
+filesystem ingress. В обычном production profile его единственный tool
 `upload_local_file(path, idempotencyKey, expectedByteSize?, expectedSha256?,
 displayFilename?)` читает один exact absolute path только после разрешения host
 sandbox/approval, отклоняет final symlink и non-regular files, ограничивает body
@@ -149,10 +149,18 @@ unsupported platform.
 
 Production package `task-manager` направляет оба MCP components на production.
 Для release gate существует отдельный явно устанавливаемый
-`task-manager-uat`: remote MCP использует UAT OAuth resource, а launcher
-передаёт companion тот же UAT origin через `--origin`. Этот profile допускает
-только synthetic test data, не заменяет production package и не содержит
-access-policy bypass либо OAuth secrets.
+`task-manager-uat`: launcher запускает один private-UAT bridge, который через
+тот же exact UAT origin проксирует deployed remote MCP и добавляет
+`upload_local_file`. Bridge сохраняет remote schemas, включая
+`_meta["openai/fileParams"]`, поэтому native OpenAI file input и exact local
+path проверяются в одном fresh runtime. Outer Sites bypass credential читается
+только из отдельного macOS Keychain item, никогда не принимается как tool arg,
+flag value, plugin config или environment variable и не является application
+identity. Task Manager DCR/PKCE OAuth остаётся отдельным обязательным слоем;
+его rotating refresh token хранится в другом Keychain item. Bridge разрешён
+только для `https://task-manager-uat.example.invalid`, отказывает для
+production origin и не меняет private UAT access policy. Profile допускает
+только synthetic test data и не заменяет production package.
 
 Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
 restore атомарно отзывает все authentication capabilities, чтобы они не

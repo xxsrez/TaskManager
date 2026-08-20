@@ -33,7 +33,7 @@ flowchart LR
     U[Пользователь] --> PROD[Production Site: task-manager]
     QA[Проверка] --> UAT[UAT Site: task-manager-uat]
     PLUGIN[Task Manager plugin] --> PRT[Production runtime]
-    UPLUGIN[Task Manager UAT validation plugin] --> URT
+    UPLUGIN[Task Manager UAT private stdio bridge] --> URT
     API[Direct UAT smoke] --> URT[UAT runtime]
     CG[Sign in with ChatGPT] --> PRT
     CG --> URT
@@ -98,9 +98,11 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
   Documentation-only изменение этого репозитория не является deployment.
 - Обычный Task Manager marketplace plugin продолжает использовать production
   `/api/mcp`. Отдельный operator-only `task-manager-uat` profile используется
-  только для synthetic release smoke и направляет как hosted MCP, так и local
-  companion на один UAT origin; он не участвует в обычном plugin data plane и
-  не заменяет production plugin.
+  только для synthetic release smoke. Один local stdio bridge направляет
+  exact-path upload и proxied hosted MCP на один UAT origin, добавляет внешний
+  Sites bypass только для этого exact host и затем отдельно использует обычный
+  Task Manager OAuth bearer. Он не участвует в обычном plugin data plane, не
+  меняет private Site policy и не заменяет production plugin.
 - Site может быть доступен в интернете как sign-in shell, но application data
   всегда требует authenticated User. Site audience и in-app authorization
   проверяются независимо.
@@ -236,6 +238,13 @@ version conflict остаётся write boundary и не заменяется po
    token в памяти и rotating refresh token в macOS Keychain. После upload
    remote MCP связывает тот же `fileRef` с Task, поэтому ACL, quota,
    idempotency и lifecycle не дублируются в local component.
+9. В operator-only UAT profile companion дополнительно является узким MCP
+   transport bridge. Он читает outer Sites bypass из отдельного macOS Keychain
+   item, вводит header только для exact UAT HTTPS origin, отказывает для
+   production/cross-origin и проксирует remote JSON-RPC без потери tool `_meta`.
+   Bypass не задаёт application subject: remote `tools/call` по-прежнему
+   получает отдельный Task Manager OAuth access token, а browser consent
+   проходит обычный owner-authenticated Sites flow.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в

@@ -80,13 +80,28 @@ metadata не редактируется вручную. Любое provision/mi
 Fresh-chat production smoke обычного marketplace plugin направлен в production
 и выполняется только после отдельно разрешённого production Site/plugin
 release. До него file-first connector gate выполняется отдельным
-`task-manager-uat@srez-marketplace`: hosted `task-manager-uat` и local
-`task-manager-local-uat` должны присутствовать в одном fresh task, а local
-launcher обязан передать `--origin https://task-manager-uat.example.invalid`.
-Профиль использует только synthetic data, не переключает production plugin и не
-хранит access bypass. Если current UAT access policy останавливает DCR/MCP до
-application boundary, gate фиксируется как blocked до отдельного явного
-решения по policy, а не обходится secret в plugin config.
+`task-manager-uat@srez-marketplace`. Fresh task должен видеть один stdio server
+`task-manager-uat`, который публикует полный deployed remote tool inventory и
+`upload_local_file`; launcher обязан передать exact UAT origin и
+`--private-uat-bridge`.
+
+Private UAT bridge использует два независимых credential lifecycle:
+
+1. Outer Sites bypass создаётся/ротируется только явной operator action и
+   сохраняется generic-password item с service
+   `com.xxsrez.task-manager.uat.sites-bypass` и account
+   `https://task-manager-uat.example.invalid`. Значение нельзя
+   помещать в command line, plugin JSON, environment, logs или Task evidence.
+2. Task Manager DCR/PKCE consent создаёт отдельный OAuth grant; client metadata
+   и rotating refresh token остаются в обычном companion Keychain item. Именно
+   этот OAuth bearer задаёт User, scopes и ACL для REST/MCP calls.
+
+Bridge добавляет Sites header только к exact UAT HTTPS origin, запрещает
+redirect/cross-origin и fail-closed отказывает при production origin. UAT
+остаётся `custom`; access policy и production plugin не меняются. Перед smoke
+перечитать Site policy, после smoke повторить read-back. Если Sites credential
+не существует или отклонён, фиксировать bounded outer-gate error без HTML/body
+и не пытаться переносить secret в plugin config.
 
 ## Recovery
 

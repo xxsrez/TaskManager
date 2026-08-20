@@ -40,10 +40,14 @@ Task Manager plugin.
    остаются направлены на production
    `https://task-manager.example.invalid/api/mcp`. Для release gate
    разрешён отдельный явно устанавливаемый operator-only profile
-   `task-manager-uat`: его hosted MCP и bundled local companion оба обязаны
-   указывать на `task-manager-uat`, использовать только synthetic data и не
-   заменять production plugin. Наличие профиля не разрешает менять UAT access
-   policy: это по-прежнему отдельная явная операция.
+   `task-manager-uat`: один bundled local stdio bridge обязан fail-closed
+   указывать на `task-manager-uat`, проксировать его hosted MCP и добавлять
+   local-file ingress, использовать только synthetic data и не заменять
+   production plugin. Для текущего private UAT outer Sites bypass credential
+   хранится отдельным Keychain item и добавляется только к exact UAT origin;
+   обычный Task Manager OAuth независимо устанавливает User, scopes и ACL.
+   Наличие профиля не разрешает менять UAT access policy: это по-прежнему
+   отдельная явная операция.
 7. Обычные ACL-scoped изменения одной явно указанной Task через production
    plugin — это product-data lifecycle, а не release. Такой запрос разрешает
    status transitions и native completion/failure comment только для этой Task,
@@ -60,7 +64,7 @@ Git exact SHA
 └── explicit approval ─> task-manager     ──> production D1 / real data
 
 Task Manager plugin ───────────────────────> task-manager /api/mcp
-Task Manager UAT validation profile ───────> task-manager-uat /api/mcp
+Task Manager UAT stdio bridge ─────────────> task-manager-uat /api/mcp
 ```
 
 ## Последствия
@@ -74,8 +78,9 @@ Task Manager UAT validation profile ───────> task-manager-uat /api
 - Проверка UAT обязана явно называть UAT URL и не считается доказательством
   production deployment.
 - Fresh-plugin проверка file-first contract больше не смешивает production
-  connector с UAT companion: operator-only profile задаёт единый UAT origin
-  для обоих MCP components и хранит отдельный OAuth grant/Keychain account.
+  connector с UAT companion: operator-only bridge публикует remote tools и
+  `upload_local_file` через один stdio server, сохраняет private Site policy и
+  держит Sites bypass и OAuth refresh token в разных Keychain items.
 
 ## Отклонённые варианты
 
