@@ -297,15 +297,19 @@ transaction резервирует Project sequence, создаёт child с par
 edge не удаляет; Project move разрешён только после detach/reparent прямых
 hierarchy edges.
 
-## Attachment
+## StoredFile и TaskAttachment
 
-`Attachment` — metadata приватного бинарного объекта одной Task. Он не является
-share target и каждый раз наследует текущий effective access Task.
+`StoredFile` — immutable metadata и private R2 object до или после привязки.
+Unbound row доступен только uploader, имеет opaque `public_id` (`fileRef`),
+upload/ready expiry и staged quota. `TaskAttachment` — отдельная ACL-scoped
+привязка к одной Task. Внешний `attachmentRef` и body refs остаются identity
+таблицы `attachments`; `stored_file_id` связывает её с canonical binary row.
+V1 допускает не более одной привязки StoredFile.
 
 | Поле | Семантика |
 |---|---|
 | `id`, `public_id` | Immutable internal identity и непрозрачная external reference |
-| `task_id`, `uploader_user_id` | Единственная Task и server-verified uploader |
+| `stored_file_id`, `task_id`, `uploader_user_id` | Canonical binary, единственная v1 Task и server-verified uploader |
 | `original_filename`, `display_name` | Нормализованные имена только для отображения; ни одно не участвует в object key |
 | `media_type`, `byte_size`, `checksum_sha256` | Проверенные сервером content metadata |
 | `object_key` | Непрозрачный environment-scoped R2 key, не выдаваемый клиенту |
@@ -316,7 +320,10 @@ share target и каждый раз наследует текущий effective 
 | `upload_expires_at`, `failure_code` | Cleanup незавершённого upload и безопасный operational result |
 | `version`, `created_at`, `updated_at`, `deleted_at` | Optimistic concurrency и recoverable-delete lifecycle |
 
-Metadata хранится в D1, body — только в приватном R2 bucket текущей среды.
+StoredFile metadata хранится в D1, body — только в приватном R2 bucket текущей
+среды. До bind действует uploader-only ACL; bind повторно проверяет Editor+,
+expiry и Task/owner/Project quotas. После bind current Task ACL становится
+единственным data access boundary.
 Viewer читает metadata/content, Editor и более сильные project roles могут
 загружать, удалять и восстанавливать в grace period. Archive/restore Task не
 меняет Attachment. Grant/revoke, перенос Task и ownership transfer немедленно

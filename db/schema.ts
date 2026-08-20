@@ -538,11 +538,69 @@ export const taskIdentifierAliases = sqliteTable(
   ],
 );
 
+export const storedFiles = sqliteTable(
+  "stored_files",
+  {
+    id: text("id").primaryKey(),
+    publicId: text("public_id").notNull(),
+    uploaderUserId: text("uploader_user_id")
+      .notNull()
+      .references(() => users.id),
+    originalFilename: text("original_filename").notNull(),
+    displayName: text("display_name").notNull(),
+    mediaType: text("media_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    checksumSha256: text("checksum_sha256").notNull(),
+    objectKey: text("object_key").notNull(),
+    kind: text("kind").notNull(),
+    state: text("state").notNull().default("uploading"),
+    imageWidth: integer("image_width"),
+    imageHeight: integer("image_height"),
+    variantMetadataJson: text("variant_metadata_json").notNull().default("{}"),
+    idempotencyKey: text("idempotency_key").notNull(),
+    uploadExpiresAt: text("upload_expires_at"),
+    readyExpiresAt: text("ready_expires_at"),
+    failureCode: text("failure_code"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    deletedAt: text("deleted_at"),
+  },
+  (table) => [
+    uniqueIndex("idx_stored_files_public_id").on(table.publicId),
+    uniqueIndex("idx_stored_files_object_key").on(table.objectKey),
+    uniqueIndex("idx_stored_files_uploader_idempotency").on(
+      table.uploaderUserId,
+      table.idempotencyKey,
+    ),
+    index("idx_stored_files_uploader_state_created").on(
+      table.uploaderUserId,
+      table.state,
+      table.createdAt,
+      table.id,
+    ),
+    index("idx_stored_files_cleanup").on(
+      table.state,
+      table.deletedAt,
+      table.uploadExpiresAt,
+      table.readyExpiresAt,
+      table.updatedAt,
+    ),
+    check("stored_files_kind_check", sql`${table.kind} IN ('file', 'image')`),
+    check(
+      "stored_files_state_check",
+      sql`${table.state} IN ('uploading', 'ready', 'failed', 'expired', 'deleted')`,
+    ),
+    check("stored_files_byte_size_check", sql`${table.byteSize} >= 0`),
+  ],
+);
+
 export const attachments = sqliteTable(
   "attachments",
   {
     id: text("id").primaryKey(),
     publicId: text("public_id").notNull(),
+    storedFileId: text("stored_file_id").references(() => storedFiles.id),
     taskId: text("task_id")
       .notNull()
       .references(() => tasks.id, { onDelete: "cascade" }),
@@ -570,6 +628,7 @@ export const attachments = sqliteTable(
   },
   (table) => [
     uniqueIndex("idx_attachments_public_id").on(table.publicId),
+    uniqueIndex("idx_attachments_stored_file_id").on(table.storedFileId),
     uniqueIndex("idx_attachments_object_key").on(table.objectKey),
     uniqueIndex("idx_attachments_task_uploader_idempotency").on(
       table.taskId,

@@ -211,6 +211,13 @@
       "when": 1787159198261,
       "tag": "0029_steep_joseph",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1787252969750,
+      "tag": "0030_absurd_blacklash",
+      "breakpoints": true
     }
   ]
 }

@@ -457,6 +457,13 @@ historical comments и Activity читаются только через native 
 Content-free admin overview вычисляется только для
 прямого открытия `/admin`; обычный snapshot хранит лишь server-derived признак
 доступности admin surface.
+Согласно [ADR-0013](decisions/0013-stored-file-and-task-attachment.md), binary
+ownership разделён на uploader-scoped `stored_files` и ACL-scoped
+`attachments` binding. До bind object живёт в `stored-files/` namespace,
+ограничен staged quota/TTL и не раскрывается другим пользователям; bind
+атомарно применяет single-binding и Task quota guards. Migration `0030`
+сохраняет существующие attachment refs и R2 keys без копирования bytes.
+
 Native attachment metadata/body также не входят в bootstrap или compact Task
 projection. `/api/tasks/{id}/attachments` лениво читает bounded metadata, а
 `.../{attachmentRef}/content` повторяет Task ACL непосредственно перед private

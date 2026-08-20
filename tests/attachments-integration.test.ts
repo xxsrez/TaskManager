@@ -173,7 +173,7 @@ test("native attachments use private opaque R2 keys, verified metadata, and scop
   assert.equal(created.displayName, "report.pdf");
   assert.equal(created.byteSize, pdf.byteLength);
   assert.match(created.checksumSha256, /^[a-f0-9]{64}$/);
-  assert.match(created.objectKey, /^test\/attachments\/[0-9a-f-]{36}$/);
+  assert.match(created.objectKey, /^test\/stored-files\/[0-9a-f-]{36}$/);
   assert.ok(!created.objectKey.includes("report.pdf"));
   assert.ok(await bucket.head(created.objectKey));
 

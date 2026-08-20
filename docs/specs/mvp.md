@@ -404,7 +404,11 @@ immutable ID и может группировать Tasks по значения�
 
 ### 5.7 Native attachments
 
-- Attachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
+- Binary сначала создаётся как uploader-only StoredFile с opaque `fileRef`,
+  bounded staged quota и TTL. Bind создаёт один TaskAttachment, повторно
+  проверяет Editor+, expiry и current Task/owner/Project quotas; v1 не допускает
+  вторую Task binding.
+- TaskAttachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
   читать/download/preview; upload, recoverable delete и restore требуют Editor.
 - Upload принимает bounded binary body с обязательным idempotency key. Сервер
   проверяет magic bytes, MIME, размер и raster dimensions, вычисляет SHA-256 и
@@ -446,10 +450,11 @@ immutable ID и может группировать Tasks по значения�
   показывает responsive image/optional caption и компактную file link, строит
   private preview/download route после авторизации и при недоступности
   использует безопасный placeholder без утечки URL или чужой metadata.
-- Composer сначала создаёт Task и лишь затем загружает выбранные files с
-  устойчивыми idempotency keys. Partial failure оставляет созданную Task и
-  успешные Attachment records видимыми, явно предлагает retry и не создаёт
-  object без Task.
+- Composer загружает выбранные files как staged StoredFiles до submit, затем
+  создаёт Task и bind-ит готовые `fileRef` с независимыми устойчивыми
+  idempotency keys. Partial bind failure оставляет созданную Task и явно
+  предлагает retry; удалённый draft освобождает unbound file recoverably, а TTL
+  убирает abandoned staged objects.
 - Attachment insert/update/delete создают ID-only `task_attachments`
   invalidation. Открытый lazy consumer перечитывает только metadata; локальный
   progress и обычный workspace snapshot не заменяются.

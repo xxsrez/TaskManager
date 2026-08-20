@@ -42,26 +42,28 @@
     — metadata lifecycle, content security, ACL и cleanup.
 17. [ADR-0012: обязательный Project и identifiers Tasks](decisions/0012-project-required-task-identifiers.md)
     — Project code/sequence, aliases, migration и запрет standalone Tasks.
-18. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
+18. [ADR-0013: StoredFile и file-first binding](decisions/0013-stored-file-and-task-attachment.md)
+    — staged lifecycle, Task binding, migration и compatibility contract.
+19. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
-19. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
+20. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
     cleanup и recovery.
-20. [Runbook импортированной истории комментариев](operations/imported-comments.md)
+21. [Runbook импортированной истории комментариев](operations/imported-comments.md)
     — reconciliation, backup, rollback и UAT smoke для cutover/import.
-21. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
+22. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
     bounded inventory/apply, allowlist, outcomes, cutover и rollback.
-22. [Runbook Task Activity](operations/task-activity.md) — atomic events,
+23. [Runbook Task Activity](operations/task-activity.md) — atomic events,
     Linear status-history reconciliation, retention, backup и UAT smoke.
-23. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+24. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-24. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+25. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-25. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+26. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
-26. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+27. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
-27. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
+28. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
     — environment inventory, удалённые public surfaces, сохранённое migration
     evidence и отдельная production authority boundary.
 

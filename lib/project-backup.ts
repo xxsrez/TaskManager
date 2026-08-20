@@ -25,6 +25,7 @@ import {
   serializeStagedAttachmentObject,
   stageAttachmentBackupObjects,
 } from "./attachment-backup";
+import { restoreStoredFileStatements } from "./attachments";
 
 type DbRow = Record<string, unknown>;
 
@@ -345,13 +346,17 @@ export async function applyProjectBackup(
     db.prepare(`SELECT row_json FROM user_import_rows
       WHERE import_id = ? AND row_type = '__attachment_objects'
       ORDER BY ordinal`).bind(input.importId),
-    db.prepare(`SELECT a.object_key FROM attachments a
+    db.prepare(`SELECT a.object_key, a.stored_file_id FROM attachments a
       JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ?`)
       .bind(session.project_id),
   ]);
   const stagedObjects = descriptorRows.results.map((row) =>
     parseStagedAttachmentObject((row as DbRow).row_json),
   );
+  const oldStoredFileIds = oldObjectRows.results.flatMap((row) => {
+    const value = (row as DbRow).stored_file_id;
+    return typeof value === "string" && value ? [value] : [];
+  });
   const transition = await db.prepare(`UPDATE user_import_sessions SET status = 'applying'
     WHERE id = ? AND created_by_user_id = ? AND kind = 'project_backup'
       AND status = 'staged' AND payload_sha256 = ? AND expires_at >= CURRENT_TIMESTAMP`)
@@ -403,6 +408,14 @@ export async function applyProjectBackup(
     db.prepare(`DELETE FROM attachments WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(session.project_id),
+    ...(oldStoredFileIds.length
+      ? [db.prepare(
+          `DELETE FROM stored_files WHERE id IN (${oldStoredFileIds.map(() => "?").join(", ")})
+           AND NOT EXISTS (
+             SELECT 1 FROM attachments binding WHERE binding.stored_file_id = stored_files.id
+           )`,
+        ).bind(...oldStoredFileIds)]
+      : []),
     db.prepare("DELETE FROM tasks WHERE project_id = ?").bind(session.project_id),
     db.prepare("DELETE FROM releases WHERE project_id = ?").bind(session.project_id),
     db.prepare("DELETE FROM saved_views WHERE scope_project_id = ?").bind(session.project_id),
@@ -421,6 +434,7 @@ export async function applyProjectBackup(
       statements.push(db.prepare(projectRestoreInsertSql(table)).bind(input.importId, table.name));
     }
   }
+  statements.push(...restoreStoredFileStatements(db));
   if (input.restoreSharing) {
     statements.push(db.prepare(`INSERT INTO access_grants
       (id, resource_type, resource_id, owner_user_id, grantee_user_id,

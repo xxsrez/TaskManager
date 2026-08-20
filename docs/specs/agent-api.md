@@ -487,6 +487,13 @@ Users.
 
 ### 7.2 Native attachment commands
 
+Канонический file-first contract разделяет upload StoredFile и bind к Task.
+`fileRef` до bind доступен только uploader; после bind metadata/content
+разрешаются через current Task ACL и существующий `attachmentRef`. Текущий
+task-bound POST остаётся compatibility wrapper над upload+bind и сохраняет
+прежнюю task-scoped idempotency. Отдельные REST/MCP commands описываются ниже
+после их delivery; local path никогда не передаётся hosted endpoint напрямую.
+
 `POST /tasks/{ref}/attachments` принимает raw binary body. Обязательны
 `Idempotency-Key`, percent-encoded `X-Attachment-Filename` и фактический
 `Content-Type`; сервер всё равно проверяет magic bytes, размер, raster

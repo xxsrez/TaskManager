@@ -342,6 +342,117 @@ test("project-scoped identifier migration preserves dependent rows in an atomic 
   }
 });
 
+test("StoredFile migration preserves every attachment ref, checksum, and object key", async () => {
+  const harness = await createD1TestHarness({}, {
+    migrationsBefore: "0030_absurd_blacklash.sql",
+  });
+  try {
+    const db = harness.database;
+    await db.batch([
+      db.prepare(
+        "INSERT INTO users (id, display_name, email) VALUES ('stored-migration-owner', 'Owner', 'stored-migration@example.test')",
+      ),
+      db.prepare(`INSERT INTO workflow_statuses
+        (id, owner_user_id, name, category, color, position, is_default, system_role)
+        VALUES ('stored-migration-status', 'stored-migration-owner', 'Todo',
+          'unstarted', '#888888', 0, 1, 'todo')`),
+      db.prepare(`INSERT INTO projects
+        (id, public_id, owner_user_id, creator_user_id, name, task_code,
+         status, lead_user_id, version)
+        VALUES ('stored-migration-project', '10000000-0000-4000-8000-000000000001',
+          'stored-migration-owner', 'stored-migration-owner', 'Stored migration',
+          'SMG', 'active', 'stored-migration-owner', 1)`),
+      db.prepare(`INSERT INTO tasks
+        (id, public_id, owner_user_id, creator_user_id, identifier, sequence_number,
+         title, status_id, project_id, rank, created_at, updated_at)
+        VALUES ('stored-migration-task', '10000000-0000-4000-8000-000000000002',
+          'stored-migration-owner', 'stored-migration-owner', 'SMG-1', 1,
+          'Stored migration Task', 'stored-migration-status',
+          'stored-migration-project', 1000,
+          '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z')`),
+      db.prepare(`INSERT INTO attachments
+        (id, public_id, task_id, uploader_user_id, original_filename,
+         display_name, media_type, byte_size, checksum_sha256, object_key,
+         kind, state, idempotency_key, created_at, updated_at)
+        VALUES ('stored-migration-attachment',
+          '10000000-0000-4000-8000-000000000003',
+          'stored-migration-task', 'stored-migration-owner', 'evidence.pdf',
+          'evidence.pdf', 'application/pdf', 123,
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          'uat/attachments/existing-object', 'file', 'ready',
+          'existing-attachment-key', '2026-01-03T00:00:00.000Z',
+          '2026-01-04T00:00:00.000Z')`),
+    ]);
+    const statements = readFileSync(
+      new URL("../drizzle/0030_absurd_blacklash.sql", import.meta.url),
+      "utf8",
+    ).split("--> statement-breakpoint").map((statement) => statement.trim()).filter(Boolean);
+    await db.batch(statements.map((statement) => db.prepare(statement)));
+
+    const attachment = await db.prepare(`SELECT public_id, stored_file_id,
+      checksum_sha256, object_key FROM attachments
+      WHERE id = 'stored-migration-attachment'`).first<{
+        public_id: string;
+        stored_file_id: string;
+        checksum_sha256: string;
+        object_key: string;
+      }>();
+    assert.equal(attachment?.public_id, "10000000-0000-4000-8000-000000000003");
+    assert.equal(attachment?.checksum_sha256, "b".repeat(64));
+    assert.equal(attachment?.object_key, "uat/attachments/existing-object");
+    assert.ok(attachment?.stored_file_id);
+    assert.deepEqual(
+      await db.prepare(`SELECT uploader_user_id, checksum_sha256, object_key,
+        state, created_at, updated_at FROM stored_files WHERE id = ?`)
+        .bind(attachment!.stored_file_id).first(),
+      {
+        uploader_user_id: "stored-migration-owner",
+        checksum_sha256: "b".repeat(64),
+        object_key: "uat/attachments/existing-object",
+        state: "ready",
+        created_at: "2026-01-03T00:00:00.000Z",
+        updated_at: "2026-01-04T00:00:00.000Z",
+      },
+    );
+    assert.equal((await db.prepare("PRAGMA foreign_key_check").all()).results.length, 0);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+test("a failed StoredFile forward migration rolls back schema and backfill together", async () => {
+  const harness = await createD1TestHarness({}, {
+    migrationsBefore: "0030_absurd_blacklash.sql",
+  });
+  try {
+    const db = harness.database;
+    const statements = readFileSync(
+      new URL("../drizzle/0030_absurd_blacklash.sql", import.meta.url),
+      "utf8",
+    ).split("--> statement-breakpoint").map((statement) => statement.trim()).filter(Boolean);
+    await assert.rejects(
+      db.batch([
+        ...statements.map((statement) => db.prepare(statement)),
+        db.prepare("INSERT INTO stored_files (id) VALUES ('forced-failure')"),
+      ]),
+      /not null constraint/i,
+    );
+    assert.equal(
+      await db.prepare(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'stored_files'",
+      ).first<{ count: number }>().then((row) => Number(row?.count ?? 0)),
+      0,
+    );
+    assert.equal(
+      (await db.prepare("PRAGMA table_info(attachments)").all<{ name: string }>())
+        .results.some((column) => column.name === "stored_file_id"),
+      false,
+    );
+  } finally {
+    await harness.dispose();
+  }
+});
+
 test("a failed project assignment migration rolls its D1 schema batch back", async () => {
   const harness = await createD1TestHarness({}, {
     migrationsBefore: "0018_tearful_black_panther.sql",

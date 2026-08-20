@@ -192,6 +192,7 @@ export type AttachmentState =
 export type AttachmentRecord = {
   id: string;
   publicId: string;
+  storedFileId: string | null;
   taskId: string;
   uploaderUserId: string;
   originalFilename: string;
@@ -206,6 +207,38 @@ export type AttachmentRecord = {
   imageHeight: number | null;
   variants: Record<string, unknown>;
   uploadExpiresAt: string | null;
+  failureCode: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
+export type StoredFileState =
+  | "uploading"
+  | "ready"
+  | "failed"
+  | "expired"
+  | "deleted";
+
+export type StoredFileRecord = {
+  id: string;
+  publicId: string;
+  uploaderUserId: string;
+  originalFilename: string;
+  displayName: string;
+  mediaType: string;
+  byteSize: number;
+  checksumSha256: string;
+  objectKey: string;
+  kind: AttachmentKind;
+  state: StoredFileState;
+  imageWidth: number | null;
+  imageHeight: number | null;
+  variants: Record<string, unknown>;
+  idempotencyKey: string;
+  uploadExpiresAt: string | null;
+  readyExpiresAt: string | null;
   failureCode: string | null;
   version: number;
   createdAt: string;

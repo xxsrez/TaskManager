@@ -408,12 +408,12 @@ List повторяет плотную grouped-list модель Linear.
 - Label control загружает active labels owner catalog выбранного Project,
   поддерживает multi-select и отправляет все назначения вместе с созданием
   Task. При смене Project несовместимые selected labels очищаются явно.
-- Composer принимает несколько файлов через picker или dropzone. Устойчивый
-  контракт — сначала server создаёт Task, затем UI последовательно загружает
-  выбранные файлы с неизменяемыми idempotency keys. При частичном результате
-  modal остаётся открыт, называет уже созданную Task и даёт retry/cancel по
-  каждому файлу; failed create не начинает upload, поэтому orphan object не
-  возникает.
+- Composer принимает несколько файлов через picker или dropzone и сразу
+  загружает их как uploader-only staged StoredFiles. Submit доступен после
+  `ready`; server создаёт Task и bind-ит `fileRef` с отдельными неизменяемыми
+  idempotency keys. При частичном bind modal остаётся открыт, называет созданную
+  Task и даёт retry/cancel по каждому файлу. Close/remove удаляет unbound file
+  recoverably; TTL очищает abandoned drafts.
 - Полноценная система persisted drafts и templates не входит в MVP.
 
 ### 8.2 Task details

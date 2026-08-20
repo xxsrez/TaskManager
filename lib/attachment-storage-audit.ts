@@ -17,8 +17,12 @@ export async function scanAttachmentStorageOwnership(
 ): Promise<AttachmentStorageOwnershipScan> {
   const limit = Math.min(10_000, Math.max(1, Math.trunc(maxObjects)));
   const [liveRows, adminStagedRows, userStagedRows] = await db.batch([
-    db.prepare(`SELECT object_key FROM attachments
-      WHERE state IN ('ready', 'deleted') ORDER BY object_key LIMIT ?`)
+    db.prepare(`SELECT object_key FROM stored_files
+      WHERE state IN ('uploading', 'ready', 'failed', 'deleted')
+      UNION
+      SELECT object_key FROM attachments
+      WHERE stored_file_id IS NULL AND state IN ('pending', 'uploading', 'ready', 'failed', 'deleted')
+      ORDER BY object_key LIMIT ?`)
       .bind(limit + 1),
     db.prepare(`SELECT json_extract(r.row_json, '$.stagingKey') AS object_key
       FROM admin_import_rows r
@@ -47,8 +51,9 @@ export async function scanAttachmentStorageOwnership(
       .map((row) => String(row.object_key)),
   );
   const scope = attachmentStorageScope();
-  const [liveObjects, stagingObjects] = await Promise.all([
+  const [legacyObjects, storedFileObjects, stagingObjects] = await Promise.all([
     listObjects(`${scope}/attachments/`, limit),
+    listObjects(`${scope}/stored-files/`, limit),
     listObjects(`${scope}/backup-staging/`, limit),
   ]);
   const truncated =
@@ -56,16 +61,18 @@ export async function scanAttachmentStorageOwnership(
     adminStagedRows.results.length > limit ||
     userStagedRows.results.length > limit ||
     adminStagedRows.results.length + userStagedRows.results.length > limit ||
-    liveObjects.truncated ||
+    legacyObjects.truncated ||
+    storedFileObjects.truncated ||
     stagingObjects.truncated;
-  const objects = [...liveObjects.items, ...stagingObjects.items];
+  const liveObjects = [...legacyObjects.items, ...storedFileObjects.items];
+  const objects = [...liveObjects, ...stagingObjects.items];
   return {
     objectCount: objects.length,
     objectBytes: objects.reduce((total, object) => total + object.size, 0),
     stagingObjectCount: stagingObjects.items.length,
     orphanObjectCount: truncated
       ? null
-      : liveObjects.items.filter((object) => !liveKeys.has(object.key)).length +
+      : liveObjects.filter((object) => !liveKeys.has(object.key)).length +
         stagingObjects.items.filter((object) => !stagedKeys.has(object.key)).length,
     truncated,
   };

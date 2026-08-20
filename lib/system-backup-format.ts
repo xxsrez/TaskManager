@@ -60,6 +60,7 @@ const timestampColumns = new Set([
   "imported_at",
   "revoked_at",
   "upload_expires_at",
+  "ready_expires_at",
   "code_locked_at",
   "historical_created_at",
   "historical_updated_at",
@@ -260,7 +261,7 @@ const legacyCommentDefinition = definition(
   { parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true } },
 );
 
-export const liveTableDeleteOrder: BackupTableName[] = [
+export const liveTableDeleteOrder: Array<BackupTableName | "stored_files"> = [
   "comment_attachment_refs",
   "attachment_migration_outcomes",
   "activity_migration_outcomes",
@@ -273,6 +274,7 @@ export const liveTableDeleteOrder: BackupTableName[] = [
   "access_grants",
   "external_records",
   "attachments",
+  "stored_files",
   "task_identifier_aliases",
   "tasks",
   "releases",

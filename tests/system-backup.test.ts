@@ -14,6 +14,7 @@ import {
   validateSystemBackup,
   type BackupTables,
 } from "../lib/system-backup-format";
+import { restoreStoredFileSql } from "../lib/attachments";
 
 const now = "2026-08-14T12:00:00.000Z";
 
@@ -909,6 +910,7 @@ function migratedDatabase() {
     "0027_busy_silver_sable.sql",
     "0028_hot_obadiah_stane.sql",
     "0029_steep_joseph.sql",
+    "0030_absurd_blacklash.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }
@@ -984,6 +986,7 @@ function applyStagedTables(database: DatabaseSync, importId: string) {
     for (const table of restoreTableDefinitions) {
       database.prepare(restoreInsertSql(table)).run(importId, table.name);
     }
+    for (const sql of restoreStoredFileSql) database.exec(sql);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");

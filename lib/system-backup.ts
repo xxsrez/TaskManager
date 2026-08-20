@@ -30,6 +30,7 @@ import {
   serializeStagedAttachmentObject,
   stageAttachmentBackupObjects,
 } from "./attachment-backup";
+import { restoreStoredFileStatements } from "./attachments";
 
 export { maxSystemBackupBytes } from "./system-backup-format";
 
@@ -192,6 +193,7 @@ export async function applySystemBackup(
         .bind(input.importId, table.name),
     );
   }
+  statements.push(...restoreStoredFileStatements(db));
   statements.push(
     db.prepare("UPDATE admin_import_sessions SET status = 'applied', applied_at = CURRENT_TIMESTAMP WHERE id = ?").bind(input.importId),
     db.prepare("DELETE FROM admin_import_rows WHERE import_id = ?").bind(input.importId),
