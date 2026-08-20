@@ -123,6 +123,11 @@ function decorateJsonValue(value: unknown) {
   for (const value of tools) {
     if (!value || typeof value !== "object" || Array.isArray(value)) continue;
     const tool = value as Record<string, unknown>;
+    const meta = isRecord(tool._meta) ? tool._meta : null;
+    if (meta && Array.isArray(meta.securitySchemes)) {
+      tool.securitySchemes = meta.securitySchemes;
+      continue;
+    }
     const scope: ApiScope =
       typeof tool.name === "string" && writeToolNames.has(tool.name)
         ? "api:write"
@@ -135,6 +140,16 @@ const writeToolNames = new Set([
   "create_task",
   "update_task",
   "move_task",
+  "set_task_parent",
+  "create_subtask",
+  "create_task_relation",
+  "add_task_label",
+  "remove_task_label",
+  "replace_task_labels",
+  "set_task_label_group_value",
+  "clear_task_label_group_value",
+  "update_task_relation",
+  "delete_task_relation",
   "upload_task_attachment",
   "delete_task_attachment",
   "add_task_comment",

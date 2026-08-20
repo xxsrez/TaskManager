@@ -48,6 +48,38 @@ test("tools/list responses expose top-level OAuth security schemes", async () =>
   ]);
 });
 
+test("tools/list top-level security mirrors each tool's canonical metadata", async () => {
+  const response = await decorateToolsListSecuritySchemes(
+    Response.json({
+      jsonrpc: "2.0",
+      id: 1,
+      result: {
+        tools: [
+          {
+            name: "set_task_parent",
+            inputSchema: { type: "object" },
+            _meta: {
+              securitySchemes: [{ type: "oauth2", scopes: ["api:write"] }],
+            },
+          },
+        ],
+      },
+    }),
+  );
+  const body = (await response.json()) as {
+    result: {
+      tools: Array<{
+        securitySchemes: unknown;
+        _meta: { securitySchemes: unknown };
+      }>;
+    };
+  };
+  assert.deepEqual(
+    body.result.tools[0]?.securitySchemes,
+    body.result.tools[0]?._meta.securitySchemes,
+  );
+});
+
 test("legacy SSE tools/list responses keep framing while adding auth policy", async () => {
   const payload = JSON.stringify({
     jsonrpc: "2.0",
@@ -226,8 +258,21 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
         .trim()
     : listText;
   const listBody = JSON.parse(listPayload) as {
-    result: { tools: Array<{ name: string }> };
+    result: {
+      tools: Array<{
+        name: string;
+        securitySchemes?: unknown;
+        _meta?: { securitySchemes?: unknown };
+      }>;
+    };
   };
+  for (const tool of listBody.result.tools) {
+    assert.deepEqual(
+      tool.securitySchemes,
+      tool._meta?.securitySchemes,
+      `${tool.name} must expose one consistent OAuth policy`,
+    );
+  }
   assert.ok(listBody.result.tools.some((tool) => tool.name === "list_tasks"));
   for (const name of [
     "list_task_activity",
