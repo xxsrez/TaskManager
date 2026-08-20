@@ -224,6 +224,14 @@ version conflict остаётся write boundary и не заменяется po
    использует отдельную Task-versioned transaction; set-parent/create-subtask и
    relation commands остаются специализированными intentions, чтобы generic
    patch не создавал промежуточно неверное состояние.
+8. Plugin-local stdio companion является source ingress, а не вторым data
+   plane: он читает один exact host-authorized regular file через stable handle,
+   проверяет optional stat/SHA-256 expectations и вызывает канонический REST
+   `POST /files`. Full local path не пересекает process boundary. Companion
+   получает native-client OAuth grant через DCR/PKCE loopback, держит access
+   token в памяти и rotating refresh token в macOS Keychain. После upload
+   remote MCP связывает тот же `fileRef` с Task, поэтому ACL, quota,
+   idempotency и lifecycle не дублируются в local component.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в

@@ -2,7 +2,7 @@
 
 Статус: `Implemented`
 
-Последнее обновление: 2026-08-19
+Последнее обновление: 2026-08-20
 
 ## 1. Назначение и граница
 
@@ -126,6 +126,26 @@ Browser-authenticated control plane, не входящий во внешний O
 Публичный protocol endpoint `POST /oauth/register` не использует browser
 session: он выдаёт только opaque `client_id` для проверенного public-client
 metadata и не предоставляет доступ к данным до отдельного consent пользователя.
+
+Task Manager plugin дополнительно поставляет local stdio MCP companion для
+filesystem ingress. Его единственный tool
+`upload_local_file(path, idempotencyKey, expectedByteSize?, expectedSha256?,
+displayFilename?)` читает один exact absolute path только после разрешения host
+sandbox/approval, отклоняет final symlink и non-regular files, ограничивает body
+25 MiB, фиксирует open-handle identity/size/timestamps до и после read и считает
+SHA-256 до network I/O. В REST `POST /files` уходят только basename либо
+explicit display filename, verified MIME, idempotency key и snapshot bytes;
+полный local path не передаётся, не логируется server-side и не возвращается в
+tool result.
+
+Companion использует отдельный native-client DCR + Authorization Code/PKCE
+loopback flow с `api:write`. Access token живёт только в памяти процесса, а
+client metadata и rotating refresh token — в macOS Keychain, не в tool args,
+plugin config или transcript. Полученный `fileRef` не имеет отдельной локальной
+семантики: его связывает общий remote `attach_file_to_task` с независимым bind
+key. Plugin поставляет self-contained macOS arm64/x86_64 binary и launcher без
+зависимости от system Node; Windows/Linux в текущей версии fail closed как
+unsupported platform.
 
 Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
 restore атомарно отзывает все authentication capabilities, чтобы они не
@@ -636,6 +656,14 @@ Authorization invariants:
     Root/reply/edit Comment принимает ready image/file refs только той же Task,
     read-back возвращает opaque `attachmentRefs`, а malformed/cross-Task,
     read-only/revoked и stale-version cases не раскрывают чужой ref.
+    Bundled local companion отдельно доказывает exact absolute path внутри и
+    вне workspace, PNG/PDF local stat/hash → server metadata equality,
+    DCR/PKCE first use, refresh rotation и revoked reconnect. Relative path,
+    final symlink, directory/special file, oversize, permission denial,
+    expected-metadata mismatch и changed-during-read останавливаются до upload;
+    local path и OAuth secrets отсутствуют в request metadata, D1/R2/Activity и
+    tool result. Retry identical bytes с тем же upload key сохраняет один
+    server-side StoredFile.
 12. Agent REST/MCP relation create retry сохраняет один stable relation ref;
     stale update/delete конфликтует, Viewer не пишет, ACL проверяется на обеих
     Tasks, а outgoing duplicate atomically меняет source status. `get_task`

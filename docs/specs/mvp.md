@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-19
+Последнее обновление: 2026-08-20
 
 ## 1. Цель
 
@@ -413,6 +413,13 @@ immutable ID и может группировать Tasks по значения�
   `upload_file/get_file/delete_file/attach_file_to_task`. Existing raw-body REST
   upload и `upload_task_attachment` остаются compatibility wrappers upload+bind.
   Hosted surfaces не принимают local path, base64 или arbitrary URL.
+- Установленный plugin может добавить отдельный local stdio companion:
+  `upload_local_file` читает один exact host-authorized absolute path, безопасно
+  snapshot-ит только regular file и вызывает тот же Agent REST `POST /files`.
+  Server не получает полный path; tool возвращает обычный verified `fileRef`,
+  который затем bind-ится общим remote `attach_file_to_task`. Native-client
+  OAuth использует DCR/PKCE loopback, rotating refresh token хранится в OS
+  credential store, а bundled runtime не зависит от случайного system Node.
 - TaskAttachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
   читать/download/preview; upload, recoverable delete и restore требуют Editor.
 - Upload принимает bounded binary body с обязательным idempotency key. Сервер
