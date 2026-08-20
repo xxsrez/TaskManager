@@ -36,10 +36,14 @@ Task Manager plugin.
    Production data и secrets туда не копируются. Полный destructive reset
    остаётся отдельной операцией и не выводится из разрешения создавать test
    data.
-6. Marketplace plugin, OAuth resource и MCP endpoint остаются направлены на
-   production `https://task-manager.example.invalid/api/mcp`.
-   UAT используется для web/API smoke напрямую и не становится endpoint
-   установленного plugin.
+6. Обычный marketplace plugin `task-manager`, его OAuth resource и MCP endpoint
+   остаются направлены на production
+   `https://task-manager.example.invalid/api/mcp`. Для release gate
+   разрешён отдельный явно устанавливаемый operator-only profile
+   `task-manager-uat`: его hosted MCP и bundled local companion оба обязаны
+   указывать на `task-manager-uat`, использовать только synthetic data и не
+   заменять production plugin. Наличие профиля не разрешает менять UAT access
+   policy: это по-прежнему отдельная явная операция.
 7. Обычные ACL-scoped изменения одной явно указанной Task через production
    plugin — это product-data lifecycle, а не release. Такой запрос разрешает
    status transitions и native completion/failure comment только для этой Task,
@@ -56,6 +60,7 @@ Git exact SHA
 └── explicit approval ─> task-manager     ──> production D1 / real data
 
 Task Manager plugin ───────────────────────> task-manager /api/mcp
+Task Manager UAT validation profile ───────> task-manager-uat /api/mcp
 ```
 
 ## Последствия
@@ -68,12 +73,16 @@ Task Manager plugin ────────────────────
   остаётся реально deployed saved version, а не последний Git commit.
 - Проверка UAT обязана явно называть UAT URL и не считается доказательством
   production deployment.
+- Fresh-plugin проверка file-first contract больше не смешивает production
+  connector с UAT companion: operator-only profile задаёт единый UAT origin
+  для обоих MCP components и хранит отдельный OAuth grant/Keychain account.
 
 ## Отклонённые варианты
 
 - Оставить один Site и считать каждый deploy безопасным UAT — нарушает новую
   production boundary.
-- Переключить plugin на UAT — отправляет обычную работу и OAuth grants в
-  тестовую среду.
+- Переключить обычный `task-manager` plugin на UAT — отправляет обычную работу
+  и OAuth grants в тестовую среду. Отдельный явно названный validation profile
+  допустим только для synthetic release smoke.
 - Копировать production D1 в UAT по умолчанию — увеличивает privacy и
   destructive-operation risk без необходимости для функционального smoke.

@@ -147,6 +147,13 @@ key. Plugin поставляет self-contained macOS arm64/x86_64 binary и lau
 зависимости от system Node; Windows/Linux в текущей версии fail closed как
 unsupported platform.
 
+Production package `task-manager` направляет оба MCP components на production.
+Для release gate существует отдельный явно устанавливаемый
+`task-manager-uat`: remote MCP использует UAT OAuth resource, а launcher
+передаёт companion тот же UAT origin через `--origin`. Этот profile допускает
+только synthetic test data, не заменяет production package и не содержит
+access-policy bypass либо OAuth secrets.
+
 Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
 restore атомарно отзывает все authentication capabilities, чтобы они не
 пережили замену identity/data state.

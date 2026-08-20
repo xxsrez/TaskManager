@@ -33,6 +33,7 @@ flowchart LR
     U[Пользователь] --> PROD[Production Site: task-manager]
     QA[Проверка] --> UAT[UAT Site: task-manager-uat]
     PLUGIN[Task Manager plugin] --> PRT[Production runtime]
+    UPLUGIN[Task Manager UAT validation plugin] --> URT
     API[Direct UAT smoke] --> URT[UAT runtime]
     CG[Sign in with ChatGPT] --> PRT
     CG --> URT
@@ -95,8 +96,11 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
   дополнительного approval. Любая production source push/save/deploy требует
   прямой текущей команды пользователя, явно разрешающей production release.
   Documentation-only изменение этого репозитория не является deployment.
-- Task Manager marketplace plugin продолжает использовать production
-  `/api/mcp`; UAT не участвует в обычном plugin OAuth/data plane.
+- Обычный Task Manager marketplace plugin продолжает использовать production
+  `/api/mcp`. Отдельный operator-only `task-manager-uat` profile используется
+  только для synthetic release smoke и направляет как hosted MCP, так и local
+  companion на один UAT origin; он не участвует в обычном plugin data plane и
+  не заменяет production plugin.
 - Site может быть доступен в интернете как sign-in shell, но application data
   всегда требует authenticated User. Site audience и in-app authorization
   проверяются независимо.

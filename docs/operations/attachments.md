@@ -77,9 +77,16 @@ metadata не редактируется вручную. Любое provision/mi
     Guessed/foreign/deleted refs должны выглядеть одинаково и не раскрывать
     filename, object key или сам факт существования.
 
-Fresh-chat smoke установленного marketplace plugin направлен в production и
-выполняется только после отдельно разрешённого production Site/plugin release.
-UAT-проверка не переключает production plugin на `task-manager-uat`.
+Fresh-chat production smoke обычного marketplace plugin направлен в production
+и выполняется только после отдельно разрешённого production Site/plugin
+release. До него file-first connector gate выполняется отдельным
+`task-manager-uat@srez-marketplace`: hosted `task-manager-uat` и local
+`task-manager-local-uat` должны присутствовать в одном fresh task, а local
+launcher обязан передать `--origin https://task-manager-uat.example.invalid`.
+Профиль использует только synthetic data, не переключает production plugin и не
+хранит access bypass. Если current UAT access policy останавливает DCR/MCP до
+application boundary, gate фиксируется как blocked до отдельного явного
+решения по policy, а не обходится secret в plugin config.
 
 ## Recovery
 
