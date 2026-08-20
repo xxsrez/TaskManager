@@ -177,8 +177,11 @@ restore атомарно отзывает все authentication capabilities, ч
 | `POST /tasks/{ref}/relations` | `api:write` | Создать relation идемпотентно |
 | `PATCH /tasks/{ref}/relations/{relationRef}` | `api:write` | Изменить type/direction с relation version |
 | `DELETE /tasks/{ref}/relations/{relationRef}` | `api:write` | Удалить relation с relation version |
+| `POST /files` | `api:write` | Bounded uploader-only binary upload; вернуть verified `fileRef` metadata |
+| `GET /files/{fileRef}` | `api:read` | Metadata готового unbound StoredFile текущего uploader |
+| `DELETE /files/{fileRef}` | `api:write` | Удалить unbound StoredFile с optimistic version |
 | `GET /tasks/{ref}/attachments` | `api:read` | Paginated native Attachment metadata |
-| `POST /tasks/{ref}/attachments` | `api:write` | Bounded binary upload с idempotency key |
+| `POST /tasks/{ref}/attachments` | `api:write` | Bind `{fileRef, idempotencyKey}` либо compatibility raw upload+bind |
 | `GET /tasks/{ref}/attachments/{attachmentRef}` | `api:read` | Metadata и private content links |
 | `PATCH /tasks/{ref}/attachments/{attachmentRef}` | `api:write` | Restore с optimistic version |
 | `DELETE /tasks/{ref}/attachments/{attachmentRef}` | `api:write` | Recoverable delete с optimistic version |
@@ -223,6 +226,10 @@ protocol revisions).
 | `set_task_label_group_value`, `clear_task_label_group_value` | `api:write` | Атомарно заменить или очистить одно взаимоисключающее значение |
 | `create_task_relation` | `api:write` | Создать native relation с idempotency key |
 | `update_task_relation`, `delete_task_relation` | `api:write` | Изменить или удалить relation по current version |
+| `upload_file` | `api:write` | Принять native OpenAI file input и вернуть verified uploader-only `fileRef` |
+| `get_file` | `api:read` | Прочитать metadata готового unbound StoredFile текущего uploader |
+| `delete_file` | `api:write` | Удалить unbound StoredFile с current version |
+| `attach_file_to_task` | `api:write` | Bind `fileRef` к editable Task с отдельным idempotency key |
 | `list_task_attachments`, `get_task_attachment` | `api:read` | Читать bounded native metadata и private content links |
 | `download_task_attachment` | `api:read` | Явно получить один bearer-protected MCP resource link original/thumbnail без binary/base64 в tool result |
 | `upload_task_attachment` | `api:write` | Принять native OpenAI file input и идемпотентно сохранить binary |
@@ -414,9 +421,12 @@ refs и возвращает authoritative child `TaskDetail`.
 
 `description` может содержать native raster embed
 `![alt](attachment:v1:<public-ref> "optional caption"){width=480}` и downloadable file link
-`[label](attachment:v1:<public-ref>)`. Сначала Attachment должен стать `ready`
-в этой же Task через Agent REST upload или MCP `upload_task_attachment`, затем
-ref вставляется обычным versioned Task update. Image embed дополнительно требует
+`[label](attachment:v1:<public-ref>)`. Сначала StoredFile загружается через
+Agent REST `POST /files` или MCP `upload_file`, затем bind создаёт ready
+TaskAttachment и возвращает `attachmentRef`; compatibility
+`POST /tasks/{ref}/attachments` и `upload_task_attachment` выполняют эти две
+операции одним вызовом. Только `attachmentRef`, не `fileRef`, вставляется обычным
+versioned Task update. Image embed дополнительно требует
 `kind=image`; file link допускает ready file/image. Общий repository path для
 REST, MCP и UI игнорирует literal inline/fenced code и отклоняет malformed,
 cross-Task, incompatible, deleted или неготовый reference без подтверждения
@@ -491,10 +501,26 @@ Users.
 `fileRef` до bind доступен только uploader; после bind metadata/content
 разрешаются через current Task ACL и существующий `attachmentRef`. Текущий
 task-bound POST остаётся compatibility wrapper над upload+bind и сохраняет
-прежнюю task-scoped idempotency. Отдельные REST/MCP commands описываются ниже
-после их delivery; local path никогда не передаётся hosted endpoint напрямую.
+прежнюю task-scoped idempotency. Local path никогда не передаётся hosted
+endpoint напрямую.
 
-`POST /tasks/{ref}/attachments` принимает raw binary body. Обязательны
+`POST /files` принимает raw binary body с обязательными `Idempotency-Key`,
+percent-encoded `X-File-Filename` и фактическим `Content-Type`. Ответ содержит
+opaque `fileRef`, verified filename/MIME/size/SHA-256/kind/state/expiry и
+version, но не internal ID, uploader ID, object key или delivery URL.
+`GET /files/{fileRef}` читает только ready unbound metadata текущего uploader;
+`DELETE` требует `X-File-Version`. Bound, expired, deleted, foreign и unknown
+refs выглядят одинаково как `not_found`.
+
+`POST /tasks/{ref}/attachments` с `application/json` принимает
+`{"fileRef":"...","displayName":"optional","idempotencyKey":"..."}`.
+Bind независимо идемпотентен, повторно проверяет current Editor+ ACL, expiry,
+staged ownership, Task/owner/Project quotas и v1 single binding. Exact retry
+возвращает тот же `attachmentRef`; changed bind payload конфликтует, а
+already-bound ref с другим command не подтверждает существование StoredFile.
+
+Compatibility `POST /tasks/{ref}/attachments` с binary body принимает
+старые обязательные
 `Idempotency-Key`, percent-encoded `X-Attachment-Filename` и фактический
 `Content-Type`; сервер всё равно проверяет magic bytes, размер, raster
 dimensions и SHA-256. Response не содержит internal Task/uploader IDs, R2 key,
@@ -507,14 +533,17 @@ Agent API и требуют тот же bearer token при каждом чте�
 отклоняется, пока description использует image ref; REST `PATCH` с
 `{"version": n, "deleted": false}` выполняет restore.
 
-MCP `upload_task_attachment` следует актуальному OpenAI file-input contract:
+MCP `upload_file` и compatibility `upload_task_attachment` следуют актуальному
+OpenAI file-input contract:
 верхнеуровневое поле `file` объявлено в `_meta["openai/fileParams"]`, содержит
 обязательные `download_url`/`file_id` и optional `mime_type`/`file_name`.
 Временный URL не сохраняется и не логируется. Worker принимает только HTTPS URL
 на OpenAI/OpenAIusercontent host, не передаёт credentials, вручную проверяет
 каждый redirect и ограничивает как declared, так и фактически прочитанный body.
-После server fetch действуют те же content inspection, idempotency и Task ACL,
-что для REST/UI upload. Contract основан на официальном
+После server fetch действуют те же content inspection и upload idempotency;
+Task ACL появляется и повторно проверяется только в `attach_file_to_task` либо
+compatibility wrapper. `get_file`/`delete_file` работают только с ready unbound
+file текущего uploader. Contract основан на официальном
 [OpenAI plugin reference](https://developers.openai.com/plugins/reference).
 После ready upload agent вставляет opaque ref в `add_task_comment`,
 `reply_to_task_comment` или `edit_task_comment`; remote Worker никогда не
@@ -541,6 +570,13 @@ Codes: `unauthenticated`, `insufficient_scope`, `invalid_argument`,
 `not_found`, `ambiguous_reference`, `forbidden`, `version_conflict`,
 `internal_error`. Неизвестный и недоступный resource дают одинаковый
 `not_found`.
+
+File-first error matrix: invalid filename/content/MIME/size/OpenAI URL получает
+`invalid_argument`; reuse upload/bind key с другим payload —
+`version_conflict`; unknown, foreign, expired, deleted, bound-after-upload и
+second-bind refs — одинаковый `not_found`; Viewer/revoked Task access не
+подтверждает file или Task existence. Quota overflow остаётся bounded
+`invalid_argument` без раскрытия чужого usage.
 
 Authorization invariants:
 
@@ -587,13 +623,16 @@ Authorization invariants:
     `kind=historical`, `id=null`; source facts нельзя edit/delete, но Editor+
     может reply/react/resolve. Provider provenance и raw migration evidence не
     входят ни в Task detail, ни в отдельный public endpoint/tool.
-11. Agent REST upload/list/get/range/delete повторяет Task ACL, не публикует
-    internal IDs/R2 keys и сохраняет стабильную attachment pagination. MCP
-    `tools/list` объявляет пять attachment tools, включая explicit
-    `download_task_attachment`; upload schema содержит
-    `_meta["openai/fileParams"]`, а download возвращает bearer-protected
-    resource link без inline base64. Invalid/private redirect, oversized body,
-    MIME mismatch и stale version отклоняются до небезопасной mutation.
+11. Agent REST `POST /files` до Task create, metadata read-back и последующий
+    JSON bind дают verified `fileRef → attachmentRef`; compatibility raw upload,
+    list/get/range/delete повторяет Task ACL, не публикует internal IDs/R2 keys
+    и сохраняет stable pagination. MCP `tools/list` объявляет file-first
+    `upload_file/get_file/delete_file/attach_file_to_task` и пять compatibility
+    attachment tools, включая explicit `download_task_attachment`; обе native
+    upload schemas содержат `_meta["openai/fileParams"]`, а download возвращает
+    bearer-protected resource link без inline base64. Invalid/private redirect,
+    oversized body, MIME mismatch, second bind и stale version отклоняются до
+    небезопасной mutation.
     Root/reply/edit Comment принимает ready image/file refs только той же Task,
     read-back возвращает opaque `attachmentRefs`, а malformed/cross-Task,
     read-only/revoked и stale-version cases не раскрывают чужой ref.

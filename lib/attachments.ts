@@ -52,6 +52,12 @@ export type BindStoredFileInput = {
   displayName?: string | null;
 };
 
+export class StoredFileAlreadyBoundError extends ConflictError {
+  constructor() {
+    super("Stored file is already bound to a Task");
+  }
+}
+
 export function publicAttachment(record: AttachmentRecord) {
   return {
     ref: record.publicId,
@@ -366,6 +372,25 @@ export async function getStoredFile(
   return storedFile;
 }
 
+export async function getUnboundStoredFile(
+  currentUser: UserRecord,
+  fileRef: string,
+): Promise<StoredFileRecord> {
+  const now = new Date().toISOString();
+  const row = await getD1().prepare(
+    `SELECT * FROM stored_files sf
+     WHERE sf.uploader_user_id = ? AND (sf.id = ? OR sf.public_id = ?)
+       AND sf.state = 'ready'
+       AND (sf.ready_expires_at IS NULL OR sf.ready_expires_at > ?)
+       AND NOT EXISTS (
+         SELECT 1 FROM attachments binding WHERE binding.stored_file_id = sf.id
+       )
+     LIMIT 1`,
+  ).bind(currentUser.id, fileRef, fileRef, now).first<DbRow>();
+  if (!row) throw new NotFoundError("Stored file not found");
+  return mapStoredFile(row);
+}
+
 export async function deleteStoredFile(
   currentUser: UserRecord,
   fileRef: string,
@@ -427,8 +452,11 @@ export async function bindStoredFileToTask(
     if (
       existingBinding.taskId === task.id &&
       await attachmentHasIdempotencyKey(existingBinding.id, idempotencyKey)
-    ) return existingBinding;
-    throw new ConflictError("Stored file is already bound to a Task");
+    ) {
+      assertBindRetryDisplayName(existingBinding, displayName);
+      return existingBinding;
+    }
+    throw new StoredFileAlreadyBoundError();
   }
   const idempotentAttachment = await findIdempotentAttachment(
     task.id,
@@ -436,7 +464,10 @@ export async function bindStoredFileToTask(
     idempotencyKey,
   );
   if (idempotentAttachment) {
-    if (idempotentAttachment.storedFileId === storedFile.id) return idempotentAttachment;
+    if (idempotentAttachment.storedFileId === storedFile.id) {
+      assertBindRetryDisplayName(idempotentAttachment, displayName);
+      return idempotentAttachment;
+    }
     throw new ConflictError("Idempotency key was already used for another binding");
   }
 
@@ -515,8 +546,11 @@ export async function bindStoredFileToTask(
         if (
           raced.taskId === task.id &&
           await attachmentHasIdempotencyKey(raced.id, idempotencyKey)
-        ) return raced;
-        throw new ConflictError("Stored file is already bound to a Task");
+        ) {
+          assertBindRetryDisplayName(raced, displayName);
+          return raced;
+        }
+        throw new StoredFileAlreadyBoundError();
       }
       const current = await loadUploaderStoredFile(
         currentUser.id,
@@ -544,9 +578,12 @@ export async function bindStoredFileToTask(
       if (
         raced.taskId === task.id &&
         await attachmentHasIdempotencyKey(raced.id, idempotencyKey)
-      ) return raced;
+      ) {
+        assertBindRetryDisplayName(raced, displayName);
+        return raced;
+      }
       if (error instanceof ConflictError) throw error;
-      throw new ConflictError("Stored file is already bound to a Task");
+      throw new StoredFileAlreadyBoundError();
     }
     const racedIdempotency = await findIdempotentAttachment(
       task.id,
@@ -554,7 +591,10 @@ export async function bindStoredFileToTask(
       idempotencyKey,
     );
     if (racedIdempotency) {
-      if (racedIdempotency.storedFileId === storedFile.id) return racedIdempotency;
+      if (racedIdempotency.storedFileId === storedFile.id) {
+        assertBindRetryDisplayName(racedIdempotency, displayName);
+        return racedIdempotency;
+      }
       throw new ConflictError("Idempotency key was already used for another binding");
     }
     throw error;
@@ -1178,6 +1218,17 @@ function assertStoredFileRetry(
     existing.kind !== inspected.kind
   ) {
     throw new ConflictError("Idempotency key was already used for another file payload");
+  }
+}
+
+function assertBindRetryDisplayName(
+  existing: AttachmentRecord,
+  displayName: string,
+) {
+  if (existing.displayName !== displayName) {
+    throw new ConflictError(
+      "Idempotency key was already used for another binding payload",
+    );
   }
 }
 

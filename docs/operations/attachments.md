@@ -51,15 +51,17 @@ metadata не редактируется вручную. Любое provision/mi
    upload progress.
 8. После deploy повторно проверить access policy Site. R2 bucket policy не
    должна становиться public.
-9. Через UAT personal bearer credential вызвать Agent REST: list с двумя
-   страницами, raw upload, metadata, original Range, thumbnail и versioned
-   delete/restore. Проверить отсутствие internal IDs/object key в JSON и
-   немедленный `404` после ACL revoke.
-10. `tools/list` должен объявлять `list_task_attachments`,
-   `get_task_attachment`, `download_task_attachment`, `upload_task_attachment`
-   и `delete_task_attachment`,
+9. Через UAT personal bearer credential сначала вызвать `POST /files`, сверить
+   verified metadata/SHA-256, создать Task и выполнить JSON bind через
+   `/tasks/{ref}/attachments`. Затем проверить compatibility raw upload, list с
+   двумя страницами, original Range, thumbnail и versioned delete/restore.
+   В JSON не должно быть internal IDs/object key; после bind `GET /files/{ref}`
+   и после ACL revoke Task metadata должны немедленно вернуть одинаковый `404`.
+10. `tools/list` должен объявлять `upload_file`, `get_file`, `delete_file`,
+   `attach_file_to_task`, `list_task_attachments`, `get_task_attachment`,
+   `download_task_attachment`, `upload_task_attachment` и `delete_task_attachment`,
    `api:read`/`api:write` security schemes и
-   `_meta["openai/fileParams"]=["file"]` для upload. Полный MCP upload smoke
+   `_meta["openai/fileParams"]=["file"]` для обоих upload tools. Полный MCP upload smoke
    выполнять только клиентом, который передаёт нативный OpenAI file object;
    base64, local path и произвольный URL не являются fallback transport.
 11. Через Agent REST и fresh MCP client загрузить небольшой PNG и PDF, получить

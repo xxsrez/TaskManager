@@ -14,6 +14,11 @@ import {
   GET as listAgentAttachmentsRoute,
   POST as createAgentAttachmentRoute,
 } from "../app/api/agent/v1/tasks/[ref]/attachments/route";
+import { POST as createAgentFileRoute } from "../app/api/agent/v1/files/route";
+import {
+  DELETE as deleteAgentFileRoute,
+  GET as getAgentFileRoute,
+} from "../app/api/agent/v1/files/[fileRef]/route";
 import { POST as mcpPost } from "../app/api/mcp/route";
 import {
   GET as listAttachmentsRoute,
@@ -1050,6 +1055,414 @@ test("Agent attachment routes and MCP tools preserve binary transport and bearer
   assert.equal(JSON.stringify(downloadResult).includes("%PDF-1.7"), false);
 });
 
+test("Agent REST stages a file before Task binding and keeps task-bound upload compatible", async () => {
+  const owner = await getOrCreateUser(ownerActor);
+  const credential = await issueApiCredential(owner, {
+    name: "agent-file-first-owner",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const authorization = { authorization: `Bearer ${credential.token}` };
+  const fileEndpoint = "https://example.test/api/agent/v1/files";
+  const pdfBody = "%PDF-1.7\nfile-first\n%%EOF";
+  const uploadRequest = (body = pdfBody) => new Request(fileEndpoint, {
+    method: "POST",
+    headers: {
+      ...authorization,
+      "content-type": "application/pdf",
+      "idempotency-key": "rest-file-first-upload",
+      "x-file-filename": encodeURIComponent("before-task.pdf"),
+    },
+    body,
+  });
+
+  const uploadedResponse = await createAgentFileRoute(uploadRequest());
+  assert.equal(uploadedResponse.status, 201);
+  const uploaded = (await uploadedResponse.json()) as {
+    data: {
+      ref: string;
+      filename: string;
+      mediaType: string;
+      byteSize: number;
+      checksumSha256: string;
+      state: string;
+      version: number;
+      readyExpiresAt: string;
+    };
+  };
+  assert.equal(uploaded.data.filename, "before-task.pdf");
+  assert.equal(uploaded.data.mediaType, "application/pdf");
+  assert.equal(uploaded.data.byteSize, new TextEncoder().encode(pdfBody).byteLength);
+  assert.match(uploaded.data.checksumSha256, /^[a-f0-9]{64}$/);
+  assert.equal(uploaded.data.state, "ready");
+  assert.ok(uploaded.data.readyExpiresAt);
+
+  const retry = await createAgentFileRoute(uploadRequest());
+  assert.equal(retry.status, 201);
+  assert.equal(((await retry.json()) as { data: { ref: string } }).data.ref, uploaded.data.ref);
+  const changed = await createAgentFileRoute(uploadRequest("%PDF-1.7\nchanged\n%%EOF"));
+  assert.equal(changed.status, 409);
+
+  const stagedContext = { params: Promise.resolve({ fileRef: uploaded.data.ref }) };
+  const metadata = await getAgentFileRoute(
+    new Request(`${fileEndpoint}/${uploaded.data.ref}`, { headers: authorization }),
+    stagedContext,
+  );
+  assert.equal(metadata.status, 200);
+  assert.equal(((await metadata.json()) as { data: { ref: string } }).data.ref, uploaded.data.ref);
+
+  const taskCode = `F${String.fromCharCode(65 + attachmentProjectCodeIndex)}`;
+  attachmentProjectCodeIndex += 1;
+  await createProject(owner, { name: "File-first REST", taskCode });
+  const project = (await getSnapshot(owner)).projects.find((item) => item.name === "File-first REST")!;
+  const task = await createTask(owner, { title: "Created after file upload", projectId: project.id });
+  const taskEndpoint = `https://example.test/api/agent/v1/tasks/${task.publicId}/attachments`;
+  const bind = () => createAgentAttachmentRoute(
+    new Request(taskEndpoint, {
+      method: "POST",
+      headers: { ...authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        fileRef: uploaded.data.ref,
+        displayName: "bound.pdf",
+        idempotencyKey: "rest-file-first-bind",
+      }),
+    }),
+    { params: Promise.resolve({ ref: task.publicId }) },
+  );
+  const boundResponse = await bind();
+  assert.equal(boundResponse.status, 201);
+  const bound = (await boundResponse.json()) as {
+    data: { ref: string; filename: string; checksumSha256: string; links: { original: string } };
+  };
+  assert.equal(bound.data.filename, "bound.pdf");
+  assert.equal(bound.data.checksumSha256, uploaded.data.checksumSha256);
+  const bindRetry = await bind();
+  assert.equal(bindRetry.status, 201);
+  assert.equal(((await bindRetry.json()) as { data: { ref: string } }).data.ref, bound.data.ref);
+  const changedBindPayload = await createAgentAttachmentRoute(
+    new Request(taskEndpoint, {
+      method: "POST",
+      headers: { ...authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        fileRef: uploaded.data.ref,
+        displayName: "changed.pdf",
+        idempotencyKey: "rest-file-first-bind",
+      }),
+    }),
+    { params: Promise.resolve({ ref: task.publicId }) },
+  );
+  assert.equal(changedBindPayload.status, 409);
+  const rebound = await createAgentAttachmentRoute(
+    new Request(taskEndpoint, {
+      method: "POST",
+      headers: { ...authorization, "content-type": "application/json" },
+      body: JSON.stringify({
+        fileRef: uploaded.data.ref,
+        idempotencyKey: "rest-file-first-different-bind",
+      }),
+    }),
+    { params: Promise.resolve({ ref: task.publicId }) },
+  );
+  assert.equal(rebound.status, 404);
+
+  const hiddenAfterBind = await getAgentFileRoute(
+    new Request(`${fileEndpoint}/${uploaded.data.ref}`, { headers: authorization }),
+    stagedContext,
+  );
+  assert.equal(hiddenAfterBind.status, 404);
+  const content = await getAgentAttachmentContentRoute(
+    new Request(bound.data.links.original, { headers: authorization }),
+    { params: Promise.resolve({ ref: task.publicId, attachmentRef: bound.data.ref }) },
+  );
+  assert.equal(content.status, 200);
+  assert.equal(new TextDecoder().decode(await content.arrayBuffer()), pdfBody);
+
+  const discardResponse = await createAgentFileRoute(new Request(fileEndpoint, {
+    method: "POST",
+    headers: {
+      ...authorization,
+      "content-type": "application/pdf",
+      "idempotency-key": "rest-file-first-discard",
+      "x-file-filename": encodeURIComponent("discard.pdf"),
+    },
+    body: "%PDF-1.7\ndiscard\n%%EOF",
+  }));
+  const discard = (await discardResponse.json()) as { data: { ref: string; version: number } };
+  const deleteResponse = await deleteAgentFileRoute(
+    new Request(`${fileEndpoint}/${discard.data.ref}`, {
+      method: "DELETE",
+      headers: { ...authorization, "x-file-version": String(discard.data.version) },
+    }),
+    { params: Promise.resolve({ fileRef: discard.data.ref }) },
+  );
+  assert.equal(deleteResponse.status, 200);
+  assert.equal(((await deleteResponse.json()) as { data: { state: string } }).data.state, "deleted");
+});
+
+test("file-first bind rechecks Viewer and post-revoke Task access without consuming the staged file", async () => {
+  const { owner, editor, viewer, project, task } = await setupSharedTask("File-first ACL");
+  const viewerCredential = await issueApiCredential(viewer, {
+    name: "file-first-viewer",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const editorCredential = await issueApiCredential(editor, {
+    name: "file-first-editor",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const readOnlyCredential = await issueApiCredential(owner, {
+    name: "file-first-read-only",
+    scopes: ["api:read"],
+    expiresInDays: 1,
+  });
+  const fileEndpoint = "https://example.test/api/agent/v1/files";
+  const uploadAs = async (token: string, key: string, filename: string) =>
+    createAgentFileRoute(new Request(fileEndpoint, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/pdf",
+        "idempotency-key": key,
+        "x-file-filename": encodeURIComponent(filename),
+      },
+      body: `%PDF-1.7\n${key}\n%%EOF`,
+    }));
+  const deniedScope = await uploadAs(
+    readOnlyCredential.token,
+    "file-first-read-only-upload",
+    "read-only.pdf",
+  );
+  assert.equal(deniedScope.status, 403);
+
+  const viewerUpload = await uploadAs(
+    viewerCredential.token,
+    "file-first-viewer-upload",
+    "viewer.pdf",
+  );
+  assert.equal(viewerUpload.status, 201);
+  const viewerFile = (await viewerUpload.json()) as { data: { ref: string } };
+  const bindEndpoint = `https://example.test/api/agent/v1/tasks/${task.publicId}/attachments`;
+  const bindAs = (token: string, fileRef: string, key: string) =>
+    createAgentAttachmentRoute(new Request(bindEndpoint, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ fileRef, idempotencyKey: key }),
+    }), { params: Promise.resolve({ ref: task.publicId }) });
+  assert.equal(
+    (await bindAs(viewerCredential.token, viewerFile.data.ref, "viewer-bind")).status,
+    403,
+  );
+  assert.equal((await getAgentFileRoute(
+    new Request(`${fileEndpoint}/${viewerFile.data.ref}`, {
+      headers: { authorization: `Bearer ${viewerCredential.token}` },
+    }),
+    { params: Promise.resolve({ fileRef: viewerFile.data.ref }) },
+  )).status, 200);
+
+  const editorUpload = await uploadAs(
+    editorCredential.token,
+    "file-first-editor-upload",
+    "editor.pdf",
+  );
+  const editorFile = (await editorUpload.json()) as { data: { ref: string } };
+  const editorGrant = (await getSnapshot(owner)).collaborators.find(
+    (item) => item.resourceId === project.id && item.userId === editor.id,
+  )!;
+  await revokeAccess(owner, editorGrant.grantId);
+  assert.equal(
+    (await bindAs(editorCredential.token, editorFile.data.ref, "revoked-bind")).status,
+    404,
+  );
+  assert.equal((await getAgentFileRoute(
+    new Request(`${fileEndpoint}/${editorFile.data.ref}`, {
+      headers: { authorization: `Bearer ${editorCredential.token}` },
+    }),
+    { params: Promise.resolve({ fileRef: editorFile.data.ref }) },
+  )).status, 200);
+});
+
+test("remote MCP exposes native file-first upload, metadata, bind, and delete tools", async (t) => {
+  const { owner, task } = await setupSharedTask("MCP file-first");
+  const credential = await issueApiCredential(owner, {
+    name: "mcp-file-first-owner",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const png = Uint8Array.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+  ]);
+  const pdf = new TextEncoder().encode("%PDF-1.7\nmcp-file-first\n%%EOF");
+  const discard = new TextEncoder().encode("%PDF-1.7\ndiscard-mcp\n%%EOF");
+  const downloads = new Map<string, { body: Uint8Array; mediaType: string }>([
+    ["https://files.openaiusercontent.com/uploads/file-first.png", { body: png, mediaType: "image/png" }],
+    ["https://files.openaiusercontent.com/uploads/file-first.pdf", { body: pdf, mediaType: "application/pdf" }],
+    ["https://files.openaiusercontent.com/uploads/discard.pdf", { body: discard, mediaType: "application/pdf" }],
+  ]);
+  t.mock.method(globalThis, "fetch", async (request: RequestInfo | URL) => {
+    assert.ok(request instanceof Request);
+    assert.equal(request.credentials, "omit");
+    assert.equal(request.redirect, "manual");
+    const source = downloads.get(request.url);
+    assert.ok(source, request.url);
+    return new Response(new Uint8Array(source.body).buffer, {
+      headers: {
+        "content-type": source.mediaType,
+        "content-length": String(source.body.byteLength),
+      },
+    });
+  });
+  const endpoint = "https://example.test/api/mcp";
+  const headers = {
+    authorization: `Bearer ${credential.token}`,
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  };
+  let requestId = 100;
+  const callTool = async (name: string, args: Record<string, unknown>) => {
+    requestId += 1;
+    return mcpResult(await mcpPost(new Request(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: requestId,
+        method: "tools/call",
+        params: { name, arguments: args },
+      }),
+    })));
+  };
+  const upload = async (
+    fileId: string,
+    url: string,
+    filename: string | undefined,
+    mediaType: string,
+    idempotencyKey: string,
+  ) => {
+    const result = await callTool("upload_file", {
+      file: {
+        download_url: url,
+        file_id: fileId,
+        mime_type: mediaType,
+        ...(filename ? { file_name: filename } : {}),
+      },
+      idempotencyKey,
+    });
+    assert.equal(result.result.isError, undefined);
+    return result.result.structuredContent.data as {
+      ref: string;
+      filename: string;
+      mediaType: string;
+      byteSize: number;
+      checksumSha256: string;
+      kind: string;
+      state: string;
+      version: number;
+    };
+  };
+
+  const stagedPng = await upload(
+    "file_native_png",
+    "https://files.openaiusercontent.com/uploads/file-first.png",
+    "file-first.png",
+    "image/png",
+    "mcp-file-first-png-upload",
+  );
+  const stagedPdf = await upload(
+    "file_native_pdf",
+    "https://files.openaiusercontent.com/uploads/file-first.pdf",
+    "file-first.pdf",
+    "application/pdf",
+    "mcp-file-first-pdf-upload",
+  );
+  assert.deepEqual(
+    [stagedPng.kind, stagedPng.mediaType, stagedPng.byteSize, stagedPng.state],
+    ["image", "image/png", png.byteLength, "ready"],
+  );
+  assert.deepEqual(
+    [stagedPdf.kind, stagedPdf.mediaType, stagedPdf.byteSize, stagedPdf.state],
+    ["file", "application/pdf", pdf.byteLength, "ready"],
+  );
+  assert.equal(stagedPng.checksumSha256, await sha256(png));
+  assert.equal(stagedPdf.checksumSha256, await sha256(pdf));
+
+  const readBack = await callTool("get_file", { fileRef: stagedPng.ref });
+  assert.equal(
+    (readBack.result.structuredContent.data as { checksumSha256: string }).checksumSha256,
+    stagedPng.checksumSha256,
+  );
+  const attach = async (fileRef: string, key: string) => {
+    const result = await callTool("attach_file_to_task", {
+      taskRef: task.publicId,
+      fileRef,
+      idempotencyKey: key,
+    });
+    assert.equal(result.result.isError, undefined);
+    return result.result.structuredContent.data as {
+      ref: string;
+      checksumSha256: string;
+    };
+  };
+  const pngAttachment = await attach(stagedPng.ref, "mcp-file-first-png-bind");
+  const pdfAttachment = await attach(stagedPdf.ref, "mcp-file-first-pdf-bind");
+  assert.equal(pngAttachment.checksumSha256, stagedPng.checksumSha256);
+  assert.equal(pdfAttachment.checksumSha256, stagedPdf.checksumSha256);
+  const retry = await attach(stagedPng.ref, "mcp-file-first-png-bind");
+  assert.equal(retry.ref, pngAttachment.ref);
+
+  const hiddenAfterBind = await callTool("get_file", { fileRef: stagedPng.ref });
+  assert.equal(hiddenAfterBind.result.isError, true);
+  const download = await callTool("download_task_attachment", {
+    taskRef: task.publicId,
+    attachmentRef: pngAttachment.ref,
+    variant: "original",
+  });
+  assert.ok(download.result.content.some((item) => item.type === "resource_link"));
+
+  const stagedDiscard = await upload(
+    "file_native_discard",
+    "https://files.openaiusercontent.com/uploads/discard.pdf",
+    undefined,
+    "application/pdf",
+    "mcp-file-first-discard-upload",
+  );
+  const deleted = await callTool("delete_file", {
+    fileRef: stagedDiscard.ref,
+    version: stagedDiscard.version,
+  });
+  assert.equal(
+    (deleted.result.structuredContent.data as { state: string }).state,
+    "deleted",
+  );
+
+  const rows = await database.prepare("SELECT * FROM stored_files").all<Record<string, unknown>>();
+  const activityRows = await database.prepare(
+    "SELECT * FROM activity_events",
+  ).all<Record<string, unknown>>();
+  const persisted = JSON.stringify([rows.results, activityRows.results]);
+  const publicResults = JSON.stringify([
+    stagedPng,
+    stagedPdf,
+    stagedDiscard,
+    pngAttachment,
+    pdfAttachment,
+  ]);
+  for (const forbidden of [
+    "file_native_png",
+    "file_native_pdf",
+    "file_native_discard",
+    "files.openaiusercontent.com",
+  ]) {
+    assert.equal(persisted.includes(forbidden), false, forbidden);
+    assert.equal(publicResults.includes(forbidden), false, forbidden);
+  }
+});
+
 async function mcpResult(response: Response) {
   const text = await response.text();
   const payload = text.startsWith("event:")
@@ -1069,6 +1482,15 @@ async function mcpResult(response: Response) {
       >;
     };
   };
+}
+
+async function sha256(bytes: Uint8Array) {
+  return [...new Uint8Array(await crypto.subtle.digest(
+    "SHA-256",
+    new Uint8Array(bytes).buffer,
+  ))]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 test("attachment-aware logical backups include scoped metadata and verified originals", async () => {

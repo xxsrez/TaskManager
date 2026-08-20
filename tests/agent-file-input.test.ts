@@ -27,6 +27,19 @@ test("MCP file input fetches a bounded HTTPS body without forwarding credentials
   assert.equal(seen[0]?.credentials, "omit");
   assert.equal(seen[0]?.redirect, "manual");
   assert.equal(seen[0]?.headers.get("authorization"), null);
+
+  const withoutName = await fetchMcpFileInput({
+    ...input,
+    file_id: "file_must_not_be_persisted",
+    file_name: undefined,
+  }, {
+    maxBytes: 64,
+    fetcher: async () => new Response("%PDF-1.7\ninput\n%%EOF", {
+      headers: { "content-type": "application/pdf" },
+    }),
+  });
+  assert.equal(withoutName.filename, "upload");
+  assert.equal(withoutName.filename.includes("file_must_not_be_persisted"), false);
 });
 
 test("MCP file input rejects local URLs and revalidates redirects", async () => {

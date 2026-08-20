@@ -169,6 +169,8 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks/{ref}/activity"), true);
   assert.equal(paths.includes("/tasks/{ref}/external-context"), false);
   assert.equal(paths.includes("/tasks/{ref}/comments/{commentRef}"), true);
+  assert.equal(paths.includes("/files"), true);
+  assert.equal(paths.includes("/files/{fileRef}"), true);
   assert.equal(paths.includes("/tasks/{ref}/attachments"), true);
   assert.equal(paths.includes("/tasks/{ref}/attachments/{attachmentRef}"), true);
   assert.equal(
@@ -325,4 +327,32 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
     ].schema.format,
     "binary",
   );
+  assert.equal(
+    agentApiOpenApi.paths["/tasks/{ref}/attachments"].post.requestBody.content[
+      "application/json"
+    ].schema.$ref,
+    "#/components/schemas/StoredFileBind",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/files"].post.requestBody.content["application/pdf"]
+      .schema.format,
+    "binary",
+  );
+  assert.equal(
+    agentApiOpenApi.paths["/files/{fileRef}"].delete.parameters.some(
+      (parameter) => parameter.name === "X-File-Version",
+    ),
+    true,
+  );
+  assert.deepEqual(agentApiOpenApi.components.schemas.StoredFile.required, [
+    "ref",
+    "filename",
+    "mediaType",
+    "byteSize",
+    "checksumSha256",
+    "kind",
+    "state",
+    "readyExpiresAt",
+    "version",
+  ]);
 });

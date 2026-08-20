@@ -408,6 +408,11 @@ immutable ID и может группировать Tasks по значения�
   bounded staged quota и TTL. Bind создаёт один TaskAttachment, повторно
   проверяет Editor+, expiry и current Task/owner/Project quotas; v1 не допускает
   вторую Task binding.
+- Agent REST публикует file-first `POST/GET/DELETE /files` и JSON bind через
+  `/tasks/{ref}/attachments`; MCP публикует
+  `upload_file/get_file/delete_file/attach_file_to_task`. Existing raw-body REST
+  upload и `upload_task_attachment` остаются compatibility wrappers upload+bind.
+  Hosted surfaces не принимают local path, base64 или arbitrary URL.
 - TaskAttachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
   читать/download/preview; upload, recoverable delete и restore требуют Editor.
 - Upload принимает bounded binary body с обязательным idempotency key. Сервер

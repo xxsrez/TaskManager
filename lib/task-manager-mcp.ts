@@ -15,6 +15,7 @@ import {
   parseAgentTaskListQuery,
 } from "./agent-api-contract";
 import {
+  attachAgentStoredFileToTask,
   assertAgentTaskAttachmentWriteAccess,
   createAgentSubtask,
   createAgentTaskAttachment,
@@ -25,10 +26,13 @@ import {
   deleteAgentTaskRelation,
   editAgentTaskComment,
   createAgentTask,
+  createAgentStoredFile,
+  deleteAgentStoredFile,
   getAgentProjectDetail,
   getAgentReleaseDetail,
   getAgentSavedViewDetail,
   getAgentTaskDetail,
+  getAgentStoredFile,
   getAgentTaskAttachment,
   getAgentTaskThread,
   getAgentWorkspace,
@@ -584,6 +588,94 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     },
     async ({ taskRef, relationRef, version }) => writeToolCall(context, () =>
       deleteAgentTaskRelation(context.user, taskRef, relationRef, { version })),
+  );
+
+  server.registerTool(
+    "upload_file",
+    {
+      title: "Upload staged file",
+      description:
+        "Uploads one native OpenAI file into uploader-only staged storage and returns verified fileRef metadata. Use attach_file_to_task later; fileRef is not valid in Task descriptions or comments. Reuse idempotencyKey only for the identical file. Local paths, base64, and arbitrary URLs are not accepted.",
+      inputSchema: z.object({
+        file: mcpFileInputSchema,
+        idempotencyKey: z.string().min(1).max(200),
+      }),
+      annotations: idempotentOpenWorldWriteAnnotations,
+      _meta: {
+        ...toolSecurity("api:write"),
+        "openai/fileParams": ["file"],
+      },
+    },
+    async ({ file, idempotencyKey }) =>
+      writeToolCall(context, async () => {
+        const downloaded = await fetchMcpFileInput(file, {
+          maxBytes: attachmentLimits().maxBytes,
+        });
+        return createAgentStoredFile(context.user, {
+          body: downloaded.body,
+          filename: downloaded.filename,
+          claimedMediaType: downloaded.mediaType,
+          idempotencyKey,
+        });
+      }),
+  );
+
+  server.registerTool(
+    "get_file",
+    {
+      title: "Get staged file",
+      description:
+        "Gets verified metadata for a ready unbound file owned by the authenticated uploader. Bound, expired, deleted, foreign, and unknown refs are all unavailable; use get_task_attachment after bind.",
+      inputSchema: z.object({
+        fileRef: reference("Opaque staged file ref returned by upload_file."),
+      }),
+      annotations: readAnnotations,
+      _meta: toolSecurity("api:read"),
+    },
+    async ({ fileRef }) => toolCall(() =>
+      getAgentStoredFile(context.user, fileRef)),
+  );
+
+  server.registerTool(
+    "delete_file",
+    {
+      title: "Delete staged file",
+      description:
+        "Deletes one ready unbound staged file using its current version. A bound file must be managed through its Task attachment lifecycle.",
+      inputSchema: z.object({
+        fileRef: reference("Opaque staged file ref returned by upload_file."),
+        version: z.number().int().positive(),
+      }),
+      annotations: destructiveWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ fileRef, version }) => writeToolCall(context, () =>
+      deleteAgentStoredFile(context.user, fileRef, version)),
+  );
+
+  server.registerTool(
+    "attach_file_to_task",
+    {
+      title: "Attach staged file to Task",
+      description:
+        "Binds an uploader-owned ready fileRef to one editable canonical Task and returns the new attachmentRef. Upload and bind use independent idempotency keys. Current Task ACL, expiry, quotas, and the v1 single-binding guard are rechecked at bind time.",
+      inputSchema: z.object({
+        taskRef: reference("Canonical Task ref."),
+        fileRef: reference("Opaque staged file ref returned by upload_file."),
+        displayName: z.string().min(1).max(512).optional(),
+        idempotencyKey: z.string().min(1).max(200),
+      }),
+      annotations: idempotentWriteAnnotations,
+      _meta: toolSecurity("api:write"),
+    },
+    async ({ taskRef, fileRef, displayName, idempotencyKey }) =>
+      writeToolCall(context, () => attachAgentStoredFileToTask(
+        context.user,
+        taskRef,
+        fileRef,
+        { displayName, idempotencyKey },
+        toolOrigin(context),
+      )),
   );
 
   server.registerTool(

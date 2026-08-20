@@ -490,6 +490,52 @@ export const agentApiOpenApi = {
         },
       },
     },
+    "/files": {
+      post: {
+        operationId: "uploadFile",
+        summary: "Upload one bounded binary into uploader-only staged storage",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [
+          requiredHeader("Idempotency-Key", "Stable retry key for the identical binary."),
+          requiredHeader("X-File-Filename", "Percent-encoded original filename."),
+        ],
+        requestBody: binaryUploadRequest(),
+        responses: {
+          "201": envelopeResponse("Created ready staged file", {
+            $ref: "#/components/schemas/StoredFile",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
+    "/files/{fileRef}": {
+      get: {
+        operationId: "getFile",
+        summary: "Get uploader-only metadata for one ready unbound staged file",
+        parameters: [fileReferenceParameter()],
+        responses: {
+          "200": envelopeResponse("Ready staged file metadata", {
+            $ref: "#/components/schemas/StoredFile",
+          }),
+          ...errorResponses,
+        },
+      },
+      delete: {
+        operationId: "deleteFile",
+        summary: "Delete an uploader-owned unbound staged file",
+        security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
+        parameters: [
+          fileReferenceParameter(),
+          requiredHeader("X-File-Version", "Current optimistic version."),
+        ],
+        responses: {
+          "200": envelopeResponse("Deleted staged file metadata", {
+            $ref: "#/components/schemas/StoredFile",
+          }),
+          ...errorResponses,
+        },
+      },
+    },
     "/tasks/{ref}/attachments": {
       get: {
         operationId: "listTaskAttachments",
@@ -518,12 +564,12 @@ export const agentApiOpenApi = {
       },
       post: {
         operationId: "uploadTaskAttachment",
-        summary: "Upload one bounded binary into private Task storage",
+        summary: "Bind a staged file or compatibility-upload one bounded Task binary",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [
           referenceParameter(),
-          requiredHeader("Idempotency-Key", "Stable retry key for the identical binary."),
-          requiredHeader(
+          binaryOnlyHeader("Idempotency-Key", "Stable retry key for the identical binary."),
+          binaryOnlyHeader(
             "X-Attachment-Filename",
             "Percent-encoded original filename.",
           ),
@@ -531,6 +577,9 @@ export const agentApiOpenApi = {
         requestBody: {
           required: true,
           content: {
+            "application/json": {
+              schema: { $ref: "#/components/schemas/StoredFileBind" },
+            },
             "application/octet-stream": {
               schema: { type: "string", format: "binary" },
             },
@@ -1255,6 +1304,48 @@ export const agentApiOpenApi = {
         },
         additionalProperties: false,
       },
+      StoredFile: {
+        type: "object",
+        required: [
+          "ref",
+          "filename",
+          "mediaType",
+          "byteSize",
+          "checksumSha256",
+          "kind",
+          "state",
+          "readyExpiresAt",
+          "version",
+        ],
+        properties: {
+          ref: { type: "string" },
+          filename: { type: "string" },
+          mediaType: { type: "string" },
+          byteSize: { type: "integer", minimum: 1 },
+          checksumSha256: { type: "string", pattern: "^[a-f0-9]{64}$" },
+          kind: { enum: ["image", "file"] },
+          state: { enum: ["uploading", "ready", "failed", "expired", "deleted"] },
+          imageWidth: { type: ["integer", "null"] },
+          imageHeight: { type: ["integer", "null"] },
+          variants: { type: "object" },
+          readyExpiresAt: { type: ["string", "null"], format: "date-time" },
+          failureCode: { type: ["string", "null"] },
+          version: { type: "integer", minimum: 1 },
+          createdAt: { type: "string", format: "date-time" },
+          updatedAt: { type: "string", format: "date-time" },
+        },
+        additionalProperties: false,
+      },
+      StoredFileBind: {
+        type: "object",
+        required: ["fileRef", "idempotencyKey"],
+        properties: {
+          fileRef: { type: "string", minLength: 1, maxLength: 200 },
+          displayName: { type: "string", minLength: 1, maxLength: 512 },
+          idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
+        },
+        additionalProperties: false,
+      },
       AttachmentRestore: {
         type: "object",
         required: ["version", "deleted"],
@@ -1373,6 +1464,15 @@ function attachmentReferenceParameter() {
   } as const;
 }
 
+function fileReferenceParameter() {
+  return {
+    name: "fileRef",
+    in: "path",
+    required: true,
+    schema: { type: "string" },
+  } as const;
+}
+
 function relationReferenceParameter() {
   return {
     name: "relationRef",
@@ -1392,6 +1492,16 @@ function requiredHeader(name: string, description: string) {
   } as const;
 }
 
+function binaryOnlyHeader(name: string, description: string) {
+  return {
+    name,
+    in: "header",
+    required: false,
+    description: `${description} Required for binary compatibility upload; omit for JSON bind.`,
+    schema: { type: "string" },
+  } as const;
+}
+
 function jsonRequest(
   schemaReference: string,
   examples?: Record<string, { summary: string; value: Record<string, unknown> }>,
@@ -1403,6 +1513,19 @@ function jsonRequest(
         schema: { $ref: schemaReference },
         ...(examples ? { examples } : {}),
       },
+    },
+  } as const;
+}
+
+function binaryUploadRequest() {
+  const binary = { schema: { type: "string", format: "binary" } } as const;
+  return {
+    required: true,
+    content: {
+      "application/octet-stream": binary,
+      "application/pdf": binary,
+      "image/png": binary,
+      "image/jpeg": binary,
     },
   } as const;
 }

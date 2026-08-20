@@ -254,5 +254,11 @@ test("unbound ready files expire without touching bound attachments", async () =
   assert.equal(await bucket.head(expired.objectKey), null);
   assert.ok(await bucket.head(bound.objectKey));
   await assert.rejects(getStoredFile(owner, expired.publicId), NotFoundError);
+  await assert.rejects(
+    bindStoredFileToTask(owner, first.id, expired.publicId, {
+      idempotencyKey: "stored-expired-bind",
+    }),
+    NotFoundError,
+  );
   assert.equal((await getStoredFile(owner, bound.publicId)).state, "ready");
 });

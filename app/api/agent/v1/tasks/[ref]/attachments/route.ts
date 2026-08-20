@@ -7,11 +7,13 @@ import {
 } from "@/lib/agent-api-contract";
 import { withAgentApi } from "@/lib/agent-api-http";
 import {
+  attachAgentStoredFileToTask,
   assertAgentTaskAttachmentWriteAccess,
   createAgentTaskAttachment,
   listAgentTaskAttachments,
 } from "@/lib/agent-api-repository";
 import { ValidationError } from "@/lib/domain";
+import { readJson } from "@/lib/http";
 import { publicOrigin } from "@/lib/oauth";
 
 export async function GET(
@@ -35,6 +37,28 @@ export async function POST(
   const { ref } = await context.params;
   return withAgentApi(request, "api:write", async ({ user }) => {
     await assertAgentTaskAttachmentWriteAccess(user, ref);
+    if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "application/json") {
+      const input = await readJson(request);
+      const fileRef = requiredText(input.fileRef, "fileRef", 200);
+      const idempotencyKey = requiredText(
+        input.idempotencyKey,
+        "idempotencyKey",
+        200,
+      );
+      const displayName = input.displayName == null
+        ? null
+        : requiredText(input.displayName, "displayName", 512);
+      return {
+        data: await attachAgentStoredFileToTask(
+          user,
+          ref,
+          fileRef,
+          { idempotencyKey, displayName },
+          publicOrigin(request),
+        ),
+        status: 201,
+      };
+    }
     const encodedFilename = request.headers.get("x-attachment-filename");
     const idempotencyKey = request.headers.get("idempotency-key");
     if (!encodedFilename) {
@@ -68,4 +92,15 @@ export async function POST(
       status: 201,
     };
   });
+}
+
+function requiredText(value: unknown, name: string, maximum: number) {
+  if (typeof value !== "string") {
+    throw new ValidationError(`${name} is required`);
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximum) {
+    throw new ValidationError(`${name} is invalid`);
+  }
+  return normalized;
 }

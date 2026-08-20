@@ -12,12 +12,17 @@ import {
   type AgentTaskListQuery,
 } from "./agent-api-contract";
 import {
+  bindStoredFileToTask,
   createAttachment,
+  createStoredFile,
   deleteAttachment,
+  deleteStoredFile,
   getAttachmentContent,
   getTaskAttachment,
+  getUnboundStoredFile,
   listTaskAttachments,
   restoreAttachment,
+  StoredFileAlreadyBoundError,
   type AttachmentContentOptions,
   type CreateAttachmentInput,
 } from "./attachments";
@@ -50,6 +55,7 @@ import type { AgentAuthorizationContext } from "./agent-api-context";
 import type {
   AccessRole,
   AttachmentRecord,
+  StoredFileRecord,
   UserRecord,
   ViewFilterCondition,
 } from "./types";
@@ -1139,6 +1145,56 @@ export async function createAgentTaskAttachment(
   return agentAttachment(attachment, String(task.public_id), origin);
 }
 
+export async function createAgentStoredFile(
+  currentUser: UserRecord,
+  input: CreateAttachmentInput,
+) {
+  return agentStoredFile(await createStoredFile(currentUser, input));
+}
+
+export async function getAgentStoredFile(
+  currentUser: UserRecord,
+  fileReference: string,
+) {
+  return agentStoredFile(
+    await getUnboundStoredFile(currentUser, fileReference),
+  );
+}
+
+export async function deleteAgentStoredFile(
+  currentUser: UserRecord,
+  fileReference: string,
+  expectedVersion: number,
+) {
+  return agentStoredFile(
+    await deleteStoredFile(currentUser, fileReference, expectedVersion),
+  );
+}
+
+export async function attachAgentStoredFileToTask(
+  currentUser: UserRecord,
+  taskReference: string,
+  fileReference: string,
+  input: { idempotencyKey: string; displayName?: string | null },
+  origin: string,
+) {
+  const task = await loadAccessibleTaskRow(currentUser.id, taskReference);
+  try {
+    const attachment = await bindStoredFileToTask(
+      currentUser,
+      String(task.id),
+      fileReference,
+      input,
+    );
+    return agentAttachment(attachment, String(task.public_id), origin);
+  } catch (error) {
+    if (error instanceof StoredFileAlreadyBoundError) {
+      throw new NotFoundError("Stored file not found");
+    }
+    throw error;
+  }
+}
+
 export async function assertAgentTaskAttachmentWriteAccess(
   currentUser: UserRecord,
   taskReference: string,
@@ -1704,6 +1760,26 @@ function agentAttachment(
           ? `${base.toString()}/content?variant=thumbnail`
           : null,
     },
+  };
+}
+
+function agentStoredFile(storedFile: StoredFileRecord) {
+  return {
+    ref: storedFile.publicId,
+    filename: storedFile.displayName,
+    mediaType: storedFile.mediaType,
+    byteSize: storedFile.byteSize,
+    checksumSha256: storedFile.checksumSha256,
+    kind: storedFile.kind,
+    state: storedFile.state,
+    imageWidth: storedFile.imageWidth,
+    imageHeight: storedFile.imageHeight,
+    variants: storedFile.variants,
+    readyExpiresAt: storedFile.readyExpiresAt,
+    failureCode: storedFile.failureCode,
+    version: storedFile.version,
+    createdAt: storedFile.createdAt,
+    updatedAt: storedFile.updatedAt,
   };
 }
 

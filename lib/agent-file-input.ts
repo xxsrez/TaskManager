@@ -24,10 +24,10 @@ export async function fetchMcpFileInput(
   input: McpFileInput,
   options: FetchFileOptions,
 ) {
-  const fileId = boundedText(input.file_id, "file_id", 512);
+  boundedText(input.file_id, "file_id", 512);
   const filename = input.file_name
     ? boundedText(input.file_name, "file_name", 512)
-    : `upload-${fileId.slice(0, 120)}`;
+    : "upload";
   const mediaType = input.mime_type
     ? boundedText(input.mime_type, "mime_type", 200)
     : null;

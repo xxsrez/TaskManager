@@ -499,15 +499,20 @@ Inline code также проходит через общий tokenizer: opener/
 напротив, одинаково в validator и renderer поглощает остаток description как
 code, поэтому неоднозначный ввод не расходится между write и read paths.
 
-Agent REST повторяет эту boundary через `/api/agent/v1/tasks/{ref}/attachments`:
-metadata использует Task-bound keyset cursor, upload читает raw body только после
-bearer/scope проверки, а content route повторно разрешает Task ACL перед R2.
-Projection исключает internal Task/uploader IDs и object key; URL ведёт обратно
-на bearer-protected Agent API. MCP использует тот же command service. Его
-OpenAI file input скачивается bounded fetch с `credentials=omit`, manual
-redirect validation и allowlist OpenAI HTTPS hosts; временный URL не попадает в
-D1 или logs. После fetch общий Attachment repository снова проверяет magic,
-claim, pixels, checksum, idempotency и effective Editor role.
+Agent REST создаёт staged binary через `/api/agent/v1/files`, uploader-only
+metadata/delete — через `/files/{fileRef}`, а JSON bind — через
+`/tasks/{ref}/attachments`. Тот же Task endpoint сохраняет raw-body
+compatibility wrapper upload+bind. После bind Task-bound keyset metadata и
+content route повторно разрешают current Task ACL перед R2. Обе projections
+исключают internal Task/uploader IDs и object key; только Attachment получает
+bearer-protected content URL. MCP `upload_file/get_file/delete_file` и
+`attach_file_to_task` используют те же command services, а
+`upload_task_attachment` остаётся compatibility wrapper. Native OpenAI file
+input скачивается bounded fetch с `credentials=omit`, manual redirect validation
+и allowlist OpenAI HTTPS hosts; `file_id` и временный URL не попадают в D1,
+R2 identity, Activity или logs. После fetch общий repository снова проверяет
+magic, claim, pixels, checksum и upload idempotency; bind отдельно проверяет
+effective Editor role, expiry, quotas и single-binding guard.
 
 Native и historical comment bodies не входят в bootstrap или Task detail. UI
 отдельно запрашивает `/api/tasks/{id}/comments`; этот route повторяет Task ACL,

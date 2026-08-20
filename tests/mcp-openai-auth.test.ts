@@ -287,6 +287,10 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     "list_task_attachments",
     "get_task_attachment",
     "download_task_attachment",
+    "upload_file",
+    "get_file",
+    "delete_file",
+    "attach_file_to_task",
     "upload_task_attachment",
     "delete_task_attachment",
     "create_task_relation",
@@ -367,6 +371,25 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
     Object.keys(uploadTool?.inputSchema?.properties?.file?.properties ?? {}),
     ["download_url", "file_id", "mime_type", "file_name"],
   );
+  const stagedUploadTool = listBody.result.tools.find(
+    (tool) => tool.name === "upload_file",
+  ) as typeof uploadTool;
+  assert.deepEqual(stagedUploadTool?._meta?.["openai/fileParams"], ["file"]);
+  assert.deepEqual(
+    Object.keys(stagedUploadTool?.inputSchema?.properties?.file?.properties ?? {}),
+    ["download_url", "file_id", "mime_type", "file_name"],
+  );
+  const attachFileTool = listBody.result.tools.find(
+    (tool) => tool.name === "attach_file_to_task",
+  ) as {
+    inputSchema?: { required?: string[]; properties?: Record<string, unknown> };
+  } | undefined;
+  assert.deepEqual(attachFileTool?.inputSchema?.required, [
+    "taskRef",
+    "fileRef",
+    "idempotencyKey",
+  ]);
+  assert.ok(attachFileTool?.inputSchema?.properties?.displayName);
   const downloadTool = listBody.result.tools.find(
     (tool) => tool.name === "download_task_attachment",
   ) as {
