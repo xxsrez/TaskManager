@@ -52,6 +52,21 @@ test("comment attachment authoring inserts image blocks and file links at the cu
   assert.equal(fileInsert.value.slice(fileInsert.cursor), "today");
 });
 
+test("mixed image and file uploads keep the image on its own Markdown line", () => {
+  const imageInsert = insertCommentAttachmentToken("", 0, image);
+  const fileInsert = insertCommentAttachmentToken(
+    imageInsert.value,
+    imageInsert.cursor,
+    document,
+  );
+
+  assert.equal(
+    fileInsert.value,
+    "![Схема [v2)](attachment:v1:image-reference-123)\n" +
+      "[Очень длинный отчёт [финал).pdf](attachment:v1:file-reference-456)",
+  );
+});
+
 test("removing a ready upload removes only its inserted draft token", () => {
   const upload = insertCommentAttachmentToken("First\nKeep", 5, document);
   const gallery = insertCommentAttachmentToken(upload.value, upload.cursor, document);

@@ -1,6 +1,7 @@
 import {
   buildTaskFileLink,
   buildTaskImageToken,
+  parseTaskImageLine,
 } from "@/lib/task-description-format";
 
 export type CommentAttachmentChoice = {
@@ -57,9 +58,12 @@ export function insertCommentAttachmentToken(
   const before = value.slice(0, cursor);
   const after = value.slice(cursor);
   const block = attachment.kind === "image";
+  const currentLine = before.slice(before.lastIndexOf("\n") + 1);
   const prefix = block
     ? before && !before.endsWith("\n") ? "\n" : ""
-    : before && !/[\s(]$/.test(before) ? " " : "";
+    : before && parseTaskImageLine(currentLine)
+      ? "\n"
+      : before && !/[\s(]$/.test(before) ? " " : "";
   const suffix = block
     ? after && !after.startsWith("\n") ? "\n" : ""
     : after && !/^[\s.,;:!?)]/.test(after) ? " " : "";
