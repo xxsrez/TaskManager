@@ -47,6 +47,38 @@ Mac постоянной частью hosted UAT data plane.
 7. Production plugin и production Site не используются как замена UAT gate.
    Проверка в production по-прежнему требует отдельной прямой команды.
 
+Edge реализован отдельным standalone Cloudflare Worker entry, а не режимом
+application Worker. Обычный UAT/production Site не содержит edge bindings и
+продолжает обслуживать только application routes. Edge активируется только
+полным согласованным набором:
+
+- `TASK_MANAGER_CONNECTOR_EDGE_UPSTREAM_ORIGIN` — строго
+  `https://task-manager-uat.example.invalid`;
+- `TASK_MANAGER_CONNECTOR_EDGE_PUBLIC_ORIGIN` — отдельный точный HTTPS origin,
+  не совпадающий с UAT или production Site;
+- `TASK_MANAGER_CONNECTOR_EDGE_SITES_BYPASS_TOKEN` — только hosted secret;
+- `TASK_MANAGER_CONNECTOR_EDGE_RATE_LIMITER` — обязательный Cloudflare
+  `RateLimit` binding.
+
+Source-конфигурация entry и limiter лежит в `wrangler.connector-edge.jsonc`;
+она намеренно не содержит public origin или secret и без них отвечает `503`.
+Это не альтернативный hosting Task Manager UI или данных: отдельный Worker
+является только UAT connector ingress и не имеет D1/R2/application assets.
+
+Любая частичная или неверная edge-конфигурация отвечает `503`. Активный edge
+принимает только discovery, DCR/token/revoke, browser entry
+`GET /oauth/authorize`, `/api/mcp` и staged
+`POST /api/agent/v1/files`; остальные paths, UI и assets получают `404`.
+Authorization entry не проксирует consent HTML: browser перенаправляется на
+owner-only UAT и проходит его обычную Sites authentication. Остальные routes
+идут server-to-server с exact-host Sites credential.
+
+Перед включением edge private UAT обязан получить
+`TASK_MANAGER_PUBLIC_ORIGIN=<edge-origin>`. Edge валидирует discovery metadata
+и fail closed, пока issuer, authorization/token/register/revoke endpoints и MCP
+resource не образуют этот единый origin. Это runtime configuration change и не
+выполняется одним source commit.
+
 ```text
 Codex hosted MCP ──> machine-only connector edge ──> private UAT Site
                                                 └──> Task Manager OAuth/ACL
@@ -59,6 +91,8 @@ Codex host path ──> local upload_local_file ───────> тот ж
 - exact upstream host и allowlist методов/routes; arbitrary URL запрещён;
 - отсутствие UI/assets и default-deny для неизвестного path;
 - bounded request/response size, timeout, redirect policy и rate limit;
+- request/response header allowlists; client cookies, origin, referer,
+  `Set-Cookie` и произвольные diagnostic headers не пересекают edge;
 - hosted secret не возвращается client и не попадает в logs;
 - browser authorization остаётся owner-authenticated и не подменяется edge;
 - OAuth issuer/resource metadata, token audience и MCP URL образуют один

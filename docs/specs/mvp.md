@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-20
+Последнее обновление: 2026-08-21
 
 ## 1. Цель
 
@@ -423,8 +423,11 @@ immutable ID и может группировать Tasks по значения�
   snapshot-ит только regular file и вызывает тот же Agent REST `POST /files`.
   Server не получает полный path; tool возвращает обычный verified `fileRef`,
   который затем bind-ится общим remote `attach_file_to_task`. Native-client
-  OAuth использует DCR/PKCE loopback, rotating refresh token хранится в OS
-  credential store, а bundled runtime не зависит от случайного system Node.
+  OAuth использует DCR/PKCE loopback только при фактическом upload; client
+  metadata, access token и rotating refresh token живут только в памяти
+  процесса. Startup/discovery не выполняют network, browser, Keychain или
+  `/usr/bin/security` operations, а bundled runtime не зависит от случайного
+  system Node.
 - TaskAttachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
   читать/download/preview; upload, recoverable delete и restore требуют Editor.
 - Upload принимает bounded binary body с обязательным idempotency key. Сервер

@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-19
+Последнее обновление: 2026-08-21
 
 Архитектура реализована первым вертикальным срезом на TypeScript, React 19,
 Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentication
@@ -104,6 +104,13 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
   проксирует JSON-RPC и не содержит Sites bypass. Полный remote UAT gate требует
   отдельно разрешённого machine-only connector edge по ADR-0014; он не меняет
   owner-only audience самого UAT Site и не заменяет production plugin.
+- Edge собирается отдельным standalone Cloudflare Worker entry без D1, R2 и
+  application assets; ordinary UAT Site не импортирует его и не получает edge
+  bindings. Entry всегда default-deny: UI/assets недоступны, upstream жёстко
+  равен private UAT, body/response/timeout/redirect/header boundaries
+  ограничены, а обязательный RateLimit binding fail closed. Browser
+  authorization перенаправляется на owner-only UAT; discovery/MCP/OAuth/file
+  ingress проходят server-to-server.
 - Site может быть доступен в интернете как sign-in shell, но application data
   всегда требует authenticated User. Site audience и in-app authorization
   проверяются независимо.

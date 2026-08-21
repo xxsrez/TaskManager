@@ -95,6 +95,44 @@ upload. Edge должен иметь exact route/upstream allowlist, bounded bod
 command line или Task evidence. До edge результат строки UAT connector —
 `blocked`, а не `verified`; production не используется как fallback.
 
+### Machine-only UAT connector edge
+
+Edge — отдельный standalone Cloudflare Worker без D1/R2/assets, а не второй
+ChatGPT Site. Не редактируйте текущий `.openai/hosting.json`: он принадлежит
+обычному owner-only UAT Site. Source entry и обязательный RateLimit binding
+описаны в `wrangler.connector-edge.jsonc`; source build выполняется вместе с
+обычным `npm run build`, но public deploy остаётся отдельным явным действием.
+
+Полный hosted набор edge:
+
+- `TASK_MANAGER_CONNECTOR_EDGE_UPSTREAM_ORIGIN` = exact private UAT origin;
+- `TASK_MANAGER_CONNECTOR_EDGE_PUBLIC_ORIGIN` = exact connector edge origin;
+- `TASK_MANAGER_CONNECTOR_EDGE_SITES_BYPASS_TOKEN` = hosted secret, никогда не
+  local env, command argument, plugin config или Task evidence;
+- `TASK_MANAGER_CONNECTOR_EDGE_RATE_LIMITER` = provisioned Cloudflare
+  `RateLimit` binding.
+
+Config намеренно не содержит public origin и hosted secret, поэтому случайный
+deploy отвечает `503`. После отдельно разрешённого provisioning сначала
+зафиксировать точный Worker origin как non-secret var, затем передать bypass
+только через provider secret store. Не помещать secret в `wrangler` config,
+shell argument, output или evidence.
+
+Private UAT одновременно получает `TASK_MANAGER_PUBLIC_ORIGIN` с тем же edge
+origin. Сначала проверить anonymous discovery: edge обязан вернуть metadata с
+edge issuer/resource; mismatch даёт `502`, а не переписанный JSON. Затем
+проверить, что `/`, `/workspace`, `/_vinext/image` и неизвестные paths дают
+`404`; direct UAT UI остаётся owner-only. `GET /oauth/authorize` должен одним
+redirect перевести owner browser на private UAT, где consent использует обычную
+Sites identity. DCR/token/MCP/file routes не передают client Cookie/Origin/
+Referer и не возвращают upstream `Set-Cookie`.
+
+Source tests проверяют disabled default, partial-config `503`, production/
+foreign-upstream rejection, exact route/method/origin allowlist, rate-limit
+fail-closed, bounded bodies/responses, manual redirect policy, metadata-origin
+consistency и отсутствие secret в client response. Они не заменяют provisioning,
+hosted secret, access-policy read-back или fresh connector E2E.
+
 ## Recovery
 
 - `uploading` после `upload_expires_at` cleanup переводит в `failed` и удаляет

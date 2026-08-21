@@ -7,7 +7,9 @@
   },
   "scripts": {
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
-    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "build": "npm run build:site && npm run build:connector-edge",
+    "build:site": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "build:connector-edge": "wrangler deploy --dry-run --config wrangler.connector-edge.jsonc --outdir .wrangler/connector-edge-build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "tsx --test tests/*.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
