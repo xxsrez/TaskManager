@@ -80,28 +80,20 @@ metadata не редактируется вручную. Любое provision/mi
 Fresh-chat production smoke обычного marketplace plugin направлен в production
 и выполняется только после отдельно разрешённого production Site/plugin
 release. До него file-first connector gate выполняется отдельным
-`task-manager-uat@srez-marketplace`. Fresh task должен видеть один stdio server
-`task-manager-uat`, который публикует полный deployed remote tool inventory и
-`upload_local_file`; launcher обязан передать exact UAT origin и
-`--private-uat-bridge`.
+`task-manager-uat@srez-marketplace`. Он должен объявлять два независимых
+servers: hosted remote MCP с полным deployed inventory и local stdio с одним
+`upload_local_file`. Local startup/initialize/list не открывает browser, не
+делает network I/O и не обращается к Keychain; Task Manager DCR/PKCE начинается
+только при фактическом upload и хранит credentials в памяти процесса.
 
-Private UAT bridge использует два независимых credential lifecycle:
-
-1. Outer Sites bypass создаётся/ротируется только явной operator action и
-   сохраняется generic-password item с service
-   `com.xxsrez.task-manager.uat.sites-bypass` и account
-   `https://task-manager-uat.example.invalid`. Значение нельзя
-   помещать в command line, plugin JSON, environment, logs или Task evidence.
-2. Task Manager DCR/PKCE consent создаёт отдельный OAuth grant; client metadata
-   и rotating refresh token остаются в обычном companion Keychain item. Именно
-   этот OAuth bearer задаёт User, scopes и ACL для REST/MCP calls.
-
-Bridge добавляет Sites header только к exact UAT HTTPS origin, запрещает
-redirect/cross-origin и fail-closed отказывает при production origin. UAT
-остаётся `custom`; access policy и production plugin не меняются. Перед smoke
-перечитать Site policy, после smoke повторить read-back. Если Sites credential
-не существует или отклонён, фиксировать bounded outer-gate error без HTML/body
-и не пытаться переносить secret в plugin config.
+Owner-only UAT Sites gate применяется до Worker. Поэтому матрицу нельзя
+запускать, пока отдельно разрешённый machine-only connector edge не опубликован
+и fresh runtime не подтвердил общий connector origin для hosted MCP и local
+upload. Edge должен иметь exact route/upstream allowlist, bounded body/timeout,
+не публиковать UI и сохранять обычные Task Manager OAuth/scopes/ACL после
+внешнего gate. Sites bypass запрещено переносить на Mac, в plugin config,
+command line или Task evidence. До edge результат строки UAT connector —
+`blocked`, а не `verified`; production не используется как fallback.
 
 ## Recovery
 

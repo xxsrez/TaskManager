@@ -139,28 +139,27 @@ explicit display filename, verified MIME, idempotency key и snapshot bytes;
 tool result.
 
 Companion использует отдельный native-client DCR + Authorization Code/PKCE
-loopback flow с `api:write`. Access token живёт только в памяти процесса, а
-client metadata и rotating refresh token — в macOS Keychain, не в tool args,
-plugin config или transcript. Полученный `fileRef` не имеет отдельной локальной
-семантики: его связывает общий remote `attach_file_to_task` с независимым bind
-key. Plugin поставляет self-contained macOS arm64/x86_64 binary и launcher без
-зависимости от system Node; Windows/Linux в текущей версии fail closed как
-unsupported platform.
+loopback flow с `api:write` только при фактическом upload. Client metadata,
+access и rotating refresh token живут только в памяти процесса; startup,
+`initialize`, `ping` и `tools/list` не выполняют network, browser, Keychain или
+`/usr/bin/security` operations. Полученный `fileRef` не имеет отдельной
+локальной семантики: его связывает общий remote `attach_file_to_task` с
+независимым bind key. Plugin поставляет self-contained macOS arm64/x86_64
+binary и launcher без зависимости от system Node; Windows/Linux в текущей
+версии fail closed как unsupported platform.
 
 Production package `task-manager` направляет оба MCP components на production.
 Для release gate существует отдельный явно устанавливаемый
-`task-manager-uat`: launcher запускает один private-UAT bridge, который через
-тот же exact UAT origin проксирует deployed remote MCP и добавляет
-`upload_local_file`. Bridge сохраняет remote schemas, включая
-`_meta["openai/fileParams"]`, поэтому native OpenAI file input и exact local
-path проверяются в одном fresh runtime. Outer Sites bypass credential читается
-только из отдельного macOS Keychain item, никогда не принимается как tool arg,
-flag value, plugin config или environment variable и не является application
-identity. Task Manager DCR/PKCE OAuth остаётся отдельным обязательным слоем;
-его rotating refresh token хранится в другом Keychain item. Bridge разрешён
-только для `https://task-manager-uat.example.invalid`, отказывает для
-production origin и не меняет private UAT access policy. Profile допускает
-только synthetic test data и не заменяет production package.
+`task-manager-uat`: hosted MCP и local `upload_local_file` объявлены отдельными
+servers и должны указывать на один UAT connector origin. Companion не
+проксирует remote schemas, не содержит Sites bypass и хранит Task Manager OAuth
+только в памяти. Owner-only Sites policy применяется до application Worker,
+поэтому direct remote MCP на private UAT не является рабочим connector origin.
+Полный gate требует отдельно provisioned machine-only connector edge по
+[ADR-0014](../decisions/0014-private-uat-connector-edge-and-local-ingress.md).
+До его отдельного разрешения и deployment UAT profile не install-ready, а
+native OpenAI file и exact local path runtime matrix остаётся blocked, не
+подменяясь source tests или production.
 
 Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
 restore атомарно отзывает все authentication capabilities, чтобы они не

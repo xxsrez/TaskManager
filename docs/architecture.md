@@ -33,7 +33,8 @@ flowchart LR
     U[Пользователь] --> PROD[Production Site: task-manager]
     QA[Проверка] --> UAT[UAT Site: task-manager-uat]
     PLUGIN[Task Manager plugin] --> PRT[Production runtime]
-    UPLUGIN[Task Manager UAT private stdio bridge] --> URT
+    UPLUGIN[Task Manager UAT hosted connector edge] --> URT
+    LOCAL[Local upload companion] --> UPLUGIN
     API[Direct UAT smoke] --> URT[UAT runtime]
     CG[Sign in with ChatGPT] --> PRT
     CG --> URT
@@ -98,11 +99,11 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
   Documentation-only изменение этого репозитория не является deployment.
 - Обычный Task Manager marketplace plugin продолжает использовать production
   `/api/mcp`. Отдельный operator-only `task-manager-uat` profile используется
-  только для synthetic release smoke. Один local stdio bridge направляет
-  exact-path upload и proxied hosted MCP на один UAT origin, добавляет внешний
-  Sites bypass только для этого exact host и затем отдельно использует обычный
-  Task Manager OAuth bearer. Он не участвует в обычном plugin data plane, не
-  меняет private Site policy и не заменяет production plugin.
+  только для synthetic release smoke. Hosted remote MCP и local-file ingress
+  разделены: local stdio process публикует только `upload_local_file`, не
+  проксирует JSON-RPC и не содержит Sites bypass. Полный remote UAT gate требует
+  отдельно разрешённого machine-only connector edge по ADR-0014; он не меняет
+  owner-only audience самого UAT Site и не заменяет production plugin.
 - Site может быть доступен в интернете как sign-in shell, но application data
   всегда требует authenticated User. Site audience и in-app authorization
   проверяются независимо.
@@ -234,17 +235,17 @@ version conflict остаётся write boundary и не заменяется po
    plane: он читает один exact host-authorized regular file через stable handle,
    проверяет optional stat/SHA-256 expectations и вызывает канонический REST
    `POST /files`. Full local path не пересекает process boundary. Companion
-   получает native-client OAuth grant через DCR/PKCE loopback, держит access
-   token в памяти и rotating refresh token в macOS Keychain. После upload
-   remote MCP связывает тот же `fileRef` с Task, поэтому ACL, quota,
-   idempotency и lifecycle не дублируются в local component.
-9. В operator-only UAT profile companion дополнительно является узким MCP
-   transport bridge. Он читает outer Sites bypass из отдельного macOS Keychain
-   item, вводит header только для exact UAT HTTPS origin, отказывает для
-   production/cross-origin и проксирует remote JSON-RPC без потери tool `_meta`.
-   Bypass не задаёт application subject: remote `tools/call` по-прежнему
-   получает отдельный Task Manager OAuth access token, а browser consent
-   проходит обычный owner-authenticated Sites flow.
+   получает native-client OAuth grant через DCR/PKCE loopback только при первом
+   upload и держит client metadata/access/refresh token в памяти процесса.
+   Discovery не вызывает network/browser/Keychain. После upload remote MCP
+   связывает тот же `fileRef` с Task, поэтому ACL, quota, idempotency и lifecycle
+   не дублируются в local component.
+9. Owner-only Sites gate находится перед Worker и не принимает Task Manager
+   OAuth как замену audience policy. Поэтому operator-only UAT profile требует
+   отдельного hosted connector edge с exact route/upstream allowlist, bounded
+   proxy policy и server-side hosting credential. Его provisioning/public
+   ingress/secret — отдельная явная security boundary; до deployment
+   fresh-runtime UAT connector acceptance остаётся blocked.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в
