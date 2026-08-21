@@ -1,8 +1,13 @@
 # ADR-0014: private UAT и on-demand local ingress
 
-Статус: `Accepted`
+Статус: `Superseded`
 
 Дата решения: 2026-08-21
+
+Operational acceptance path этого ADR заменён
+[ADR-0015](0015-production-file-first-release-canary.md). Документ сохранён как
+история отклонённого private-UAT ingress: реализовывать, запускать или требовать
+этот контур для текущего release gate больше не следует.
 
 Этот ADR заменяет прежнюю connector-часть пункта 6 ADR-0010 и прежнюю редакцию
 ADR-0014 с hosted machine-only edge. Разделение production/UAT, owner-only

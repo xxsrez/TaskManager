@@ -33,8 +33,7 @@ flowchart LR
     U[Пользователь] --> PROD[Production Site: task-manager]
     QA[Проверка] --> UAT[UAT Site: task-manager-uat]
     PLUGIN[Task Manager plugin] --> PRT[Production runtime]
-    LOCAL[Task Manager UAT local companion] --> INGRESS[On-demand loopback ingress]
-    INGRESS --> URT
+    LOCAL[Task Manager local companion] --> PRT
     API[Direct UAT smoke] --> URT[UAT runtime]
     CG[Sign in with ChatGPT] --> PRT
     CG --> URT
@@ -97,18 +96,17 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
   дополнительного approval. Любая production source push/save/deploy требует
   прямой текущей команды пользователя, явно разрешающей production release.
   Documentation-only изменение этого репозитория не является deployment.
-- Обычный Task Manager marketplace plugin продолжает использовать production
-  `/api/mcp`. Отдельный operator-only `task-manager-uat` profile используется
-  только для synthetic release smoke. Он не объявляет hosted MCP: local stdio
-  process выполняет `upload_local_file` и `attach_local_file_to_task` через Agent
-  REST, не проксируя JSON-RPC. Private UAT остаётся owner-only.
-- Для машинных OAuth/file/attachment запросов UAT-профиля оператор вручную
-  запускает bounded ingress на exact `127.0.0.1`. Он принимает Sites bypass
-  token только через stdin, хранит его в памяти процесса, разрешает exact
-  OAuth/file/attachment routes и не публикуется в сети. Startup/discovery
-  companion не запускают ingress и не обращаются к Keychain или
-  `/usr/bin/security`. Browser authorization идёт напрямую в owner-only UAT;
-  hosted Codex, публичный connector edge и production не входят в этот контур.
+- Обычный Task Manager marketplace plugin использует production `/api/mcp`, а
+  его local stdio companion — production Agent REST. Companion выполняет
+  `upload_local_file` и `attach_local_file_to_task`, не проксируя JSON-RPC и не
+  передавая local path серверу.
+- Private UAT остаётся owner-only и обслуживает обычные browser/API/contract
+  checks. Обязательный machine ingress и Sites bypass для него удалены из
+  release topology. По [ADR-0015](decisions/0015-production-file-first-release-canary.md)
+  fresh local-path proof выполняется bounded production canary только после
+  прямого production approval. Startup/discovery companion не выполняют
+  network/browser/Keychain operations; hosted Codex и public machine edge не
+  участвуют.
 - Site может быть доступен в интернете как sign-in shell, но application data
   всегда требует authenticated User. Site audience и in-app authorization
   проверяются независимо.
@@ -246,10 +244,10 @@ version conflict остаётся write boundary и не заменяется po
    local tool связывает тот же `fileRef` с Task через канонический Agent REST,
    поэтому ACL, quota, idempotency и lifecycle не дублируются в local component.
 9. Owner-only Sites gate находится перед Worker и не принимает Task Manager
-   OAuth как замену audience policy. Поэтому operator-only UAT profile направляет
-   machine requests через вручную запускаемый loopback-only ingress с exact
-   route/upstream allowlist. Sites credential поступает только через stdin и
-   живёт в памяти процесса; browser OAuth идёт напрямую в owner-only UAT.
+   OAuth как замену audience policy. Поэтому automated local-file release proof
+   не проксируется в private UAT: после отдельного production approval exact
+   packaged companion проверяется напрямую против production Agent REST
+   bounded canary из ADR-0015.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в

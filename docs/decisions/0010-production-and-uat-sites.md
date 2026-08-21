@@ -36,16 +36,15 @@ Task Manager plugin.
    Production data и secrets туда не копируются. Полный destructive reset
    остаётся отдельной операцией и не выводится из разрешения создавать test
    data.
-6. Обычный marketplace plugin `task-manager`, его OAuth resource и MCP endpoint
-   остаются направлены на production
-   `https://task-manager.example.invalid/api/mcp`. Для release gate
-   разрешён отдельный явно устанавливаемый operator-only profile
-   `task-manager-uat`. По ADR-0014 этот profile не объявляет hosted MCP: local
-   companion публикует `upload_local_file` и `attach_local_file_to_task`, а
-   machine requests направляет через отдельно и вручную запускаемый loopback
-   ingress. Ingress принимает Sites bypass только через stdin, держит его в
-   памяти и не использует Keychain или `/usr/bin/security`. Private UAT
-   остаётся owner-only; hosted Codex и публичный connector edge не требуются.
+6. Обычный marketplace plugin `task-manager`, его OAuth resource, MCP endpoint
+   и local companion остаются направлены на production
+   `https://task-manager.example.invalid`. Private UAT используется для
+   browser/API/contract checks, но не получает обязательный machine ingress.
+   По [ADR-0015](0015-production-file-first-release-canary.md) свежая local-path
+   приёмка file-first release выполняется bounded production canary только
+   после отдельной прямой production-команды для exact scope. Keychain,
+   `/usr/bin/security`, Sites bypass proxy, public machine edge и hosted Codex
+   в local-file цепочке не используются.
 7. Обычные ACL-scoped изменения одной явно указанной Task через production
    plugin — это product-data lifecycle, а не release. Такой запрос разрешает
    status transitions и native completion/failure comment только для этой Task,
@@ -62,7 +61,7 @@ Git exact SHA
 └── explicit approval ─> task-manager     ──> production D1 / real data
 
 Task Manager plugin ───────────────────────> task-manager /api/mcp
-Task Manager UAT local companion ──────────> loopback ingress ─> UAT Agent REST
+Task Manager local companion ──────────────> production Agent REST
 ```
 
 ## Последствия
@@ -75,10 +74,9 @@ Task Manager UAT local companion ──────────> loopback ingres
   остаётся реально deployed saved version, а не последний Git commit.
 - Проверка UAT обязана явно называть UAT URL и не считается доказательством
   production deployment.
-- Fresh-plugin проверка file-first contract не смешивает production connector
-  с UAT: оба local tools используют UAT Agent REST через on-demand loopback
-  ingress. Private Site policy сохраняется; secret не попадает в package,
-  environment или Keychain и живёт только в памяти ingress process.
+- Fresh-plugin file-first проверка выполняется только после явного production
+  approval через bounded canary из ADR-0015. UAT policy сохраняется; постоянный
+  credential, Sites bypass и Keychain для acceptance не создаются.
 
 ## Отклонённые варианты
 

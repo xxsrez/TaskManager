@@ -54,6 +54,16 @@ scripts/package-site-environment.sh production \
 После deploy обязательны terminal status, production smoke, проверка access
 policy и подтверждение, что plugin endpoint продолжает отвечать с этого Site.
 
+Для file-first release дополнительно выполнить bounded canary из
+[ADR-0015](../decisions/0015-production-file-first-release-canary.md): exact
+production plugin/local companion, один маленький non-sensitive файл и
+существующая Task; `upload_local_file → fileRef →
+attach_local_file_to_task → attachmentRef → original download` с проверкой
+byte size/SHA-256 и recoverable cleanup. Не создавать synthetic production
+Project/Release/Task, не менять access policy и не использовать Keychain,
+Sites bypass или persistent credential. Native OpenAI-file MCP smoke фиксируется
+отдельной строкой и не подменяет local-path canary.
+
 ## Восстановление и ошибки
 
 - Failed UAT deploy не разрешает переключать binding или plugin на production.

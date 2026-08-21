@@ -152,18 +152,13 @@ Plugin поставляет self-contained macOS arm64/x86_64
 binary и launcher без зависимости от system Node; Windows/Linux в текущей
 версии fail closed как unsupported platform.
 
-Production package `task-manager` направляет оба MCP components на production.
-Для release gate существует отдельный явно устанавливаемый
-`task-manager-uat`: он не объявляет hosted MCP и направляет оба local tools в
-private UAT через вручную запускаемый loopback ingress по
-[ADR-0014](../decisions/0014-private-uat-connector-edge-and-local-ingress.md).
-Companion не проксирует JSON-RPC и хранит Task Manager OAuth только в памяти.
-Ingress слушает только exact `127.0.0.1`, принимает Sites bypass token один раз
-через stdin, хранит его только в памяти и разрешает лишь OAuth/file/attachment
-Agent REST routes. Token запрещено передавать через chat, command arguments,
-environment, plugin config, repository, Keychain или `/usr/bin/security`.
-Owner browser проходит обычную Sites authentication непосредственно на UAT;
-production и hosted Codex не входят в этот runtime-контур.
+Production package `task-manager` направляет remote MCP и оба local tools на
+production. Private UAT не получает обязательный local machine ingress. По
+[ADR-0015](../decisions/0015-production-file-first-release-canary.md) fresh
+local-path release proof выполняется bounded production canary после отдельной
+прямой production-команды. Companion не проксирует JSON-RPC и хранит Task
+Manager OAuth только в памяти; Keychain, `/usr/bin/security`, Sites bypass,
+public machine edge и hosted Codex в local-file runtime не участвуют.
 
 Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
 restore атомарно отзывает все authentication capabilities, чтобы они не

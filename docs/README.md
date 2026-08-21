@@ -45,27 +45,29 @@
 18. [ADR-0013: StoredFile и file-first binding](decisions/0013-stored-file-and-task-attachment.md)
     — staged lifecycle, Task binding, migration и compatibility contract.
 19. [ADR-0014: private UAT и on-demand local ingress](decisions/0014-private-uat-connector-edge-and-local-ingress.md)
-    — owner-only UAT, local upload+bind и secret-safe loopback boundary.
-20. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
+    — superseded история неудачного loopback acceptance path.
+20. [ADR-0015: production canary для file-first release gate](decisions/0015-production-file-first-release-canary.md)
+    — exact production candidate, bounded fixture, hash/read-back и cleanup.
+21. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
-21. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
+22. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
     cleanup и recovery.
-22. [Runbook импортированной истории комментариев](operations/imported-comments.md)
+23. [Runbook импортированной истории комментариев](operations/imported-comments.md)
     — reconciliation, backup, rollback и UAT smoke для cutover/import.
-23. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
+24. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
     bounded inventory/apply, allowlist, outcomes, cutover и rollback.
-24. [Runbook Task Activity](operations/task-activity.md) — atomic events,
+25. [Runbook Task Activity](operations/task-activity.md) — atomic events,
     Linear status-history reconciliation, retention, backup и UAT smoke.
-25. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+26. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-26. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+27. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-27. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+28. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
-28. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+29. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
-29. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
+30. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
     — environment inventory, удалённые public surfaces, сохранённое migration
     evidence и отдельная production authority boundary.
 
@@ -132,10 +134,10 @@ upload/preview/download без публичных content URL.
 ADR-0012 заменяет optional/standalone Task semantics: каждая Task требует
 Project, получает identifier из Project code/sequence, а прежние identifiers
 сохраняются как ACL-scoped aliases.
-ADR-0014 определяет локальный private-UAT контур: companion сам выполняет
-upload+bind через Agent REST и не использует hosted MCP; вручную запускаемый
-loopback ingress держит Sites bypass только в памяти процесса и не использует
-Keychain, `/usr/bin/security`, публичный edge или hosted Codex.
+ADR-0014 сохранён как superseded incident history. ADR-0015 определяет текущий
+release gate: обычный UAT остаётся private, а fresh local-path proof после
+отдельного production approval выполняется bounded production canary без
+Keychain, Sites bypass, публичного machine edge или hosted Codex.
 
 ## Категории
 

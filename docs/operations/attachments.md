@@ -77,59 +77,22 @@ metadata не редактируется вручную. Любое provision/mi
     Guessed/foreign/deleted refs должны выглядеть одинаково и не раскрывать
     filename, object key или сам факт существования.
 
-Fresh-chat production smoke обычного marketplace plugin направлен в production
-и выполняется только после отдельно разрешённого production Site/plugin
-release. До него file-first gate выполняется отдельным
-`task-manager-uat@srez-marketplace`. UAT profile не объявляет hosted MCP: его
-local stdio server публикует `upload_local_file` и
-`attach_local_file_to_task`. Local startup/initialize/list не открывает browser,
-не делает network I/O и не обращается к Keychain; Task Manager DCR/PKCE
-начинается только при первой фактической операции и хранит credentials в памяти
-процесса.
+Fresh-runtime file-first gate выполняется по
+[ADR-0015](../decisions/0015-production-file-first-release-canary.md) только
+после отдельно разрешённого production release. Обычный marketplace plugin
+публикует `upload_local_file` и `attach_local_file_to_task`; startup,
+initialize и list не открывают browser, не делают network I/O и не обращаются к
+Keychain. Task Manager DCR/PKCE начинается при первой фактической операции и
+хранит credentials только в памяти process.
 
-Owner-only UAT Sites gate применяется до Worker. Машинные OAuth/file/attachment
-запросы проходят через вручную запускаемый loopback ingress; browser consent
-идёт непосредственно на owner-only UAT. Контур не требует hosted Codex,
-публичного connector edge или изменения Sites audience. Production не
-используется как fallback.
-
-### On-demand private UAT ingress
-
-Ingress входит в тот же bundled local companion, но не стартует вместе со stdio
-server. Оператор запускает его отдельно только на время acceptance matrix:
-
-```zsh
-read -rs 'TM_UAT_SITES_TOKEN?UAT Sites token: '
-printf '\n'
-exec {TM_UAT_TOKEN_FD}< <(printf '%s' "$TM_UAT_SITES_TOKEN")
-unset TM_UAT_SITES_TOKEN
-./bin/task-manager-local-launcher --serve-private-uat-ingress <&$TM_UAT_TOKEN_FD
-exec {TM_UAT_TOKEN_FD}<&-
-unset TM_UAT_TOKEN_FD
-```
-
-Команда читает token скрыто в shell variable, не экспортирует его, передаёт в
-короткоживущий process-substitution writer и удаляет parent shell variable до
-старта foreground ingress. Ingress получает значение ровно один раз через stdin.
-Token запрещено передавать через chat, clipboard automation, command arguments,
-environment, plugin config, repository, logs, Task evidence, Keychain или
-`/usr/bin/security`. Он живёт только в памяти ingress process. После smoke
-ingress останавливается `Ctrl-C`, затем descriptor закрывается.
-
-Ingress обязан слушать exact `127.0.0.1:47821`, отключать redirects и proxy env,
-жёстко направлять upstream на `task-manager-uat`, удалять client cookies и
-upstream `Set-Cookie`, ограничивать body/response/timeout и разрешать только:
-
-- `POST /oauth/register`, `/oauth/token`, `/oauth/revoke`;
-- staged `POST /files`, `GET/DELETE /files/{ref}`;
-- `GET/POST /tasks/{ref}/attachments`;
-- `GET/PATCH/DELETE /tasks/{ref}/attachments/{attachmentRef}`;
-- `GET .../content` только с `variant=original|thumbnail`.
-
-MCP, UI, assets, browser authorization и arbitrary paths через ingress
-запрещены. Fresh-runtime gate должен доказать inventory двух local tools, затем
-`local path → fileRef → attachmentRef → download → cleanup`. Source tests не
-заменяют этот runtime proof.
+Canary использует один маленький non-sensitive file и существующую production
+Task. До upload локально зафиксировать byte size/SHA-256; после bind скачать
+original и доказать byte-identical equality. Затем удалить canary Attachment и
+перечитать отсутствие active attachment/unbound file. Soft-delete/audit history
+может сохраняться по recoverable lifecycle и не считается active residue.
+Sites access policy, secrets и OAuth policy не меняются. Keychain,
+`/usr/bin/security`, Sites bypass, UAT proxy, public machine edge и synthetic
+production Project/Release/Task запрещены.
 
 ## Recovery
 
