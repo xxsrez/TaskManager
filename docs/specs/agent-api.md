@@ -128,38 +128,42 @@ session: он выдаёт только opaque `client_id` для провере
 metadata и не предоставляет доступ к данным до отдельного consent пользователя.
 
 Task Manager plugin дополнительно поставляет local stdio MCP companion для
-filesystem ingress. В обычном production profile его единственный tool
+filesystem ingress. Он публикует два tools:
 `upload_local_file(path, idempotencyKey, expectedByteSize?, expectedSha256?,
-displayFilename?)` читает один exact absolute path только после разрешения host
+displayFilename?)` и
+`attach_local_file_to_task(taskRef, fileRef, idempotencyKey, displayName?)`.
+Первый читает один exact absolute path только после разрешения host
 sandbox/approval, отклоняет final symlink и non-regular files, ограничивает body
 25 MiB, фиксирует open-handle identity/size/timestamps до и после read и считает
 SHA-256 до network I/O. В REST `POST /files` уходят только basename либо
 explicit display filename, verified MIME, idempotency key и snapshot bytes;
 полный local path не передаётся, не логируется server-side и не возвращается в
-tool result.
+tool result. Второй связывает verified `fileRef` с Task через Agent REST
+`POST /tasks/{ref}/attachments` и возвращает обычный `attachmentRef`; hosted MCP
+в local-file цепочке не участвует.
 
 Companion использует отдельный native-client DCR + Authorization Code/PKCE
 loopback flow с `api:write` только при фактическом upload. Client metadata,
 access и rotating refresh token живут только в памяти процесса; startup,
 `initialize`, `ping` и `tools/list` не выполняют network, browser, Keychain или
 `/usr/bin/security` operations. Полученный `fileRef` не имеет отдельной
-локальной семантики: его связывает общий remote `attach_file_to_task` с
-независимым bind key. Plugin поставляет self-contained macOS arm64/x86_64
+локальной семантики и связывается вторым local tool с независимым bind key.
+Plugin поставляет self-contained macOS arm64/x86_64
 binary и launcher без зависимости от system Node; Windows/Linux в текущей
 версии fail closed как unsupported platform.
 
 Production package `task-manager` направляет оба MCP components на production.
 Для release gate существует отдельный явно устанавливаемый
-`task-manager-uat`: hosted MCP и local `upload_local_file` объявлены отдельными
-servers и должны указывать на один UAT connector origin. Companion не
-проксирует remote schemas, не содержит Sites bypass и хранит Task Manager OAuth
-только в памяти. Owner-only Sites policy применяется до application Worker,
-поэтому direct remote MCP на private UAT не является рабочим connector origin.
-Полный gate требует отдельно provisioned machine-only connector edge по
+`task-manager-uat`: он не объявляет hosted MCP и направляет оба local tools в
+private UAT через вручную запускаемый loopback ingress по
 [ADR-0014](../decisions/0014-private-uat-connector-edge-and-local-ingress.md).
-До его отдельного разрешения и deployment UAT profile не install-ready, а
-native OpenAI file и exact local path runtime matrix остаётся blocked, не
-подменяясь source tests или production.
+Companion не проксирует JSON-RPC и хранит Task Manager OAuth только в памяти.
+Ingress слушает только exact `127.0.0.1`, принимает Sites bypass token один раз
+через stdin, хранит его только в памяти и разрешает лишь OAuth/file/attachment
+Agent REST routes. Token запрещено передавать через chat, command arguments,
+environment, plugin config, repository, Keychain или `/usr/bin/security`.
+Owner browser проходит обычную Sites authentication непосредственно на UAT;
+production и hosted Codex не входят в этот runtime-контур.
 
 Logical backup не переносит credentials, OAuth grants, codes или tokens. Full
 restore атомарно отзывает все authentication capabilities, чтобы они не

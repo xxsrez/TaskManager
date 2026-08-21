@@ -418,16 +418,17 @@ immutable ID и может группировать Tasks по значения�
   recovery только `fileRef`, verified metadata, optimistic version и устойчивые
   operation keys; browser draft не хранит local path, `File`, binary или object
   URL.
-- Установленный plugin может добавить отдельный local stdio companion:
-  `upload_local_file` читает один exact host-authorized absolute path, безопасно
-  snapshot-ит только regular file и вызывает тот же Agent REST `POST /files`.
-  Server не получает полный path; tool возвращает обычный verified `fileRef`,
-  который затем bind-ится общим remote `attach_file_to_task`. Native-client
-  OAuth использует DCR/PKCE loopback только при фактическом upload; client
-  metadata, access token и rotating refresh token живут только в памяти
-  процесса. Startup/discovery не выполняют network, browser, Keychain или
-  `/usr/bin/security` operations, а bundled runtime не зависит от случайного
-  system Node.
+- Установленный plugin может добавить отдельный local stdio companion с двумя
+  tools. `upload_local_file` читает один exact host-authorized absolute path,
+  безопасно snapshot-ит только regular file и вызывает тот же Agent REST
+  `POST /files`. `attach_local_file_to_task` принимает полученный `fileRef` и
+  связывает его с Task через Agent REST `/tasks/{ref}/attachments`; hosted MCP
+  для local-file сценария не требуется. Server не получает полный path.
+  Native-client OAuth использует DCR/PKCE loopback только при первой фактической
+  операции; client metadata, access token и rotating refresh token живут только
+  в памяти процесса. Startup/discovery не выполняют network, browser, Keychain
+  или `/usr/bin/security` operations, а bundled runtime не зависит от
+  случайного system Node.
 - TaskAttachment принадлежит ровно одной Task и не расширяет её ACL. Viewer может
   читать/download/preview; upload, recoverable delete и restore требуют Editor.
 - Upload принимает bounded binary body с обязательным idempotency key. Сервер

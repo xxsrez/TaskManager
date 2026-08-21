@@ -44,8 +44,8 @@
     — Project code/sequence, aliases, migration и запрет standalone Tasks.
 18. [ADR-0013: StoredFile и file-first binding](decisions/0013-stored-file-and-task-attachment.md)
     — staged lifecycle, Task binding, migration и compatibility contract.
-19. [ADR-0014: private UAT connector edge и local ingress](decisions/0014-private-uat-connector-edge-and-local-ingress.md)
-    — owner-only UAT, hosted MCP boundary и side-effect-free local upload.
+19. [ADR-0014: private UAT и on-demand local ingress](decisions/0014-private-uat-connector-edge-and-local-ingress.md)
+    — owner-only UAT, local upload+bind и secret-safe loopback boundary.
 20. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
 21. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
@@ -132,10 +132,10 @@ upload/preview/download без публичных content URL.
 ADR-0012 заменяет optional/standalone Task semantics: каждая Task требует
 Project, получает identifier из Project code/sequence, а прежние identifiers
 сохраняются как ACL-scoped aliases.
-ADR-0014 разделяет private UAT hosted connector и local filesystem ingress:
-companion не проксирует remote MCP, не использует Keychain/Sites bypass и
-начинает in-memory OAuth только при upload; полный UAT connector gate требует
-отдельно разрешённого machine-only edge.
+ADR-0014 определяет локальный private-UAT контур: companion сам выполняет
+upload+bind через Agent REST и не использует hosted MCP; вручную запускаемый
+loopback ingress держит Sites bypass только в памяти процесса и не использует
+Keychain, `/usr/bin/security`, публичный edge или hosted Codex.
 
 ## Категории
 

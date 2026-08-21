@@ -33,8 +33,8 @@ flowchart LR
     U[Пользователь] --> PROD[Production Site: task-manager]
     QA[Проверка] --> UAT[UAT Site: task-manager-uat]
     PLUGIN[Task Manager plugin] --> PRT[Production runtime]
-    UPLUGIN[Task Manager UAT hosted connector edge] --> URT
-    LOCAL[Local upload companion] --> UPLUGIN
+    LOCAL[Task Manager UAT local companion] --> INGRESS[On-demand loopback ingress]
+    INGRESS --> URT
     API[Direct UAT smoke] --> URT[UAT runtime]
     CG[Sign in with ChatGPT] --> PRT
     CG --> URT
@@ -99,18 +99,16 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
   Documentation-only изменение этого репозитория не является deployment.
 - Обычный Task Manager marketplace plugin продолжает использовать production
   `/api/mcp`. Отдельный operator-only `task-manager-uat` profile используется
-  только для synthetic release smoke. Hosted remote MCP и local-file ingress
-  разделены: local stdio process публикует только `upload_local_file`, не
-  проксирует JSON-RPC и не содержит Sites bypass. Полный remote UAT gate требует
-  отдельно разрешённого machine-only connector edge по ADR-0014; он не меняет
-  owner-only audience самого UAT Site и не заменяет production plugin.
-- Edge собирается отдельным standalone Cloudflare Worker entry без D1, R2 и
-  application assets; ordinary UAT Site не импортирует его и не получает edge
-  bindings. Entry всегда default-deny: UI/assets недоступны, upstream жёстко
-  равен private UAT, body/response/timeout/redirect/header boundaries
-  ограничены, а обязательный RateLimit binding fail closed. Browser
-  authorization перенаправляется на owner-only UAT; discovery/MCP/OAuth/file
-  ingress проходят server-to-server.
+  только для synthetic release smoke. Он не объявляет hosted MCP: local stdio
+  process выполняет `upload_local_file` и `attach_local_file_to_task` через Agent
+  REST, не проксируя JSON-RPC. Private UAT остаётся owner-only.
+- Для машинных OAuth/file/attachment запросов UAT-профиля оператор вручную
+  запускает bounded ingress на exact `127.0.0.1`. Он принимает Sites bypass
+  token только через stdin, хранит его в памяти процесса, разрешает exact
+  OAuth/file/attachment routes и не публикуется в сети. Startup/discovery
+  companion не запускают ingress и не обращаются к Keychain или
+  `/usr/bin/security`. Browser authorization идёт напрямую в owner-only UAT;
+  hosted Codex, публичный connector edge и production не входят в этот контур.
 - Site может быть доступен в интернете как sign-in shell, но application data
   всегда требует authenticated User. Site audience и in-app authorization
   проверяются независимо.
@@ -243,16 +241,15 @@ version conflict остаётся write boundary и не заменяется po
    проверяет optional stat/SHA-256 expectations и вызывает канонический REST
    `POST /files`. Full local path не пересекает process boundary. Companion
    получает native-client OAuth grant через DCR/PKCE loopback только при первом
-   upload и держит client metadata/access/refresh token в памяти процесса.
-   Discovery не вызывает network/browser/Keychain. После upload remote MCP
-   связывает тот же `fileRef` с Task, поэтому ACL, quota, idempotency и lifecycle
-   не дублируются в local component.
+   network operation и держит client metadata/access/refresh token в памяти
+   процесса. Discovery не вызывает network/browser/Keychain. После upload второй
+   local tool связывает тот же `fileRef` с Task через канонический Agent REST,
+   поэтому ACL, quota, idempotency и lifecycle не дублируются в local component.
 9. Owner-only Sites gate находится перед Worker и не принимает Task Manager
-   OAuth как замену audience policy. Поэтому operator-only UAT profile требует
-   отдельного hosted connector edge с exact route/upstream allowlist, bounded
-   proxy policy и server-side hosting credential. Его provisioning/public
-   ingress/secret — отдельная явная security boundary; до deployment
-   fresh-runtime UAT connector acceptance остаётся blocked.
+   OAuth как замену audience policy. Поэтому operator-only UAT profile направляет
+   machine requests через вручную запускаемый loopback-only ingress с exact
+   route/upstream allowlist. Sites credential поступает только через stdin и
+   живёт в памяти процесса; browser OAuth идёт напрямую в owner-only UAT.
 
 Реализованный контракт описан в [спецификации agent API](specs/agent-api.md),
 а credential/write boundary принят в

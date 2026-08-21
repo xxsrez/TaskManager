@@ -79,59 +79,57 @@ metadata не редактируется вручную. Любое provision/mi
 
 Fresh-chat production smoke обычного marketplace plugin направлен в production
 и выполняется только после отдельно разрешённого production Site/plugin
-release. До него file-first connector gate выполняется отдельным
-`task-manager-uat@srez-marketplace`. Он должен объявлять два независимых
-servers: hosted remote MCP с полным deployed inventory и local stdio с одним
-`upload_local_file`. Local startup/initialize/list не открывает browser, не
-делает network I/O и не обращается к Keychain; Task Manager DCR/PKCE начинается
-только при фактическом upload и хранит credentials в памяти процесса.
+release. До него file-first gate выполняется отдельным
+`task-manager-uat@srez-marketplace`. UAT profile не объявляет hosted MCP: его
+local stdio server публикует `upload_local_file` и
+`attach_local_file_to_task`. Local startup/initialize/list не открывает browser,
+не делает network I/O и не обращается к Keychain; Task Manager DCR/PKCE
+начинается только при первой фактической операции и хранит credentials в памяти
+процесса.
 
-Owner-only UAT Sites gate применяется до Worker. Поэтому матрицу нельзя
-запускать, пока отдельно разрешённый machine-only connector edge не опубликован
-и fresh runtime не подтвердил общий connector origin для hosted MCP и local
-upload. Edge должен иметь exact route/upstream allowlist, bounded body/timeout,
-не публиковать UI и сохранять обычные Task Manager OAuth/scopes/ACL после
-внешнего gate. Sites bypass запрещено переносить на Mac, в plugin config,
-command line или Task evidence. До edge результат строки UAT connector —
-`blocked`, а не `verified`; production не используется как fallback.
+Owner-only UAT Sites gate применяется до Worker. Машинные OAuth/file/attachment
+запросы проходят через вручную запускаемый loopback ingress; browser consent
+идёт непосредственно на owner-only UAT. Контур не требует hosted Codex,
+публичного connector edge или изменения Sites audience. Production не
+используется как fallback.
 
-### Machine-only UAT connector edge
+### On-demand private UAT ingress
 
-Edge — отдельный standalone Cloudflare Worker без D1/R2/assets, а не второй
-ChatGPT Site. Не редактируйте текущий `.openai/hosting.json`: он принадлежит
-обычному owner-only UAT Site. Source entry и обязательный RateLimit binding
-описаны в `wrangler.connector-edge.jsonc`; source build выполняется вместе с
-обычным `npm run build`, но public deploy остаётся отдельным явным действием.
+Ingress входит в тот же bundled local companion, но не стартует вместе со stdio
+server. Оператор запускает его отдельно только на время acceptance matrix:
 
-Полный hosted набор edge:
+```zsh
+read -rs 'TM_UAT_SITES_TOKEN?UAT Sites token: '
+printf '\n'
+exec {TM_UAT_TOKEN_FD}< <(printf '%s' "$TM_UAT_SITES_TOKEN")
+unset TM_UAT_SITES_TOKEN
+./bin/task-manager-local-launcher --serve-private-uat-ingress <&$TM_UAT_TOKEN_FD
+exec {TM_UAT_TOKEN_FD}<&-
+unset TM_UAT_TOKEN_FD
+```
 
-- `TASK_MANAGER_CONNECTOR_EDGE_UPSTREAM_ORIGIN` = exact private UAT origin;
-- `TASK_MANAGER_CONNECTOR_EDGE_PUBLIC_ORIGIN` = exact connector edge origin;
-- `TASK_MANAGER_CONNECTOR_EDGE_SITES_BYPASS_TOKEN` = hosted secret, никогда не
-  local env, command argument, plugin config или Task evidence;
-- `TASK_MANAGER_CONNECTOR_EDGE_RATE_LIMITER` = provisioned Cloudflare
-  `RateLimit` binding.
+Команда читает token скрыто в shell variable, не экспортирует его, передаёт в
+короткоживущий process-substitution writer и удаляет parent shell variable до
+старта foreground ingress. Ingress получает значение ровно один раз через stdin.
+Token запрещено передавать через chat, clipboard automation, command arguments,
+environment, plugin config, repository, logs, Task evidence, Keychain или
+`/usr/bin/security`. Он живёт только в памяти ingress process. После smoke
+ingress останавливается `Ctrl-C`, затем descriptor закрывается.
 
-Config намеренно не содержит public origin и hosted secret, поэтому случайный
-deploy отвечает `503`. После отдельно разрешённого provisioning сначала
-зафиксировать точный Worker origin как non-secret var, затем передать bypass
-только через provider secret store. Не помещать secret в `wrangler` config,
-shell argument, output или evidence.
+Ingress обязан слушать exact `127.0.0.1:47821`, отключать redirects и proxy env,
+жёстко направлять upstream на `task-manager-uat`, удалять client cookies и
+upstream `Set-Cookie`, ограничивать body/response/timeout и разрешать только:
 
-Private UAT одновременно получает `TASK_MANAGER_PUBLIC_ORIGIN` с тем же edge
-origin. Сначала проверить anonymous discovery: edge обязан вернуть metadata с
-edge issuer/resource; mismatch даёт `502`, а не переписанный JSON. Затем
-проверить, что `/`, `/workspace`, `/_vinext/image` и неизвестные paths дают
-`404`; direct UAT UI остаётся owner-only. `GET /oauth/authorize` должен одним
-redirect перевести owner browser на private UAT, где consent использует обычную
-Sites identity. DCR/token/MCP/file routes не передают client Cookie/Origin/
-Referer и не возвращают upstream `Set-Cookie`.
+- `POST /oauth/register`, `/oauth/token`, `/oauth/revoke`;
+- staged `POST /files`, `GET/DELETE /files/{ref}`;
+- `GET/POST /tasks/{ref}/attachments`;
+- `GET/PATCH/DELETE /tasks/{ref}/attachments/{attachmentRef}`;
+- `GET .../content` только с `variant=original|thumbnail`.
 
-Source tests проверяют disabled default, partial-config `503`, production/
-foreign-upstream rejection, exact route/method/origin allowlist, rate-limit
-fail-closed, bounded bodies/responses, manual redirect policy, metadata-origin
-consistency и отсутствие secret в client response. Они не заменяют provisioning,
-hosted secret, access-policy read-back или fresh connector E2E.
+MCP, UI, assets, browser authorization и arbitrary paths через ingress
+запрещены. Fresh-runtime gate должен доказать inventory двух local tools, затем
+`local path → fileRef → attachmentRef → download → cleanup`. Source tests не
+заменяют этот runtime proof.
 
 ## Recovery
 
