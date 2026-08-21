@@ -29,10 +29,16 @@ task commands. UI snapshot и административные capabilities дл
 2. Sites application одновременно является OAuth 2.1 Authorization Server и
    MCP Resource Server. Authorization endpoint использует существующую
    trusted `Sign in with ChatGPT` identity и явный экран согласия.
-3. Public clients используют Authorization Code + PKCE S256. Поддерживаются
-   два безопасных способа получить `client_id`: Client ID Metadata Document
-   (CIMD) и Dynamic Client Registration (DCR) через `/oauth/register` для
-   Codex Desktop/native clients. `redirect_uri` совпадает буквально,
+3. Public clients используют Authorization Code + PKCE S256. Основной
+   автоматически обнаруживаемый способ получить `client_id` для Codex
+   Desktop/native clients — Dynamic Client Registration (DCR) через
+   `/oauth/register`. Server implementation также сохраняет bounded Client ID
+   Metadata Document (CIMD) path для явно совместимых clients, но Authorization
+   Server Metadata публикует
+   `client_id_metadata_document_supported=false`: Codex native callback
+   содержит динамический loopback port, которого нет в его hosted metadata
+   document, а OAuth boundary правильно требует буквального совпадения
+   `redirect_uri`. `redirect_uri` совпадает буквально,
    `resource` обязателен, resource audience — `https://<site>/api/mcp`.
    Client secrets и implicit flow не поддерживаются.
 4. Access token непрозрачный, живёт 15 минут и хранится только как SHA-256 hash.
@@ -77,10 +83,11 @@ task commands. UI snapshot и административные capabilities дл
   Task Manager из Plugins, нажимает Authenticate, входит через ChatGPT,
   подтверждает scopes и сразу получает tools; ручные MCP/OAuth поля и secret
   не нужны.
-- Текущий Task Manager app connector использует выбранный builder DCR через
-  `/oauth/register`. CIMD остаётся поддерживаемым protocol path для совместимых
-  MCP clients, но не используется этой connector instance после production
-  ошибки проверки metadata document.
+- Текущий Task Manager app connector и Codex native auto-registration используют
+  DCR через `/oauth/register`. CIMD остаётся bounded protocol path для явно
+  совместимых MCP clients, но не рекламируется для automatic selection до
+  доказанной поддержки port-variable loopback callback без ослабления exact
+  redirect validation.
 - `initialize`, `notifications/initialized`, `ping` и `tools/list` доступны без
   bearer token, чтобы новый app connector мог обнаружить schemas. Это не
   расширяет data plane: любой `tools/call` по-прежнему проходит OAuth, scopes и

@@ -2,7 +2,7 @@
 
 Статус: `Implemented`
 
-Последнее обновление: 2026-08-20
+Последнее обновление: 2026-08-21
 
 ## 1. Назначение и граница
 
@@ -70,9 +70,12 @@ flowchart LR
 
 1. Client читает Protected Resource Metadata для `https://<site>/api/mcp` и
    Authorization Server Metadata на том же site origin.
-2. Client либо использует HTTPS Client ID Metadata Document (CIMD), либо
-   регистрирует public client через `POST /oauth/register`; затем генерирует
-   PKCE S256 и передаёт `resource=https://<site>/api/mcp`.
+2. Codex и другие auto-configured native clients регистрируют public client
+   через `POST /oauth/register`; затем генерируют PKCE S256 и передают
+   `resource=https://<site>/api/mcp`. Bounded HTTPS Client ID Metadata Document
+   (CIMD) path сохраняется для явно совместимых clients, но не рекламируется
+   native auto-discovery, пока hosted metadata и callback не совпадают буквально
+   с динамическим loopback port.
 3. `/oauth/authorize` использует Sites `Sign in with ChatGPT`, показывает
    consent и выдаёт одноразовый authorization code.
 4. `/oauth/token` проверяет client ID, redirect, resource и verifier, затем
@@ -101,10 +104,11 @@ OAuth lifecycle:
 - redirect должен совпасть буквально; несколько одинаковых значений
   `resource` принимаются как одно, а конфликтующие значения отклоняются.
 
-Authorization Server Metadata публикует `registration_endpoint`. Codex Desktop
-может автоматически зарегистрировать свой локальный OAuth client во время
-первого Connect/Login; пользователю не требуется создавать или переносить
-`client_id` вручную.
+Authorization Server Metadata публикует `registration_endpoint` и
+`client_id_metadata_document_supported=false`, направляя Codex Desktop в
+проверенный DCR flow. Codex может автоматически зарегистрировать свой локальный
+OAuth client во время первого Connect/Login; пользователю не требуется
+создавать или переносить `client_id` вручную.
 
 Personal token `tm_pat_...` сохранён для scripts, local smoke и REST clients:
 
@@ -637,7 +641,8 @@ Authorization invariants:
    plugin `.app.json`; OAuth Connect через выбранный connector builder DCR
    (`/oauth/register`) выполняет
    `workspace → create → compact search → detail → status update` без Sites
-   headers. Raw MCP clients также могут использовать DCR или разрешённый CIMD.
+   headers. Raw MCP clients используют DCR; явно совместимый client может
+   обратиться к разрешённому CIMD path без его automatic discovery.
 2. Marker из description отсутствует в list и появляется только в detail.
 3. Status transition меняет timestamps/version; stale version даёт `409`.
 4. Read-only и revoked/expired token получают соответственно `403` и `401`;

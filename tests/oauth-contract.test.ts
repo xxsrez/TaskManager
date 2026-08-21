@@ -32,7 +32,7 @@ test("OAuth consent allows the registered callback origin after POST", () => {
   assert.match(loopback, /form-action 'self' http:\/\/127\.0\.0\.1:49152;/);
 });
 
-test("OAuth discovery binds the connector resource and advertises PKCE", () => {
+test("OAuth discovery binds the connector resource and directs native clients to DCR", () => {
   const authorization = oauthAuthorizationServerMetadata(origin);
   const resource = oauthProtectedResourceMetadata(origin);
   assert.equal(authorization.issuer, origin);
@@ -40,7 +40,7 @@ test("OAuth discovery binds the connector resource and advertises PKCE", () => {
   assert.equal(authorization.token_endpoint, `${origin}/oauth/token`);
   assert.equal(authorization.registration_endpoint, `${origin}/oauth/register`);
   assert.deepEqual(authorization.code_challenge_methods_supported, ["S256"]);
-  assert.equal(authorization.client_id_metadata_document_supported, true);
+  assert.equal(authorization.client_id_metadata_document_supported, false);
   assert.equal(resource.resource, `${origin}/api/mcp`);
   assert.deepEqual(resource.authorization_servers, [origin]);
   assert.equal(

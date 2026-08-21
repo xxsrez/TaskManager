@@ -76,7 +76,12 @@ export function oauthAuthorizationServerMetadata(origin: string) {
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: ["none"],
-    client_id_metadata_document_supported: true,
+    // Codex native OAuth uses a loopback callback with a dynamic port. Its
+    // hosted metadata document currently lists the same callback without that
+    // port, while this authorization server intentionally validates redirects
+    // by exact string match. Advertising CIMD makes Codex prefer that
+    // incompatible path over the proven DCR endpoint.
+    client_id_metadata_document_supported: false,
     scopes_supported: [...API_SCOPES],
     resource_parameter_supported: true,
   } as const;

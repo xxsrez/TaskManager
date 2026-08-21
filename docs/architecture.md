@@ -206,8 +206,10 @@ version conflict остаётся write boundary и не заменяется po
 ### Чтение и task commands через agent API
 
 1. Codex/ChatGPT подключается к `/api/mcp` через OAuth Authorization Code +
-   PKCE и получает client identity через CIMD либо DCR; scripts могут
-   использовать переходную personal API credential.
+   PKCE и получает client identity через advertised DCR. Bounded CIMD path
+   остаётся только для явно совместимых clients и не рекламируется native
+   auto-discovery, пока dynamic-loopback redirect не может пройти exact match;
+   scripts могут использовать переходную personal API credential.
    Оба способа сопоставляются внутреннему User до data query; browser headers
    нельзя синтезировать client-side.
 2. Agent query service применяет тот же ownership/ACL predicate до filters,
@@ -832,8 +834,9 @@ User preferences.
   проверяться schema и integration tests, а не только дисциплиной клиента.
 - OAuth/token connector добавляет новую identity boundary. Нельзя считать
   Sites browser session переносимой во внешний client или выдавать API
-  credential implicit admin access. CIMD/DCR, exact redirect/resource, PKCE,
-  expiry, refresh rotation и revoke должны проверяться server-side.
+  credential implicit admin access. Advertised DCR, bounded explicit CIMD,
+  exact redirect/resource, PKCE, expiry, refresh rotation и revoke должны
+  проверяться server-side.
 - Ошибка в role ceiling увеличивает blast radius grant; server-side hierarchy,
   provenance и быстрый revoke обязательны.
 - Sites contract сегодня даёт ChatGPT identity через email/name headers, а не
