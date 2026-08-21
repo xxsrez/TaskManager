@@ -32,6 +32,7 @@ import {
   Paperclip,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelsTopLeft,
   Palette,
   Plus,
   Rocket,
@@ -3352,6 +3353,7 @@ export function TaskTracker({
           </button>
         )}
         <nav className="nav-scroll" aria-label="Workspace">
+          <NavItem compact={sidebarCompact} icon={<PanelsTopLeft size={15} />} label="Workspace" active={surface === "workspace"} href="/workspace" onNavigate={() => navigateSurface("workspace", "list")} />
           <NavItem compact={sidebarCompact} icon={<Inbox size={15} />} label="My tasks" active={surface === "mine"} href="/issues" onNavigate={() => navigateSurface("mine", "list")} count={taskCountForView("mine", data, statusMap)} />
           <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
           {!sidebarCompact && (

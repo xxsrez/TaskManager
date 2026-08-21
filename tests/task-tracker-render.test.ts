@@ -2737,9 +2737,31 @@ test("workspace controls navigate to the overview without a false dropdown affor
   );
 
   const workspaceControl = markup.match(/<a class="workspace-switcher"[\s\S]*?<\/a>/)?.[0] ?? "";
+  const primaryNavigation = markup.match(/<nav class="nav-scroll"[\s\S]*?<\/nav>/)?.[0] ?? "";
   assert.match(workspaceControl, /href="\/workspace"/);
   assert.doesNotMatch(workspaceControl, /chevron-down/);
+  assert.match(
+    primaryNavigation,
+    /href="\/workspace"[^>]*aria-label="Workspace"[\s\S]*?href="\/issues"[^>]*aria-label="My tasks"/,
+  );
+  assert.doesNotMatch(primaryNavigation.match(/href="\/workspace"[^>]*>/)?.[0] ?? "", /aria-current="page"/);
   assert.match(markup, /<a class="breadcrumb-link" href="\/workspace">Workspace<\/a>/);
+
+  const workspaceMarkup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: {
+        surface: "workspace",
+        layout: "list",
+        taskId: null,
+      },
+      signOutPath: "/sign-out",
+    }),
+  );
+  const workspaceNavigation = workspaceMarkup.match(/<nav class="nav-scroll"[\s\S]*?<\/nav>/)?.[0] ?? "";
+  assert.match(workspaceNavigation, /href="\/workspace"[^>]*aria-current="page"[^>]*aria-label="Workspace"/);
+  assert.match(workspaceMarkup, /<a class="workspace-switcher"[^>]*href="\/workspace"[^>]*aria-current="page"/);
+  assert.match(workspaceMarkup, /<button class="icon-button"[^>]*title="Create task \(C\)"/);
 });
 
 test("mobile shell exposes complete navigation and view controls", () => {

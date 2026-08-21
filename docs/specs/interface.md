@@ -59,8 +59,10 @@ Desktop-first shell повторяет композицию Linear:
   продукте существует один workspace, product mark/name является обычной
   ссылкой на workspace root без chevron или другого ложного menu affordance;
   dropdown появляется только вместе с реально реализованным workspace menu.
-- Основная навигация: `My tasks`, `Shared with me`, `Views`, `Projects`,
-  `Releases`. Исключённые функции Linear не показываются даже disabled.
+- Основная навигация начинается с `Workspace`, затем следуют `My tasks`,
+  `Shared with me`, `Views`, `Projects`, `Releases`. `Workspace` ведёт на тот
+  же canonical `/workspace`, что product mark/name, и имеет собственный active
+  state. Исключённые функции Linear не показываются даже disabled.
 - `Views`, `Projects` и `Releases` всегда начинаются с канонической collection
   link (`All views`, `All projects`, `All releases`), после которой показывают
   не более трёх доступных неархивных записей. Общий порядок recent —
