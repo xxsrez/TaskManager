@@ -248,6 +248,31 @@ journal rows старше 30 дней удаляются не чаще раза 
 переиспользуется; cursor до retention boundary образует обнаруживаемый gap и
 приводит к full bootstrap.
 
+## Owner workspace scope (UI projection)
+
+Owner workspace scope не хранится в D1 и не добавляет `Workspace` entity,
+grant, migration или tenant boundary. Это transient browser/server read model,
+который принимает только opaque token и возвращает compact descriptors:
+`token`, `kind`, user-facing `label`, `current`. Descriptor не содержит email,
+internal User ID или reversible owner claim.
+
+Effective owner для этой проекции определяется так:
+
+- `Project` — его current `owner_user_id`;
+- `Task`, `Release` и project-scoped `SavedView` — current owner связанного
+  Project, независимо от исторического child `owner_user_id`;
+- global `SavedView` — собственный `owner_user_id`.
+
+Набор options строится только из current User и владельцев уже доступных
+Project/global SavedView roots; `All accessible` обозначает прежний ACL union.
+Repository сначала материализует ownership/active-grant ACL, затем применяет
+scope как дополнительный equality predicate до count/order/page. Неизвестный,
+подменённый или переставший быть доступным owner token fail-closed выбирает
+current User и помечает fallback. Scope не участвует в `accessRole`: Viewer,
+Editor, Manager и Owner controls продолжают выводиться только из effective
+resource role. Omitted scope у Agent API и внутренних non-UI callers сохраняет
+ACL union и не меняет их семантику.
+
 ## Task
 
 | Поле | Тип | Обязательность | Семантика |

@@ -13,6 +13,11 @@ export async function POST(request: Request) {
   const input = await readJson(request);
   return withUser(async (user) => {
     const createdTask = await createTask(user, input);
-    return { ...(await getSnapshot(user)), createdTask };
+    return {
+      ...(await getSnapshot(user, {
+        workspaceScope: new URL(request.url).searchParams.get("workspace_scope"),
+      })),
+      createdTask,
+    };
   });
 }

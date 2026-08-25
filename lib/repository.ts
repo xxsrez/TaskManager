@@ -56,6 +56,9 @@ import type {
   WorkflowStatusRecord,
   WorkspaceCatalogKind,
   WorkspaceCatalogPage,
+  WorkspaceScopeDescriptor,
+  WorkspaceScopeState,
+  WorkspaceMetrics,
 } from "./types";
 import {
   parseStoredViewDisplay,
@@ -105,6 +108,13 @@ import {
   type GlobalSearchInput,
   type GlobalSearchResponse,
 } from "./global-search";
+import {
+  ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+  opaqueWorkspaceOwnerToken,
+  parseWorkspaceScopeToken,
+  resolveWorkspaceScopeMembership,
+  workspaceScopeContextLabel,
+} from "./workspace-scope";
 
 type DbRow = Record<string, unknown>;
 
@@ -129,8 +139,278 @@ const defaultStatuses: Array<[
 
 const editableTaskPredicate = editableTaskWhere("tasks");
 
-const snapshotTaskIdScopeCte = `WITH scoped_task_ids AS (
+type WorkspaceOwnerCandidate = { id: string; displayName: string };
+
+type ResolvedWorkspaceScope = {
+  ownerUserId: string | null;
+  selectedToken: string;
+  currentToken: string;
+  fallback: boolean;
+  candidates?: WorkspaceOwnerCandidate[];
+};
+
+async function resolveWorkspaceScope(
+  user: UserRecord,
+  requested: string | null | undefined,
+): Promise<ResolvedWorkspaceScope | null> {
+  // Undefined is the compatibility boundary for repository and Agent callers:
+  // their existing ACL union remains unchanged. UI routes pass null explicitly.
+  if (requested === undefined) return null;
+  const currentToken = await opaqueWorkspaceOwnerToken(user.id);
+  if (requested === null || requested === "") {
+    return {
+      ownerUserId: user.id,
+      selectedToken: currentToken,
+      currentToken,
+      fallback: false,
+    };
+  }
+  const parsed = parseWorkspaceScopeToken(requested);
+  if (parsed?.kind === "all") {
+    return {
+      ownerUserId: null,
+      selectedToken: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+      currentToken,
+      fallback: false,
+    };
+  }
+  if (parsed?.kind === "owner" && parsed.token === currentToken) {
+    return {
+      ownerUserId: user.id,
+      selectedToken: currentToken,
+      currentToken,
+      fallback: false,
+    };
+  }
+  const candidates = await loadAccessibleWorkspaceOwners(user.id);
+  const descriptors = await workspaceScopeDescriptors(user, candidates);
+  const membership = resolveWorkspaceScopeMembership(requested, descriptors, currentToken);
+  const selectedCandidate = await candidateForWorkspaceToken(candidates, membership.token);
+  return {
+    ownerUserId: selectedCandidate?.id ?? user.id,
+    selectedToken: selectedCandidate ? membership.token : currentToken,
+    currentToken,
+    fallback: membership.fallback || !selectedCandidate,
+    candidates,
+  };
+}
+
+export async function resolveUiWorkspaceScope(
+  user: UserRecord,
+  requested: string | null,
+) {
+  const resolved = await resolveWorkspaceScope(user, requested);
+  if (!resolved) throw new Error("UI workspace scope was not resolved");
+  return {
+    ownerUserId: resolved.ownerUserId,
+    selectedToken: resolved.selectedToken,
+    fallback: resolved.fallback,
+  };
+}
+
+export async function getWorkspaceTaskMetrics(
+  user: UserRecord,
+  ownerUserId: string | null,
+): Promise<WorkspaceMetrics> {
+  const scope: ResolvedWorkspaceScope = {
+    ownerUserId,
+    selectedToken: "",
+    currentToken: "",
+    fallback: false,
+  };
+  const predicate = workspacePredicate("workspace_owner_user_id", scope);
+  const row = await getD1().prepare(
+    `WITH scoped AS (
+       SELECT t.archived_at, t.assignee_user_id, s.category,
+         CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+           ELSE t.owner_user_id END AS workspace_owner_user_id,
+         ${taskAccessRoleSql("t", "p")} AS access_role
+       FROM tasks t
+       JOIN workflow_statuses s ON s.id = t.status_id
+       LEFT JOIN projects p ON p.id = t.project_id
+     )
+     SELECT
+       SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS all_count,
+       SUM(CASE WHEN archived_at IS NULL
+         AND category IN ('unstarted', 'started') THEN 1 ELSE 0 END) AS active_count,
+       SUM(CASE WHEN archived_at IS NULL AND category = 'backlog'
+         THEN 1 ELSE 0 END) AS backlog_count,
+       SUM(CASE WHEN archived_at IS NULL AND assignee_user_id = ?
+         THEN 1 ELSE 0 END) AS mine_count,
+       SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived_count
+     FROM scoped WHERE access_role IS NOT NULL AND ${predicate.sql}`,
+  ).bind(
+    user.id,
+    user.id,
+    user.id,
+    user.id,
+    user.id,
+    ...predicate.parameters,
+  ).first<DbRow>();
+  return {
+    taskCounts: {
+      all: Number(row?.all_count ?? 0),
+      active: Number(row?.active_count ?? 0),
+      backlog: Number(row?.backlog_count ?? 0),
+      mine: Number(row?.mine_count ?? 0),
+      archived: Number(row?.archived_count ?? 0),
+    },
+  };
+}
+
+async function candidateForWorkspaceToken(
+  candidates: readonly WorkspaceOwnerCandidate[],
+  token: string,
+) {
+  const matches = await Promise.all(candidates.map(async (candidate) => ({
+    candidate,
+    token: await opaqueWorkspaceOwnerToken(candidate.id),
+  })));
+  return matches.find((match) => match.token === token)?.candidate ?? null;
+}
+
+async function workspaceScopeDescriptors(
+  user: UserRecord,
+  candidates: readonly WorkspaceOwnerCandidate[],
+): Promise<WorkspaceScopeDescriptor[]> {
+  const distinct = [...new Map([
+    { id: user.id, displayName: user.displayName },
+    ...candidates,
+  ].map((candidate) => [candidate.id, candidate])).values()];
+  const owners = await Promise.all(distinct.map(async (candidate) => ({
+    token: await opaqueWorkspaceOwnerToken(candidate.id),
+    kind: "owner" as const,
+    label: candidate.id === user.id ? "Your work" : candidate.displayName,
+    current: candidate.id === user.id,
+  })));
+  owners.sort((left, right) =>
+    Number(right.current) - Number(left.current) || left.label.localeCompare(right.label),
+  );
+  return [
+    ...owners,
+    {
+      token: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+      kind: "all" as const,
+      label: "All accessible",
+      current: false,
+    },
+  ];
+}
+
+async function workspaceScopeState(
+  user: UserRecord,
+  scope: ResolvedWorkspaceScope,
+  candidates: readonly WorkspaceOwnerCandidate[],
+): Promise<WorkspaceScopeState> {
+  const options = await workspaceScopeDescriptors(user, candidates);
+  const membership = resolveWorkspaceScopeMembership(
+    scope.selectedToken,
+    options,
+    scope.currentToken,
+  );
+  return {
+    selectedToken: membership.token,
+    selectedLabel: workspaceScopeContextLabel(membership.token, options),
+    fallback: scope.fallback || membership.fallback,
+    options,
+  };
+}
+
+async function loadAccessibleWorkspaceOwners(userId: string) {
+  const rows = await accessibleWorkspaceOwnersStatement(getD1(), userId).all<DbRow>();
+  return rows.results.map((row) => ({
+    id: String(row.id),
+    displayName: String(row.display_name),
+  }));
+}
+
+function accessibleWorkspaceOwnersStatement(db: D1Database, userId: string) {
+  return db.prepare(
+    `WITH owner_ids AS (
+       SELECT ? AS id
+       UNION
+       SELECT p.owner_user_id FROM projects p
+       WHERE p.owner_user_id = ? OR EXISTS (
+         SELECT 1 FROM access_grants ag
+         WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+           AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+       )
+       UNION
+       SELECT t.owner_user_id FROM tasks t
+       WHERE t.project_id IS NULL AND (
+         t.owner_user_id = ? OR EXISTS (
+           SELECT 1 FROM access_grants ag
+           WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+         )
+       )
+       UNION
+       SELECT v.owner_user_id FROM saved_views v
+       WHERE v.scope_project_id IS NULL AND (
+         v.owner_user_id = ? OR EXISTS (
+           SELECT 1 FROM access_grants ag
+           WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+         )
+       )
+     )
+     SELECT u.id, u.display_name FROM users u JOIN owner_ids ON owner_ids.id = u.id
+     ORDER BY CASE WHEN u.id = ? THEN 0 ELSE 1 END, lower(u.display_name), u.id`,
+  ).bind(userId, userId, userId, userId, userId, userId, userId, userId);
+}
+
+function workspacePredicate(
+  expression: string,
+  scope: ResolvedWorkspaceScope | null,
+): { sql: string; parameters: string[] } {
+  if (!scope?.ownerUserId) return { sql: "1 = 1", parameters: [] };
+  return { sql: `${expression} = ?`, parameters: [scope.ownerUserId] };
+}
+
+function workspaceCatalogOwnerPredicate(
+  expression: string,
+  userId: string,
+  scope: ResolvedWorkspaceScope | null,
+) {
+  if (!scope) return { sql: `${expression} = ?`, parameters: [userId] };
+  if (scope.ownerUserId) {
+    return { sql: `${expression} = ?`, parameters: [scope.ownerUserId] };
+  }
+  return {
+    sql: `(${expression} = ? OR EXISTS (
+      SELECT 1 FROM projects catalog_project
+      WHERE catalog_project.owner_user_id = ${expression} AND (
+        catalog_project.owner_user_id = ? OR EXISTS (
+          SELECT 1 FROM access_grants catalog_grant
+          WHERE catalog_grant.resource_type = 'project'
+            AND catalog_grant.resource_id = catalog_project.id
+            AND catalog_grant.grantee_user_id = ?
+            AND catalog_grant.revoked_at IS NULL
+        )
+      )
+    ) OR EXISTS (
+      SELECT 1 FROM tasks catalog_task
+      WHERE catalog_task.project_id IS NULL
+        AND catalog_task.owner_user_id = ${expression} AND (
+          catalog_task.owner_user_id = ? OR EXISTS (
+            SELECT 1 FROM access_grants catalog_task_grant
+            WHERE catalog_task_grant.resource_type = 'task'
+              AND catalog_task_grant.resource_id = catalog_task.id
+              AND catalog_task_grant.grantee_user_id = ?
+              AND catalog_task_grant.revoked_at IS NULL
+          )
+        )
+    ))`,
+    parameters: [userId, userId, userId, userId, userId],
+  };
+}
+
+function snapshotTaskIdScopeCte(scope: ResolvedWorkspaceScope | null) {
+  const predicate = workspacePredicate("workspace_owner_user_id", scope);
+  return `WITH scoped_task_ids AS (
   SELECT t.id, t.updated_at,
+    CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+      ELSE t.owner_user_id END AS workspace_owner_user_id,
     CASE
       WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 1
       WHEN t.project_id IS NOT NULL THEN EXISTS (
@@ -147,9 +427,10 @@ const snapshotTaskIdScopeCte = `WITH scoped_task_ids AS (
     END AS is_visible
   FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
 ), visible_task_ids AS (
-  SELECT id FROM scoped_task_ids WHERE is_visible = 1
+  SELECT id FROM scoped_task_ids WHERE is_visible = 1 AND ${predicate.sql}
   ORDER BY updated_at DESC, id DESC LIMIT ?
 )`;
+}
 
 const snapshotTaskProjection = `
   t.id, t.public_id, t.owner_user_id, t.creator_user_id,
@@ -352,9 +633,16 @@ export async function getSnapshot(
     includeAdminOverview?: boolean;
     taskLimit?: number;
     navigationLimit?: number;
+    workspaceScope?: string | null;
   } = {},
 ): Promise<AppSnapshot> {
   const db = getD1();
+  const workspaceScope = await resolveWorkspaceScope(user, options.workspaceScope);
+  const taskWorkspace = workspacePredicate(
+    "workspace_owner_user_id",
+    workspaceScope,
+  );
+  const projectWorkspace = workspacePredicate("owner_user_id", workspaceScope);
   const requestedTaskLimit = Number(options.taskLimit ?? MAX_UI_SNAPSHOT_TASKS);
   const taskLimit = Number.isSafeInteger(requestedTaskLimit)
     ? Math.min(MAX_UI_SNAPSHOT_TASKS, Math.max(1, requestedTaskLimit))
@@ -378,15 +666,25 @@ export async function getSnapshot(
         .prepare(
           `WITH scoped AS (
              SELECT ${snapshotTaskProjection},
+               CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+                 ELSE t.owner_user_id END AS workspace_owner_user_id,
                ${taskAccessRoleSql("t", "p")} AS access_role
              FROM tasks t
              LEFT JOIN projects p ON p.id = t.project_id
            )
            SELECT * FROM scoped WHERE access_role IS NOT NULL
+             AND ${taskWorkspace.sql}
            ORDER BY updated_at DESC, id DESC
            LIMIT ?`,
         )
-        .bind(user.id, user.id, user.id, user.id, taskLimit + 1),
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          ...taskWorkspace.parameters,
+          taskLimit + 1,
+        ),
       db
         .prepare(
           `WITH visible_task_project_ids AS (
@@ -394,6 +692,10 @@ export async function getSnapshot(
                SELECT t.project_id, t.updated_at, t.id
                FROM tasks t
                WHERE t.project_id IS NOT NULL AND ${accessibleTaskWhere("t")}
+                 AND ${workspacePredicate(
+                   "(SELECT owner_user_id FROM projects WHERE id = t.project_id)",
+                   workspaceScope,
+                 ).sql}
                ORDER BY t.updated_at DESC, t.id DESC
                LIMIT ?
              )
@@ -404,15 +706,17 @@ export async function getSnapshot(
            ), recent_ids AS (
              SELECT id FROM scoped
              WHERE access_role IS NOT NULL AND archived_at IS NULL
+               AND ${projectWorkspace.sql}
              ORDER BY updated_at DESC, id DESC
              LIMIT ?
            )
            SELECT scoped.*,
              (SELECT COUNT(*) FROM scoped counted
               WHERE counted.access_role IS NOT NULL
+                AND ${projectWorkspace.sql}
                 AND (? = 0 OR counted.archived_at IS NULL)) AS total_count
            FROM scoped
-           WHERE access_role IS NOT NULL AND (
+           WHERE access_role IS NOT NULL AND ${projectWorkspace.sql} AND (
              ? = 0 OR id IN (SELECT id FROM recent_ids)
                OR id IN (SELECT id FROM visible_task_project_ids)
            )
@@ -424,11 +728,18 @@ export async function getSnapshot(
           user.id,
           user.id,
           user.id,
+          ...workspacePredicate(
+            "(SELECT owner_user_id FROM projects WHERE id = t.project_id)",
+            workspaceScope,
+          ).parameters,
           taskLimit,
           user.id,
           user.id,
+          ...projectWorkspace.parameters,
           navigationLimit ?? -1,
+          ...projectWorkspace.parameters,
           navigationOnly ? 1 : 0,
+          ...projectWorkspace.parameters,
           navigationOnly ? 1 : 0,
         ),
       db
@@ -438,6 +749,10 @@ export async function getSnapshot(
                SELECT t.release_id, t.updated_at, t.id
                FROM tasks t
                WHERE t.release_id IS NOT NULL AND ${accessibleTaskWhere("t")}
+                 AND ${workspacePredicate(
+                   "(SELECT owner_user_id FROM projects WHERE id = t.project_id)",
+                   workspaceScope,
+                 ).sql}
                ORDER BY t.updated_at DESC, t.id DESC
                LIMIT ?
              )
@@ -447,13 +762,15 @@ export async function getSnapshot(
              FROM releases r JOIN projects p ON p.id = r.project_id
            ), recent_ids AS (
              SELECT id FROM scoped WHERE access_role IS NOT NULL
+               AND ${projectWorkspace.sql}
              ORDER BY updated_at DESC, id DESC
              LIMIT ?
            )
            SELECT scoped.*,
              (SELECT COUNT(*) FROM scoped counted
-              WHERE counted.access_role IS NOT NULL) AS total_count
-           FROM scoped WHERE access_role IS NOT NULL AND (
+              WHERE counted.access_role IS NOT NULL
+                AND ${projectWorkspace.sql}) AS total_count
+           FROM scoped WHERE access_role IS NOT NULL AND ${projectWorkspace.sql} AND (
              ? = 0 OR id IN (SELECT id FROM recent_ids)
                OR id IN (SELECT id FROM visible_task_release_ids)
            )
@@ -465,23 +782,33 @@ export async function getSnapshot(
           user.id,
           user.id,
           user.id,
+          ...workspacePredicate(
+            "(SELECT owner_user_id FROM projects WHERE id = t.project_id)",
+            workspaceScope,
+          ).parameters,
           taskLimit,
           user.id,
           user.id,
+          ...projectWorkspace.parameters,
           navigationLimit ?? -1,
+          ...projectWorkspace.parameters,
+          ...projectWorkspace.parameters,
           navigationOnly ? 1 : 0,
         ),
       db
         .prepare(
           `WITH scoped AS (
              SELECT v.*,
+               CASE WHEN v.scope_project_id IS NOT NULL THEN p.owner_user_id
+                 ELSE v.owner_user_id END AS workspace_owner_user_id,
                ${savedViewAccessRoleSql("v", "p")} AS access_role
              FROM saved_views v
              LEFT JOIN projects p ON p.id = v.scope_project_id
            )
            SELECT *, COUNT(*) OVER() AS total_count
            FROM scoped
-           WHERE access_role IS NOT NULL AND (? = 0 OR archived_at IS NULL)
+           WHERE access_role IS NOT NULL AND ${taskWorkspace.sql}
+             AND (? = 0 OR archived_at IS NULL)
            ORDER BY updated_at DESC, id DESC
            LIMIT ?`,
         )
@@ -490,13 +817,14 @@ export async function getSnapshot(
           user.id,
           user.id,
           user.id,
+          ...taskWorkspace.parameters,
           navigationOnly ? 1 : 0,
           navigationQueryLimit,
         ),
       db
         .prepare(
           `SELECT s.* FROM workflow_statuses s
-           WHERE s.owner_user_id = ?
+           WHERE ((s.owner_user_id = ?
               OR EXISTS (
                 SELECT 1 FROM projects p
                 WHERE p.owner_user_id = s.owner_user_id AND (
@@ -506,8 +834,8 @@ export async function getSnapshot(
                       AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
                   )
                 )
-              )
-              OR EXISTS (
+              )) AND ${workspacePredicate("s.owner_user_id", workspaceScope).sql})
+             OR EXISTS (
                 SELECT 1 FROM tasks t
                 LEFT JOIN projects p ON p.id = t.project_id
                 WHERE t.status_id = s.id AND (
@@ -526,6 +854,10 @@ export async function getSnapshot(
                     )
                   ))
                 )
+                AND ${workspacePredicate(
+                  "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
+                  workspaceScope,
+                ).sql}
               )
            ORDER BY s.owner_user_id, s.position`,
         )
@@ -533,10 +865,15 @@ export async function getSnapshot(
           user.id,
           user.id,
           user.id,
+          ...workspacePredicate("s.owner_user_id", workspaceScope).parameters,
           user.id,
           user.id,
           user.id,
           user.id,
+          ...workspacePredicate(
+            "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
+            workspaceScope,
+          ).parameters,
         ),
       db
         .prepare(
@@ -553,7 +890,7 @@ export async function getSnapshot(
                    AND actor_grant.grantee_user_id = ?
                    AND actor_grant.revoked_at IS NULL
                )
-             ) AND (
+             ) AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql} AND (
                p.owner_user_id = u.id OR EXISTS (
                  SELECT 1 FROM access_grants member_grant
                  WHERE member_grant.resource_type = 'project'
@@ -572,7 +909,7 @@ export async function getSnapshot(
                    AND actor_grant.grantee_user_id = ?
                    AND actor_grant.revoked_at IS NULL
                )
-             ) AND (
+             ) AND ${workspacePredicate("t.owner_user_id", workspaceScope).sql} AND (
                t.owner_user_id = u.id OR EXISTS (
                  SELECT 1 FROM access_grants member_grant
                  WHERE member_grant.resource_type = 'task'
@@ -583,7 +920,15 @@ export async function getSnapshot(
              )
            ) ORDER BY u.display_name, u.id`,
         )
-        .bind(user.id, user.id, user.id, user.id, user.id),
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
+          user.id,
+          user.id,
+          ...workspacePredicate("t.owner_user_id", workspaceScope).parameters,
+        ),
       db
         .prepare(
           `SELECT ag.id, ag.resource_type, ag.resource_id, ag.permission,
@@ -601,7 +946,7 @@ export async function getSnapshot(
                      AND actor_grant.grantee_user_id = ?
                      AND actor_grant.revoked_at IS NULL
                  )
-               )
+               ) AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
              )) OR
              (ag.resource_type = 'task' AND EXISTS (
                SELECT 1 FROM tasks t
@@ -612,22 +957,36 @@ export async function getSnapshot(
                      AND actor_grant.resource_id = t.id
                      AND actor_grant.grantee_user_id = ?
                      AND actor_grant.revoked_at IS NULL
-                 ))
+                 )) AND ${workspacePredicate("t.owner_user_id", workspaceScope).sql}
              )) OR
              (ag.resource_type = 'saved_view' AND EXISTS (
                SELECT 1 FROM saved_views v
                WHERE v.id = ag.resource_id AND v.scope_project_id IS NULL
                  AND v.owner_user_id = ?
+                 AND ${workspacePredicate("v.owner_user_id", workspaceScope).sql}
              ))
            )
            ORDER BY ag.created_at DESC`,
         )
-        .bind(user.id, user.id, user.id, user.id, user.id),
+        .bind(
+          user.id,
+          user.id,
+          ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
+          user.id,
+          user.id,
+          ...workspacePredicate("t.owner_user_id", workspaceScope).parameters,
+          user.id,
+          ...workspacePredicate("v.owner_user_id", workspaceScope).parameters,
+        ),
       db
         .prepare(
-          `${snapshotTaskIdScopeCte}
+          `${snapshotTaskIdScopeCte(workspaceScope)}
            SELECT l.* FROM labels l
-           WHERE l.owner_user_id = ?
+           WHERE ${workspaceCatalogOwnerPredicate(
+             "l.owner_user_id",
+             user.id,
+             workspaceScope,
+           ).sql}
               OR EXISTS (
                 SELECT 1 FROM task_labels tl
                 JOIN visible_task_ids visible ON visible.id = tl.task_id
@@ -635,12 +994,23 @@ export async function getSnapshot(
               )
            ORDER BY l.name`,
         )
-        .bind(...snapshotTaskScopeParameters(user.id, taskLimit), user.id),
+        .bind(
+          ...snapshotTaskScopeParameters(user.id, taskLimit, workspaceScope),
+          ...workspaceCatalogOwnerPredicate(
+            "l.owner_user_id",
+            user.id,
+            workspaceScope,
+          ).parameters,
+        ),
       db
         .prepare(
-          `${snapshotTaskIdScopeCte}
+          `${snapshotTaskIdScopeCte(workspaceScope)}
            SELECT g.* FROM label_groups g
-           WHERE g.owner_user_id = ? OR EXISTS (
+           WHERE ${workspaceCatalogOwnerPredicate(
+             "g.owner_user_id",
+             user.id,
+             workspaceScope,
+           ).sql} OR EXISTS (
              SELECT 1 FROM labels l
              JOIN task_labels tl ON tl.label_id = l.id
              JOIN visible_task_ids visible ON visible.id = tl.task_id
@@ -648,17 +1018,24 @@ export async function getSnapshot(
            )
            ORDER BY g.position, lower(g.name), g.id`,
         )
-        .bind(...snapshotTaskScopeParameters(user.id, taskLimit), user.id),
+        .bind(
+          ...snapshotTaskScopeParameters(user.id, taskLimit, workspaceScope),
+          ...workspaceCatalogOwnerPredicate(
+            "g.owner_user_id",
+            user.id,
+            workspaceScope,
+          ).parameters,
+        ),
       db
         .prepare(
-          `${snapshotTaskIdScopeCte}
+          `${snapshotTaskIdScopeCte(workspaceScope)}
            SELECT tl.* FROM task_labels tl
            JOIN visible_task_ids visible ON visible.id = tl.task_id`,
         )
-        .bind(...snapshotTaskScopeParameters(user.id, taskLimit)),
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit, workspaceScope)),
       db
         .prepare(
-          `${snapshotTaskIdScopeCte}
+          `${snapshotTaskIdScopeCte(workspaceScope)}
            SELECT tr.id, tr.source_task_id, tr.target_task_id, tr.type,
              tr.version, tr.created_at, tr.updated_at
            FROM task_relations tr
@@ -667,7 +1044,7 @@ export async function getSnapshot(
            JOIN visible_task_ids target_visible
              ON target_visible.id = tr.target_task_id`,
         )
-        .bind(...snapshotTaskScopeParameters(user.id, taskLimit)),
+        .bind(...snapshotTaskScopeParameters(user.id, taskLimit, workspaceScope)),
       db
         .prepare(
           `SELECT provider, verified_email
@@ -675,6 +1052,37 @@ export async function getSnapshot(
            ORDER BY provider, provider_account_key`,
         )
         .bind(user.id),
+      accessibleWorkspaceOwnersStatement(db, user.id),
+      db
+        .prepare(
+          `WITH scoped AS (
+             SELECT t.archived_at, t.assignee_user_id, s.category,
+               CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+                 ELSE t.owner_user_id END AS workspace_owner_user_id,
+               ${taskAccessRoleSql("t", "p")} AS access_role
+             FROM tasks t
+             JOIN workflow_statuses s ON s.id = t.status_id
+             LEFT JOIN projects p ON p.id = t.project_id
+           )
+           SELECT
+             SUM(CASE WHEN archived_at IS NULL THEN 1 ELSE 0 END) AS all_count,
+             SUM(CASE WHEN archived_at IS NULL
+               AND category IN ('unstarted', 'started') THEN 1 ELSE 0 END) AS active_count,
+             SUM(CASE WHEN archived_at IS NULL AND category = 'backlog'
+               THEN 1 ELSE 0 END) AS backlog_count,
+             SUM(CASE WHEN archived_at IS NULL AND assignee_user_id = ?
+               THEN 1 ELSE 0 END) AS mine_count,
+             SUM(CASE WHEN archived_at IS NOT NULL THEN 1 ELSE 0 END) AS archived_count
+           FROM scoped WHERE access_role IS NOT NULL AND ${taskWorkspace.sql}`,
+        )
+        .bind(
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          ...taskWorkspace.parameters,
+        ),
     ]),
     isAdmin && options.includeAdminOverview
       ? getAdminOverview(user, configuredAdminEmails)
@@ -695,6 +1103,8 @@ export async function getSnapshot(
     taskLabels,
     relations,
     identities,
+    workspaceOwners,
+    workspaceMetrics,
   ] = snapshotResults;
 
   const boundedTaskRows = tasks.results.slice(0, taskLimit);
@@ -709,6 +1119,14 @@ export async function getSnapshot(
   const navigationProjectRecords = recentNavigationRecords(projectRecords, navigationLimit);
   const navigationReleaseRecords = recentNavigationRecords(releaseRecords, navigationLimit);
   const navigationViewRecords = recentNavigationRecords(viewRecords, navigationLimit);
+  const ownerCandidates = workspaceOwners.results.map((row) => ({
+    id: String(row.id),
+    displayName: String(row.display_name),
+  }));
+  const resolvedWorkspaceScope = workspaceScope
+    ? await workspaceScopeState(user, workspaceScope, ownerCandidates)
+    : undefined;
+  const metrics = workspaceMetrics.results[0] ?? {};
 
   return {
     user,
@@ -725,7 +1143,7 @@ export async function getSnapshot(
     tasks: boundedTaskRows.map(mapTask),
     taskWindow: { limit: taskLimit, truncated: tasks.results.length > taskLimit },
     labels: labels.results
-      .filter((row) => String(row.owner_user_id) === user.id || boundedLabelIds.has(String(row.id)))
+      .filter((row) => workspaceScope || String(row.owner_user_id) === user.id || boundedLabelIds.has(String(row.id)))
       .map(mapLabel),
     labelGroups: labelGroups.results.map(mapLabelGroup),
     taskLabels: boundedTaskLabels.map(mapTaskLabel),
@@ -733,6 +1151,18 @@ export async function getSnapshot(
       .filter((row) => boundedTaskIds.has(String(row.source_task_id)) && boundedTaskIds.has(String(row.target_task_id)))
       .map(mapRelation),
     views: viewRecords,
+    ...(resolvedWorkspaceScope ? { workspaceScope: resolvedWorkspaceScope } : {}),
+    ...(workspaceScope ? {
+      workspaceMetrics: {
+        taskCounts: {
+          all: Number(metrics.all_count ?? 0),
+          active: Number(metrics.active_count ?? 0),
+          backlog: Number(metrics.backlog_count ?? 0),
+          mine: Number(metrics.mine_count ?? 0),
+          archived: Number(metrics.archived_count ?? 0),
+        },
+      },
+    } : {}),
     navigationCollections: {
       projects: {
         items: navigationProjectRecords,
@@ -769,8 +1199,10 @@ export async function getWorkspaceCatalogPage(
     activeOnly?: boolean;
     order?: "updated" | "name";
     direction?: "asc" | "desc";
+    workspaceScope?: string | null;
   },
 ): Promise<WorkspaceCatalogPage> {
+  const workspaceScope = await resolveWorkspaceScope(currentUser, input.workspaceScope);
   const kind = input.kind;
   const limit = Math.min(50, Math.max(1, Math.trunc(input.limit ?? 30)));
   const search = String(input.search ?? "").trim().toLocaleLowerCase();
@@ -786,6 +1218,7 @@ export async function getWorkspaceCatalogPage(
       activeOnly: input.activeOnly === true,
       order,
       direction,
+      workspaceScope: workspaceScope?.selectedToken ?? null,
     }),
   );
   const after = decodeKeysetCursor(input.cursor ?? null, fingerprint);
@@ -796,7 +1229,9 @@ export async function getWorkspaceCatalogPage(
   }
   const afterValue = after ? String(after.values[0]) : null;
   const orderExpression = order === "name" ? "lower(name)" : "updated_at";
-  const predicates = ["access_role IS NOT NULL"];
+  const workspace = workspacePredicate("workspace_owner_user_id", workspaceScope);
+  const predicates = ["access_role IS NOT NULL", workspace.sql];
+  const workspaceParameters = workspace.parameters;
   if (input.activeOnly && kind !== "releases") {
     predicates.push("archived_at IS NULL");
   }
@@ -820,17 +1255,21 @@ export async function getWorkspaceCatalogPage(
   const scope = kind === "projects"
     ? `WITH scoped AS (
          SELECT p.*,
+           p.owner_user_id AS workspace_owner_user_id,
            ${projectAccessRoleSql("p")} AS access_role
          FROM projects p
        )`
     : kind === "releases"
       ? `WITH scoped AS (
            SELECT r.*,
+             p.owner_user_id AS workspace_owner_user_id,
              ${projectAccessRoleSql("p")} AS access_role
            FROM releases r JOIN projects p ON p.id = r.project_id
          )`
       : `WITH scoped AS (
            SELECT v.*,
+             CASE WHEN v.scope_project_id IS NOT NULL THEN p.owner_user_id
+               ELSE v.owner_user_id END AS workspace_owner_user_id,
              ${savedViewAccessRoleSql("v", "p")} AS access_role
            FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
          )`;
@@ -845,7 +1284,7 @@ export async function getWorkspaceCatalogPage(
      WHERE ${predicates.join(" AND ")}
      ORDER BY ${orderExpression} ${direction.toUpperCase()}, id ${direction.toUpperCase()}
      LIMIT ?`,
-  ).bind(...principalParameters, ...trailing).all<DbRow>();
+  ).bind(...principalParameters, ...workspaceParameters, ...trailing).all<DbRow>();
   const visible = rows.results.slice(0, limit);
   const last = visible.at(-1);
   const hasMore = rows.results.length > limit;
@@ -888,6 +1327,7 @@ export type WorkspaceSyncProjectionInput = {
   viewIds: readonly string[];
   labelGroupIds: readonly string[];
   invalidatedTaskIds: readonly string[];
+  workspaceOwnerUserId?: string | null;
 };
 
 export type WorkspaceSyncProjection = {
@@ -912,6 +1352,16 @@ export async function getWorkspaceSyncProjection(
   input: WorkspaceSyncProjectionInput,
 ): Promise<WorkspaceSyncProjection> {
   const db = getD1();
+  const syncScope: ResolvedWorkspaceScope | null = input.workspaceOwnerUserId === undefined
+    ? null
+    : {
+        ownerUserId: input.workspaceOwnerUserId,
+        selectedToken: "",
+        currentToken: "",
+        fallback: false,
+      };
+  const taskWorkspace = workspacePredicate("workspace_owner_user_id", syncScope);
+  const projectWorkspace = workspacePredicate("workspace_owner_user_id", syncScope);
   const allTaskIds = [...new Set([...input.taskIds, ...input.invalidatedTaskIds])];
   const taskPlaceholders = sqlPlaceholders(allTaskIds);
   const projectPlaceholders = sqlPlaceholders(input.projectIds);
@@ -923,48 +1373,56 @@ export async function getWorkspaceSyncProjection(
       .prepare(
         `WITH scoped AS (
            SELECT ${snapshotTaskProjection},
+             CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+               ELSE t.owner_user_id END AS workspace_owner_user_id,
              ${taskAccessRoleSql("t", "p")} AS access_role
            FROM tasks t
            LEFT JOIN projects p ON p.id = t.project_id
            WHERE t.id IN (${taskPlaceholders})
          )
-         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+         SELECT * FROM scoped WHERE access_role IS NOT NULL AND ${taskWorkspace.sql}`,
       )
-      .bind(user.id, user.id, user.id, user.id, ...allTaskIds),
+      .bind(user.id, user.id, user.id, user.id, ...allTaskIds,
+        ...taskWorkspace.parameters),
     db
       .prepare(
         `WITH scoped AS (
            SELECT p.*,
+             p.owner_user_id AS workspace_owner_user_id,
              ${projectAccessRoleSql("p")} AS access_role
            FROM projects p
            WHERE p.id IN (${projectPlaceholders})
          )
-         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+         SELECT * FROM scoped WHERE access_role IS NOT NULL AND ${projectWorkspace.sql}`,
       )
-      .bind(user.id, user.id, ...input.projectIds),
+      .bind(user.id, user.id, ...input.projectIds, ...projectWorkspace.parameters),
     db
       .prepare(
         `WITH scoped AS (
            SELECT r.*,
+             p.owner_user_id AS workspace_owner_user_id,
              ${projectAccessRoleSql("p")} AS access_role
            FROM releases r JOIN projects p ON p.id = r.project_id
            WHERE r.id IN (${releasePlaceholders})
          )
-         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+         SELECT * FROM scoped WHERE access_role IS NOT NULL AND ${projectWorkspace.sql}`,
       )
-      .bind(user.id, user.id, ...input.releaseIds),
+      .bind(user.id, user.id, ...input.releaseIds, ...projectWorkspace.parameters),
     db
       .prepare(
         `WITH scoped AS (
            SELECT v.*,
+             CASE WHEN v.scope_project_id IS NOT NULL THEN p.owner_user_id
+               ELSE v.owner_user_id END AS workspace_owner_user_id,
              ${savedViewAccessRoleSql("v", "p")} AS access_role
            FROM saved_views v
            LEFT JOIN projects p ON p.id = v.scope_project_id
            WHERE v.id IN (${viewPlaceholders})
          )
-         SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+         SELECT * FROM scoped WHERE access_role IS NOT NULL AND ${projectWorkspace.sql}`,
       )
-      .bind(user.id, user.id, user.id, user.id, ...input.viewIds),
+      .bind(user.id, user.id, user.id, user.id, ...input.viewIds,
+        ...projectWorkspace.parameters),
     db
       .prepare(
         `SELECT * FROM label_groups
@@ -1357,6 +1815,7 @@ export type TaskQueryInput = {
   display?: ViewDisplay;
   limit?: number;
   after?: TaskQueryCursor | null;
+  workspaceScope?: string | null;
 };
 
 export type TaskQueryCursor = {
@@ -1369,6 +1828,10 @@ export async function queryTaskSummaries(
   currentUser: UserRecord,
   input: TaskQueryInput,
 ) {
+  const workspaceScope = await resolveWorkspaceScope(
+    currentUser,
+    input.workspaceScope,
+  );
   const query = validateViewQuery(input.query);
   const surface = typeof input.surface === "string" && input.surface.length <= 240
     ? input.surface
@@ -1420,6 +1883,9 @@ export async function queryTaskSummaries(
     currentUser.id,
     ...compiled.parameters,
   ];
+  const workspace = workspacePredicate("v.workspace_owner_user_id", workspaceScope);
+  predicates.push(workspace.sql);
+  parameters.push(...workspace.parameters);
 
   if (scopeProject) {
     predicates.push("v.project_id = ?");
@@ -1458,6 +1924,8 @@ export async function queryTaskSummaries(
   const rows = await getD1().prepare(
     `WITH scoped AS (
        SELECT t.*, s.category AS status_category,
+         CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+           ELSE t.owner_user_id END AS workspace_owner_user_id,
          ${taskAccessRoleSql("t", "p")} AS access_role
        FROM tasks t
        JOIN workflow_statuses s ON s.id = t.status_id
@@ -5617,8 +6085,19 @@ function adminEmailsFromEnvironment(): string {
   return getRuntimeEnvironment().TASK_MANAGER_ADMIN_EMAILS ?? "";
 }
 
-function snapshotTaskScopeParameters(userId: string, taskLimit: number) {
-  return [userId, userId, userId, userId, taskLimit + 1];
+function snapshotTaskScopeParameters(
+  userId: string,
+  taskLimit: number,
+  scope: ResolvedWorkspaceScope | null,
+) {
+  return [
+    userId,
+    userId,
+    userId,
+    userId,
+    ...workspacePredicate("workspace_owner_user_id", scope).parameters,
+    taskLimit + 1,
+  ];
 }
 
 function collectionRows(rows: DbRow[], limit: number | null) {

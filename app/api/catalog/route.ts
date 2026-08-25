@@ -27,6 +27,7 @@ export async function GET(request: Request) {
         "active_only",
         "order",
         "direction",
+        "workspace_scope",
       ].includes(key),
     );
     if (unknown) throw new ValidationError(`Unknown catalog parameter: ${unknown}`);
@@ -55,6 +56,7 @@ export async function GET(request: Request) {
       activeOnly: activeOnly === "1",
       order,
       direction,
+      workspaceScope: parameters.get("workspace_scope"),
     });
   });
 }

@@ -67,6 +67,33 @@ test("a reset response captures local IDs before one authoritative bootstrap", a
   ]);
 });
 
+test("a scoped sync cycle keeps the opaque owner token on incremental and reset requests", async () => {
+  const requests: string[] = [];
+  const token = `wso_${"A".repeat(43)}`;
+  const snapshot = { syncCursor: "scoped-bootstrap" } as AppSnapshot;
+
+  const cursor = await runWorkspaceSyncCycle({
+    cursor: "scoped-cursor",
+    workspaceScope: token,
+    signal: new AbortController().signal,
+    captureCheckpoint: () => checkpoint,
+    onIncremental: () => assert.fail("reset response must not apply incrementally"),
+    onReset: () => undefined,
+    fetcher: async (input) => {
+      requests.push(String(input));
+      return requests.length === 1
+        ? Response.json({ ...response("reset-cursor", false), resetRequired: true })
+        : Response.json(snapshot);
+    },
+  });
+
+  assert.equal(cursor, "scoped-bootstrap");
+  assert.deepEqual(requests, [
+    `/api/sync?cursor=scoped-cursor&workspace_scope=${encodeURIComponent(token)}`,
+    `/api/bootstrap?workspace_scope=${encodeURIComponent(token)}`,
+  ]);
+});
+
 function response(cursor: string, hasMore: boolean): WorkspaceSyncResponse {
   return {
     cursor,

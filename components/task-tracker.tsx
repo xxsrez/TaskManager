@@ -132,6 +132,13 @@ import {
   mergeTaskSummary,
 } from "@/lib/workspace-sync-contract";
 import {
+  ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+  opaqueWorkspaceOwnerToken,
+  parseWorkspaceScopeToken,
+  resolveWorkspaceScopeMembership,
+  sharedWithMeRoots,
+} from "@/lib/workspace-scope";
+import {
   mergeLoadedTask,
   mergeSearchTaskSummaries,
   mergeTaskDetailContext,
@@ -348,6 +355,35 @@ export function commentDraftStorageKey(
   return `tm:comment-draft:${userId}:${taskId}:${threadId ?? "root"}`;
 }
 
+const workspaceScopeHistoryKey = "taskManagerWorkspaceScope";
+
+export function workspaceScopeStorageKey(userId: string) {
+  return `tm-workspace-scope:${userId}`;
+}
+
+export function navigationStateWithWorkspaceScope(
+  navigation: ResolvedNavigation,
+  workspaceScope: string,
+) {
+  return {
+    ...navigationHistoryState(navigation),
+    [workspaceScopeHistoryKey]: workspaceScope,
+  };
+}
+
+export function workspaceScopeFromHistory(state: unknown): string | null {
+  if (!state || typeof state !== "object") return null;
+  const value = (state as Record<string, unknown>)[workspaceScopeHistoryKey];
+  return parseWorkspaceScopeToken(value)?.token ?? null;
+}
+
+export function scopedUiApiPath(path: string, workspaceScope: string) {
+  if (!workspaceScope) return path;
+  const url = new URL(path, "https://task-manager.invalid");
+  url.searchParams.set("workspace_scope", workspaceScope);
+  return `${url.pathname}${url.search}`;
+}
+
 const priorityMeta: Record<Priority, { label: string }> = {
   urgent: { label: "Urgent" },
   high: { label: "High" },
@@ -502,6 +538,10 @@ export function applyMutationResult(
         const updated = updates.get(task.id);
         return updated ? mergeTaskMutation(task, updated) : task;
       }),
+      workspaceMetrics: workspaceMetricsAfterTaskReplacements(
+        current,
+        result.taskUpdates,
+      ),
     };
   }
   if (!("task" in result)) return result;
@@ -510,6 +550,52 @@ export function applyMutationResult(
     tasks: current.tasks.map((task) =>
       task.id === result.task.id ? mergeTaskMutation(task, result.task) : task,
     ),
+    workspaceMetrics: workspaceMetricsAfterTaskReplacements(current, [result.task]),
+  };
+}
+
+function workspaceMetricsAfterTaskReplacements(
+  current: AppSnapshot,
+  replacements: readonly TaskRecord[],
+) {
+  if (!current.workspaceMetrics) return undefined;
+  const statuses = new Map(current.statuses.map((status) => [status.id, status.category]));
+  const currentTasks = new Map(current.tasks.map((task) => [task.id, task]));
+  const counts = { ...current.workspaceMetrics.taskCounts };
+  for (const replacement of replacements) {
+    const retained = currentTasks.get(replacement.id);
+    if (!retained) continue;
+    for (const [key, value] of Object.entries(taskMetricContribution(
+      retained,
+      current.user.id,
+      statuses,
+    ))) {
+      counts[key as keyof typeof counts] -= value;
+    }
+    for (const [key, value] of Object.entries(taskMetricContribution(
+      replacement,
+      current.user.id,
+      statuses,
+    ))) {
+      counts[key as keyof typeof counts] += value;
+    }
+  }
+  return { taskCounts: counts };
+}
+
+function taskMetricContribution(
+  task: TaskRecord,
+  currentUserId: string,
+  statuses: ReadonlyMap<string, WorkflowStatusRecord["category"]>,
+) {
+  const category = statuses.get(task.statusId);
+  const active = !task.archivedAt;
+  return {
+    all: active ? 1 : 0,
+    active: active && (category === "unstarted" || category === "started") ? 1 : 0,
+    backlog: active && category === "backlog" ? 1 : 0,
+    mine: active && task.assigneeUserId === currentUserId ? 1 : 0,
+    archived: task.archivedAt ? 1 : 0,
   };
 }
 
@@ -758,8 +844,14 @@ export function shouldTriggerPullRefresh(distance: number) {
   return distance >= PULL_REFRESH_THRESHOLD;
 }
 
-export async function fetchTaskSnapshot(fetcher: typeof fetch = fetch) {
-  const response = await fetcher("/api/bootstrap", { cache: "no-store" });
+export async function fetchTaskSnapshot(
+  fetcher: typeof fetch = fetch,
+  workspaceScope?: string,
+) {
+  const path = workspaceScope
+    ? `/api/bootstrap?workspace_scope=${encodeURIComponent(workspaceScope)}`
+    : "/api/bootstrap";
+  const response = await fetcher(path, { cache: "no-store" });
   const value = (await response.json()) as AppSnapshot | { error: string };
   if (!response.ok || "error" in value) {
     throw new Error("error" in value ? value.error : "Refresh failed");
@@ -770,6 +862,7 @@ export async function fetchTaskSnapshot(fetcher: typeof fetch = fetch) {
 export async function fetchCompleteWorkspaceCatalog(
   kind: WorkspaceCatalogKind,
   fetcher: typeof fetch = fetch,
+  workspaceScope?: string,
 ): Promise<WorkspaceCatalogPage> {
   let cursor: string | null = null;
   let complete: WorkspaceCatalogPage = {
@@ -789,6 +882,7 @@ export async function fetchCompleteWorkspaceCatalog(
       direction: "asc",
     });
     if (kind !== "releases") parameters.set("active_only", "1");
+    if (workspaceScope) parameters.set("workspace_scope", workspaceScope);
     if (cursor) parameters.set("cursor", cursor);
     const response = await fetcher(`/api/catalog?${parameters}`, { cache: "no-store" });
     const page = await response.json() as WorkspaceCatalogPage | { error: string };
@@ -1019,6 +1113,11 @@ export function TaskTracker({
 }) {
   const [data, setData] = useState(initialData);
   const dataRef = useRef(data);
+  const initialWorkspaceScopeToken = initialData.workspaceScope?.selectedToken ?? "";
+  const [workspaceScopeToken, setWorkspaceScopeToken] = useState(initialWorkspaceScopeToken);
+  const workspaceScopeTokenRef = useRef(initialWorkspaceScopeToken);
+  const [workspaceScopeLoading, setWorkspaceScopeLoading] = useState(false);
+  const [resourceOwnerLabel, setResourceOwnerLabel] = useState<string | null>(null);
   const [surface, setSurface] = useState(initialNavigation.surface);
   const [layout, setLayout] = useState<Layout>(initialNavigation.layout);
   const [search, setSearch] = useState("");
@@ -1130,19 +1229,25 @@ export function TaskTracker({
   const ensureCompleteCatalogs = useCallback(async (
     kinds: readonly WorkspaceCatalogKind[],
   ) => {
+    const requestedWorkspaceScope = workspaceScopeTokenRef.current;
     const pages = await Promise.all(kinds.map(async (kind) => {
       if ((dataRef.current.catalogCoverage?.[kind] ?? "complete") === "complete") {
         return null;
       }
       let flight = completeCatalogFlights.current[kind];
       if (!flight) {
-        flight = fetchCompleteWorkspaceCatalog(kind).finally(() => {
+        flight = fetchCompleteWorkspaceCatalog(
+          kind,
+          fetch,
+          workspaceScopeTokenRef.current,
+        ).finally(() => {
           delete completeCatalogFlights.current[kind];
         });
         completeCatalogFlights.current[kind] = flight;
       }
       return flight;
     }));
+    if (workspaceScopeTokenRef.current !== requestedWorkspaceScope) return;
     const loaded = pages.filter((page): page is WorkspaceCatalogPage => page !== null);
     if (!loaded.length) return;
     setData((current) => {
@@ -1191,7 +1296,10 @@ export function TaskTracker({
       dataRef.current,
     );
     window.history.replaceState(
-      navigationHistoryState({ surface: "workspace", layout: "list", taskId: null }),
+      navigationStateWithWorkspaceScope(
+        { surface: "workspace", layout: "list", taskId: null },
+        workspaceScopeTokenRef.current,
+      ),
       "",
       taskReturnPath.current,
     );
@@ -1291,6 +1399,7 @@ export function TaskTracker({
 
   useWorkspaceSyncCoordinator({
     cursor: data.syncCursor,
+    workspaceScope: workspaceScopeToken,
     captureCheckpoint: captureSyncCheckpoint,
     onIncremental: applyIncrementalSync,
     onReset: applySyncReset,
@@ -1358,8 +1467,58 @@ export function TaskTracker({
   }, [data]);
 
   useEffect(() => {
+    workspaceScopeTokenRef.current = workspaceScopeToken;
+  }, [workspaceScopeToken]);
+
+  useEffect(() => {
+    const projected = data.workspaceScope?.selectedToken;
+    if (!projected || projected === workspaceScopeTokenRef.current) return;
+    workspaceScopeTokenRef.current = projected;
+    setWorkspaceScopeToken(projected);
+    window.localStorage.setItem(workspaceScopeStorageKey(data.user.id), projected);
+    const resolved: ResolvedNavigation = { surface, layout, taskId: activeTaskId };
+    window.history.replaceState(
+      navigationStateWithWorkspaceScope(resolved, projected),
+      "",
+      window.location.href,
+    );
+  }, [activeTaskId, data.user.id, data.workspaceScope?.selectedToken, layout, surface]);
+
+  useEffect(() => {
+    if (!initialData.workspaceScope || initialNavigation.taskId ||
+      initialNavigation.surface.startsWith("project:") ||
+      initialNavigation.surface.startsWith("project-releases:") ||
+      initialNavigation.surface.startsWith("release:") ||
+      initialNavigation.surface.startsWith("view:")) return;
+    const persisted = window.localStorage.getItem(
+      workspaceScopeStorageKey(initialData.user.id),
+    );
+    const membership = resolveWorkspaceScopeMembership(
+      persisted,
+      initialData.workspaceScope.options,
+      initialData.workspaceScope.options.find((option) => option.current)?.token ??
+        initialData.workspaceScope.selectedToken,
+    );
+    if (!persisted || membership.fallback || membership.token === workspaceScopeTokenRef.current) {
+      return;
+    }
+    void loadWorkspaceScopeSnapshot(membership.token, "replace", false);
+    // Initial hydration intentionally uses the server-projected option set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     taskSearchRef.current = taskSearch;
   }, [taskSearch]);
+
+  useEffect(() => {
+    if (surface !== "shared") return;
+    void ensureCompleteCatalogs(["projects", "views"]).catch((requestError: unknown) => {
+      setError(requestError instanceof Error
+        ? requestError.message
+        : "Shared resources could not be loaded");
+    });
+  }, [ensureCompleteCatalogs, surface, workspaceScopeToken]);
 
   useEffect(() => () => taskQueryRefreshCoordinatorRef.current?.cancel(), []);
 
@@ -1372,6 +1531,7 @@ export function TaskTracker({
     const timer = window.setTimeout(() => {
       setCatalogLoading(true);
       const parameters = new URLSearchParams({ kind, limit: "30" });
+      if (workspaceScopeToken) parameters.set("workspace_scope", workspaceScopeToken);
       parameters.set("order", catalogOrder);
       parameters.set("direction", catalogDirection);
       if (search.trim()) parameters.set("search", search.trim());
@@ -1399,14 +1559,20 @@ export function TaskTracker({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [catalogDirection, catalogEpoch, catalogOrder, search, surface]);
+  }, [catalogDirection, catalogEpoch, catalogOrder, search, surface, workspaceScopeToken]);
 
   useEffect(() => {
     if (catalogEpoch === 0) return;
     const controller = new AbortController();
     void Promise.all(
       (["projects", "releases", "views"] as const).map(async (kind) => {
-        const response = await fetch(`/api/catalog?kind=${kind}&limit=3&active_only=1`, {
+        const parameters = new URLSearchParams({
+          kind,
+          limit: "3",
+          active_only: "1",
+        });
+        if (workspaceScopeToken) parameters.set("workspace_scope", workspaceScopeToken);
+        const response = await fetch(`/api/catalog?${parameters}`, {
           cache: "no-store",
           signal: controller.signal,
         });
@@ -1442,7 +1608,7 @@ export function TaskTracker({
         setError(requestError instanceof Error ? requestError.message : "Navigation could not be refreshed");
       });
     return () => controller.abort();
-  }, [catalogEpoch]);
+  }, [catalogEpoch, workspaceScopeToken]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1488,7 +1654,10 @@ export function TaskTracker({
 
   useEffect(() => {
     window.history.replaceState(
-      navigationHistoryState(initialNavigation),
+      navigationStateWithWorkspaceScope(
+        initialNavigation,
+        workspaceScopeTokenRef.current,
+      ),
       "",
       window.location.href,
     );
@@ -1533,7 +1702,10 @@ export function TaskTracker({
     };
     const loadRemainingTasks = () => {
       const checkpoint = captureSyncCheckpoint();
-      void fetch("/api/bootstrap", { cache: "no-store", signal: controller.signal })
+      const parameters = new URLSearchParams();
+      if (workspaceScopeToken) parameters.set("workspace_scope", workspaceScopeToken);
+      const bootstrapPath = parameters.size ? `/api/bootstrap?${parameters}` : "/api/bootstrap";
+      void fetch(bootstrapPath, { cache: "no-store", signal: controller.signal })
         .then(async (response) => {
           const value = (await response.json()) as AppSnapshot | { error: string };
           if (!response.ok || "error" in value) {
@@ -1567,7 +1739,7 @@ export function TaskTracker({
       if (idleId !== null) idleWindow.cancelIdleCallback?.(idleId);
       if (timerId !== null) window.clearTimeout(timerId);
     };
-  }, [captureSyncCheckpoint, taskWindowLoading]);
+  }, [captureSyncCheckpoint, taskWindowLoading, workspaceScopeToken]);
 
   const activeSavedView = surface.startsWith("view:")
     ? data.views.find((view) => view.id === surface.slice(5) && !view.archivedAt)
@@ -1604,6 +1776,7 @@ export function TaskTracker({
     surface,
     scopeProjectId: activeSavedView?.scopeProjectId ?? null,
     display: taskQueryDisplay,
+    workspaceScope: workspaceScopeToken || null,
   });
   taskQueryKeyRef.current = taskQueryKey;
   const activeTaskQueryDependencySet = useMemo(
@@ -1695,7 +1868,7 @@ export function TaskTracker({
       setPullRefreshError("");
       const checkpoint = captureSyncCheckpoint();
       try {
-        const incoming = await fetchTaskSnapshot();
+        const incoming = await fetchTaskSnapshot(fetch, workspaceScopeTokenRef.current);
         setData((current) => mergeDeferredSnapshot(current, incoming, {
           taskIdsAtRequest: checkpoint.taskIds,
           projectIdsAtRequest: checkpoint.projectIds,
@@ -1968,6 +2141,8 @@ export function TaskTracker({
       ? catalogPages.releases?.total ?? data.navigationCollections?.releases.total ?? data.releases.length
     : surface === "admin" && data.admin
       ? data.admin.registeredUserCount
+    : surface === "shared"
+      ? sharedWithMeRoots(data).projects.length + sharedWithMeRoots(data).views.length
     : surface.startsWith("settings:")
       ? ""
     : projectReleaseSurfaceId
@@ -1976,6 +2151,31 @@ export function TaskTracker({
   const contextProjectRecord = contextProject
     ? data.projects.find((project) => project.id === contextProject)
     : undefined;
+  const resourceOwnerUserId = activeTask
+    ? activeTask.projectId
+      ? data.projects.find((project) => project.id === activeTask.projectId)?.ownerUserId
+      : activeTask.ownerUserId
+    : contextProjectRecord?.ownerUserId ?? (
+        activeSavedView?.scopeProjectId
+          ? data.projects.find((project) => project.id === activeSavedView.scopeProjectId)?.ownerUserId
+          : activeSavedView?.ownerUserId
+      );
+  useEffect(() => {
+    let current = true;
+    if (!resourceOwnerUserId || !data.workspaceScope) {
+      queueMicrotask(() => {
+        if (current) setResourceOwnerLabel(null);
+      });
+      return () => { current = false; };
+    }
+    void opaqueWorkspaceOwnerToken(resourceOwnerUserId).then((token) => {
+      if (!current) return;
+      setResourceOwnerLabel(
+        data.workspaceScope?.options.find((option) => option.token === token)?.label ?? null,
+      );
+    });
+    return () => { current = false; };
+  }, [data.workspaceScope, resourceOwnerUserId]);
   const surfaceContextualEntity = contextReleaseRecord
     ? releaseContextualEntity(contextReleaseRecord)
     : activeSavedView
@@ -2143,7 +2343,7 @@ export function TaskTracker({
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(path, {
+      const response = await fetch(scopedUiApiPath(path, workspaceScopeTokenRef.current), {
         method,
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -2154,6 +2354,12 @@ export function TaskTracker({
       }
       const before = dataRef.current;
       const after = applyMutationResult(before, value);
+      if ("workspaceScope" in value && value.workspaceScope) {
+        const selectedToken = value.workspaceScope.selectedToken;
+        workspaceScopeTokenRef.current = selectedToken;
+        setWorkspaceScopeToken(selectedToken);
+        window.localStorage.setItem(workspaceScopeStorageKey(value.user.id), selectedToken);
+      }
       dataRef.current = after;
       setData((current) => {
         const next = applyMutationResult(current, value);
@@ -2272,6 +2478,7 @@ export function TaskTracker({
         order: catalogOrder,
         direction: catalogDirection,
       });
+      if (workspaceScopeToken) parameters.set("workspace_scope", workspaceScopeToken);
       if (search.trim()) parameters.set("search", search.trim());
       const response = await fetch(`/api/catalog?${parameters}`, { cache: "no-store" });
       const value = await response.json() as WorkspaceCatalogPage | { error: string };
@@ -2300,11 +2507,14 @@ export function TaskTracker({
     setBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/tasks", {
+      const response = await fetch(
+        scopedUiApiPath("/api/tasks", workspaceScopeTokenRef.current),
+        {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
-      });
+        },
+      );
       const value = (await response.json()) as
         | (AppSnapshot & { createdTask: { id: string; publicId: string } })
         | { error: string };
@@ -2534,6 +2744,69 @@ export function TaskTracker({
     }
   }
 
+  async function loadWorkspaceScopeSnapshot(
+    requestedToken: string,
+    historyMode: "push" | "replace" | "none" = "push",
+    goToWorkspace = true,
+  ) {
+    const scope = dataRef.current.workspaceScope;
+    if (!scope) return false;
+    const currentToken = scope.options.find((option) => option.current)?.token ??
+      scope.selectedToken;
+    const membership = resolveWorkspaceScopeMembership(
+      requestedToken,
+      scope.options,
+      currentToken,
+    );
+    setWorkspaceScopeLoading(true);
+    setError("");
+    try {
+      const incoming = await fetchTaskSnapshot(fetch, membership.token);
+      const selectedToken = incoming.workspaceScope?.selectedToken ?? currentToken;
+      workspaceScopeTokenRef.current = selectedToken;
+      setWorkspaceScopeToken(selectedToken);
+      dataRef.current = incoming;
+      setData(incoming);
+      completeCatalogFlights.current = {};
+      setCatalogPages({});
+      setCatalogEpoch((current) => current + 1);
+      setTaskSearch(null);
+      setSelected(new Set());
+      setPeekTaskId(null);
+      setTaskDetail(null);
+      setForcedTaskDetailId(null);
+      taskQueryGenerationRef.current += 1;
+      window.localStorage.setItem(
+        workspaceScopeStorageKey(incoming.user.id),
+        selectedToken,
+      );
+      const next: ResolvedNavigation = goToWorkspace
+        ? { surface: "workspace", layout: "list", taskId: null }
+        : { surface, layout, taskId: activeTaskId };
+      if (goToWorkspace) {
+        setSurface(next.surface);
+        setLayout(next.layout);
+        setActiveTaskId(null);
+        taskReturnPath.current = "/workspace";
+      }
+      if (historyMode !== "none") {
+        window.history[historyMode === "push" ? "pushState" : "replaceState"](
+          navigationStateWithWorkspaceScope(next, selectedToken),
+          "",
+          goToWorkspace ? "/workspace" : window.location.href,
+        );
+      }
+      return true;
+    } catch (requestError) {
+      setError(requestError instanceof Error
+        ? requestError.message
+        : "Workspace scope could not be loaded");
+      return false;
+    } finally {
+      setWorkspaceScopeLoading(false);
+    }
+  }
+
   function applyNavigation(
     next: ResolvedNavigation,
     historyMode: "push" | "replace" | "none" = "push",
@@ -2554,13 +2827,13 @@ export function TaskTracker({
     if (!next.taskId) taskReturnPath.current = nextPath;
     if (historyMode === "push") {
       window.history.pushState(
-        navigationHistoryState(next),
+        navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current),
         "",
         nextPath,
       );
     } else if (historyMode === "replace") {
       window.history.replaceState(
-        navigationHistoryState(next),
+        navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current),
         "",
         nextPath,
       );
@@ -2576,6 +2849,21 @@ export function TaskTracker({
       // The initial workspace snapshot intentionally omits the admin overview.
       // Let the server build the gated projection before rendering this surface.
       window.location.assign("/admin");
+      return;
+    }
+    if (
+      nextSurface === "shared" &&
+      workspaceScopeTokenRef.current !== ALL_ACCESSIBLE_WORKSPACE_SCOPE
+    ) {
+      void (async () => {
+        if (await loadWorkspaceScopeSnapshot(
+          ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+          "none",
+          false,
+        )) {
+          applyNavigation({ surface: "shared", layout: "list", taskId: null });
+        }
+      })();
       return;
     }
     applyNavigation({
@@ -2673,7 +2961,9 @@ export function TaskTracker({
     const target = parseNavigationPath(taskReturnPath.current);
     const next = target ? resolveNavigationTarget(target, data) : null;
     window.history.replaceState(
-      next ? navigationHistoryState(next) : null,
+      next
+        ? navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current)
+        : null,
       "",
       taskReturnPath.current,
     );
@@ -3012,24 +3302,33 @@ export function TaskTracker({
 
   useEffect(() => {
     function handlePopState(event: PopStateEvent) {
-      const target = parseNavigationPath(window.location.pathname);
-      const resolved =
-        resolveNavigationHistoryState(
-          event.state,
-          window.location.pathname,
-          data,
-        ) ?? (target ? resolveNavigationTarget(target, data) : null);
-      if (resolved) {
-        setSurface(resolved.surface);
-        setLayout(resolved.layout);
-        setActiveTaskId(resolved.taskId);
-        if (!resolved.taskId) {
-          taskReturnPath.current = navigationPath(resolved, data);
+      void (async () => {
+        const historyScope = workspaceScopeFromHistory(event.state);
+        if (historyScope && historyScope !== workspaceScopeTokenRef.current) {
+          await loadWorkspaceScopeSnapshot(historyScope, "none", false);
         }
-      }
+        const currentData = dataRef.current;
+        const target = parseNavigationPath(window.location.pathname);
+        const resolved =
+          resolveNavigationHistoryState(
+            event.state,
+            window.location.pathname,
+            currentData,
+          ) ?? (target ? resolveNavigationTarget(target, currentData) : null);
+        if (resolved) {
+          setSurface(resolved.surface);
+          setLayout(resolved.layout);
+          setActiveTaskId(resolved.taskId);
+          if (!resolved.taskId) {
+            taskReturnPath.current = navigationPath(resolved, currentData);
+          }
+        }
+      })();
     }
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
+    // The handler intentionally resolves the latest loader inputs through refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
   useEffect(() => {
@@ -3198,7 +3497,7 @@ export function TaskTracker({
         setActiveTaskId(null);
         taskReturnPath.current = navigationPath(next, data);
         window.history.pushState(
-          navigationHistoryState(next),
+          navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current),
           "",
           navigationPath(next, data),
         );
@@ -3473,6 +3772,19 @@ export function TaskTracker({
               </nav>
               <span className="count-pill">{surfaceCount}</span>
             </div>
+            {data.workspaceScope && (
+              <WorkspaceScopeSelector
+                value={workspaceScopeToken}
+                options={data.workspaceScope.options}
+                busy={workspaceScopeLoading}
+                onChange={(token) => void loadWorkspaceScopeSnapshot(token)}
+              />
+            )}
+            {resourceOwnerLabel && (
+              <span className="workspace-resource-owner" title={`Resource owner: ${resourceOwnerLabel}`}>
+                Owner: {resourceOwnerLabel}
+              </span>
+            )}
             <div className="title-actions">
               {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadSystemBackup()}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Export"}</button>}
               {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Import</button>}
@@ -3645,6 +3957,25 @@ export function TaskTracker({
             onCreateProject={() => setDialog("project")}
             onCreateRelease={() => void openDialogWithCatalog("release", ["projects"])}
           />
+        ) : surface === "shared" ? (
+          <SharedWithMeSurface
+            data={{
+              ...data,
+              projects: catalogPages.projects?.projects ?? data.projects,
+              views: catalogPages.views?.views ?? data.views,
+            }}
+            tasks={data.tasks}
+            statuses={data.statuses}
+            users={userMap}
+            onOpenProject={(id) => navigateSurface(`project:${id}`, "list")}
+            onOpenView={(view) => navigateSurface(`view:${view.id}`, view.display.layout)}
+            onProjectContextActions={(project, x, y, focus) => openContextualActions(
+              { entities: [projectContextualEntity(project)] },
+              x,
+              y,
+              focus,
+            )}
+          />
         ) : surface === "admin" && data.admin ? (
           <AdminSurface overview={data.admin} timeZone={data.user.timezone} />
         ) : surface === "views" ? (
@@ -3709,7 +4040,7 @@ export function TaskTracker({
       )}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} labels={labelsForTask(data, peekTask.id)} hierarchy={taskHierarchySummary(peekTask, data.tasks)} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={createTaskForComposer} busy={busy} />}
-      {dialog === "project" && <ProjectDialog currentUser={data.user} leadOptions={[data.user]} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/projects", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "project" && <ProjectDialog currentUser={data.user} leadOptions={[data.user]} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const before = new Set(dataRef.current.projects.map((project) => project.id)); const ok = await mutate("/api/projects", "POST", input); if (!ok) return; const created = dataRef.current.projects.find((project) => !before.has(project.id)); setDialog(null); if (created) { const next = { surface: `project:${created.id}`, layout: "list" as const, taskId: null }; setSurface(next.surface); setLayout(next.layout); setActiveTaskId(null); const path = `/projects/${encodeURIComponent(created.publicId)}`; taskReturnPath.current = path; window.history.pushState(navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current), "", path); } }} busy={busy} />}
       {dialog === "projectEdit" && contextProjectRecord && <ProjectDialog project={contextProjectRecord} currentUser={data.user} leadOptions={projectMemberOptions(data, contextProjectRecord)} openTaskCount={openProjectTaskCount(contextProjectRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, ...input }); if (ok) setDialog(null); }} onArchive={async () => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, archived: !contextProjectRecord.archivedAt }); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialProjectId={contextProject} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} busy={busy} />}
@@ -3729,6 +4060,30 @@ export function TaskTracker({
 
 function NavItem({ compact, icon, label, active, href, onNavigate, count }: { compact: boolean; icon: React.ReactNode; label: string; active: boolean; href: string; onNavigate: () => void; count?: number }) {
   return <a className={`nav-item ${active ? "active" : ""}`} href={href} aria-current={active ? "page" : undefined} aria-label={label} onClick={(event) => handleLocalLink(event, onNavigate)} title={label}><span className="nav-icon">{icon}</span>{!compact && <><span className="nav-label">{label}</span>{count !== undefined && <small className="nav-count">{count}</small>}</>}</a>;
+}
+
+function WorkspaceScopeSelector({ value, options, busy, onChange }: {
+  value: string;
+  options: NonNullable<AppSnapshot["workspaceScope"]>["options"];
+  busy: boolean;
+  onChange: (token: string) => void;
+}) {
+  return (
+    <label className="workspace-scope-selector">
+      <UsersRound size={14} aria-hidden="true" />
+      <span>Owner workspace</span>
+      <select
+        value={value}
+        disabled={busy}
+        aria-label="Owner workspace"
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.token} value={option.token}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 function SidebarSection({ title, action, children }: { title: string; action: () => void; children: React.ReactNode }) {
@@ -7543,11 +7898,11 @@ function WorkspaceOverviewSurface({
   onCreateRelease: () => void;
 }) {
   const openTasks = data.tasks.filter((task) => !task.archivedAt);
-  const activeCount = openTasks.filter((task) => {
+  const activeCount = data.workspaceMetrics?.taskCounts.active ?? openTasks.filter((task) => {
     const category = statusMap.get(task.statusId)?.category;
     return category === "unstarted" || category === "started";
   }).length;
-  const backlogCount = openTasks.filter(
+  const backlogCount = data.workspaceMetrics?.taskCounts.backlog ?? openTasks.filter(
     (task) => statusMap.get(task.statusId)?.category === "backlog",
   ).length;
   const recentTasks = [...openTasks]
@@ -7562,14 +7917,8 @@ function WorkspaceOverviewSurface({
   const recentViews = selectRecentNavigation(
     data.navigationCollections?.views.items ?? data.views,
   );
-  const sharedProjects = data.projects.filter((project) => project.accessRole !== "owner");
-  const sharedTasks = openTasks.filter(
-    (task) => task.projectId === null && task.accessRole !== "owner",
-  );
-  const sharedViews = data.views.filter(
-    (view) => view.scopeProjectId === null && view.accessRole !== "owner",
-  );
-  const sharedCount = sharedProjects.length + sharedTasks.length + sharedViews.length;
+  const { projects: sharedProjects, views: sharedViews } = sharedWithMeRoots(data);
+  const sharedCount = sharedProjects.length + sharedViews.length;
   const isEmpty =
     openTasks.length === 0 &&
     (data.navigationCollections?.projects.total ?? data.projects.length) === 0 &&
@@ -7702,7 +8051,7 @@ function WorkspaceOverviewSurface({
           {sharedCount ? (
             <div className="workspace-shared-summary">
               <WorkspaceSharedCount label="Projects" value={sharedProjects.length} />
-              <WorkspaceSharedCount label="Tasks" value={sharedTasks.length} />
+              <WorkspaceSharedCount label="Tasks" value={0} />
               <WorkspaceSharedCount label="Views" value={sharedViews.length} />
             </div>
           ) : <WorkspaceSectionEmpty title="Nothing shared yet" description="Resources shared with your account will appear here." />}
@@ -7726,6 +8075,60 @@ function WorkspaceSectionEmpty({ title, description }: { title: string; descript
 
 function WorkspaceSharedCount({ label, value }: { label: string; value: number }) {
   return <span><b>{value}</b><small>{label}</small></span>;
+}
+
+function SharedWithMeSurface({ data, tasks, statuses, users, onOpenProject, onOpenView, onProjectContextActions }: {
+  data: AppSnapshot;
+  tasks: TaskRecord[];
+  statuses: WorkflowStatusRecord[];
+  users: Map<string, UserRecord>;
+  onOpenProject: (id: string) => void;
+  onOpenView: (view: SavedViewRecord) => void;
+  onProjectContextActions: (project: ProjectRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void;
+}) {
+  const roots = sharedWithMeRoots(data);
+  if (!roots.projects.length && !roots.views.length) {
+    return <div className="empty-state"><UsersRound size={22} /><h2>Nothing shared yet</h2><p>Projects and global Saved Views granted directly to you will appear here.</p></div>;
+  }
+  return (
+    <div className="shared-roots-surface">
+      {roots.projects.length > 0 && (
+        <section aria-labelledby="shared-project-roots">
+          <header className="shared-roots-heading"><h2 id="shared-project-roots">Projects</h2><p>Project grants include their Tasks, Releases, and project views.</p></header>
+          <ProjectsSurface
+            projects={roots.projects}
+            tasks={tasks}
+            statuses={statuses}
+            users={users}
+            onOpen={onOpenProject}
+            onContextActions={onProjectContextActions}
+            onCreate={() => undefined}
+          />
+        </section>
+      )}
+      {roots.views.length > 0 && (
+        <section aria-labelledby="shared-view-roots">
+          <header className="shared-roots-heading"><h2 id="shared-view-roots">Global Saved Views</h2><p>Direct view grants never expand access to underlying Tasks.</p></header>
+          <div className="entity-grid shared-view-grid">
+            {roots.views.map((view) => (
+              <a
+                className="entity-card"
+                key={view.id}
+                href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)}
+                onClick={(event) => handleLocalLink(event, () => onOpenView(view))}
+              >
+                <div className="entity-icon"><Zap size={18} /></div>
+                <div className="entity-card-copy">
+                  <div><h2>{view.name}</h2><span className="status-badge">{view.accessRole}</span></div>
+                  <p>Global view · {view.display.layout}</p>
+                </div>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
 }
 
 function ViewsSurface({ data, statusMap, onOpen, onContextActions, onRestore, busy }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void; onContextActions: (view: SavedViewRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onRestore: (view: SavedViewRecord) => Promise<boolean>; busy: boolean }) {
@@ -8151,7 +8554,7 @@ function surfaceBreadcrumbs(
   const builtIn = builtInViews.find((item) => item.id === surface);
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
-function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
+function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
 function taskContextualEntity(task: TaskRecord): ContextualActionEntity {
   return { kind: "task", id: task.id, label: task.identifier, accessRole: task.accessRole, archivedAt: task.archivedAt, version: taskMutationVersion(task) };
 }
@@ -8245,7 +8648,7 @@ function displayLabel(value: string) {
   };
   return labels[value] ?? `${value[0]?.toUpperCase() ?? ""}${value.slice(1)}`;
 }
-function taskCountForView(id: string, data: AppSnapshot, statusMap: Map<string, WorkflowStatusRecord>) { if (id === "mine") return data.tasks.filter((task) => !task.archivedAt && task.assigneeUserId === data.user.id).length; if (id === "archived") return data.tasks.filter((task) => task.archivedAt).length; if (id === "backlog") return data.tasks.filter((task) => !task.archivedAt && statusMap.get(task.statusId)?.category === "backlog").length; if (id === "active") return data.tasks.filter((task) => !task.archivedAt && ["unstarted", "started"].includes(statusMap.get(task.statusId)?.category ?? "")).length; return data.tasks.filter((task) => !task.archivedAt).length; }
+function taskCountForView(id: string, data: AppSnapshot, statusMap: Map<string, WorkflowStatusRecord>) { const exact = data.workspaceMetrics?.taskCounts; if (id === "mine") return exact?.mine ?? data.tasks.filter((task) => !task.archivedAt && task.assigneeUserId === data.user.id).length; if (id === "archived") return exact?.archived ?? data.tasks.filter((task) => task.archivedAt).length; if (id === "backlog") return exact?.backlog ?? data.tasks.filter((task) => !task.archivedAt && statusMap.get(task.statusId)?.category === "backlog").length; if (id === "active") return exact?.active ?? data.tasks.filter((task) => !task.archivedAt && ["unstarted", "started"].includes(statusMap.get(task.statusId)?.category ?? "")).length; return exact?.all ?? data.tasks.filter((task) => !task.archivedAt).length; }
 function completion(tasks: TaskRecord[], statuses: WorkflowStatusRecord[]) { const statusMap = new Map(statuses.map((status) => [status.id, status])); const eligible = tasks.filter((task) => statusMap.get(task.statusId)?.category !== "canceled"); if (!eligible.length) return 0; return Math.round((eligible.filter((task) => statusMap.get(task.statusId)?.category === "completed").length / eligible.length) * 100); }
 function toggleSet(current: Set<string>, value: string) { const next = new Set(current); if (next.has(value)) next.delete(value); else next.add(value); return next; }
 function setsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>) { return left.size === right.size && [...left].every((value) => right.has(value)); }

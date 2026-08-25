@@ -5,6 +5,9 @@ export async function POST(request: Request) {
   const input = await readJson(request);
   return withUser(async (user) => {
     await createProject(user, input);
-    return getSnapshot(user);
+    // A Project is always created for the authenticated user, even while the
+    // UI is viewing another owner's scope. Return that destination scope.
+    const isUiScoped = new URL(request.url).searchParams.has("workspace_scope");
+    return getSnapshot(user, isUiScoped ? { workspaceScope: null } : {});
   });
 }

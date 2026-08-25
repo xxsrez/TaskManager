@@ -9,6 +9,8 @@ export async function PATCH(
   const { id } = await context.params;
   return withUser(async (user) => {
     await updateRelease(user, id, input);
-    return getSnapshot(user);
+    return getSnapshot(user, {
+      workspaceScope: new URL(request.url).searchParams.get("workspace_scope"),
+    });
   });
 }

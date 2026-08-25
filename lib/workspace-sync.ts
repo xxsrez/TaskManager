@@ -1,6 +1,8 @@
 import { getD1 } from "@/db";
 import {
+  getWorkspaceTaskMetrics,
   getWorkspaceSyncProjection,
+  resolveUiWorkspaceScope,
   type WorkspaceSyncProjection,
 } from "./repository";
 import type {
@@ -27,8 +29,12 @@ const SYNC_PRUNE_INTERVAL_HOURS = 24;
 export async function getWorkspaceSync(
   user: UserRecord,
   cursorValue: string,
+  workspaceScopeToken?: string | null,
 ): Promise<WorkspaceSyncResponse> {
   const db = getD1();
+  const workspaceScope = workspaceScopeToken === undefined
+    ? null
+    : await resolveUiWorkspaceScope(user, workspaceScopeToken);
   await pruneWorkspaceSyncEvents(db);
   const state = await db
     .prepare(
@@ -38,6 +44,7 @@ export async function getWorkspaceSync(
     .bind(user.id)
     .first<{ last_sequence: number }>();
   const lastSequence = Number(state?.last_sequence ?? 0);
+  if (workspaceScope?.fallback) return resetResponse(lastSequence);
   const cursor = decodeWorkspaceSyncCursor(cursorValue);
   if (cursor === null || cursor > lastSequence) {
     return resetResponse(lastSequence);
@@ -97,19 +104,28 @@ export async function getWorkspaceSync(
     ...touched.task_activity,
     ...touched.task_attachments,
   ];
-  const projection = await getWorkspaceSyncProjection(user, {
-    taskIds: [...touched.task],
-    projectIds: [...touched.project],
-    releaseIds: [...touched.release],
-    viewIds: [...touched.saved_view],
-    labelGroupIds: [...touched.label_group],
-    invalidatedTaskIds,
-  });
+  const [projection, workspaceMetrics] = await Promise.all([
+    getWorkspaceSyncProjection(user, {
+      taskIds: [...touched.task],
+      projectIds: [...touched.project],
+      releaseIds: [...touched.release],
+      viewIds: [...touched.saved_view],
+      labelGroupIds: [...touched.label_group],
+      invalidatedTaskIds,
+      ...(workspaceScope
+        ? { workspaceOwnerUserId: workspaceScope.ownerUserId }
+        : {}),
+    }),
+    workspaceScope
+      ? getWorkspaceTaskMetrics(user, workspaceScope.ownerUserId)
+      : Promise.resolve(undefined),
+  ]);
   return {
     cursor: encodeWorkspaceSyncCursor(processedSequence),
     resetRequired: false,
     hasMore: page.results.length > SYNC_PAGE_SIZE,
     changes: buildChanges(projection, touched),
+    ...(workspaceMetrics ? { workspaceMetrics } : {}),
   };
 }
 

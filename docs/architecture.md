@@ -141,6 +141,16 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
    invariants в одной транзакции.
 5. Unauthorized lookup возвращает ответ, не подтверждающий существование
    чужого resource.
+6. Browser UI может передать opaque owner workspace scope. Repository сначала
+   применяет тот же ACL predicate, затем дополнительный owner predicate до
+   aggregation/order/pagination. Effective owner project child берётся из
+   current Project; global SavedView использует собственный owner. Scope не
+   является authorization и не участвует в вычислении `accessRole`.
+7. UI descriptors строятся только из доступных roots и содержат opaque token,
+   display label, kind/current flags без email/internal IDs. Invalid или stale
+   membership возвращает current-user fallback. Если UI scope omitted, как в
+   Agent API/MCP и существующих внутренних callers, repository сохраняет
+   прежний ACL union.
 
 ### Share и revoke
 
@@ -198,6 +208,12 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
    синхронизируется после visibility/online; network failures и 45-секундный
    timeout дают bounded backoff до пяти минут. Journal хранится 30 дней и
    очищается throttled maintenance path не чаще раза в сутки.
+8. UI coordinator добавляет owner token к bootstrap, task query, catalogs и
+   sync. Sync повторно разрешает membership перед projection; revoke или
+   ownership transfer, сделавшие token stale, возвращают reset, после которого
+   scoped bootstrap атомарно заменяет snapshot и selector безопасным fallback.
+   `All accessible` оставляет ACL union, а конкретный owner фильтрует touched
+   Task/Project/Release/SavedView по тем же effective-owner правилам.
 
 Контракт и границы решения приняты в
 [ADR-0009](decisions/0009-central-workspace-synchronization.md). Optimistic
@@ -420,6 +436,16 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
 `taskWindow.truncated=true`, а UI показывает границу вместо молчаливой иллюзии
 полного workspace. Команды создания/изменения Task, Project, Release, SavedView
 и AccessGrant остаются отдельными route handlers.
+Browser routes передают `workspace_scope` как UI-only opaque token в
+`/api/bootstrap`, `/api/tasks/query`, `/api/catalog` и `/api/sync`. Сервер
+фильтрует snapshot tasks, exact metrics, navigation recents/totals и picker
+catalogs непосредственно в SQL после ACL; client-side фильтрация bounded union
+не считается достаточной. Выбранный token живёт в user-scoped local storage и
+`history.state`, поэтому canonical Project/Release/View/Task public-ID paths не
+меняются. Direct route отдельно ACL-разрешает адресованный record и проецирует
+его current owner context. Созданный из чужого scope Project всегда получает
+current User owner, после чего response переводит UI в current-user scope и на
+canonical URL результата.
 Server render и `/api/bootstrap` возвращают отдельную bounded
 `navigationCollections` projection: по три active recent summaries для
 Projects, Releases и SavedViews (`updated_at DESC, id DESC`) вместе с ACL-scoped
@@ -446,6 +472,10 @@ Workspace overview `/workspace` повторно использует этот A
 endpoint с cross-user counts нет: task bodies, labels, relations, native
 comments, migration metadata и admin aggregates остаются вне overview и
 загружаются только своими authorization-scoped путями по запросу.
+`Shared with me` не строится из Task `accessRole <> owner`: он проецирует только
+Projects с явным/inherited root access и напрямую расшаренные global
+SavedViews; project Tasks, Releases и scoped Views остаются внутри Project и не
+дублируются как shared roots.
 Task rows в этом snapshot являются summary projection: они содержат поля list,
 board, grouping и navigation, но вместо `description` передают явный `null`.
 Открытие Task отдельно запрашивает полную запись через `GET /api/tasks/{id}` с

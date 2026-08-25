@@ -57,6 +57,22 @@ test("the application owns its reset without Tailwind Preflight", () => {
   assert.match(declarations("button"), /padding:\s*0\s*;/);
 });
 
+test("owner workspace selector stays bounded at 390x844 and 844x390", () => {
+  const selector = declarations(".workspace-scope-selector");
+  assert.match(selector, /min-width:\s*0\s*;/);
+  assert.match(selector, /overflow:\s*hidden\s*;/);
+  assert.match(declarations(".main-surface"), /min-width:\s*0\s*;/);
+  assert.match(declarations(".main-surface"), /overflow:\s*hidden\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.workspace-scope-selector\s*\{[^}]*max-width:\s*min\(230px,\s*34vw\)\s*;[^}]*height:\s*40px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.workspace-scope-selector\s*\{[^}]*max-width:\s*132px\s*;[^}]*flex-basis:\s*132px\s*;/,
+  );
+});
+
 test("global search stays bounded, focus-safe, and overflow-free across phone orientations", () => {
   const dialog = declarations(".global-search-dialog");
   assert.match(dialog, /width:\s*min\(680px,\s*calc\(100vw\s*-\s*32px\)\)\s*;/);

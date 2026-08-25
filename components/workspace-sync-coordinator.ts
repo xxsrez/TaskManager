@@ -17,6 +17,7 @@ export type WorkspaceSyncCheckpoint = {
 
 type WorkspaceSyncCoordinatorOptions = {
   cursor?: string;
+  workspaceScope?: string;
   captureCheckpoint: () => WorkspaceSyncCheckpoint;
   onIncremental: (response: WorkspaceSyncResponse) => void;
   onReset: (
@@ -32,19 +33,26 @@ type WorkspaceSyncCycleOptions = WorkspaceSyncCoordinatorOptions & {
 
 export async function runWorkspaceSyncCycle({
   cursor,
+  workspaceScope,
   captureCheckpoint,
   onIncremental,
   onReset,
   signal,
   fetcher = fetch,
 }: WorkspaceSyncCycleOptions): Promise<string | undefined> {
+  const scopedPath = (path: string) => {
+    if (!workspaceScope) return path;
+    const url = new URL(path, "https://task-manager.invalid");
+    url.searchParams.set("workspace_scope", workspaceScope);
+    return `${url.pathname}${url.search}`;
+  };
   let nextCursor = cursor;
   let hasMore = true;
   while (hasMore && !signal.aborted) {
     if (!nextCursor) {
       const requestCheckpoint = captureCheckpoint();
       const snapshot = await readSyncJson<AppSnapshot>(
-        await fetcher("/api/bootstrap", { cache: "no-store", signal }),
+        await fetcher(scopedPath("/api/bootstrap"), { cache: "no-store", signal }),
       );
       nextCursor = snapshot.syncCursor;
       onReset(snapshot, requestCheckpoint);
@@ -53,7 +61,7 @@ export async function runWorkspaceSyncCycle({
     }
 
     const response = await readSyncJson<WorkspaceSyncResponse>(
-      await fetcher(`/api/sync?cursor=${encodeURIComponent(nextCursor)}`, {
+      await fetcher(scopedPath(`/api/sync?cursor=${encodeURIComponent(nextCursor)}`), {
         cache: "no-store",
         signal,
       }),
@@ -62,7 +70,7 @@ export async function runWorkspaceSyncCycle({
     if (response.resetRequired) {
       const requestCheckpoint = captureCheckpoint();
       const snapshot = await readSyncJson<AppSnapshot>(
-        await fetcher("/api/bootstrap", { cache: "no-store", signal }),
+        await fetcher(scopedPath("/api/bootstrap"), { cache: "no-store", signal }),
       );
       nextCursor = snapshot.syncCursor ?? response.cursor;
       onReset(snapshot, requestCheckpoint);
@@ -89,20 +97,21 @@ async function readSyncJson<T>(response: Response): Promise<T> {
 
 export function useWorkspaceSyncCoordinator({
   cursor,
+  workspaceScope,
   captureCheckpoint,
   onIncremental,
   onReset,
 }: WorkspaceSyncCoordinatorOptions) {
   const cursorRef = useRef(cursor);
-  const handlersRef = useRef({ captureCheckpoint, onIncremental, onReset });
+  const handlersRef = useRef({ workspaceScope, captureCheckpoint, onIncremental, onReset });
 
   useEffect(() => {
     cursorRef.current = cursor;
   }, [cursor]);
 
   useEffect(() => {
-    handlersRef.current = { captureCheckpoint, onIncremental, onReset };
-  }, [captureCheckpoint, onIncremental, onReset]);
+    handlersRef.current = { workspaceScope, captureCheckpoint, onIncremental, onReset };
+  }, [workspaceScope, captureCheckpoint, onIncremental, onReset]);
 
   useEffect(() => {
     let timer: number | null = null;

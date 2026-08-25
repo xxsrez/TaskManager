@@ -566,6 +566,8 @@ export type AppSnapshot = {
   taskLabels: TaskLabelAssignment[];
   relations: TaskRelationRecord[];
   views: SavedViewRecord[];
+  workspaceScope?: WorkspaceScopeState;
+  workspaceMetrics?: WorkspaceMetrics;
   navigationCollections?: {
     projects: { items: ProjectRecord[]; total: number; hasMore: boolean };
     releases: { items: ReleaseRecord[]; total: number; hasMore: boolean };
@@ -580,6 +582,30 @@ export type AppSnapshot = {
   collaborators: CollaboratorRecord[];
   /** Opaque checkpoint for the authenticated principal's incremental UI feed. */
   syncCursor?: string;
+};
+
+export type WorkspaceScopeDescriptor = {
+  token: string;
+  kind: "owner" | "all";
+  label: string;
+  current: boolean;
+};
+
+export type WorkspaceScopeState = {
+  selectedToken: string;
+  selectedLabel: string;
+  fallback: boolean;
+  options: WorkspaceScopeDescriptor[];
+};
+
+export type WorkspaceMetrics = {
+  taskCounts: {
+    all: number;
+    active: number;
+    backlog: number;
+    mine: number;
+    archived: number;
+  };
 };
 
 export type WorkspaceCatalogKind = "projects" | "releases" | "views";
@@ -625,4 +651,5 @@ export type WorkspaceSyncResponse = {
   resetRequired: boolean;
   hasMore: boolean;
   changes: WorkspaceSyncChanges;
+  workspaceMetrics?: WorkspaceMetrics;
 };

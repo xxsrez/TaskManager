@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-21
+Последнее обновление: 2026-08-25
 
 ## 1. Цель
 
@@ -39,6 +39,9 @@ MVP должен позволить вести задачи от backlog до п
   thread, reply принадлежит ровно одному root thread.
 - **Attachment** — приватный файл или raster image одной Task: metadata
   хранится в D1, body — в environment-isolated R2 и не имеет публичного URL.
+- **Owner workspace scope** — UI-проекция доступных records по владельцу,
+  применяемая только как дополнительное сужение уже вычисленного ACL; это не
+  entity, tenant, grant или источник authorization.
 
 ### 2.1 Интерфейсный принцип
 
@@ -118,6 +121,26 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 
 - Канонический корень авторизованного продукта — `/workspace`; прежний `/`
   перенаправляется туда. `My tasks` остаётся отдельной task surface `/issues`.
+- В header доступен owner workspace selector: по умолчанию выбран текущий User,
+  далее доступны владельцы хотя бы одного уже доступного root и `All
+  accessible`. Для Project, Task, Release и project-scoped SavedView владельцем
+  этой проекции всегда считается current Project owner; для global SavedView —
+  собственный owner View. Исторический `owner_user_id` project child не
+  определяет UI scope.
+- Scope применяется на сервере после ownership/ACL predicate, но до totals,
+  recents, task query, pagination и Project/Release/SavedView/Label catalogs.
+  Поэтому selector не расширяет права и не может сделать видимым недоступный
+  record. Agent API и прочие не-UI callers, не передавшие UI scope, сохраняют
+  прежнее ACL-union поведение.
+- Selector получает только compact opaque tokens и display labels без email и
+  внутренних IDs. Выбор сохраняется для User в browser storage и history state,
+  но не меняет canonical public-ID URL. Reload и Back/Forward восстанавливают
+  доступный выбор; forged, stale, revoked или исчезнувший после ownership
+  transfer token атомарно сбрасывается на scope текущего User.
+- Прямой доступный deep link остаётся открываемым независимо от сохранённого
+  фильтра и показывает owner context адресованного resource. Создание Project в
+  чужом owner scope всё равно создаёт Project текущего User, переключает scope
+  на текущего User и открывает канонический URL созданного Project.
 - Overview показывает только доступные текущему User компактные итоги: active и
   backlog Tasks, последние Tasks, Projects и их progress, Releases с Project
   context, SavedViews и верхнеуровневые ресурсы `Shared with me`.
@@ -174,6 +197,14 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   видит пересечение view с уже доступными ему данными.
 - Resources, которыми поделились с User, доступны в `Shared with me`. Revoke
   прекращает новые чтения и mutations немедленно после завершения транзакции.
+- `Shared with me` перечисляет только top-level Projects с явным Project grant
+  и напрямую расшаренные global SavedViews. Унаследованные Tasks, Releases и
+  project-scoped SavedViews не становятся отдельными строками этой surface.
+  Открытие этой специальной collection использует `All accessible` и полные
+  server-paginated Project/View catalogs, а не bounded snapshot `Your work`.
+- Доступность Viewer/Editor/Manager/Owner controls определяется только
+  server-derived `accessRole`; owner workspace scope не повышает role и не
+  служит условием показа mutation controls.
 - Необратимое удаление допускается только для Owner после отдельного
   подтверждения; первый срез может ограничиться обратимым archive/restore.
 

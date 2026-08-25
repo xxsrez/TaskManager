@@ -4,8 +4,10 @@ import { RECENT_NAVIGATION_LIMIT } from "@/lib/recent-navigation";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const workspaceScope = new URL(request.url).searchParams.get("workspace_scope");
   return withUser((user) => getSnapshot(user, {
     navigationLimit: RECENT_NAVIGATION_LIMIT,
+    workspaceScope,
   }));
 }

@@ -9,6 +9,8 @@ export async function POST(request: Request) {
       String(input.projectId ?? ""),
       String(input.targetUserId ?? ""),
     );
-    return getSnapshot(user);
+    return getSnapshot(user, {
+      workspaceScope: new URL(request.url).searchParams.get("workspace_scope"),
+    });
   });
 }

@@ -78,6 +78,7 @@ export function applyWorkspaceSync(
         !removedTaskIds.has(relation.sourceTaskId) &&
         !removedTaskIds.has(relation.targetTaskId),
     ),
+    workspaceMetrics: response.workspaceMetrics ?? current.workspaceMetrics,
     syncCursor: response.cursor,
   };
 }

@@ -5,6 +5,8 @@ export async function POST(request: Request) {
   const input = await readJson(request);
   return withUser(async (user) => {
     await createRelease(user, input);
-    return getSnapshot(user);
+    return getSnapshot(user, {
+      workspaceScope: new URL(request.url).searchParams.get("workspace_scope"),
+    });
   });
 }

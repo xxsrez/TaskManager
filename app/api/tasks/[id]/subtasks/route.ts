@@ -9,6 +9,11 @@ export async function POST(
   const { id } = await context.params;
   return withUser(async (user) => {
     const created = await createSubtask(user, id, input);
-    return { ...(await getSnapshot(user)), createdTask: created };
+    return {
+      ...(await getSnapshot(user, {
+        workspaceScope: new URL(request.url).searchParams.get("workspace_scope"),
+      })),
+      createdTask: created,
+    };
   });
 }
