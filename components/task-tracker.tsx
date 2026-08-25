@@ -384,6 +384,18 @@ export function scopedUiApiPath(path: string, workspaceScope: string) {
   return `${url.pathname}${url.search}`;
 }
 
+export function taskDetailUiApiPath(taskId: string, workspaceScope: string) {
+  return scopedUiApiPath(
+    `/api/tasks/${encodeURIComponent(taskId)}`,
+    workspaceScope,
+  );
+}
+
+export function taskRelationSearchUiApiPath(query: string, workspaceScope: string) {
+  const parameters = new URLSearchParams({ search: query });
+  return scopedUiApiPath(`/api/tasks?${parameters}`, workspaceScope);
+}
+
 const priorityMeta: Record<Priority, { label: string }> = {
   urgent: { label: "Urgent" },
   high: { label: "High" },
@@ -2057,7 +2069,7 @@ export function TaskTracker({
     const controller = new AbortController();
     void (async () => {
       const response = await fetch(
-        `/api/tasks/${encodeURIComponent(taskDetailRequestId)}`,
+        taskDetailUiApiPath(taskDetailRequestId, workspaceScopeToken),
         { cache: "no-store", signal: controller.signal },
       );
         const value = (await response.json()) as
@@ -2098,7 +2110,7 @@ export function TaskTracker({
         setError(requestError instanceof Error ? requestError.message : "Could not load task details");
       });
     return () => controller.abort();
-  }, [activeTaskId, returnToWorkspaceAfterRemoval, taskDetailRequestId]);
+  }, [activeTaskId, returnToWorkspaceAfterRemoval, taskDetailRequestId, workspaceScopeToken]);
   const activeDetailsData = activeTask && taskDetail?.task.id === activeTask.id
     ? mergeTaskDetailContext(data, { ...taskDetail, task: activeTask })
     : data;
@@ -2653,7 +2665,7 @@ export function TaskTracker({
   const refreshTaskDetail = useCallback(async (taskId: string): Promise<TaskRecord | null> => {
     setError("");
     try {
-      const response = await fetch(`/api/tasks/${encodeURIComponent(taskId)}`, {
+      const response = await fetch(taskDetailUiApiPath(taskId, workspaceScopeTokenRef.current), {
         cache: "no-store",
       });
       const value = (await response.json()) as TaskDetailRecord | { error: string };
@@ -5486,7 +5498,10 @@ function TaskRelations({
     }
     setSearching(true);
     searchTimer.current = setTimeout(() => {
-      void fetch(`/api/tasks?search=${encodeURIComponent(nextQuery.trim())}`, { cache: "no-store" })
+      void fetch(taskRelationSearchUiApiPath(
+        nextQuery.trim(),
+        data.workspaceScope?.selectedToken ?? "",
+      ), { cache: "no-store" })
         .then(async (response) => {
           const value = await response.json() as { tasks?: TaskRecord[]; error?: string };
           if (!response.ok || value.error) throw new Error(value.error ?? "Task search failed");

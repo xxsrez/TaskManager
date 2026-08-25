@@ -1,22 +1,29 @@
 import assert from "node:assert/strict";
-import { after, before, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
+import { configureActorResolverForTests } from "../lib/auth";
 import {
   createProject,
   createSavedView,
   createTask,
   getOrCreateUser,
   getSnapshot,
+  getTaskDetail,
   getWorkspaceCatalogPage,
   grantAccess,
   queryTaskSummaries,
   revokeAccess,
+  searchTaskSummaries,
   transferProjectOwnership,
 } from "../lib/repository";
 import {
   navigationStateWithWorkspaceScope,
   scopedUiApiPath,
+  taskDetailUiApiPath,
+  taskRelationSearchUiApiPath,
   workspaceScopeFromHistory,
 } from "../components/task-tracker";
+import { GET as searchTasksRoute } from "../app/api/tasks/route";
+import { GET as getTaskRoute } from "../app/api/tasks/[id]/route";
 import {
   ALL_ACCESSIBLE_WORKSPACE_SCOPE,
   opaqueWorkspaceOwnerToken,
@@ -44,6 +51,7 @@ before(async () => {
 });
 
 after(async () => dispose?.());
+afterEach(() => configureActorResolverForTests(null));
 
 test("workspace scope tokens are opaque, bounded, and fail closed to the current user", async () => {
   const currentToken = await opaqueWorkspaceOwnerToken("usr_current-internal");
@@ -76,6 +84,14 @@ test("workspace scope tokens are opaque, bounded, and fail closed to the current
     scopedUiApiPath("/api/tasks?cursor=next", otherToken),
     `/api/tasks?cursor=next&workspace_scope=${encodeURIComponent(otherToken)}`,
   );
+  assert.equal(
+    taskDetailUiApiPath("task/a", otherToken),
+    `/api/tasks/task%2Fa?workspace_scope=${encodeURIComponent(otherToken)}`,
+  );
+  assert.equal(
+    taskRelationSearchUiApiPath("needle / one", otherToken),
+    `/api/tasks?search=needle+%2F+one&workspace_scope=${encodeURIComponent(otherToken)}`,
+  );
 
   assert.deepEqual(
     resolveWorkspaceScopeMembership(otherToken, descriptors, currentToken),
@@ -85,6 +101,96 @@ test("workspace scope tokens are opaque, bounded, and fail closed to the current
     resolveWorkspaceScopeMembership("wso_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", descriptors, currentToken),
     { token: currentToken, fallback: true },
   );
+});
+
+test("task detail context and relation search narrow by re-resolved UI owner scope", async () => {
+  const currentActor = {
+    provider: "chatgpt" as const,
+    providerAccountKey: "workspace-detail-current",
+    displayName: "Workspace Detail Current",
+    email: "workspace-detail-current@example.test",
+  };
+  const foreignActor = {
+    provider: "chatgpt" as const,
+    providerAccountKey: "workspace-detail-foreign",
+    displayName: "Workspace Detail Foreign",
+    email: "workspace-detail-foreign@example.test",
+  };
+  const current = await getOrCreateUser(currentActor);
+  const foreign = await getOrCreateUser(foreignActor);
+  await createProject(current, { name: "Scope Detail Current", taskCode: "SDC" });
+  await createProject(foreign, { name: "Scope Detail Foreign", taskCode: "SDF" });
+  const currentProject = (await getSnapshot(current)).projects.find(
+    (project) => project.name === "Scope Detail Current",
+  )!;
+  const foreignProject = (await getSnapshot(foreign)).projects.find(
+    (project) => project.name === "Scope Detail Foreign",
+  )!;
+  const source = await createTask(current, {
+    projectId: currentProject.id,
+    title: "Scoped relation needle source",
+  });
+  const foreignTarget = await createTask(foreign, {
+    projectId: foreignProject.id,
+    title: "Scoped relation needle foreign",
+  });
+  await grantAccess(foreign, {
+    resourceType: "project",
+    resourceId: foreignProject.id,
+    email: current.email,
+    permission: "editor",
+  });
+  await database.prepare(`INSERT INTO task_relations
+    (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(
+      "relation-workspace-detail-cross-owner",
+      source.id,
+      foreignTarget.id,
+      "related",
+      current.id,
+      "relation-workspace-detail-cross-owner",
+    )
+    .run();
+
+  const currentToken = await opaqueWorkspaceOwnerToken(current.id);
+  const unionDetail = await getTaskDetail(current, source.id);
+  assert.deepEqual(unionDetail.relatedTasks.map((task) => task.id), [foreignTarget.id]);
+  assert.equal(unionDetail.relations.length, 1);
+  const scopedDetail = await getTaskDetail(current, source.id, {
+    workspaceScope: currentToken,
+  });
+  assert.deepEqual(scopedDetail.relatedTasks, []);
+  assert.deepEqual(scopedDetail.relations, []);
+
+  const unionSearch = await searchTaskSummaries(current, "Scoped relation needle");
+  assert.deepEqual(
+    new Set(unionSearch.map((task) => task.id)),
+    new Set([source.id, foreignTarget.id]),
+  );
+  const scopedSearch = await searchTaskSummaries(current, "Scoped relation needle", {
+    workspaceScope: currentToken,
+  });
+  assert.deepEqual(scopedSearch.map((task) => task.id), [source.id]);
+
+  configureActorResolverForTests(async () => currentActor);
+  const detailResponse = await getTaskRoute(
+    new Request(
+      `https://example.test/api/tasks/${source.id}?workspace_scope=${encodeURIComponent(currentToken)}`,
+    ),
+    { params: Promise.resolve({ id: source.id }) },
+  );
+  assert.equal(detailResponse.status, 200);
+  const detailPayload = await detailResponse.json() as typeof scopedDetail;
+  assert.deepEqual(detailPayload.relatedTasks, []);
+  assert.deepEqual(detailPayload.relations, []);
+
+  const searchResponse = await searchTasksRoute(new Request(
+    `https://example.test/api/tasks?search=Scoped+relation+needle&workspace_scope=${encodeURIComponent(currentToken)}`,
+  ));
+  assert.equal(searchResponse.status, 200);
+  const searchPayload = await searchResponse.json() as { tasks: TaskRecord[] };
+  assert.deepEqual(searchPayload.tasks.map((task) => task.id), [source.id]);
 });
 
 test("project children use the current Project owner while global views use their own owner", () => {

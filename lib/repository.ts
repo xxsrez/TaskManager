@@ -1482,8 +1482,13 @@ export async function getTask(
 export async function getTaskDetail(
   currentUser: UserRecord,
   taskId: string,
+  options: { workspaceScope?: string | null } = {},
 ): Promise<TaskDetailRecord> {
   const task = await loadAccessibleTask(currentUser.id, taskId);
+  const workspaceScope = await resolveWorkspaceScope(
+    currentUser,
+    options.workspaceScope,
+  );
   const db = getD1();
   const [labelRows, relationRows, childRows] = await db.batch([
     db
@@ -1529,6 +1534,9 @@ export async function getTaskDetail(
         viewIds: [],
         labelGroupIds: [],
         invalidatedTaskIds: [],
+        ...(workspaceScope
+          ? { workspaceOwnerUserId: workspaceScope.ownerUserId }
+          : {}),
       })).tasks
     : [];
   const visibleIds = new Set([task.id, ...relatedTasks.map((item) => item.id)]);
@@ -1559,16 +1567,24 @@ export async function searchTaskIds(
 export async function searchTaskSummaries(
   currentUser: UserRecord,
   input: string,
+  options: { workspaceScope?: string | null } = {},
 ): Promise<TaskRecord[]> {
   const query = input.trim().toLowerCase();
   if (!query) return [];
   if (query.length > 200) {
     throw new ValidationError("Task search is limited to 200 characters");
   }
+  const workspaceScope = await resolveWorkspaceScope(
+    currentUser,
+    options.workspaceScope,
+  );
+  const workspace = workspacePredicate("workspace_owner_user_id", workspaceScope);
   const rows = await getD1()
     .prepare(
       `WITH scoped AS (
          SELECT ${snapshotTaskProjection},
+           CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+             ELSE t.owner_user_id END AS workspace_owner_user_id,
            ${taskAccessRoleSql("t", "p")} AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
          WHERE instr(lower(t.identifier), ?) > 0
@@ -1580,7 +1596,8 @@ export async function searchTaskSummaries(
             OR instr(lower(t.title), ?) > 0
             OR instr(lower(COALESCE(t.description, '')), ?) > 0
        )
-       SELECT * FROM scoped WHERE access_role IS NOT NULL
+       SELECT * FROM scoped
+       WHERE access_role IS NOT NULL AND ${workspace.sql}
        ORDER BY updated_at DESC, id DESC LIMIT ?`,
     )
     .bind(
@@ -1592,6 +1609,7 @@ export async function searchTaskSummaries(
       query,
       query,
       query,
+      ...workspace.parameters,
       MAX_UI_SNAPSHOT_TASKS,
     )
     .all<DbRow>();

@@ -2,11 +2,16 @@ import { readJson, withUser } from "@/lib/http";
 import { getTaskDetail, updateTask } from "@/lib/repository";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  return withUser(async (user) => getTaskDetail(user, id));
+  const parameters = new URL(request.url).searchParams;
+  return withUser(async (user) => getTaskDetail(user, id, {
+    workspaceScope: parameters.has("workspace_scope")
+      ? parameters.get("workspace_scope")
+      : undefined,
+  }));
 }
 
 export async function PATCH(
