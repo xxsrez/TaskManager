@@ -24,6 +24,10 @@ import {
   updateLabelGroup,
 } from "../lib/repository";
 import { getWorkspaceSync } from "../lib/workspace-sync";
+import {
+  ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+  opaqueWorkspaceOwnerToken,
+} from "../lib/workspace-scope";
 import type { AppSnapshot, WorkspaceSyncResponse } from "../lib/types";
 import { createD1TestHarness } from "./helpers/d1";
 import {
@@ -274,6 +278,85 @@ test("owner Label Group catalog mutations advance bounded incremental sync", asy
   const outsiderSync = await getWorkspaceSync(outsider, outsiderInitial.syncCursor!);
   assert.equal(outsiderSync.cursor, outsiderInitial.syncCursor);
   assert.deepEqual(outsiderSync.changes.labelGroups, []);
+});
+
+test("foreign-owner Label Group changes replace scoped collaborator state", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "sync-label-group-foreign-owner",
+    email: "sync-label-group-foreign-owner@example.test",
+  });
+  const collaborator = await getOrCreateUser({
+    ...collaboratorActor,
+    providerAccountKey: "sync-label-group-foreign-collaborator",
+    email: "sync-label-group-foreign-collaborator@example.test",
+  });
+  const project = await ensureSyncProject(owner);
+  let catalog = await createLabelGroup(owner, { name: "Foreign scoped group" });
+  let group = catalog.find((item) => item.name === "Foreign scoped group")!;
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: collaborator.email,
+    permission: "viewer",
+  });
+
+  const ownerScope = await opaqueWorkspaceOwnerToken(owner.id);
+  const initial = await getSnapshot(collaborator, { workspaceScope: ownerScope });
+  const allInitial = await getSnapshot(collaborator, {
+    workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+  });
+  assert.equal(initial.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+  assert.equal(allInitial.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+
+  catalog = await updateLabelGroup(owner, group.id, {
+    action: "update",
+    version: group.version,
+    name: "Renamed foreign scoped group",
+  });
+  group = catalog.find((item) => item.id === group.id)!;
+  const renamed = await getWorkspaceSync(collaborator, initial.syncCursor!, ownerScope);
+  const allRenamed = await getWorkspaceSync(
+    collaborator,
+    allInitial.syncCursor!,
+    ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+  );
+  const omittedRenamed = await getWorkspaceSync(collaborator, initial.syncCursor!);
+  assert.deepEqual(omittedRenamed.changes.labelGroups, []);
+  assert.equal(
+    renamed.changes.labelGroups?.find((item) => item.id === group.id)?.name,
+    group.name,
+  );
+  assert.equal(
+    allRenamed.changes.labelGroups?.find((item) => item.id === group.id)?.name,
+    group.name,
+  );
+  let client = applyWorkspaceSync(initial, renamed);
+  assert.equal(client.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+
+  catalog = await updateLabelGroup(owner, group.id, {
+    action: "archive",
+    version: group.version,
+  });
+  group = catalog.find((item) => item.id === group.id)!;
+  const archived = await getWorkspaceSync(collaborator, renamed.cursor, ownerScope);
+  const allArchived = await getWorkspaceSync(
+    collaborator,
+    allRenamed.cursor,
+    ALL_ACCESSIBLE_WORKSPACE_SCOPE,
+  );
+  assert.ok(archived.changes.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
+  assert.ok(allArchived.changes.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
+  client = applyWorkspaceSync(client, archived);
+  assert.ok(client.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
+
+  const grant = (await getSnapshot(owner)).collaborators.find(
+    (item) => item.resourceType === "project" && item.resourceId === project.id,
+  );
+  assert.ok(grant);
+  await revokeAccess(owner, grant.grantId);
+  const reset = await getWorkspaceSync(collaborator, archived.cursor, ownerScope);
+  assert.equal(reset.resetRequired, true);
 });
 
 test("task label and relation updates emit bounded Label context with lazy detail invalidations", async () => {

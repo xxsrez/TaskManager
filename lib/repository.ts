@@ -1328,6 +1328,7 @@ export type WorkspaceSyncProjectionInput = {
   labelGroupIds: readonly string[];
   invalidatedTaskIds: readonly string[];
   workspaceOwnerUserId?: string | null;
+  includeLabelGroupCatalog?: boolean;
 };
 
 export type WorkspaceSyncProjection = {
@@ -1362,12 +1363,23 @@ export async function getWorkspaceSyncProjection(
       };
   const taskWorkspace = workspacePredicate("workspace_owner_user_id", syncScope);
   const projectWorkspace = workspacePredicate("workspace_owner_user_id", syncScope);
+  const labelGroupWorkspace = workspaceCatalogOwnerPredicate(
+    "g.owner_user_id",
+    user.id,
+    syncScope,
+  );
   const allTaskIds = [...new Set([...input.taskIds, ...input.invalidatedTaskIds])];
   const taskPlaceholders = sqlPlaceholders(allTaskIds);
   const projectPlaceholders = sqlPlaceholders(input.projectIds);
   const releasePlaceholders = sqlPlaceholders(input.releaseIds);
   const viewPlaceholders = sqlPlaceholders(input.viewIds);
   const labelGroupPlaceholders = sqlPlaceholders(input.labelGroupIds);
+  const labelGroupSelection = input.includeLabelGroupCatalog
+    ? { sql: "1 = 1", parameters: [] as string[] }
+    : {
+        sql: `g.id IN (${labelGroupPlaceholders})`,
+        parameters: [...input.labelGroupIds],
+      };
   const [tasks, projects, releases, views, catalogLabelGroups] = await db.batch<DbRow>([
     db
       .prepare(
@@ -1425,11 +1437,12 @@ export async function getWorkspaceSyncProjection(
         ...projectWorkspace.parameters),
     db
       .prepare(
-        `SELECT * FROM label_groups
-         WHERE owner_user_id = ? AND id IN (${labelGroupPlaceholders})
-         ORDER BY position, lower(name), id`,
+        `SELECT g.* FROM label_groups g
+         WHERE ${labelGroupWorkspace.sql}
+           AND ${labelGroupSelection.sql}
+         ORDER BY g.position, lower(g.name), g.id`,
       )
-      .bind(user.id, ...input.labelGroupIds),
+      .bind(...labelGroupWorkspace.parameters, ...labelGroupSelection.parameters),
   ]);
 
   const taskRecords = tasks.results.map(mapTask);

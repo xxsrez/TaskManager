@@ -35,6 +35,9 @@ export async function getWorkspaceSync(
   const workspaceScope = workspaceScopeToken === undefined
     ? null
     : await resolveUiWorkspaceScope(user, workspaceScopeToken);
+  const refreshScopedLabelGroupCatalog = Boolean(
+    workspaceScope && workspaceScope.ownerUserId !== user.id,
+  );
   await pruneWorkspaceSyncEvents(db);
   const state = await db
     .prepare(
@@ -88,11 +91,28 @@ export async function getWorkspaceSync(
     return resetResponse(lastSequence);
   }
   if (rows.length === 0) {
+    const changes = emptyChanges();
+    if (workspaceScope && refreshScopedLabelGroupCatalog) {
+      // A foreign owner's catalog events live in that owner's journal, while
+      // this cursor belongs to the collaborator. Reproject the already
+      // authorized owner/All catalog so idle polling still replaces stale rows.
+      const projection = await getWorkspaceSyncProjection(user, {
+        taskIds: [],
+        projectIds: [],
+        releaseIds: [],
+        viewIds: [],
+        labelGroupIds: [],
+        invalidatedTaskIds: [],
+        workspaceOwnerUserId: workspaceScope.ownerUserId,
+        includeLabelGroupCatalog: true,
+      });
+      changes.labelGroups = projection.labelGroups;
+    }
     return {
       cursor: cursorValue,
       resetRequired: false,
       hasMore: false,
-      changes: emptyChanges(),
+      changes,
     };
   }
 
@@ -115,6 +135,7 @@ export async function getWorkspaceSync(
       ...(workspaceScope
         ? { workspaceOwnerUserId: workspaceScope.ownerUserId }
         : {}),
+      includeLabelGroupCatalog: refreshScopedLabelGroupCatalog,
     }),
     workspaceScope
       ? getWorkspaceTaskMetrics(user, workspaceScope.ownerUserId)
