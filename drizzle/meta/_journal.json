@@ -225,6 +225,13 @@
       "when": 1787664112000,
       "tag": "0031_reconcile_duplicate_chatgpt_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1787689200000,
+      "tag": "0032_expand_project_task_codes",
+      "breakpoints": true
     }
   ]
 }

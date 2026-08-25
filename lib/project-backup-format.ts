@@ -13,6 +13,7 @@ import {
   hasMalformedTaskAttachmentReference,
   parseTaskAttachmentReferences,
 } from "./task-description-format";
+import { isProjectTaskCode, PROJECT_TASK_CODE_ERROR } from "./project-task-code";
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
@@ -397,8 +398,8 @@ function validateProjectRelationships(
     project.id !== identity.projectId || project.public_id !== identity.projectPublicId ||
     project.name !== identity.projectName || project.owner_user_id !== identity.ownerUserId
   ) throw new ValidationError("Project backup identity does not match its project row");
-  if (!/^[A-Z]{2,3}$/.test(String(project.task_code))) {
-    throw new ValidationError("Project task code must contain 2-3 uppercase Latin letters");
+  if (!isProjectTaskCode(project.task_code)) {
+    throw new ValidationError(PROJECT_TASK_CODE_ERROR);
   }
   if (!Number.isSafeInteger(project.task_sequence) || Number(project.task_sequence) < 0) {
     throw new ValidationError("Project task sequence must be a non-negative integer");

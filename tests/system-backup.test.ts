@@ -30,6 +30,31 @@ test("a complete system snapshot validates and preserves application data", asyn
   assert.equal(validated.tables.access_grants[0]?.permission, "full_access");
 });
 
+test("system backup validates and restores an expanded Project code", async () => {
+  const tables = validTables();
+  tables.projects[0]!.task_code = "WEB-APP2";
+  for (const task of tables.tasks) {
+    task.identifier = `WEB-APP2-${String(task.sequence_number)}`;
+  }
+  const backup = await createSystemBackup(tables, now);
+  const validated = await validateSystemBackup(backup);
+  assert.equal(validated.tables.projects[0]?.task_code, "WEB-APP2");
+
+  const database = migratedDatabase();
+  insertOldState(database);
+  const importId = stageTables(database, validated.tables);
+  applyStagedTables(database, importId);
+  assert.equal(
+    database.prepare("SELECT task_code FROM projects WHERE id = 'project-1'").get()?.task_code,
+    "WEB-APP2",
+  );
+  assert.deepEqual(
+    database.prepare("SELECT identifier FROM tasks ORDER BY sequence_number").all().map((row) => row.identifier),
+    ["WEB-APP2-1", "WEB-APP2-2"],
+  );
+  database.close();
+});
+
 test("system backup preserves Label Group topology and rejects duplicate group values", async () => {
   const tables = validTables();
   tables.label_groups.push({
@@ -157,6 +182,11 @@ test("schema 2 system backups without attachments remain importable", async () =
   const validated = await validateSystemBackup(legacy);
   assert.equal(validated.schemaVersion, 2);
   assert.deepEqual(validated.tables.attachments, []);
+  assert.equal(validated.tables.projects[0]?.task_code, "TM");
+  assert.deepEqual(
+    validated.tables.tasks.map((task) => task.identifier),
+    ["TM-1", "TM-2"],
+  );
 });
 
 test("schema 3 system backups synthesize reserved workflow metadata before restore", async () => {
@@ -911,6 +941,7 @@ function migratedDatabase() {
     "0028_hot_obadiah_stane.sql",
     "0029_steep_joseph.sql",
     "0030_absurd_blacklash.sql",
+    "0032_expand_project_task_codes.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

@@ -517,7 +517,10 @@ immutable ID и может группировать Tasks по значения�
 ## 7. Проекты
 
 - Для Project обязательны `name` и уникальный для active Projects текущего
-  owner code из 2–3 заглавных латинских букв.
+  owner code длиной 1–12 символов. Code состоит из заглавных латинских букв,
+  цифр и внутренних дефисов; первый и последний символы — буква или цифра.
+  Текстовый ingress обрезает внешние пробелы и приводит code к верхнему
+  регистру до проверки, а сохранённая и backup-проекция всегда канонические.
 - Новый Project принадлежит создавшему его User.
 - Проект поддерживает summary, Markdown description, status, lead, start date,
   target date, icon/color и timestamps.
@@ -526,6 +529,9 @@ immutable ID и может группировать Tasks по значения�
   revoke между read и write не оставляют partial update.
 - `task_code` разрешено исправить только до первого выделенного Task number.
   После `code_locked_at` UI делает control read-only, а server отклоняет обход.
+- Create dialog предлагает допустимый code из имени Project, но сохраняет
+  пользовательский выбор только после той же server-side проверки. Agent API,
+  OpenAPI и MCP возвращают полный канонический code без сокращения.
 - Lifecycle использует `planned`, `active`, `paused`, `completed`, `canceled`.
   Переход в terminal status при открытых Tasks требует явного подтверждения;
   Tasks автоматически не закрываются.

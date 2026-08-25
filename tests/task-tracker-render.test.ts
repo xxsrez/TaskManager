@@ -3191,6 +3191,18 @@ test("Project edit dialog exposes every lifecycle field and reversible archive",
   assert.match(markup, /readOnly=""/);
   assert.match(markup, /Restore project/);
   assert.match(markup, /Markdown description/);
+  assert.match(markup, /minLength="1"/);
+  assert.match(markup, /maxLength="12"/);
+  assert.match(markup, /pattern="\[A-Z0-9\]\(\?:\[A-Z0-9-\]\{0,10\}\[A-Z0-9\]\)\?"/);
+  const createMarkup = renderToStaticMarkup(createElement(ProjectDialog, {
+    currentUser: snapshot.user,
+    leadOptions: [snapshot.user],
+    openTaskCount: 0,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+    busy: false,
+  }));
+  assert.match(createMarkup, /1–12 characters/);
 });
 
 test("Release overview and edit dialog expose native lifecycle metadata", () => {

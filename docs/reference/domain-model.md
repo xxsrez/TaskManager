@@ -509,8 +509,11 @@ Project logical backup schema `10` впервые сохраняет обе та
 
 ### Project task code и sequence
 
-`Project.task_code` — 2–3 заглавные латинские буквы, уникальные среди active
-Projects current owner. `Project.task_sequence` — монотонный allocator.
+`Project.task_code` — 1–12 символов, уникальных среди active Projects current
+owner: заглавные латинские буквы, цифры и внутренние дефисы с буквенно-цифровыми
+краями. Все текстовые write ingress используют одну trim/uppercase normalization
+и одну validation grammar; backup хранит уже каноническое значение.
+`Project.task_sequence` — монотонный allocator.
 Атомарный `UPDATE ... RETURNING` сверяется с максимальным уже сохранённым
 `Task.sequence_number`, поэтому параллельные create и импорт не создают
 дубликаты. `code_locked_at` устанавливается при первой Task; после этого code
@@ -548,7 +551,7 @@ status, на который ссылаются задачи или SavedViews, �
 | `slug` | Читаемый optional alias; не является identity |
 | `owner_user_id` | Владелец Project и его subtree |
 | `name` | Обязательное имя |
-| `task_code` | 2–3 заглавные латинские буквы; уникален среди active Projects current owner |
+| `task_code` | 1–12 символов `[A-Z0-9-]`, дефис только внутри; уникален среди active Projects current owner |
 | `task_sequence` | Монотонный последний выделенный номер Task |
 | `code_locked_at` | Момент первого выделения номера; после него code неизменяем |
 | `summary`, `description` | Краткий и подробный контекст |

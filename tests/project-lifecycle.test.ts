@@ -47,7 +47,7 @@ test("Project create and versioned edit cover metadata, roles, code locking, lif
   const member = await getOrCreateUser(memberActor);
   await createProject(owner, {
     name: "Lifecycle Project",
-    taskCode: "LP",
+    taskCode: "life-cycle2",
     summary: "Initial summary",
     description: "## Outcome\n\nNative Project lifecycle.",
     status: "active",
@@ -66,14 +66,14 @@ test("Project create and versioned edit cover metadata, roles, code locking, lif
   assert.equal(project.leadUserId, owner.id);
 
   await assert.rejects(
-    createProject(owner, { name: "Duplicate Project code", taskCode: "LP" }),
+    createProject(owner, { name: "Duplicate Project code", taskCode: "LIFE-CYCLE2" }),
     /already in use/,
   );
   project = await updateProject(owner, project.id, {
     version: project.version,
-    taskCode: "LX",
+    taskCode: "LC-EDIT2",
   });
-  assert.equal(project.taskCode, "LX");
+  assert.equal(project.taskCode, "LC-EDIT2");
 
   await grantAccess(owner, {
     resourceType: "project",
@@ -131,6 +131,7 @@ test("Project create and versioned edit cover metadata, roles, code locking, lif
   assert.equal(agentDetail.version, project.version);
   assert.equal(agentDetail.icon, "target");
   assert.equal(agentDetail.color, "#aa5500");
+  assert.equal(agentDetail.taskCode, "LC-EDIT2");
   assert.equal(agentDetail.lead?.displayName, member.displayName);
 
   await createTask(owner, { title: "Open Project Task", projectId: project.id });
@@ -138,7 +139,7 @@ test("Project create and versioned edit cover metadata, roles, code locking, lif
   await assert.rejects(
     updateProject(owner, project.id, {
       version: project.version,
-      taskCode: "LY",
+      taskCode: "LOCKED-2",
     }),
     /code is locked/,
   );

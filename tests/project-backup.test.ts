@@ -36,6 +36,45 @@ test("project bundle validates one exact subtree without user identities", async
   assert.equal("users" in validated.tables, false);
 });
 
+test("project backup validates and restores an expanded Project code", async () => {
+  const tables = validProjectTables();
+  tables.projects[0]!.task_code = "WEB-APP2";
+  for (const task of tables.tasks) {
+    task.identifier = `WEB-APP2-${String(task.sequence_number)}`;
+  }
+  const backup = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables,
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const validated = await validateProjectBackup(backup);
+  assert.equal(validated.tables.projects[0]?.task_code, "WEB-APP2");
+
+  const database = migratedDatabase();
+  database.prepare(
+    "INSERT INTO users (id, display_name, email, timezone, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+  ).run("user-owner", "Owner", "owner@example.test", "UTC", now, now);
+  database.prepare(`INSERT INTO projects
+    (id, public_id, owner_user_id, creator_user_id, name, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+    "project-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "user-owner",
+    "user-owner", "Old project", now, now,
+  );
+  stageProjectRows(database, "user-import:expanded-code", validated.tables);
+  applyProjectRows(database, "user-import:expanded-code");
+  assert.equal(
+    database.prepare("SELECT task_code FROM projects WHERE id = 'project-1'").get()?.task_code,
+    "WEB-APP2",
+  );
+  assert.deepEqual(
+    database.prepare("SELECT identifier FROM tasks ORDER BY sequence_number").all().map((row) => row.identifier),
+    ["WEB-APP2-1", "WEB-APP2-2"],
+  );
+  database.close();
+});
+
 test("project bundles preserve historical comments, activity, and reconciliation outcomes", async () => {
   const tables = validProjectTables();
   tables.tasks[0]!.comment_count = 2;
@@ -166,6 +205,11 @@ test("schema 2 project bundles without attachments remain importable", async () 
   const validated = await validateProjectBackup(legacy);
   assert.equal(validated.schemaVersion, 2);
   assert.deepEqual(validated.tables.attachments, []);
+  assert.equal(validated.tables.projects[0]?.task_code, "PRO");
+  assert.deepEqual(
+    validated.tables.tasks.map((task) => task.identifier),
+    ["PRO-1", "PRO-2"],
+  );
 });
 
 test("schema 3 project bundles upgrade workflow metadata without changing their checksum body", async () => {
@@ -613,6 +657,7 @@ function migratedDatabase() {
     "0027_busy_silver_sable.sql",
     "0028_hot_obadiah_stane.sql",
     "0029_steep_joseph.sql",
+    "0032_expand_project_task_codes.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

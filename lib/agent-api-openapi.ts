@@ -1,3 +1,5 @@
+import { PROJECT_TASK_CODE_PATTERN_SOURCE } from "./project-task-code";
+
 const metaSchema = {
   type: "object",
   required: ["apiVersion", "asOf", "requestId"],
@@ -957,7 +959,12 @@ export const agentApiOpenApi = {
         properties: {
           ref: { type: "string" },
           name: { type: "string" },
-          taskCode: { type: "string", pattern: "^[A-Z]{2,3}$" },
+          taskCode: {
+            type: "string",
+            pattern: PROJECT_TASK_CODE_PATTERN_SOURCE,
+            minLength: 1,
+            maxLength: 12,
+          },
           taskSequence: { type: "integer", minimum: 0 },
           codeLocked: { type: "boolean" },
           summary: { type: "string" },

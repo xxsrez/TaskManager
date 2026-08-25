@@ -638,6 +638,9 @@ optional/standalone Task semantics из ранних решений: кажда�
 - unique `(owner_user_id, task_code)` среди active Projects, unique
   `(project_id, sequence_number)` для Tasks и атомарный Project allocator для
   `Task.identifier`;
+- общий Project-code contract нормализует text ingress в uppercase и проверяет
+  длину 1–12, `[A-Z0-9]` на краях и только `[A-Z0-9-]` внутри; те же границы
+  повторяют UI, backup validators, OpenAPI projection и D1 insert/update guards;
 - `task_identifier_aliases` с нормализованным lookup index для прежних
   identifiers;
 - индексы по owner/status/archive, project/release и updated time;

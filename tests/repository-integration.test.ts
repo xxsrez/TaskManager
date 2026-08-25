@@ -699,8 +699,8 @@ test("explicit Task moves allocate atomically, preserve identity, and enforce de
   const owner = await getOrCreateUser(ownerActor);
   const collaborator = await getOrCreateUser(collaboratorActor);
   const outsider = await getOrCreateUser(outsiderActor);
-  await createProject(owner, { name: "Move source project", taskCode: "MS" });
-  await createProject(owner, { name: "Move target project", taskCode: "MT" });
+  await createProject(owner, { name: "Move source project", taskCode: "SOURCE-1" });
+  await createProject(owner, { name: "Move target project", taskCode: "TARGET-2" });
   await createProject(owner, { name: "Move archived target", taskCode: "MA" });
   const projects = (await getSnapshot(owner)).projects;
   const source = projects.find((project) => project.name === "Move source project")!;
@@ -779,7 +779,7 @@ test("explicit Task moves allocate atomically, preserve identity, and enforce de
     releaseId: targetRelease.id,
   });
   assert.equal(task.projectId, target.id);
-  assert.equal(task.identifier, "MT-2");
+  assert.equal(task.identifier, "TARGET-2-2");
   assert.equal(task.sequenceNumber, 2);
   assert.equal(task.publicId, publicId);
   assert.equal(task.title, "Atomic move subject");
@@ -931,7 +931,7 @@ test("explicit Task moves allocate atomically, preserve identity, and enforce de
   assert.equal(response.status, 200);
   const movedByRoute = await response.json() as { task: { publicId: string; identifier: string } };
   assert.equal(movedByRoute.task.publicId, archivedSubject.publicId);
-  assert.match(movedByRoute.task.identifier, /^MT-\d+$/);
+  assert.match(movedByRoute.task.identifier, /^TARGET-2-\d+$/);
 
   await createTask(owner, { title: "Forced rollback subject", projectId: source.id });
   const rollbackSubject = (await getSnapshot(owner)).tasks.find(
@@ -1679,14 +1679,14 @@ test("Project codes drive allocation and legacy aliases resolve safely", async (
     providerAccountKey: "project-code-owner-account",
     email: "project-code-owner@example.test",
   });
-  await createProject(owner, { name: "Code project", taskCode: "pc" });
+  await createProject(owner, { name: "Code project", taskCode: "web-app2" });
   await assert.rejects(
-    createProject(owner, { name: "Duplicate code", taskCode: "PC" }),
+    createProject(owner, { name: "Duplicate code", taskCode: "WEB-APP2" }),
     /Project code is already in use/,
   );
   await assert.rejects(
-    createProject(owner, { name: "Invalid code", taskCode: "P1" }),
-    /2 or 3 Latin letters/,
+    createProject(owner, { name: "Invalid code", taskCode: "-P1" }),
+    /1 to 12 Latin letters, digits, or internal hyphens/,
   );
   await assert.rejects(
     createTask(owner, { title: "Missing Project" }),
@@ -1700,7 +1700,7 @@ test("Project codes drive allocation and legacy aliases resolve safely", async (
   const firstTask = (await getSnapshot(owner)).tasks.find(
     (task) => task.title === "First coded Task",
   )!;
-  assert.equal(firstTask.identifier, "PC-1");
+  assert.equal(firstTask.identifier, "WEB-APP2-1");
   const allocatedProject = (await getSnapshot(owner)).projects.find(
     (project) => project.id === firstProject.id,
   )!;
@@ -1723,7 +1723,7 @@ test("Project codes drive allocation and legacy aliases resolve safely", async (
   ).bind(firstTask.id).run();
   assert.equal((await getAgentTaskDetail(owner, "old-9")).ref, firstTask.publicId);
 
-  await createProject(owner, { name: "Second code project", taskCode: "PD" });
+  await createProject(owner, { name: "Second code project", taskCode: "PD-2" });
   const secondProject = (await getSnapshot(owner)).projects.find(
     (project) => project.name === "Second code project",
   )!;
@@ -1743,7 +1743,7 @@ test("Project codes drive allocation and legacy aliases resolve safely", async (
   );
   assert.deepEqual(
     aliasSearch.data.map((task) => task.identifier),
-    ["PC-1", "PD-1"],
+    ["WEB-APP2-1", "PD-2-1"],
   );
   await assert.rejects(
     getAgentTaskDetail(owner, "OLD-9"),
@@ -1766,8 +1766,8 @@ test("ownership transfer rejects a Project code conflict before mutation", async
     providerAccountKey: "transfer-code-successor-account",
     email: "transfer-code-successor@example.test",
   });
-  await createProject(owner, { name: "Transfer source", taskCode: "CF" });
-  await createProject(successor, { name: "Conflicting target", taskCode: "CF" });
+  await createProject(owner, { name: "Transfer source", taskCode: "client-2" });
+  await createProject(successor, { name: "Conflicting target", taskCode: "CLIENT-2" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "Transfer source",
   )!;

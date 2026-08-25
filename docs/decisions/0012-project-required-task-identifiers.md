@@ -16,9 +16,11 @@ owner-scoped sequence. Это расходится с выбранной раб�
 1. Каждая Task принадлежит ровно одному Project. Create, import, restore и
    generic update не могут записать `project_id = NULL`; legacy payload требует
    явный Project mapping.
-2. Project получает обязательный `task_code` из 2–3 букв `A–Z`, уникальный
-   среди active Projects current owner. Ownership transfer заранее проверяет
-   конфликт у нового owner.
+2. Project получает обязательный `task_code` длиной 1–12 символов: `A–Z`,
+   `0–9` и дефисы только внутри code, с буквенно-цифровыми краями. Text ingress
+   обрезает внешние пробелы и приводит значение к верхнему регистру. Code
+   уникален среди active Projects current owner; ownership transfer заранее
+   проверяет конфликт у нового owner.
 3. Project хранит монотонный `task_sequence`. Следующий номер резервируется
    атомарно и не переиспользуется после archive, purge или переноса.
 4. Текущий identifier равен `<task_code>-<task_sequence>`. `public_id` остаётся

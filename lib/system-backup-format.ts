@@ -19,6 +19,7 @@ import {
   upgradeLegacySystemUsers,
   upgradeLegacySystemWorkflow,
 } from "./system-backup-upgrades";
+import { isProjectTaskCode, PROJECT_TASK_CODE_ERROR } from "./project-task-code";
 
 export type { BackupRow, BackupScalar } from "./system-backup-contract";
 export type BackupTableName = (typeof backupTableNames)[number];
@@ -588,8 +589,8 @@ function validateRelationships(
     requireReference(users, project.creator_user_id, "Project creator");
     publicId(project.public_id, "Project public ID");
     boundedTitle(project.name, "Project name");
-    if (!/^[A-Z]{2,3}$/.test(String(project.task_code))) {
-      throw new ValidationError("Project task code must contain 2-3 uppercase Latin letters");
+    if (!isProjectTaskCode(project.task_code)) {
+      throw new ValidationError(PROJECT_TASK_CODE_ERROR);
     }
     if (!Number.isSafeInteger(project.task_sequence) || Number(project.task_sequence) < 0) {
       throw new ValidationError("Project task sequence must be a non-negative integer");

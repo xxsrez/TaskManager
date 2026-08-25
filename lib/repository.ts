@@ -87,6 +87,7 @@ import {
   taskDescriptionAttachmentPredicate,
   validateTaskDescriptionAttachments,
 } from "./task-description-attachments";
+import { normalizeProjectTaskCode } from "./project-task-code";
 import {
   activityBatchAssertion,
   activityEventStatement,
@@ -4367,7 +4368,7 @@ export async function createProject(
   input: Record<string, unknown>,
 ) {
   const now = new Date().toISOString();
-  const code = projectTaskCode(input.taskCode);
+  const code = normalizeProjectTaskCode(input.taskCode);
   const status = projectStatus(input.status ?? "planned");
   const leadUserId = input.leadUserId == null || input.leadUserId === ""
     ? currentUser.id
@@ -4436,7 +4437,7 @@ export async function updateProject(
     ? requireTitle(input.name)
     : project.name;
   const taskCode = Object.hasOwn(input, "taskCode")
-    ? projectTaskCode(input.taskCode)
+    ? normalizeProjectTaskCode(input.taskCode)
     : project.taskCode;
   if (taskCode !== project.taskCode && (project.codeLockedAt || project.taskSequence > 0)) {
     throw new ValidationError("Project code is locked after the first Task number is allocated");
@@ -5255,29 +5256,27 @@ export async function transferProjectOwnership(
 
   const now = new Date().toISOString();
   const db = getD1();
-  const results = await db.batch([
-    db
-      .prepare(
+  let results: D1Result<unknown>[];
+  try {
+    results = await db.batch([
+      db.prepare(
         `UPDATE projects
          SET owner_user_id = ?, version = version + 1, updated_at = ?
          WHERE id = ? AND owner_user_id = ?`,
       )
       .bind(targetUserId, now, project.id, currentUser.id),
-    db
-      .prepare(
+      db.prepare(
         `UPDATE access_grants SET owner_user_id = ?
          WHERE resource_type = 'project' AND resource_id = ?
            AND owner_user_id = ?`,
       )
       .bind(targetUserId, project.id, currentUser.id),
-    db
-      .prepare(
+      db.prepare(
         `UPDATE access_grants SET revoked_at = ?
          WHERE id = ? AND owner_user_id = ? AND revoked_at IS NULL`,
       )
       .bind(now, targetGrant.id, targetUserId),
-    db
-      .prepare(
+      db.prepare(
         `INSERT INTO access_grants
           (id, resource_type, resource_id, owner_user_id, grantee_user_id,
            granted_by_user_id, permission, revoked_at, created_at)
@@ -5298,7 +5297,13 @@ export async function transferProjectOwnership(
         project.id,
         targetUserId,
       ),
-  ]);
+    ]);
+  } catch (error) {
+    if (error instanceof Error && /task_code|unique/i.test(error.message)) {
+      throw new ValidationError("The new owner already has a Project with this code");
+    }
+    throw error;
+  }
   if ((results[0]?.meta.changes ?? 0) < 1) {
     throw new ConflictError("Project ownership changed in another session");
   }
@@ -5835,17 +5840,6 @@ function effectiveRole(value: unknown): AccessRole {
     return value;
   }
   return "viewer";
-}
-
-function projectTaskCode(value: unknown): string {
-  if (typeof value !== "string") {
-    throw new ValidationError("Project code is required");
-  }
-  const code = value.trim().toUpperCase();
-  if (!/^[A-Z]{2,3}$/.test(code)) {
-    throw new ValidationError("Project code must use 2 or 3 Latin letters");
-  }
-  return code;
 }
 
 function projectStatus(value: unknown): ProjectStatus {

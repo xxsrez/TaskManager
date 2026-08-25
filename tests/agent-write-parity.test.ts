@@ -386,10 +386,10 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
   assert.equal(deletedDuplicate.status, 200);
 });
 
-test("MCP exposes the same assignee, Label replacement, hierarchy, and relation command boundary", async () => {
+test("MCP exposes the same Project-code projection, assignee, Label replacement, hierarchy, and relation command boundary", async () => {
   const owner = await getOrCreateUser(actor("mcp-parity-owner"));
   const member = await getOrCreateUser(actor("mcp-parity-member"));
-  await createProject(owner, { name: "MCP parity", taskCode: "MP" });
+  await createProject(owner, { name: "MCP parity", taskCode: "mcp-parity2" });
   await createProject(owner, { name: "MCP parity other", taskCode: "MO" });
   const project = (await getSnapshot(owner)).projects.find(
     (item) => item.name === "MCP parity",
@@ -421,6 +421,13 @@ test("MCP exposes the same assignee, Label replacement, hierarchy, and relation 
     scopes: ["api:write"],
     expiresInDays: 1,
   });
+
+  const projects = await mcpCall(credential.token, "list_projects", {}) as
+    Array<{ name: string; taskCode: string }>;
+  assert.equal(
+    projects.find((item) => item.name === "MCP parity")?.taskCode,
+    "MCP-PARITY2",
+  );
 
   const created = await mcpCall(credential.token, "create_task", {
     title: "MCP created",

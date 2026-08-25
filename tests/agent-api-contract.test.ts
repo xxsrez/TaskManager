@@ -165,6 +165,14 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/releases"), true);
   assert.equal(paths.includes("/views"), true);
   assert.equal(paths.includes("/views/{ref}"), true);
+  assert.equal(
+    agentApiOpenApi.components.schemas.ProjectSummary.properties.taskCode.pattern,
+    "^[A-Z0-9](?:[A-Z0-9-]{0,10}[A-Z0-9])?$",
+  );
+  assert.equal(
+    agentApiOpenApi.components.schemas.ProjectSummary.properties.taskCode.maxLength,
+    12,
+  );
   assert.equal(paths.includes("/tasks/{ref}/comments"), true);
   assert.equal(paths.includes("/tasks/{ref}/activity"), true);
   assert.equal(paths.includes("/tasks/{ref}/external-context"), false);

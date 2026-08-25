@@ -11,6 +11,7 @@ import {
   type PlannedHistoricalActivityEvent,
 } from "./imported-activity";
 import { validateViewQuery } from "./view-contract";
+import { normalizeProjectTaskCode } from "./project-task-code";
 
 type JsonObject = Record<string, unknown>;
 
@@ -1300,8 +1301,9 @@ function viewDisplay(value: unknown): ViewDisplay {
 }
 
 function linearSequence(identifier: string) {
-  const match = identifier.match(/^[A-Z][A-Z0-9]*-(\d+)$/);
-  const value = match ? Number(match[1]) : Number.NaN;
+  const match = identifier.match(/^(.+)-(\d+)$/);
+  if (match) normalizeProjectTaskCode(match[1]);
+  const value = match ? Number(match[2]) : Number.NaN;
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new ValidationError(
       `Linear issue identifier ${identifier} has no numeric sequence`,
@@ -1316,10 +1318,7 @@ function allocateImportProjectCode(
   used: Set<string>,
 ) {
   if (explicit) {
-    const normalized = explicit.trim().toUpperCase();
-    if (!/^[A-Z]{2,3}$/.test(normalized)) {
-      throw new ValidationError("Imported Project task code must contain 2-3 uppercase Latin letters");
-    }
+    const normalized = normalizeProjectTaskCode(explicit);
     if (used.has(normalized)) throw new ValidationError(`Duplicate imported Project code ${normalized}`);
     return normalized;
   }

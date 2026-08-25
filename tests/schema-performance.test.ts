@@ -69,6 +69,56 @@ test("prefix search and task sequence allocation have dedicated schema support",
   assert.deepEqual(columns.map((column) => column.name), ["owner_user_id", "last_value"]);
 });
 
+test("Project code trigger migration expands only the code grammar and preserves sequence locks", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readdirSync(new URL("../drizzle", import.meta.url))
+    .filter((name) => name.endsWith(".sql") && name < "0032_expand_project_task_codes.sql")
+    .sort();
+  for (const migration of migrations) database.exec(migrationSql(migration));
+  database.exec(`
+    INSERT INTO users (id, display_name, email)
+      VALUES ('code-owner', 'Code Owner', 'code-owner@example.test');
+  `);
+  assert.throws(() => database.exec(`
+    INSERT INTO projects
+      (id, public_id, owner_user_id, creator_user_id, name, task_code)
+      VALUES ('project-before', '10000000-0000-4000-8000-000000000001',
+        'code-owner', 'code-owner', 'Before migration', 'WEB-APP2');
+  `), /Invalid Project task code or sequence/);
+
+  database.exec(migrationSql("0032_expand_project_task_codes.sql"));
+  database.exec(`
+    INSERT INTO projects
+      (id, public_id, owner_user_id, creator_user_id, name, task_code)
+      VALUES ('project-expanded', '10000000-0000-4000-8000-000000000002',
+        'code-owner', 'code-owner', 'Expanded code', 'WEB-APP2');
+  `);
+  for (const invalid of ["-ABC", "ABC-", "ABC DEF", "1234567890123"]) {
+    assert.throws(() => database.prepare(`
+      INSERT INTO projects
+        (id, public_id, owner_user_id, creator_user_id, name, task_code)
+        VALUES (?, ?, 'code-owner', 'code-owner', ?, ?)
+    `).run(`project-${invalid}`, crypto.randomUUID(), invalid, invalid), /Invalid Project task code or sequence/);
+  }
+  database.exec(`
+    UPDATE projects SET task_sequence = 1, code_locked_at = CURRENT_TIMESTAMP
+    WHERE id = 'project-expanded';
+  `);
+  assert.throws(
+    () => database.exec("UPDATE projects SET task_code = 'OTHER2' WHERE id = 'project-expanded'"),
+    /Invalid or locked Project task code or sequence/,
+  );
+  assert.throws(
+    () => database.exec("UPDATE projects SET task_sequence = 0 WHERE id = 'project-expanded'"),
+    /Invalid or locked Project task code or sequence/,
+  );
+  assert.deepEqual(
+    { ...database.prepare("SELECT task_code, task_sequence, code_locked_at IS NOT NULL AS locked FROM projects WHERE id = 'project-expanded'").get() },
+    { task_code: "WEB-APP2", task_sequence: 1, locked: 1 },
+  );
+  database.close();
+});
+
 test("project-scoped identifier migration preserves legacy lookup and assigns standalone Tasks deterministically", () => {
   const database = new DatabaseSync(":memory:");
   const migrations = readdirSync(new URL("../drizzle", import.meta.url))

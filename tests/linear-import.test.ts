@@ -216,6 +216,31 @@ test("Linear import preserves identifiers, hierarchy, labels, relations and view
   );
 });
 
+test("Linear import accepts expanded Project codes and parses the final numeric suffix", () => {
+  const payload = fixture();
+  const projects = payload.projects as Array<Record<string, unknown>>;
+  projects[0]!.taskCode = "web-app2";
+  const issues = payload.issues as Array<Record<string, unknown>>;
+  issues[0]!.id = "WEB-APP2-12";
+  issues[0]!.parentId = "WEB-APP2-7";
+  issues[0]!.relations = {
+    blocks: [], blockedBy: [], relatedTo: [{ id: "WEB-APP2-7", title: "Parent" }], duplicateOf: null,
+  };
+  issues[1]!.id = "WEB-APP2-7";
+  issues[1]!.relations = {
+    blocks: [{ id: "WEB-APP2-12", title: "Child" }], blockedBy: [], relatedTo: [{ id: "WEB-APP2-12", title: "Child" }], duplicateOf: null,
+  };
+  payload.commentsByIssue = { "WEB-APP2-12": [], "WEB-APP2-7": [] };
+
+  const plan = buildLinearImportPlan("usr_test", payload);
+  assert.equal(plan.projects[0]?.taskCode, "WEB-APP2");
+  assert.equal(plan.projects[0]?.taskSequence, 12);
+  assert.deepEqual(
+    plan.tasks.map((task) => task.identifier).sort(),
+    ["WEB-APP2-12", "WEB-APP2-7"],
+  );
+});
+
 test("Linear import rejects relations across Projects", () => {
   const payload = fixture();
   const projects = payload.projects as Array<Record<string, unknown>>;

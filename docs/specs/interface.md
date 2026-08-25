@@ -596,8 +596,10 @@ List повторяет плотную grouped-list модель Linear.
   visuals, где они применимы.
 - Строка или compact card показывает icon/color, name, summary, status,
   progress, lead и dates.
-- Create dialog требует code из 2–3 заглавных латинских букв и объясняет, что
-  он блокируется после первой Task.
+- Create dialog предлагает code из имени и принимает 1–12 символов: заглавные
+  латинские буквы, цифры и дефисы только внутри code. Подсказка объясняет
+  grammar и блокировку после первой Task; edit использует тот же control и
+  тот же validation contract.
 - Archived cards остаются в Project index с явным `Archived` state для
   восстановления, но не показываются в основной sidebar и Task/Release
   create pickers.
