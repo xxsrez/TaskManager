@@ -5,6 +5,7 @@ import { getAgentSavedViewDetail } from "../lib/agent-api-repository";
 import { ConflictError, PermissionError, ValidationError } from "../lib/domain";
 import {
   createProject,
+  createRelease,
   createSavedView,
   getOrCreateUser,
   getSnapshot,
@@ -199,4 +200,71 @@ test("concurrent Saved View writes commit one complete configuration", async () 
   const committed = (await getSnapshot(owner)).views.find((item) => item.id === view.id)!;
   assert.equal(committed.version, view.version + 1);
   assert.ok(committed.name === "Race A" || committed.name === "Race B");
+});
+
+test("base replacement excludes temporary filters while Save as materializes the effective query", async () => {
+  const owner = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: "saved-view-layer-owner",
+    email: "saved-view-layer-owner@example.test",
+  });
+  await createProject(owner, { name: "Diary Project", taskCode: "DY" });
+  const project = (await getSnapshot(owner)).projects.find((item) => item.name === "Diary Project")!;
+  await createRelease(owner, { projectId: project.id, name: "0.1" });
+  await createRelease(owner, { projectId: project.id, name: "0.2" });
+  const releases = (await getSnapshot(owner)).releases.filter((item) => item.projectId === project.id);
+  const release01 = releases.find((item) => item.name === "0.1")!;
+  const release02 = releases.find((item) => item.name === "0.2")!;
+  const source = await createSavedView(owner, {
+    name: "My Diary",
+    scopeProjectId: project.id,
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [{ field: "release", operator: "is", value: release01.id }],
+    },
+    display: { layout: "list" },
+  });
+
+  const replaced = await updateSavedView(owner, source.id, {
+    version: source.version,
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [{ field: "release", operator: "is", value: release02.id }],
+    },
+    display: source.display,
+  });
+  assert.deepEqual(replaced.query, {
+    version: 1,
+    op: "all",
+    conditions: [{ field: "release", operator: "is", value: release02.id }],
+  });
+
+  const copy = await createSavedView(owner, {
+    name: "My Diary · High",
+    scopeProjectId: project.id,
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [
+        { field: "release", operator: "is", value: release02.id },
+        { field: "priority", operator: "is", value: "high" },
+      ],
+    },
+    display: { ...replaced.display, layout: "board" },
+  });
+  const snapshotAfterCopy = await getSnapshot(owner);
+  const unchangedSource = snapshotAfterCopy.views.find((item) => item.id === source.id)!;
+  assert.equal(unchangedSource.version, replaced.version);
+  assert.deepEqual(unchangedSource.query, replaced.query);
+  assert.deepEqual(copy.query, {
+    version: 1,
+    op: "all",
+    conditions: [
+      { field: "release", operator: "is", value: release02.id },
+      { field: "priority", operator: "is", value: "high" },
+    ],
+  });
+  assert.equal(copy.display.layout, "board");
 });

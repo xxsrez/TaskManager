@@ -687,9 +687,10 @@ List повторяет плотную grouped-list модель Linear.
 - `Filter` открывается по click или `F`.
 - Segmented icon switch меняет list/board; `Cmd/Ctrl+B` выполняет то же действие.
 - `Display` открывается по click или `Shift+V`.
-- Save control появляется, когда временный filter/display state отличается от
-  сохранённого view. Доступны `Save as new`, `Update` и `Discard changes`
-  согласно ownership/ACL.
+- `Save as` появляется для доступного текущего результата и создаёт новую View
+  из effective base + temporary filters и текущего Display. Исходная View
+  обновляется только через `Edit view → Save changes`; временные filters не
+  становятся её base query неявно.
 - View title/overflow содержит rename, duplicate, share и delete, если action
   входит в effective role. Project-scoped View не имеет отдельного Share:
   участники и роль управляются у Project.
@@ -707,8 +708,14 @@ List повторяет плотную grouped-list модель Linear.
   type и direction. Пустой searchable catalog показывает явный empty state.
 - MVP соединяет условия через `AND`; `OR` и nested groups не показываются как
   disabled promises.
-- Active filters отражаются в URL и видимы в toolbar. `Clear all` возвращает
-  базовый view state; каждый chip удаляется отдельной touch/keyboard action.
+- В Saved View Filter surface показывает два визуально различимых слоя:
+  `Saved in <View name>` с полной base formula и `Temporary filters` с
+  дополнительными URL/session conditions. Saved chips доступны read-only
+  Viewer; Editor+ получает `Edit`, открывающий тот же `Edit view`, что action у
+  названия View.
+- Temporary filters отражаются в URL и видимы отдельно в toolbar. `Clear
+  temporary` очищает только этот слой, не меняя saved formula; каждый temporary
+  chip удаляется отдельной touch/keyboard action.
 - Counts и suggestions формируются только в authorization scope пользователя.
 - Loading сохраняет предыдущий результат до authoritative ответа; нулевой
   результат различает loading, error и честный empty state. Если bounded page
@@ -729,12 +736,17 @@ List повторяет плотную grouped-list модель Linear.
 Изменение применяется сразу; persisted state меняется только по правилам
 current/saved view.
 
-Для Saved View toolbar показывает явный dirty state: `Save` сохраняет текущие
-query и Display, `Save as` создаёт независимую копию, `Cancel` возвращает
-последнюю подтверждённую конфигурацию. `Edit view` меняет имя/scope и предлагает
-обратимый archive. Архивный View не открывается по direct URL и не остаётся в
-sidebar; restore доступен в `All views`. Viewer видит сохранённую конфигурацию,
-но не получает write controls.
+`Edit view` содержит name, scope, полный base filter builder, Display и
+обратимый archive. Его draft query всегда начинается с сохранённого
+`activeSavedView.query`, даже когда в URL активен temporary layer. При наличии
+temporary filters редактор показывает их count и явно сообщает, что они не
+войдут в `Save changes`; успешное сохранение и `Cancel` оставляют temporary
+layer активным. `Save changes` атомарно заменяет base query/display с текущей
+optimistic version, а conflict перечитывает View без partial overwrite.
+`Save as` создаёт независимую View из effective query и текущего Display.
+Архивный View не открывается по direct URL и не остаётся в sidebar; restore
+доступен в `All views`. Viewer видит saved и temporary formulas, может менять
+свой temporary layer, но не получает base write controls.
 
 ## 11. Search и contextual command actions
 

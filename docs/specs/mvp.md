@@ -648,10 +648,11 @@ immutable ID и может группировать Tasks по значения�
 - View не хранит снимок задач; при открытии он выполняет сохранённый запрос к
   текущим данным.
 - Встроенные views: `All tasks`, `Active`, `Backlog`, `My tasks` и `Archived`.
-- Пользователь может сохранить изменённый view под новым именем (`Save as`),
-  атомарно обновить имя/query/display (`Save`), отменить временные изменения
-  (`Cancel`) и обратимо архивировать/восстановить Saved View. Архивный View
-  исчезает из sidebar и direct route, но остаётся в `All views` для restore.
+- Пользователь может сохранить текущий эффективный результат под новым именем
+  (`Save as`), открыть `Edit view` и атомарно заменить имя/base query/display
+  исходного Saved View (`Save changes`), отменить draft (`Cancel`) и обратимо
+  архивировать/восстановить Saved View. Архивный View исчезает из sidebar и
+  direct route, но остаётся в `All views` для restore.
 - View может иметь global scope либо явный scope одного Project.
 - Project-scoped View имеет обязательный `scope_project_id`, жёстко ограничен
   этим Project и наследует его role. Он не получает отдельный `AccessGrant`.
@@ -673,8 +674,16 @@ created/updated/started/completed/canceled dates и archived state.
   `updated_at`. Calendar dates вычисляются в timezone текущего User.
 - Первый UI может соединять условия только через `AND`; формат хранения не
   должен препятствовать последующему добавлению `OR` и вложенных групп.
-- Временные фильтры меняют URL/session state, но не сохранённый view, пока
-  пользователь явно не нажал Save.
+- Saved View хранит постоянный base query, а открытая View отдельно применяет
+  временный URL/session query. Filter UI показывает оба слоя как `Saved in
+  <View name>` и `Temporary filters`; Viewer читает base formula, а Editor+
+  открывает её в `Edit view`.
+- `Edit view` инициализирует query draft только из сохранённого base query.
+  `Save changes` не сериализует временные условия; `Cancel` не меняет ни base,
+  ни temporary layer. `Clear temporary` очищает только URL/session query.
+- `Save as` создаёт новую identity из эффективного `base AND temporary` query и
+  текущего Display, не меняя source View или его version. Совпадение field не
+  заменяет base condition автоматически: каждое условие остаётся самостоятельным.
 - UI, Saved View и Agent translation используют один validated server filter
   executor. Он сначала строит ACL-scoped Task set, затем применяет AST и
   возвращает только compact summary projection. List, board, counts и groups
@@ -708,9 +717,11 @@ created/updated/started/completed/canceled dates и archived state.
   показывают общий empty state без пустых контейнеров.
 - Sub-grouping/swimlanes и независимые настройки одного view для разных
   пользователей отложены.
-- `Save` использует текущую optimistic `version` и сохраняет query + весь
-  Display одним repository command; конфликт второй сессии не даёт partial
-  write. `Save as` создаёт новую identity и не меняет source View.
+- `Save changes` внутри `Edit view` использует текущую optimistic `version` и
+  сохраняет base query + весь Display одним repository command; конфликт второй
+  сессии не даёт partial write, клиент перечитывает последнюю View и оставляет
+  редактор открытым для повторной проверки. `Save as` создаёт новую identity и
+  не меняет source View.
 
 ## 10. List и Kanban
 

@@ -154,6 +154,20 @@ query уже versioned (`version: 1`, `op: all`, typed conditions), поэтом
 ограничение интерфейса не создаёт второго flat формата. Собственные controls,
 copy и assets сохраняют product identity Task Manager.
 
+### Уточнение Saved View layers 2026-08-25
+
+Официальные страницы Filters и Custom Views повторно проверены 2026-08-25.
+Linear по-прежнему отделяет durable Custom View от временных filters в URL,
+открывает изменение существующей View через действие `Edit view…` у её имени
+и сохраняет отфильтрованный list/board как отдельную Custom View.
+
+Task Manager адаптирует эту модель к своему явному AST и ACL: Filter surface
+показывает read-only `Saved in <View name>` и редактируемый `Temporary filters`,
+а base formula изменяется только в `Edit view`. `Save changes` заменяет base
+query/display без temporary layer; `Save as` намеренно материализует effective
+`base AND temporary` в новую View. Это собственная формулировка контракта Task
+Manager, а не утверждение о внутренних правилах хранения Linear.
+
 ## Источники
 
 Все источники — официальная документация Linear, проверенная 2026-08-13:

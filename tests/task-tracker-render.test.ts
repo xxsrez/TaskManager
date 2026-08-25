@@ -12,6 +12,7 @@ import {
   GlobalSearchOverlay,
   fetchCompleteWorkspaceCatalog,
   FilterConditionEditor,
+  SavedViewFilterLayers,
   applyMutationResult,
   bulkAssigneeOptions,
   BulkProjectDialog,
@@ -52,6 +53,8 @@ import {
   TaskMoveDialog,
   TaskTracker,
   SettingsSurface,
+  ViewDialog,
+  viewDialogDraftQuery,
 } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
 import type { AppSnapshot } from "../lib/types";
@@ -2866,6 +2869,214 @@ test("mobile filter controls expose every hydrated Project and Release beyond th
   assert.equal(markup.match(/Mobile Release \d/g)?.length, 5);
   assert.match(markup, /Mobile Project 5/);
   assert.match(markup, /Mobile Release 5/);
+});
+
+test("Saved View filter controls render saved and temporary layers separately", () => {
+  const release01 = {
+    id: "release-01",
+    publicId: "11111111-2222-4333-8444-555555555555",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    projectId: "project-1",
+    name: "0.1",
+    description: "",
+    status: "active" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const view = {
+    id: "view-diary",
+    publicId: "22222222-3333-4444-8555-666666666666",
+    ownerUserId: "user-1",
+    name: "My Diary",
+    scopeProjectId: "project-1",
+    query: {
+      version: 1 as const,
+      op: "all" as const,
+      conditions: [{ field: "release" as const, operator: "is" as const, value: release01.id }],
+    },
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "priority" as const,
+      direction: "asc" as const,
+      showEmptyGroups: true,
+      visibleFields: ["priority" as const],
+    },
+    version: 4,
+    accessRole: "editor" as const,
+  };
+  const markup = renderToStaticMarkup(createElement(SavedViewFilterLayers, {
+    data: { ...snapshot, releases: [release01] },
+    savedView: view,
+    temporaryQuery: {
+      version: 1,
+      op: "all",
+      conditions: [{ field: "priority", operator: "is", value: "high" }],
+    },
+    onTemporaryQuery: () => undefined,
+    onEditSaved: () => undefined,
+  }));
+
+  assert.match(markup, /Saved in My Diary/);
+  assert.match(markup, /Release is 0\.1/);
+  assert.match(markup, /Temporary filters/);
+  assert.match(markup, /Priority is High/);
+  assert.match(markup, />Edit</);
+  assert.match(markup, /Clear temporary/);
+});
+
+test("Saved View filter controls keep the saved formula read-only for Viewer", () => {
+  const markup = renderToStaticMarkup(createElement(SavedViewFilterLayers, {
+    data: snapshot,
+    savedView: {
+      id: "view-viewer",
+      publicId: "33333333-4444-4555-8666-777777777777",
+      ownerUserId: "other-user",
+      name: "Read only",
+      scopeProjectId: null,
+      query: {
+        version: 1,
+        op: "all",
+        conditions: [{ field: "priority", operator: "is", value: "high" }],
+      },
+      display: {
+        layout: "list",
+        groupBy: "status",
+        orderBy: "priority",
+        direction: "asc",
+        showEmptyGroups: true,
+        visibleFields: [],
+      },
+      version: 2,
+      accessRole: "viewer",
+    },
+    temporaryQuery: { version: 1, op: "all", conditions: [] },
+    onTemporaryQuery: () => undefined,
+  }));
+
+  assert.match(markup, /Saved in Read only/);
+  assert.match(markup, /Priority is High/);
+  assert.doesNotMatch(markup, />Edit</);
+  assert.match(markup, /No temporary filters/);
+});
+
+test("Saved View toolbar exposes the persisted formula without an unsafe direct Save action", () => {
+  const data = listViewSnapshot("none");
+  data.releases = [{
+    id: "release-toolbar",
+    publicId: "66666666-7777-4888-8999-aaaaaaaaaaaa",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    projectId: "project-1",
+    name: "0.1",
+    description: "",
+    status: "active",
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner",
+  }];
+  data.views[0] = {
+    ...data.views[0]!,
+    name: "My Diary",
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [{ field: "release", operator: "is", value: "release-toolbar" }],
+    },
+  };
+  const markup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: data,
+    initialNavigation: { surface: "view:view-none", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+
+  assert.match(markup, /Saved in My Diary/);
+  assert.match(markup, /Release is 0\.1/);
+  assert.match(markup, />Save as</);
+  assert.doesNotMatch(markup, />Save<\/button>/);
+});
+
+test("Edit view drafts only the saved query and warns about temporary filters", () => {
+  const savedQuery = {
+    version: 1 as const,
+    op: "all" as const,
+    conditions: [{ field: "release" as const, operator: "is" as const, value: "release-01" }],
+  };
+  const effectiveQuery = {
+    version: 1 as const,
+    op: "all" as const,
+    conditions: [
+      ...savedQuery.conditions,
+      { field: "priority" as const, operator: "is" as const, value: "high" },
+    ],
+  };
+  const view = {
+    id: "view-edit",
+    publicId: "44444444-5555-4666-8777-888888888888",
+    ownerUserId: "user-1",
+    name: "My Diary",
+    scopeProjectId: "project-1",
+    query: savedQuery,
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "priority" as const,
+      direction: "asc" as const,
+      showEmptyGroups: true,
+      visibleFields: ["priority" as const],
+    },
+    version: 5,
+    accessRole: "owner" as const,
+  };
+
+  assert.deepEqual(viewDialogDraftQuery(true, view, effectiveQuery), savedQuery);
+  assert.deepEqual(viewDialogDraftQuery(false, view, effectiveQuery), effectiveQuery);
+
+  const markup = renderToStaticMarkup(createElement(ViewDialog, {
+    view,
+    editing: true,
+    query: effectiveQuery,
+    display: view.display,
+    data: { ...snapshot, releases: [{
+      id: "release-01",
+      publicId: "55555555-6666-4777-8888-999999999999",
+      ownerUserId: "user-1",
+      creatorUserId: "user-1",
+      projectId: "project-1",
+      name: "0.1",
+      description: "",
+      status: "active",
+      targetDate: null,
+      releasedAt: null,
+      releaseNotes: "",
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+      accessRole: "owner",
+    }] },
+    initialScopeProjectId: "project-1",
+    temporaryFilterCount: 1,
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+    busy: false,
+  }));
+
+  assert.match(markup, /1 temporary filter is not part of this Saved View/);
+  assert.match(markup, /Release is 0\.1/);
+  assert.doesNotMatch(markup, /Priority is High/);
+  assert.match(markup, /Saved filters/);
+  assert.match(markup, /Display/);
+  assert.match(markup, /Save changes/);
 });
 
 test("sidebar release and view labels expose the full name while truncating visually", () => {

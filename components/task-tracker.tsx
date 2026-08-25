@@ -2269,11 +2269,13 @@ export function TaskTracker({
       : surface === "views"
         ? "Search views"
         : "Search tasks";
-  const hasViewChanges = activeSavedView
-    ? JSON.stringify(currentViewQuery) !== JSON.stringify(activeSavedView.query) ||
-      JSON.stringify(currentDisplay) !== JSON.stringify(activeSavedView.display)
-    : Boolean(search || canonicalTemporaryQuery.conditions.length ||
-      JSON.stringify(currentDisplay) !== JSON.stringify(defaultViewDisplay()));
+  const hasTemporaryFilters = Boolean(
+    search.trim() || canonicalTemporaryQuery.conditions.length,
+  );
+  const hasDisplayChanges = JSON.stringify(currentDisplay) !== JSON.stringify(
+    activeSavedView?.display ?? defaultViewDisplay(),
+  );
+  const hasRuntimeViewChanges = hasTemporaryFilters || hasDisplayChanges;
 
   function taskMatchesCurrentQuery(task: TaskRecord, snapshot: AppSnapshot) {
     if (surface === "mine" && task.assigneeUserId !== snapshot.user.id) return false;
@@ -2351,7 +2353,30 @@ export function TaskTracker({
     );
   }
 
-  async function mutate(path: string, method: string, body: unknown) {
+  async function refreshSavedViewsAfterConflict() {
+    const refreshed = await fetchTaskSnapshot(
+      fetch,
+      workspaceScopeTokenRef.current || undefined,
+    );
+    dataRef.current = {
+      ...dataRef.current,
+      views: refreshed.views,
+    };
+    setData((current) => ({
+      ...current,
+      views: refreshed.views,
+    }));
+  }
+
+  async function mutate(
+    path: string,
+    method: string,
+    body: unknown,
+    options?: {
+      onConflict?: () => Promise<void>;
+      conflictMessage?: string;
+    },
+  ) {
     setBusy(true);
     setError("");
     try {
@@ -2362,6 +2387,10 @@ export function TaskTracker({
       });
       const value = (await response.json()) as MutationResult | { error: string };
       if (!response.ok || "error" in value) {
+        if (response.status === 409 && options?.onConflict) {
+          await options.onConflict();
+          throw new Error(options.conflictMessage ?? "The record changed in another session. Latest data was reloaded.");
+        }
         throw new Error("error" in value ? value.error : "Request failed");
       }
       const before = dataRef.current;
@@ -2921,41 +2950,25 @@ export function TaskTracker({
     }));
   }
 
-  function cancelViewChanges() {
+  function clearTemporaryFilters() {
     setSearch("");
     setTemporaryQuery(emptyViewQuery());
+  }
+
+  function resetDisplayChanges() {
     setDisplayOverrides((current) => {
       const next = { ...current };
       delete next[surface];
       return next;
     });
-    if (activeSavedView && layout !== activeSavedView.display.layout) {
+    const baselineLayout = activeSavedView?.display.layout ?? defaultViewDisplay().layout;
+    if (layout !== baselineLayout) {
       applyNavigation({
         surface,
-        layout: activeSavedView.display.layout,
+        layout: baselineLayout,
         taskId: null,
       });
     }
-  }
-
-  async function saveCurrentView() {
-    if (!activeSavedView) {
-      await openDialogWithCatalog("view", ["projects"]);
-      return;
-    }
-    const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", {
-      version: activeSavedView.version,
-      query: currentViewQuery,
-      display: currentDisplay,
-    });
-    if (!ok) return;
-    setSearch("");
-    setTemporaryQuery(emptyViewQuery());
-    setDisplayOverrides((current) => {
-      const next = { ...current };
-      delete next[surface];
-      return next;
-    });
   }
 
   function openTask(taskId: string) {
@@ -3803,7 +3816,7 @@ export function TaskTracker({
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
-              {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => void openDialogWithCatalog("viewEdit", ["projects"])}><Zap size={14} />Edit view</button>}
+              {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => void openDialogWithCatalog("viewEdit", ["projects", "releases"])}><Zap size={14} />Edit view</button>}
               {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
               {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
               {surfaceContextualEntity && <button className="icon-button" type="button" aria-label={`Open contextual actions for ${surfaceContextualEntity.label}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openContextualActions({ entities: [surfaceContextualEntity] }, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
@@ -3820,8 +3833,8 @@ export function TaskTracker({
                     {search && <button onClick={() => setSearch("")}><X size={12} /></button>}
                   </div>
                   <div className="popover-anchor">
-                    <button ref={filterTriggerRef} className={`button ghost ${filterOpen ? "active" : ""}`} aria-keyshortcuts="F" title="Filter (F)" onClick={() => { setDisplayOpen(false); void toggleFilters(); }}><ListFilter size={14} />Filter{canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}</button>
-                    {filterOpen && <FilterPopover data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onClose={() => { setFilterOpen(false); filterTriggerRef.current?.focus(); }} />}
+                    <button ref={filterTriggerRef} className={`button ghost ${filterOpen ? "active" : ""}`} aria-keyshortcuts="F" title="Filter (F)" onClick={() => { setDisplayOpen(false); void toggleFilters(); }}><ListFilter size={14} />Filter{queryFilterCount(currentViewQuery) > 0 && <span className="filter-count">{queryFilterCount(currentViewQuery)}</span>}</button>
+                    {filterOpen && <FilterPopover data={data} savedView={activeSavedView} temporaryQuery={canonicalTemporaryQuery} onTemporaryQuery={setTemporaryQuery} onEditSaved={activeSavedView && canEditContent(activeSavedView.accessRole) ? () => { setFilterOpen(false); void openDialogWithCatalog("viewEdit", ["projects", "releases"]); } : undefined} onClose={() => { setFilterOpen(false); filterTriggerRef.current?.focus(); }} />}
                   </div>
                   <div className="segmented" aria-label="Layout">
                     <button className={layout === "list" ? "active" : ""} aria-keyshortcuts="Meta+B Control+B" onClick={() => changeLayout("list")} title="List (⌘/Ctrl+B)"><LayoutList size={14} /></button>
@@ -3831,10 +3844,11 @@ export function TaskTracker({
                     <button ref={displayTriggerRef} className={`button ghost ${displayOpen ? "active" : ""}`} aria-keyshortcuts="Shift+V" title="Display (Shift+V)" onClick={() => { setFilterOpen(false); setDisplayOpen((value) => !value); }}><SlidersHorizontal size={14} />Display</button>
                     {displayOpen && <DisplayPopover display={currentDisplay} labelGroups={data.labelGroups ?? []} onLayout={changeLayout} onDisplay={changeDisplay} onClose={() => { setDisplayOpen(false); displayTriggerRef.current?.focus(); }} />}
                   </div>
-                  {activeSavedView && canSaveView && hasViewChanges && <button className="button ghost save-view" onClick={() => void saveCurrentView()}><Save size={13} />Save</button>}
-                  {activeSavedView && hasViewChanges && <button className="button ghost" onClick={cancelViewChanges}><X size={13} />Cancel</button>}
-                  {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" onClick={() => void openDialogWithCatalog("view", ["projects"])}><Copy size={13} />Save as</button>}
+                  {hasTemporaryFilters && <button className="button ghost" onClick={clearTemporaryFilters}><X size={13} />Clear temporary</button>}
+                  {hasDisplayChanges && <button className="button ghost" onClick={resetDisplayChanges}><SlidersHorizontal size={13} />Reset display</button>}
+                  {canSaveView && (activeSavedView || hasRuntimeViewChanges) && <button className="button ghost" onClick={() => void openDialogWithCatalog("view", ["projects", "releases"])}><Copy size={13} />Save as</button>}
                 </div>
+                {activeSavedView && <SavedFilterChips data={data} view={activeSavedView} onEdit={canEditContent(activeSavedView.accessRole) ? () => void openDialogWithCatalog("viewEdit", ["projects", "releases"]) : undefined} />}
                 {canonicalTemporaryQuery.conditions.length > 0 && <FilterChips data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onEdit={() => void toggleFilters()} />}
                 <div className="segmented mobile-layout-switcher" role="group" aria-label="Layout">
                   <button type="button" className={layout === "list" ? "active" : ""} aria-label="List view" aria-pressed={layout === "list"} onClick={() => changeLayout("list")}><LayoutList size={16} /></button>
@@ -3852,7 +3866,7 @@ export function TaskTracker({
                     onClick={() => void toggleMobileViewControls()}
                   >
                     <SlidersHorizontal size={17} />
-                    {canonicalTemporaryQuery.conditions.length > 0 && <span className="filter-count">{canonicalTemporaryQuery.conditions.length}</span>}
+                    {queryFilterCount(currentViewQuery) > 0 && <span className="filter-count">{queryFilterCount(currentViewQuery)}</span>}
                   </button>
                   <div
                     className="mobile-view-controls"
@@ -3873,7 +3887,7 @@ export function TaskTracker({
                     </label>
                     <section className="mobile-control-section">
                       <h3>Filter</h3>
-                      <FilterConditionEditor data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} compact />
+                      <SavedViewFilterLayers data={data} savedView={activeSavedView} temporaryQuery={canonicalTemporaryQuery} onTemporaryQuery={setTemporaryQuery} onEditSaved={activeSavedView && canEditContent(activeSavedView.accessRole) ? () => { setMobileActionsOpen(false); void openDialogWithCatalog("viewEdit", ["projects", "releases"]); } : undefined} compact />
                     </section>
                     <section className="mobile-control-section">
                       <h3>Display</h3>
@@ -3889,10 +3903,9 @@ export function TaskTracker({
                       <label className="display-checkbox"><input type="checkbox" checked={currentDisplay.showEmptyGroups} disabled={currentGroupBy === "status" || currentGroupBy === "none"} onChange={(event) => changeDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>
                     </section>
                     <div className="mobile-controls-footer">
-                      <button className="button ghost" type="button" disabled={!canonicalTemporaryQuery.conditions.length} onClick={() => setTemporaryQuery(emptyViewQuery())}>Clear filters</button>
-                      {activeSavedView && hasViewChanges && canSaveView && <button className="button secondary" type="button" onClick={() => { setMobileActionsOpen(false); void saveCurrentView(); }}><Save size={14} />Save</button>}
-                      {activeSavedView && hasViewChanges && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); cancelViewChanges(); }}><X size={14} />Cancel</button>}
-                      {canSaveView && (activeSavedView || hasViewChanges) && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); void openDialogWithCatalog("view", ["projects"]); }}><Copy size={14} />Save as</button>}
+                      {hasTemporaryFilters && <button className="button ghost" type="button" onClick={clearTemporaryFilters}>Clear temporary</button>}
+                      {hasDisplayChanges && <button className="button ghost" type="button" onClick={resetDisplayChanges}>Reset display</button>}
+                      {canSaveView && (activeSavedView || hasRuntimeViewChanges) && <button className="button ghost" type="button" onClick={() => { setMobileActionsOpen(false); void openDialogWithCatalog("view", ["projects", "releases"]); }}><Copy size={14} />Save as</button>}
                     </div>
                   </div>
                 </div>
@@ -4056,8 +4069,8 @@ export function TaskTracker({
       {dialog === "projectEdit" && contextProjectRecord && <ProjectDialog project={contextProjectRecord} currentUser={data.user} leadOptions={projectMemberOptions(data, contextProjectRecord)} openTaskCount={openProjectTaskCount(contextProjectRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, ...input }); if (ok) setDialog(null); }} onArchive={async () => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, archived: !contextProjectRecord.archivedAt }); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialProjectId={contextProject} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog view={activeSavedView} editing query={currentViewQuery} display={currentDisplay} projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialScopeProjectId={activeSavedView.scopeProjectId} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); setSearch(""); setTemporaryQuery(emptyViewQuery()); } }} onArchive={async () => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, archived: true }); if (ok) { setDialog(null); navigateSurface("views", "list"); } }} busy={busy} />}
+      {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} data={data} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} temporaryFilterCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={`${activeSavedView.id}:${activeSavedView.version}`} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } }} onArchive={async () => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, archived: true }); if (ok) { setDialog(null); navigateSurface("views", "list"); } }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
@@ -6423,20 +6436,90 @@ const filterOperatorLabels: Record<ViewFilterOperator, string> = {
   recent: "was updated recently",
 };
 
-function FilterPopover({ data, query, onQuery, onClose }: {
-  data: AppSnapshot;
-  query: ViewQuery;
-  onQuery: (query: ViewQuery) => void;
-  onClose: () => void;
-}) {
-  return <Popover title="Filter" className="filter-popover" onClose={onClose}><FilterConditionEditor data={data} query={query} onQuery={onQuery} /></Popover>;
+function queryFilterCount(query: ViewQuery | undefined) {
+  const canonical = canonicalViewQuery(query);
+  return canonical.conditions.length + (canonical.search?.trim() ? 1 : 0);
 }
 
-export function FilterConditionEditor({ data, query, onQuery, compact = false }: {
+function FilterLayerSummary({ data, query, emptyCopy }: {
+  data: AppSnapshot;
+  query: ViewQuery;
+  emptyCopy: string;
+}) {
+  const canonical = canonicalViewQuery(query);
+  if (!queryFilterCount(canonical)) {
+    return <p className="filter-layer-empty">{emptyCopy}</p>;
+  }
+  return <div className="filter-layer-summary" aria-label="Filter formula summary">
+    {canonical.search?.trim() && <span>Search contains “{canonical.search.trim()}”</span>}
+    {canonical.conditions.map((condition, index) => (
+      <span key={`${condition.field}:${index}`}>{filterConditionSummary(condition, data)}</span>
+    ))}
+  </div>;
+}
+
+export function SavedViewFilterLayers({
+  data,
+  savedView,
+  temporaryQuery,
+  onTemporaryQuery,
+  onEditSaved,
+  compact = false,
+}: {
+  data: AppSnapshot;
+  savedView?: SavedViewRecord;
+  temporaryQuery: ViewQuery;
+  onTemporaryQuery: (query: ViewQuery) => void;
+  onEditSaved?: () => void;
+  compact?: boolean;
+}) {
+  return <div className={`filter-layers ${compact ? "compact" : ""}`}>
+    {savedView && <section className="filter-layer saved-filter-layer" aria-label={`Saved in ${savedView.name}`}>
+      <header>
+        <span><Save size={13} />Saved in {savedView.name}</span>
+        {onEditSaved && <button type="button" className="button ghost compact" onClick={onEditSaved}>Edit</button>}
+      </header>
+      <FilterLayerSummary data={data} query={savedView.query} emptyCopy="No saved filters" />
+    </section>}
+    <section className="filter-layer temporary-filter-layer" aria-label="Temporary filters">
+      <header><span><ListFilter size={13} />Temporary filters</span></header>
+      <FilterLayerSummary data={data} query={temporaryQuery} emptyCopy="No temporary filters" />
+      <FilterConditionEditor
+        data={data}
+        query={temporaryQuery}
+        onQuery={onTemporaryQuery}
+        compact={compact}
+        clearLabel="Clear temporary"
+      />
+    </section>
+  </div>;
+}
+
+export function FilterPopover({ data, savedView, temporaryQuery, onTemporaryQuery, onEditSaved, onClose }: {
+  data: AppSnapshot;
+  savedView?: SavedViewRecord;
+  temporaryQuery: ViewQuery;
+  onTemporaryQuery: (query: ViewQuery) => void;
+  onEditSaved?: () => void;
+  onClose: () => void;
+}) {
+  return <Popover title="Filter" className="filter-popover" onClose={onClose}>
+    <SavedViewFilterLayers
+      data={data}
+      savedView={savedView}
+      temporaryQuery={temporaryQuery}
+      onTemporaryQuery={onTemporaryQuery}
+      onEditSaved={onEditSaved}
+    />
+  </Popover>;
+}
+
+export function FilterConditionEditor({ data, query, onQuery, compact = false, clearLabel = "Clear all" }: {
   data: AppSnapshot;
   query: ViewQuery;
   onQuery: (query: ViewQuery) => void;
   compact?: boolean;
+  clearLabel?: string;
 }) {
   const [propertySearch, setPropertySearch] = useState("");
   const canonical = canonicalViewQuery(query);
@@ -6483,7 +6566,7 @@ export function FilterConditionEditor({ data, query, onQuery, compact = false }:
         }} />
         <button type="button" className="icon-button quiet" aria-label={`Remove ${condition.field} filter`} onClick={() => replaceConditions(canonical.conditions.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button>
       </div>)}
-      <button className="button ghost popover-clear" type="button" onClick={() => replaceConditions([])}>Clear all</button>
+      <button className="button ghost popover-clear" type="button" onClick={() => replaceConditions([])}>{clearLabel}</button>
     </div>}
   </div>;
 }
@@ -6529,7 +6612,21 @@ function FilterChips({ data, query, onQuery, onEdit }: {
 }) {
   const canonical = canonicalViewQuery(query);
   const remove = (index: number) => onQuery({ version: 1, op: "all", conditions: canonical.conditions.filter((_, itemIndex) => itemIndex !== index) });
-  return <div className="filter-chip-list" aria-label="Active filters">{canonical.conditions.map((condition, index) => <span className="filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data)}</button><button type="button" aria-label={`Remove ${condition.field} filter`} onClick={() => remove(index)}><X size={11} /></button></span>)}<button className="filter-clear-all" type="button" onClick={() => onQuery(emptyViewQuery())}>Clear all</button></div>;
+  return <div className="filter-chip-list temporary" aria-label="Temporary filters"><span className="filter-chip-layer-label">Temporary</span>{canonical.conditions.map((condition, index) => <span className="filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data)}</button><button type="button" aria-label={`Remove ${condition.field} filter`} onClick={() => remove(index)}><X size={11} /></button></span>)}<button className="filter-clear-all" type="button" onClick={() => onQuery(emptyViewQuery())}>Clear temporary</button></div>;
+}
+
+function SavedFilterChips({ data, view, onEdit }: {
+  data: AppSnapshot;
+  view: SavedViewRecord;
+  onEdit?: () => void;
+}) {
+  const canonical = canonicalViewQuery(view.query);
+  if (!queryFilterCount(canonical)) return null;
+  return <div className="filter-chip-list saved" aria-label={`Saved in ${view.name}`}>
+    <span className="filter-chip-layer-label"><Save size={11} />Saved in {view.name}</span>
+    {canonical.search?.trim() && <span className="filter-chip saved-filter-chip"><button type="button" onClick={onEdit}>Search contains “{canonical.search.trim()}”</button></span>}
+    {canonical.conditions.map((condition, index) => <span className="filter-chip saved-filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data)}</button></span>)}
+  </div>;
 }
 
 function filterOperators(field: ViewFilterField): ViewFilterOperator[] {
@@ -7167,11 +7264,24 @@ export function ReleaseDialog({ release, projects, initialProjectId, openTaskCou
   const reopenWarning = release?.status === "released" && status !== "released";
   return <Modal onClose={onClose} className="project-dialog release-dialog" ariaLabel={release ? `Edit ${release.name}` : "Create release"}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ ...values, confirmOpenTasks: values.confirmOpenTasks === "on" }); }}><DialogHeader title={release ? "Edit release" : "Create release"} icon={<Rocket size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>Release name / version</span><input name="name" required autoFocus placeholder="v1.0" value={name} onChange={(event) => setName(event.target.value)} /></label><div className="project-form-grid"><label><span>Project</span><select name="projectId" required disabled={Boolean(release)} defaultValue={release?.projectId ?? initialProjectId ?? ""}><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Status</span><select name="status" value={status} onChange={(event) => setStatus(event.target.value as ReleaseStatus)}>{releaseStatusOptions.map((value) => <option key={value} value={value}>{projectStatusLabel(value)}</option>)}</select></label><label><span>Target date</span><input name="targetDate" type="date" defaultValue={release?.targetDate ?? ""} /></label></div><label><span>Markdown description</span><textarea name="description" rows={6} defaultValue={release?.description ?? ""} placeholder="Release outcome and scope…" /></label><label><span>Release notes</span><textarea name="releaseNotes" rows={7} defaultValue={release?.releaseNotes ?? ""} placeholder="Published changes, migration notes, and known limitations…" /></label>{terminalWarning && <label className="project-terminal-warning"><input name="confirmOpenTasks" type="checkbox" required /><span>This Release has {openTaskCount} open Task{openTaskCount === 1 ? "" : "s"}. Confirm publishing without changing their statuses.</span></label>}{reopenWarning && <p className="release-transition-note">Leaving Released clears the server release timestamp; Tasks remain unchanged.</p>}</div>{!projects.length && <p className="inline-note">Create a project before adding a release.</p>}<div className="project-dialog-footer"><span /> <div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim() || !projects.length}>{busy ? "Saving…" : release ? "Save changes" : "Create release"}</button></div></div></form></Modal>;
 }
-function ViewDialog({ view, editing, query, display, projects, initialScopeProjectId, onClose, onSubmit, onArchive, busy }: { view?: SavedViewRecord; editing: boolean; query: ViewQuery; display: ViewDisplay; projects: ProjectRecord[]; initialScopeProjectId: string | null; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; onArchive?: () => Promise<void>; busy: boolean }) {
+export function viewDialogDraftQuery(
+  editing: boolean,
+  view: SavedViewRecord | undefined,
+  query: ViewQuery,
+) {
+  return canonicalViewQuery(editing ? view?.query : query);
+}
+
+export function ViewDialog({ view, editing, query, display, data, initialScopeProjectId, temporaryFilterCount = 0, onClose, onSubmit, onArchive, busy }: { view?: SavedViewRecord; editing: boolean; query: ViewQuery; display: ViewDisplay; data: AppSnapshot; initialScopeProjectId: string | null; temporaryFilterCount?: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; onArchive?: () => Promise<void>; busy: boolean }) {
   const [name, setName] = useState(editing ? view?.name ?? "" : view ? `${view.name} copy` : "");
   const [scopeProjectId, setScopeProjectId] = useState(initialScopeProjectId ?? "");
+  const [savedQueryDraft, setSavedQueryDraft] = useState<ViewQuery>(() => viewDialogDraftQuery(editing, view, query));
+  const [displayDraft, setDisplayDraft] = useState<ViewDisplay>(() => ({ ...display, visibleFields: [...display.visibleFields] }));
   const canMoveScope = !editing || view?.accessRole === "owner";
-  return <Modal onClose={onClose} className="project-dialog view-dialog" ariaLabel={editing ? `Edit ${view?.name ?? "Saved View"}` : "Save as view"}><form onSubmit={(event) => { event.preventDefault(); void onSubmit({ name, query, display, scopeProjectId: scopeProjectId || null }); }}><DialogHeader title={editing ? "Edit view" : "Save as view"} icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>Scope</span><select name="scopeProjectId" value={scopeProjectId} disabled={!canMoveScope} onChange={(event) => setScopeProjectId(event.target.value)}><option value="">Workspace (global)</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></label><div className="view-contract-summary"><span><b>{display.layout === "list" ? "List" : "Board"}</b> · grouped by {displayLabel(display.groupBy)}</span><span>Order: {displayLabel(display.orderBy)}{display.orderBy === "manual" ? "" : ` (${display.direction})`}</span><span>{display.visibleFields.length ? display.visibleFields.map(displayLabel).join(", ") : "No optional metadata"}</span><span>{Object.keys(query).length || "No"} active filter{Object.keys(query).length === 1 ? "" : "s"}</span></div>{scopeProjectId ? <p className="dialog-copy">This view is limited to the selected Project and inherits its access.</p> : <p className="dialog-copy">A global view only returns Tasks the reader can already access.</p>}</div><div className="project-dialog-footer">{editing && onArchive ? <button className="button ghost danger" type="button" disabled={busy} onClick={() => { if (window.confirm(`Archive ${view?.name ?? "this Saved View"}? Its direct route will stop opening until restored.`)) void onArchive(); }}><Archive size={14} />Archive view</button> : <span />}<div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim()}>{busy ? "Saving…" : editing ? "Save changes" : "Save view"}</button></div></div></form></Modal>;
+  const projects = data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole));
+  const emptyGroupsDisabled = displayDraft.groupBy === "status" || displayDraft.groupBy === "none";
+  const changeDisplayDraft = (changes: Partial<ViewDisplay>) => setDisplayDraft((current) => ({ ...current, ...changes }));
+  return <Modal onClose={onClose} className="project-dialog view-dialog" ariaLabel={editing ? `Edit ${view?.name ?? "Saved View"}` : "Save as view"}><form onSubmit={(event) => { event.preventDefault(); void onSubmit({ name, query: canonicalViewQuery(savedQueryDraft), display: displayDraft, scopeProjectId: scopeProjectId || null }); }}><DialogHeader title={editing ? "Edit view" : "Save as view"} icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>Scope</span><select name="scopeProjectId" value={scopeProjectId} disabled={!canMoveScope} onChange={(event) => setScopeProjectId(event.target.value)}><option value="">Workspace (global)</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></label>{editing && temporaryFilterCount > 0 && <p className="view-temporary-warning" role="note"><ListFilter size={14} /><span><b>{temporaryFilterCount} temporary filter{temporaryFilterCount === 1 ? " is" : "s are"} not part of this Saved View.</b> Saving keeps {temporaryFilterCount === 1 ? "it" : "them"} active only in the current URL until you choose Clear temporary.</span></p>}<section className="view-dialog-section" aria-labelledby="saved-view-filter-heading"><header><h3 id="saved-view-filter-heading">Saved filters</h3><span>{queryFilterCount(savedQueryDraft)} active</span></header><FilterLayerSummary data={data} query={savedQueryDraft} emptyCopy="No saved filters" /><FilterConditionEditor data={data} query={savedQueryDraft} onQuery={setSavedQueryDraft} clearLabel="Clear saved filters" /></section><section className="view-dialog-section" aria-labelledby="saved-view-display-heading"><header><h3 id="saved-view-display-heading">Display</h3></header><div className="view-display-editor"><div className="display-option"><span>Layout</span><div className="segmented wide"><button type="button" className={displayDraft.layout === "list" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "list" })}><LayoutList size={13} />List</button><button type="button" className={displayDraft.layout === "board" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "board" })}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={displayDraft.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; changeDisplayDraft({ groupBy, labelGroupId: groupBy === "label_group" ? displayDraft.labelGroupId ?? (data.labelGroups ?? []).find((group) => !group.archivedAt)?.id ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{displayDraft.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={displayDraft.labelGroupId ?? ""} onChange={(event) => changeDisplayDraft({ labelGroupId: event.target.value || null })}>{(data.labelGroups ?? []).filter((group) => !group.archivedAt || group.id === displayDraft.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}<label className="popover-field"><span>Order by</span><select value={displayDraft.orderBy} onChange={(event) => changeDisplayDraft({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={displayDraft.direction} disabled={displayDraft.orderBy === "manual"} onChange={(event) => changeDisplayDraft({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={displayDraft.visibleFields.includes(option.value)} onChange={() => changeDisplayDraft({ visibleFields: toggleViewField(displayDraft.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox"><input type="checkbox" checked={displayDraft.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => changeDisplayDraft({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label></div></section>{scopeProjectId ? <p className="dialog-copy">This view is limited to the selected Project and inherits its access.</p> : <p className="dialog-copy">A global view only returns Tasks the reader can already access.</p>}</div><div className="project-dialog-footer">{editing && onArchive ? <button className="button ghost danger" type="button" disabled={busy} onClick={() => { if (window.confirm(`Archive ${view?.name ?? "this Saved View"}? Its direct route will stop opening until restored.`)) void onArchive(); }}><Archive size={14} />Archive view</button> : <span />}<div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim()}>{busy ? "Saving…" : editing ? "Save changes" : "Save view"}</button></div></div></form></Modal>;
 }
 
 function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
