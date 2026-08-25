@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -3192,7 +3193,6 @@ test("Project edit dialog exposes every lifecycle field and reversible archive",
   assert.match(markup, /Restore project/);
   assert.match(markup, /Markdown description/);
   assert.match(markup, /minLength="1"/);
-  assert.match(markup, /maxLength="12"/);
   assert.match(markup, /pattern="\[A-Z0-9\]\(\?:\[A-Z0-9-\]\{0,10\}\[A-Z0-9\]\)\?"/);
   const createMarkup = renderToStaticMarkup(createElement(ProjectDialog, {
     currentUser: snapshot.user,
@@ -3203,6 +3203,16 @@ test("Project edit dialog exposes every lifecycle field and reversible archive",
     busy: false,
   }));
   assert.match(createMarkup, /1–12 characters/);
+  assert.doesNotMatch(createMarkup, /<input[^>]*maxLength=[^>]*name="taskCode"/);
+
+  const source = readFileSync(
+    new URL("../components/task-tracker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /name="taskCode"[\s\S]*?setTaskCode\(normalizeProjectTaskCodeDraft\(event\.target\.value\)\)/,
+  );
 });
 
 test("Release overview and edit dialog expose native lifecycle metadata", () => {
