@@ -13,11 +13,15 @@ export function isProjectTaskCode(value: unknown): value is string {
   return typeof value === "string" && PROJECT_TASK_CODE_PATTERN.test(value);
 }
 
+export function normalizeProjectTaskCodeDraft(value: string): string {
+  return value.trim().toUpperCase();
+}
+
 export function normalizeProjectTaskCode(value: unknown): string {
   if (typeof value !== "string") {
     throw new ValidationError("Project code is required");
   }
-  const normalized = value.trim().toUpperCase();
+  const normalized = normalizeProjectTaskCodeDraft(value);
   if (!isProjectTaskCode(normalized)) {
     throw new ValidationError(PROJECT_TASK_CODE_ERROR);
   }

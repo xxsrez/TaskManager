@@ -3,6 +3,7 @@ import test from "node:test";
 import { ValidationError } from "../lib/domain";
 import {
   isProjectTaskCode,
+  normalizeProjectTaskCodeDraft,
   normalizeProjectTaskCode,
   suggestProjectTaskCode,
 } from "../lib/project-task-code";
@@ -45,4 +46,10 @@ test("Project task code suggestions remain valid while using the expanded range"
   assert.equal(suggestProjectTaskCode("Platform 2 Delivery"), "P2D");
   assert.equal(suggestProjectTaskCode("Платформа"), "PR");
   assert.equal(isProjectTaskCode(suggestProjectTaskCode("one two three four five six seven eight nine ten eleven twelve thirteen")), true);
+});
+
+test("Project task code UI drafts normalize pasted and edited outer whitespace", () => {
+  assert.equal(normalizeProjectTaskCodeDraft(" web-app2 "), "WEB-APP2");
+  assert.equal(normalizeProjectTaskCodeDraft(" WEB-app2-qa "), "WEB-APP2-QA");
+  assert.equal(isProjectTaskCode(normalizeProjectTaskCodeDraft(" web-app2 ")), true);
 });
