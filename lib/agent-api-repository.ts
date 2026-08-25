@@ -1,6 +1,11 @@
 import { getD1 } from "@/db";
 import { canEditContent } from "./access";
 import {
+  projectAccessRoleSql,
+  savedViewAccessRoleSql,
+  taskAccessRoleSql,
+} from "./access-sql";
+import {
   AgentApiError,
   catalogReference,
   encodeKeysetCursor,
@@ -87,31 +92,7 @@ const taskScopeCte = (detail: boolean) => `WITH scoped_tasks AS (
     r.target_date AS release_target_date,
     r.released_at AS release_released_at,
     assignee.display_name AS assignee_display_name,
-    CASE
-      WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-      WHEN t.project_id IS NOT NULL THEN (
-        SELECT CASE ag.permission
-          WHEN 'full_access' THEN 'manager'
-          WHEN 'manager' THEN 'manager'
-          WHEN 'editor' THEN 'editor'
-          WHEN 'viewer' THEN 'viewer'
-        END
-        FROM access_grants ag
-        WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
-          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-      )
-      WHEN t.owner_user_id = ? THEN 'owner'
-      ELSE (
-        SELECT CASE ag.permission
-          WHEN 'full_access' THEN 'editor'
-          WHEN 'editor' THEN 'editor'
-          WHEN 'viewer' THEN 'viewer'
-        END
-        FROM access_grants ag
-        WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-      )
-    END AS access_role
+    ${taskAccessRoleSql("t", "p")} AS access_role
   FROM tasks t
   JOIN workflow_statuses s ON s.id = t.status_id
   LEFT JOIN projects p ON p.id = t.project_id
@@ -143,17 +124,7 @@ const taskProjection = `v.*,
 
 const projectScopeCte = `WITH scoped_projects AS (
   SELECT p.*,
-    CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-      SELECT CASE ag.permission
-        WHEN 'full_access' THEN 'manager'
-        WHEN 'manager' THEN 'manager'
-        WHEN 'editor' THEN 'editor'
-        WHEN 'viewer' THEN 'viewer'
-      END
-      FROM access_grants ag
-      WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-    ) END AS access_role
+    ${projectAccessRoleSql("p")} AS access_role
   FROM projects p
 ), visible_projects AS (
   SELECT * FROM scoped_projects WHERE access_role IS NOT NULL
@@ -161,17 +132,7 @@ const projectScopeCte = `WITH scoped_projects AS (
 
 const releaseScopeCte = `WITH scoped_releases AS (
   SELECT r.*, p.public_id AS project_public_id, p.name AS project_name,
-    CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-      SELECT CASE ag.permission
-        WHEN 'full_access' THEN 'manager'
-        WHEN 'manager' THEN 'manager'
-        WHEN 'editor' THEN 'editor'
-        WHEN 'viewer' THEN 'viewer'
-      END
-      FROM access_grants ag
-      WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
-        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-    ) END AS access_role
+    ${projectAccessRoleSql("p")} AS access_role
   FROM releases r JOIN projects p ON p.id = r.project_id
 ), visible_releases AS (
   SELECT * FROM scoped_releases WHERE access_role IS NOT NULL
@@ -179,31 +140,7 @@ const releaseScopeCte = `WITH scoped_releases AS (
 
 const savedViewScopeCte = `WITH scoped_views AS (
   SELECT v.*, p.public_id AS project_public_id, p.name AS project_name,
-    CASE
-      WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-      WHEN v.scope_project_id IS NOT NULL THEN (
-        SELECT CASE ag.permission
-          WHEN 'full_access' THEN 'manager'
-          WHEN 'manager' THEN 'manager'
-          WHEN 'editor' THEN 'editor'
-          WHEN 'viewer' THEN 'viewer'
-        END
-        FROM access_grants ag
-        WHERE ag.resource_type = 'project' AND ag.resource_id = v.scope_project_id
-          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-      )
-      WHEN v.owner_user_id = ? THEN 'owner'
-      ELSE (
-        SELECT CASE ag.permission
-          WHEN 'full_access' THEN 'editor'
-          WHEN 'editor' THEN 'editor'
-          WHEN 'viewer' THEN 'viewer'
-        END
-        FROM access_grants ag
-        WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-      )
-    END AS access_role
+    ${savedViewAccessRoleSql("v", "p")} AS access_role
   FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
 ), visible_views AS (
   SELECT * FROM scoped_views WHERE access_role IS NOT NULL

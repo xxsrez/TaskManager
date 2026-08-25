@@ -69,6 +69,13 @@ import {
   taskFilterSql,
 } from "./task-filter";
 import { getD1 } from "@/db";
+import {
+  accessibleTaskWhere,
+  editableTaskWhere,
+  projectAccessRoleSql,
+  savedViewAccessRoleSql,
+  taskAccessRoleSql,
+} from "./access-sql";
 import { getRuntimeEnvironment } from "./runtime-environment";
 import { encodeWorkspaceSyncCursor } from "./workspace-sync-cursor";
 import {
@@ -119,46 +126,7 @@ const defaultStatuses: Array<[
   ["Duplicate", "canceled", "#9ca3af", 5, 0, "duplicate"],
 ];
 
-const editableTaskWhere = `(
-  (tasks.project_id IS NOT NULL AND (
-    EXISTS (
-      SELECT 1 FROM projects p
-      WHERE p.id = tasks.project_id AND p.owner_user_id = ?
-    ) OR EXISTS (
-      SELECT 1 FROM access_grants ag
-      WHERE ag.resource_type = 'project' AND ag.resource_id = tasks.project_id
-        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-        AND ag.permission IN ('editor', 'manager', 'full_access')
-    )
-  )) OR (tasks.project_id IS NULL AND (
-    tasks.owner_user_id = ? OR EXISTS (
-      SELECT 1 FROM access_grants ag
-      WHERE ag.resource_type = 'task' AND ag.resource_id = tasks.id
-        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-        AND ag.permission IN ('editor', 'full_access')
-    )
-  ))
-)`;
-
-function accessibleTaskWhere(alias: string) {
-  return `(
-    (${alias}.project_id IS NOT NULL AND (
-      EXISTS (SELECT 1 FROM projects access_project
-        WHERE access_project.id = ${alias}.project_id AND access_project.owner_user_id = ?)
-      OR EXISTS (SELECT 1 FROM access_grants access_grant
-        WHERE access_grant.resource_type = 'project'
-          AND access_grant.resource_id = ${alias}.project_id
-          AND access_grant.grantee_user_id = ? AND access_grant.revoked_at IS NULL)
-    )) OR (${alias}.project_id IS NULL AND (
-      ${alias}.owner_user_id = ? OR EXISTS (
-        SELECT 1 FROM access_grants access_grant
-        WHERE access_grant.resource_type = 'task'
-          AND access_grant.resource_id = ${alias}.id
-          AND access_grant.grantee_user_id = ? AND access_grant.revoked_at IS NULL
-      )
-    ))
-  )`;
-}
+const editableTaskPredicate = editableTaskWhere("tasks");
 
 const snapshotTaskIdScopeCte = `WITH scoped_task_ids AS (
   SELECT t.id, t.updated_at,
@@ -409,34 +377,7 @@ export async function getSnapshot(
         .prepare(
           `WITH scoped AS (
              SELECT ${snapshotTaskProjection},
-               CASE
-                 WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-                 WHEN t.project_id IS NOT NULL THEN (
-                   SELECT CASE ag.permission
-                     WHEN 'full_access' THEN 'manager'
-                     WHEN 'manager' THEN 'manager'
-                     WHEN 'editor' THEN 'editor'
-                     WHEN 'viewer' THEN 'viewer'
-                   END
-                   FROM access_grants ag
-                   WHERE ag.resource_type = 'project'
-                     AND ag.resource_id = t.project_id
-                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                   LIMIT 1
-                 )
-                 WHEN t.owner_user_id = ? THEN 'owner'
-                 ELSE (
-                   SELECT CASE ag.permission
-                     WHEN 'full_access' THEN 'editor'
-                     WHEN 'editor' THEN 'editor'
-                     WHEN 'viewer' THEN 'viewer'
-                   END
-                   FROM access_grants ag
-                   WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                   LIMIT 1
-                 )
-               END AS access_role
+               ${taskAccessRoleSql("t", "p")} AS access_role
              FROM tasks t
              LEFT JOIN projects p ON p.id = t.project_id
            )
@@ -457,18 +398,7 @@ export async function getSnapshot(
              )
            ), scoped AS (
              SELECT p.*,
-               CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'manager'
-                   WHEN 'manager' THEN 'manager'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               ) END AS access_role
+               ${projectAccessRoleSql("p")} AS access_role
              FROM projects p
            ), recent_ids AS (
              SELECT id FROM scoped
@@ -512,19 +442,7 @@ export async function getSnapshot(
              )
            ), scoped AS (
              SELECT r.*,
-               CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'manager'
-                   WHEN 'manager' THEN 'manager'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'project'
-                   AND ag.resource_id = r.project_id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               ) END AS access_role
+               ${projectAccessRoleSql("p")} AS access_role
              FROM releases r JOIN projects p ON p.id = r.project_id
            ), recent_ids AS (
              SELECT id FROM scoped WHERE access_role IS NOT NULL
@@ -556,34 +474,7 @@ export async function getSnapshot(
         .prepare(
           `WITH scoped AS (
              SELECT v.*,
-               CASE
-                 WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-                 WHEN v.scope_project_id IS NOT NULL THEN (
-                   SELECT CASE ag.permission
-                     WHEN 'full_access' THEN 'manager'
-                     WHEN 'manager' THEN 'manager'
-                     WHEN 'editor' THEN 'editor'
-                     WHEN 'viewer' THEN 'viewer'
-                   END
-                   FROM access_grants ag
-                   WHERE ag.resource_type = 'project'
-                     AND ag.resource_id = v.scope_project_id
-                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                   LIMIT 1
-                 )
-                 WHEN v.owner_user_id = ? THEN 'owner'
-                 ELSE (
-                   SELECT CASE ag.permission
-                     WHEN 'full_access' THEN 'editor'
-                     WHEN 'editor' THEN 'editor'
-                     WHEN 'viewer' THEN 'viewer'
-                   END
-                   FROM access_grants ag
-                   WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-                     AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                   LIMIT 1
-                 )
-               END AS access_role
+               ${savedViewAccessRoleSql("v", "p")} AS access_role
              FROM saved_views v
              LEFT JOIN projects p ON p.id = v.scope_project_id
            )
@@ -928,67 +819,18 @@ export async function getWorkspaceCatalogPage(
   const scope = kind === "projects"
     ? `WITH scoped AS (
          SELECT p.*,
-           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-             SELECT CASE ag.permission
-               WHEN 'full_access' THEN 'manager'
-               WHEN 'manager' THEN 'manager'
-               WHEN 'editor' THEN 'editor'
-               WHEN 'viewer' THEN 'viewer'
-             END
-             FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             LIMIT 1
-           ) END AS access_role
+           ${projectAccessRoleSql("p")} AS access_role
          FROM projects p
        )`
     : kind === "releases"
       ? `WITH scoped AS (
            SELECT r.*,
-             CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'manager'
-                 WHEN 'manager' THEN 'manager'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               LIMIT 1
-             ) END AS access_role
+             ${projectAccessRoleSql("p")} AS access_role
            FROM releases r JOIN projects p ON p.id = r.project_id
          )`
       : `WITH scoped AS (
            SELECT v.*,
-             CASE
-               WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-               WHEN v.scope_project_id IS NOT NULL THEN (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'manager'
-                   WHEN 'manager' THEN 'manager'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'project'
-                   AND ag.resource_id = v.scope_project_id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               )
-               WHEN v.owner_user_id = ? THEN 'owner'
-               ELSE (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'editor'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               )
-             END AS access_role
+             ${savedViewAccessRoleSql("v", "p")} AS access_role
            FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
          )`;
   const principalParameters = kind === "views"
@@ -1012,18 +854,7 @@ export async function getWorkspaceCatalogPage(
     const projectRows = await getD1().prepare(
       `WITH scoped AS (
          SELECT p.*,
-           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-             SELECT CASE ag.permission
-               WHEN 'full_access' THEN 'manager'
-               WHEN 'manager' THEN 'manager'
-               WHEN 'editor' THEN 'editor'
-               WHEN 'viewer' THEN 'viewer'
-             END
-             FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             LIMIT 1
-           ) END AS access_role
+           ${projectAccessRoleSql("p")} AS access_role
          FROM projects p
          WHERE p.id IN (${sqlPlaceholders(projectIds)})
        )
@@ -1091,34 +922,7 @@ export async function getWorkspaceSyncProjection(
       .prepare(
         `WITH scoped AS (
            SELECT ${snapshotTaskProjection},
-             CASE
-               WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-               WHEN t.project_id IS NOT NULL THEN (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'manager'
-                   WHEN 'manager' THEN 'manager'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'project'
-                   AND ag.resource_id = t.project_id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               )
-               WHEN t.owner_user_id = ? THEN 'owner'
-               ELSE (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'editor'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               )
-             END AS access_role
+             ${taskAccessRoleSql("t", "p")} AS access_role
            FROM tasks t
            LEFT JOIN projects p ON p.id = t.project_id
            WHERE t.id IN (${taskPlaceholders})
@@ -1130,18 +934,7 @@ export async function getWorkspaceSyncProjection(
       .prepare(
         `WITH scoped AS (
            SELECT p.*,
-             CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'manager'
-                 WHEN 'manager' THEN 'manager'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               LIMIT 1
-             ) END AS access_role
+             ${projectAccessRoleSql("p")} AS access_role
            FROM projects p
            WHERE p.id IN (${projectPlaceholders})
          )
@@ -1152,19 +945,7 @@ export async function getWorkspaceSyncProjection(
       .prepare(
         `WITH scoped AS (
            SELECT r.*,
-             CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'manager'
-                 WHEN 'manager' THEN 'manager'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'project'
-                 AND ag.resource_id = r.project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               LIMIT 1
-             ) END AS access_role
+             ${projectAccessRoleSql("p")} AS access_role
            FROM releases r JOIN projects p ON p.id = r.project_id
            WHERE r.id IN (${releasePlaceholders})
          )
@@ -1175,34 +956,7 @@ export async function getWorkspaceSyncProjection(
       .prepare(
         `WITH scoped AS (
            SELECT v.*,
-             CASE
-               WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-               WHEN v.scope_project_id IS NOT NULL THEN (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'manager'
-                   WHEN 'manager' THEN 'manager'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'project'
-                   AND ag.resource_id = v.scope_project_id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               )
-               WHEN v.owner_user_id = ? THEN 'owner'
-               ELSE (
-                 SELECT CASE ag.permission
-                   WHEN 'full_access' THEN 'editor'
-                   WHEN 'editor' THEN 'editor'
-                   WHEN 'viewer' THEN 'viewer'
-                 END
-                 FROM access_grants ag
-                 WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 LIMIT 1
-               )
-             END AS access_role
+             ${savedViewAccessRoleSql("v", "p")} AS access_role
            FROM saved_views v
            LEFT JOIN projects p ON p.id = v.scope_project_id
            WHERE v.id IN (${viewPlaceholders})
@@ -1356,33 +1110,7 @@ export async function searchTaskSummaries(
     .prepare(
       `WITH scoped AS (
          SELECT ${snapshotTaskProjection},
-           CASE
-             WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-             WHEN t.project_id IS NOT NULL THEN (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'manager'
-                 WHEN 'manager' THEN 'manager'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               LIMIT 1
-             )
-             WHEN t.owner_user_id = ? THEN 'owner'
-             ELSE (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'editor'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               LIMIT 1
-             )
-           END AS access_role
+           ${taskAccessRoleSql("t", "p")} AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
          WHERE instr(lower(t.identifier), ?) > 0
             OR EXISTS (
@@ -1481,12 +1209,7 @@ export async function searchWorkspace(
   const projectQuery = db.prepare(
     `WITH scoped AS MATERIALIZED (
        SELECT p.id, p.public_id, p.name, p.task_code, p.summary, p.status, p.updated_at,
-         CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-           SELECT ag.permission FROM access_grants ag
-           WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           LIMIT 1
-         ) END AS access_role
+         ${projectAccessRoleSql("p")} AS access_role
        FROM projects p WHERE p.archived_at IS NULL
      ), visible AS MATERIALIZED (
        SELECT * FROM scoped WHERE access_role IS NOT NULL
@@ -1509,12 +1232,7 @@ export async function searchWorkspace(
     `WITH scoped AS MATERIALIZED (
        SELECT r.id, r.public_id, r.name, r.status, r.updated_at,
          p.name AS project_name, p.public_id AS project_public_id,
-         CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-           SELECT ag.permission FROM access_grants ag
-           WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           LIMIT 1
-         ) END AS access_role
+         ${projectAccessRoleSql("p")} AS access_role
        FROM releases r JOIN projects p ON p.id = r.project_id
        WHERE p.archived_at IS NULL
      ), visible AS MATERIALIZED (
@@ -1538,22 +1256,7 @@ export async function searchWorkspace(
     `WITH scoped AS MATERIALIZED (
        SELECT v.id, v.public_id, v.name, v.updated_at,
          p.name AS project_name,
-         CASE
-           WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-           WHEN v.scope_project_id IS NOT NULL THEN (
-             SELECT ag.permission FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = v.scope_project_id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             LIMIT 1
-           )
-           WHEN v.owner_user_id = ? THEN 'owner'
-           ELSE (
-             SELECT ag.permission FROM access_grants ag
-             WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             LIMIT 1
-           )
-         END AS access_role
+         ${savedViewAccessRoleSql("v", "p")} AS access_role
        FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
        WHERE v.archived_at IS NULL
          AND (v.scope_project_id IS NULL OR p.archived_at IS NULL)
@@ -1754,31 +1457,7 @@ export async function queryTaskSummaries(
   const rows = await getD1().prepare(
     `WITH scoped AS (
        SELECT t.*, s.category AS status_category,
-         CASE
-           WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-           WHEN t.project_id IS NOT NULL THEN (
-             SELECT CASE ag.permission
-               WHEN 'full_access' THEN 'manager'
-               WHEN 'manager' THEN 'manager'
-               WHEN 'editor' THEN 'editor'
-               WHEN 'viewer' THEN 'viewer'
-             END
-             FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-           )
-           WHEN t.owner_user_id = ? THEN 'owner'
-           ELSE (
-             SELECT CASE ag.permission
-               WHEN 'full_access' THEN 'editor'
-               WHEN 'editor' THEN 'editor'
-               WHEN 'viewer' THEN 'viewer'
-             END
-             FROM access_grants ag
-             WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-           )
-         END AS access_role
+         ${taskAccessRoleSql("t", "p")} AS access_role
        FROM tasks t
        JOIN workflow_statuses s ON s.id = t.status_id
        LEFT JOIN projects p ON p.id = t.project_id
@@ -2230,7 +1909,7 @@ export async function createSubtask(
       db.prepare(
         `UPDATE tasks SET version = version + 1, updated_at = ?
          WHERE id = ? AND version = ? AND project_id = ?
-           AND ${editableTaskWhere}`,
+           AND ${editableTaskPredicate}`,
       ).bind(
         now,
         parent.id,
@@ -2344,7 +2023,7 @@ export async function setTaskParent(
       db.prepare(
       `UPDATE tasks SET parent_task_id = ?, version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND project_id IS NOT NULL
-         AND ${parentGuard} AND ${editableTaskWhere}`,
+         AND ${parentGuard} AND ${editableTaskPredicate}`,
     ).bind(
       parentTaskId,
       now,
@@ -2756,7 +2435,7 @@ export async function reorderTask(
            release_id = ?, rank = ?, started_at = ?, completed_at = ?, canceled_at = ?,
            version = version + 1, updated_at = ?
          WHERE id = ? AND version = ? AND ${expectedGroup.sql}
-           AND ${editableTaskWhere}${guardSql}
+           AND ${editableTaskPredicate}${guardSql}
            AND NOT EXISTS (
              SELECT 1 FROM tasks ranked
              WHERE ranked.id <> tasks.id AND ranked.rank = ?
@@ -3366,7 +3045,7 @@ export async function bulkMoveTasks(
              WHERE relation.source_task_id = tasks.id
                 OR relation.target_task_id = tasks.id
            )
-           AND ${editableTaskWhere}
+           AND ${editableTaskPredicate}
            AND EXISTS (
              SELECT 1 FROM projects target
              WHERE target.id = ? AND target.archived_at IS NULL AND target.status <> 'canceled'
@@ -3533,7 +3212,7 @@ export async function bulkUpdateTasks(
       update = db
         .prepare(
             `UPDATE tasks SET priority = ?, version = version + 1, updated_at = ?
-             WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
+             WHERE id = ? AND version = ? AND ${editableTaskPredicate}`,
         )
         .bind(
           nextPriority,
@@ -3554,7 +3233,7 @@ export async function bulkUpdateTasks(
       update = db
         .prepare(
           `UPDATE tasks SET archived_at = ?, version = version + 1, updated_at = ?
-           WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
+           WHERE id = ? AND version = ? AND ${editableTaskPredicate}`,
         )
         .bind(
           nextArchivedAt,
@@ -3575,7 +3254,7 @@ export async function bulkUpdateTasks(
         .prepare(
           `UPDATE tasks SET status_id = ?, started_at = ?, completed_at = ?,
             canceled_at = ?, version = version + 1, updated_at = ?
-           WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
+           WHERE id = ? AND version = ? AND ${editableTaskPredicate}`,
         )
         .bind(
           targetStatus!.id,
@@ -3602,7 +3281,7 @@ export async function bulkUpdateTasks(
       update = db
         .prepare(
           `UPDATE tasks SET assignee_user_id = ?, version = version + 1, updated_at = ?
-           WHERE id = ? AND version = ? AND ${editableTaskWhere}
+           WHERE id = ? AND version = ? AND ${editableTaskPredicate}
              AND (
                ? IS NULL OR EXISTS (
                  SELECT 1 FROM users assignee
@@ -3656,7 +3335,7 @@ export async function bulkUpdateTasks(
       update = db
         .prepare(
           `UPDATE tasks SET release_id = ?, version = version + 1, updated_at = ?
-           WHERE id = ? AND version = ? AND ${editableTaskWhere}
+           WHERE id = ? AND version = ? AND ${editableTaskPredicate}
              AND (? IS NULL OR EXISTS (
                SELECT 1 FROM releases selected_release
                WHERE selected_release.id = ?
@@ -4060,7 +3739,7 @@ export async function setTaskLabel(
        WHERE tasks.id = ? AND labels.id = ?
          AND labels.owner_user_id = tasks.owner_user_id
          AND labels.archived_at IS NULL
-         AND ${editableTaskWhere}`,
+         AND ${editableTaskPredicate}`,
     ).bind(
       task.id,
       label.id,
@@ -4073,7 +3752,7 @@ export async function setTaskLabel(
       `DELETE FROM task_labels
        WHERE task_id = ? AND label_id = ? AND EXISTS (
          SELECT 1 FROM tasks
-         WHERE tasks.id = task_labels.task_id AND ${editableTaskWhere}
+         WHERE tasks.id = task_labels.task_id AND ${editableTaskPredicate}
        )`,
     ).bind(
       task.id,
@@ -4166,7 +3845,7 @@ export async function replaceTaskLabels(
   const statements: D1PreparedStatement[] = [
     db.prepare(
       `UPDATE tasks SET version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ? AND ${editableTaskWhere}`,
+       WHERE id = ? AND version = ? AND ${editableTaskPredicate}`,
     ).bind(
       now,
       task.id,
@@ -4272,7 +3951,7 @@ export async function bulkSetTaskLabel(
         ? db.prepare(
           `INSERT OR IGNORE INTO task_labels (task_id, label_id)
            SELECT tasks.id, ? FROM tasks
-           WHERE tasks.id = ? AND ${editableTaskWhere}`,
+           WHERE tasks.id = ? AND ${editableTaskPredicate}`,
         ).bind(
           label.id,
           task.id,
@@ -4285,7 +3964,7 @@ export async function bulkSetTaskLabel(
           `DELETE FROM task_labels
            WHERE task_id = ? AND label_id = ? AND EXISTS (
              SELECT 1 FROM tasks
-             WHERE tasks.id = task_labels.task_id AND ${editableTaskWhere}
+             WHERE tasks.id = task_labels.task_id AND ${editableTaskPredicate}
            )`,
         ).bind(
           task.id,
@@ -4370,7 +4049,7 @@ export async function setTaskLabelGroupValue(
     statements.push(
       db.prepare(
         `DELETE FROM task_labels WHERE task_id = ? AND label_id = ? AND EXISTS (
-           SELECT 1 FROM tasks WHERE tasks.id = task_labels.task_id AND ${editableTaskWhere}
+           SELECT 1 FROM tasks WHERE tasks.id = task_labels.task_id AND ${editableTaskPredicate}
          )`,
       ).bind(task.id, current.label_id, currentUser.id, currentUser.id, currentUser.id, currentUser.id),
       activityBatchAssertion(db, `label_group_clear_assert_${crypto.randomUUID()}`, now),
@@ -4385,7 +4064,7 @@ export async function setTaskLabelGroupValue(
          WHERE tasks.id = ? AND labels.id = ? AND labels.group_id = ?
            AND labels.owner_user_id = tasks.owner_user_id
            AND labels.archived_at IS NULL AND g.archived_at IS NULL
-           AND ${editableTaskWhere}`,
+           AND ${editableTaskPredicate}`,
       ).bind(task.id, label.id, group.id, currentUser.id, currentUser.id, currentUser.id, currentUser.id),
       activityBatchAssertion(db, `label_group_set_assert_${crypto.randomUUID()}`, now),
     );
@@ -4454,7 +4133,7 @@ export async function bulkSetTaskLabelGroupValue(
     if (current) statements.push(
       db.prepare(
         `DELETE FROM task_labels WHERE task_id = ? AND label_id = ? AND EXISTS (
-           SELECT 1 FROM tasks WHERE tasks.id = task_labels.task_id AND ${editableTaskWhere}
+           SELECT 1 FROM tasks WHERE tasks.id = task_labels.task_id AND ${editableTaskPredicate}
          )`,
       ).bind(task.id, current.label_id, currentUser.id, currentUser.id, currentUser.id, currentUser.id),
       activityBatchAssertion(db, `bulk_group_clear_assert_${crypto.randomUUID()}`, now),
@@ -4462,7 +4141,7 @@ export async function bulkSetTaskLabelGroupValue(
     if (label) statements.push(
       db.prepare(
         `INSERT INTO task_labels (task_id, label_id)
-         SELECT tasks.id, ? FROM tasks WHERE tasks.id = ? AND ${editableTaskWhere}`,
+         SELECT tasks.id, ? FROM tasks WHERE tasks.id = ? AND ${editableTaskPredicate}`,
       ).bind(label.id, task.id, currentUser.id, currentUser.id, currentUser.id, currentUser.id),
       activityBatchAssertion(db, `bulk_group_set_assert_${crypto.randomUUID()}`, now),
     );
@@ -5632,31 +5311,7 @@ async function loadAccessibleTasks(userId: string, taskIds: string[]) {
     .prepare(
       `WITH scoped AS (
          SELECT t.*,
-           CASE
-             WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-             WHEN t.project_id IS NOT NULL THEN (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'manager'
-                 WHEN 'manager' THEN 'manager'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-             )
-             WHEN t.owner_user_id = ? THEN 'owner'
-             ELSE (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'editor'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-             )
-           END AS access_role
+           ${taskAccessRoleSql("t", "p")} AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
          WHERE t.id IN (${placeholders}) OR t.public_id IN (${placeholders})
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
@@ -5685,17 +5340,7 @@ export async function loadAccessibleProject(userId: string, projectId: string) {
     .prepare(
       `WITH scoped AS (
          SELECT p.*,
-           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-             SELECT CASE ag.permission
-               WHEN 'full_access' THEN 'manager'
-               WHEN 'manager' THEN 'manager'
-               WHEN 'editor' THEN 'editor'
-               WHEN 'viewer' THEN 'viewer'
-             END
-             FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-           ) END AS access_role
+           ${projectAccessRoleSql("p")} AS access_role
          FROM projects p WHERE p.id = ? OR p.public_id = ?
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
@@ -5710,17 +5355,7 @@ export async function loadAccessibleRelease(userId: string, releaseId: string) {
     .prepare(
       `WITH scoped AS (
          SELECT r.*,
-           CASE WHEN p.owner_user_id = ? THEN 'owner' ELSE (
-             SELECT CASE ag.permission
-               WHEN 'full_access' THEN 'manager'
-               WHEN 'manager' THEN 'manager'
-               WHEN 'editor' THEN 'editor'
-               WHEN 'viewer' THEN 'viewer'
-             END
-             FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = r.project_id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-           ) END AS access_role
+           ${projectAccessRoleSql("p")} AS access_role
          FROM releases r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ? OR r.public_id = ?
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
@@ -5736,32 +5371,7 @@ export async function loadAccessibleView(userId: string, viewId: string) {
     .prepare(
       `WITH scoped AS (
          SELECT v.*,
-           CASE
-             WHEN v.scope_project_id IS NOT NULL AND p.owner_user_id = ? THEN 'owner'
-             WHEN v.scope_project_id IS NOT NULL THEN (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'manager'
-                 WHEN 'manager' THEN 'manager'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'project'
-                 AND ag.resource_id = v.scope_project_id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-             )
-             WHEN v.owner_user_id = ? THEN 'owner'
-             ELSE (
-               SELECT CASE ag.permission
-                 WHEN 'full_access' THEN 'editor'
-                 WHEN 'editor' THEN 'editor'
-                 WHEN 'viewer' THEN 'viewer'
-               END
-               FROM access_grants ag
-               WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL LIMIT 1
-             )
-           END AS access_role
+           ${savedViewAccessRoleSql("v", "p")} AS access_role
          FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
          WHERE v.id = ? OR v.public_id = ?
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,

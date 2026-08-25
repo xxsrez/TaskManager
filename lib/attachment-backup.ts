@@ -1,7 +1,7 @@
 import { getAttachmentBucket } from "@/db";
 import { ValidationError } from "./domain";
 import { attachmentStorageScope } from "./attachment-storage";
-import type { BackupRow } from "./system-backup-format";
+import type { BackupRow } from "./system-backup-contract";
 
 export const attachmentBackupEncoding = "base64" as const;
 
