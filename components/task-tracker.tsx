@@ -110,6 +110,18 @@ import {
   taskMatchesViewQuery,
 } from "@/lib/task-filter";
 import {
+  activeTaskQueryDependencies,
+  authoritativeTaskQueryRefreshLimit,
+  createTaskQueryRefreshCoordinator,
+  mutationAffectsTaskQuery,
+  reconcileTaskQueryMembership,
+  taskMutationDependencies,
+  taskQueryRequestToken,
+  taskQueryResponseIsCurrent,
+  type TaskQueryDependency,
+  type TaskQueryRefreshCoordinator,
+} from "@/lib/task-query-reconciliation";
+import {
   applyWorkspaceSync,
   mergeTaskSummary,
 } from "@/lib/workspace-sync-contract";
@@ -493,6 +505,10 @@ function mergeTaskMutation(
   incoming: TaskRecord,
 ): TaskRecord {
   if (!retained) return incoming;
+  if (
+    retained.version > incoming.version ||
+    (retained.version === incoming.version && retained.updatedAt > incoming.updatedAt)
+  ) return retained;
   const clientState: Partial<TaskRecord> = {};
   const hasLoadedDetailState = retained.detailVersion !== undefined ||
     retained.detailStale !== undefined ||
@@ -1237,6 +1253,9 @@ export function TaskTracker({
   const [search, setSearch] = useState("");
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [taskSearch, setTaskSearch] = useState<TaskSearchState | null>(null);
+  const taskSearchRef = useRef<TaskSearchState | null>(null);
+  const taskQueryKeyRef = useRef("");
+  const taskQueryGenerationRef = useRef(0);
   const [pendingProjectMove, setPendingProjectMove] = useState<PendingProjectGroupMove | null>(null);
   const [taskQueryPaging, setTaskQueryPaging] = useState(false);
   const [taskDetail, setTaskDetail] = useState<TaskDetailRecord | null>(null);
@@ -1271,6 +1290,17 @@ export function TaskTracker({
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [pullRefreshError, setPullRefreshError] = useState("");
   const [refreshEpoch, setRefreshEpoch] = useState(0);
+  const taskQueryRefreshCoordinatorRef = useRef<TaskQueryRefreshCoordinator | null>(null);
+  if (!taskQueryRefreshCoordinatorRef.current) {
+    taskQueryRefreshCoordinatorRef.current = createTaskQueryRefreshCoordinator(
+      (refresh) => {
+        taskQueryGenerationRef.current += 1;
+        return window.setTimeout(refresh, 120);
+      },
+      (handle) => window.clearTimeout(handle),
+      () => setRefreshEpoch((current) => current + 1),
+    );
+  }
   const pullRefreshFlight = useRef<Promise<AppSnapshot> | null>(null);
   const [systemBackupBusy, setSystemBackupBusy] = useState(false);
   const [error, setError] = useState("");
@@ -1416,6 +1446,7 @@ export function TaskTracker({
       : current);
     if (response.changes.tasks.upsert.length || removedTaskIds.size) {
       setTaskSearch((current) => reconcileTaskSearch(current, response.changes));
+      taskQueryGenerationRef.current += 1;
       setRefreshEpoch((current) => current + 1);
     }
     if (
@@ -1459,6 +1490,7 @@ export function TaskTracker({
       ? null
       : current);
     setTaskWindowLoading(false);
+    taskQueryGenerationRef.current += 1;
     setRefreshEpoch((current) => current + 1);
     setCatalogEpoch((current) => current + 1);
     if (activeTaskId !== null) setForcedTaskDetailId(activeTaskId);
@@ -1553,6 +1585,12 @@ export function TaskTracker({
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
+
+  useEffect(() => {
+    taskSearchRef.current = taskSearch;
+  }, [taskSearch]);
+
+  useEffect(() => () => taskQueryRefreshCoordinatorRef.current?.cancel(), []);
 
   useEffect(() => {
     const kind = surface === "projects" || surface === "releases" || surface === "views"
@@ -1785,22 +1823,47 @@ export function TaskTracker({
     () => mergeViewQueries(activeSavedView?.query, temporaryViewQuery),
     [activeSavedView, temporaryViewQuery],
   );
+  const taskQueryDisplay = useMemo(() => ({
+    ...defaultViewDisplay(),
+    orderBy: currentDisplay.orderBy,
+    direction: currentDisplay.direction,
+  }), [currentDisplay.direction, currentDisplay.orderBy]);
   const taskQueryKey = JSON.stringify({
     query: currentViewQuery,
     surface,
     scopeProjectId: activeSavedView?.scopeProjectId ?? null,
-    display: currentDisplay,
+    display: taskQueryDisplay,
   });
+  taskQueryKeyRef.current = taskQueryKey;
+  const activeTaskQueryDependencySet = useMemo(
+    () => activeTaskQueryDependencies({
+      query: currentViewQuery,
+      surface,
+      scopeProjectId: activeSavedView?.scopeProjectId ?? null,
+      display: currentDisplay,
+    }),
+    [activeSavedView?.scopeProjectId, currentDisplay, currentViewQuery, surface],
+  );
   const searchNeedle = (currentViewQuery.search ?? "").trim().toLowerCase();
 
   useEffect(() => {
     if (isCollectionSurface(surface)) return;
+    const generation = taskQueryGenerationRef.current + 1;
+    taskQueryGenerationRef.current = generation;
+    const token = taskQueryRequestToken(taskQueryKey, generation);
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
+      const loaded = taskSearchRef.current?.query === taskQueryKey
+        ? taskSearchRef.current.taskIds.length
+        : 0;
+      const request = JSON.parse(taskQueryKey) as Record<string, unknown>;
       void fetch("/api/tasks/query", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: taskQueryKey,
+        body: JSON.stringify({
+          ...request,
+          limit: authoritativeTaskQueryRefreshLimit(loaded),
+        }),
         signal: controller.signal,
       })
         .then(async (response) => {
@@ -1810,7 +1873,14 @@ export function TaskTracker({
           if (!response.ok || "error" in value) {
             throw new Error("error" in value ? value.error : "Task search failed");
           }
-          if (controller.signal.aborted) return;
+          if (
+            controller.signal.aborted ||
+            !taskQueryResponseIsCurrent(
+              token,
+              taskQueryKeyRef.current,
+              taskQueryGenerationRef.current,
+            )
+          ) return;
           setTaskSearch({
             query: taskQueryKey,
             taskIds: value.taskIds,
@@ -1823,13 +1893,22 @@ export function TaskTracker({
           if (requestError instanceof DOMException && requestError.name === "AbortError") {
             return;
           }
-          setTaskSearch({
-            query: taskQueryKey,
-            taskIds: [],
-            tasks: [],
-            status: "error",
-            page: null,
-          });
+          if (!taskQueryResponseIsCurrent(
+            token,
+            taskQueryKeyRef.current,
+            taskQueryGenerationRef.current,
+          )) return;
+          setTaskSearch((current) =>
+            current?.query === taskQueryKey && current.status === "ready"
+              ? current
+              : {
+                  query: taskQueryKey,
+                  taskIds: [],
+                  tasks: [],
+                  status: "error",
+                  page: null,
+                },
+          );
           setError(requestError instanceof Error ? requestError.message : "Task search failed");
         });
     }, 120);
@@ -1853,6 +1932,7 @@ export function TaskTracker({
           viewIdsAtRequest: checkpoint.viewIds,
         }));
         setTaskWindowLoading(false);
+        taskQueryGenerationRef.current += 1;
         setRefreshEpoch((current) => current + 1);
         return incoming;
       } catch (requestError) {
@@ -1869,6 +1949,11 @@ export function TaskTracker({
   async function loadMoreFilteredTasks() {
     const next = taskSearch?.query === taskQueryKey ? taskSearch.page?.next : null;
     if (!next || taskQueryPaging) return;
+    const token = taskQueryRequestToken(
+      taskQueryKey,
+      taskQueryGenerationRef.current,
+    );
+    const expectedCursor = JSON.stringify(next);
     setTaskQueryPaging(true);
     setError("");
     try {
@@ -1884,8 +1969,22 @@ export function TaskTracker({
       if (!response.ok || "error" in value) {
         throw new Error("error" in value ? value.error : "Could not load more tasks");
       }
+      if (!taskQueryResponseIsCurrent(
+        token,
+        taskQueryKeyRef.current,
+        taskQueryGenerationRef.current,
+      )) return;
       setTaskSearch((current) => {
-        if (!current || current.query !== taskQueryKey) return current;
+        if (
+          !current ||
+          current.query !== taskQueryKey ||
+          JSON.stringify(current.page?.next ?? null) !== expectedCursor ||
+          !taskQueryResponseIsCurrent(
+            token,
+            taskQueryKeyRef.current,
+            taskQueryGenerationRef.current,
+          )
+        ) return current;
         return {
           ...current,
           taskIds: [...new Set([...current.taskIds, ...value.taskIds])],
@@ -1894,6 +1993,11 @@ export function TaskTracker({
         };
       });
     } catch (requestError) {
+      if (!taskQueryResponseIsCurrent(
+        token,
+        taskQueryKeyRef.current,
+        taskQueryGenerationRef.current,
+      )) return;
       setError(requestError instanceof Error ? requestError.message : "Could not load more tasks");
     } finally {
       setTaskQueryPaging(false);
@@ -2188,6 +2292,82 @@ export function TaskTracker({
     : Boolean(search || canonicalTemporaryQuery.conditions.length ||
       JSON.stringify(currentDisplay) !== JSON.stringify(defaultViewDisplay()));
 
+  function taskMatchesCurrentQuery(task: TaskRecord, snapshot: AppSnapshot) {
+    if (surface === "mine" && task.assigneeUserId !== snapshot.user.id) return false;
+    if (surface === "shared" && task.accessRole === "owner") return false;
+    if (surface.startsWith("project:") && task.projectId !== surface.slice(8)) return false;
+    if (surface.startsWith("release:") && task.releaseId !== surface.slice(8)) return false;
+    const status = snapshot.statuses.find((item) => item.id === task.statusId);
+    if (surface === "active" && status?.category !== "unstarted" && status?.category !== "started") {
+      return false;
+    }
+    if (surface === "backlog" && status?.category !== "backlog") return false;
+
+    const archivedCondition = canonicalViewQuery(currentViewQuery).conditions.some(
+      (condition) => condition.field === "archived",
+    );
+    if (surface === "mine" && task.archivedAt) return false;
+    if (surface === "archived" && !task.archivedAt) return false;
+    if (surface !== "archived" && surface !== "mine" && !archivedCondition && task.archivedAt) {
+      return false;
+    }
+    if (
+      activeSavedView?.scopeProjectId &&
+      task.projectId !== activeSavedView.scopeProjectId
+    ) return false;
+
+    return taskMatchesViewQuery(task, currentViewQuery, {
+      statuses: snapshot.statuses,
+      taskLabels: snapshot.taskLabels,
+      relations: snapshot.relations,
+      tasks: snapshot.tasks,
+      referenceTime: new Date(viewReferenceTime),
+      timezone: snapshot.user.timezone,
+    });
+  }
+
+  function reconcileSuccessfulTaskMutation(
+    affectedTasks: readonly TaskRecord[],
+    before: AppSnapshot,
+    after: AppSnapshot,
+    additionalDependencies: Iterable<TaskQueryDependency> = [],
+    allowLocalMembership = true,
+  ) {
+    if (isCollectionSurface(surface) || !affectedTasks.length) return;
+    const beforeTasks = new Map(before.tasks.map((task) => [task.id, task]));
+    const dependencies = new Set<TaskQueryDependency>(additionalDependencies);
+    for (const task of affectedTasks) {
+      for (const dependency of taskMutationDependencies(beforeTasks.get(task.id), task)) {
+        dependencies.add(dependency);
+      }
+    }
+    if (!mutationAffectsTaskQuery(activeTaskQueryDependencySet, dependencies)) return;
+
+    const localSemanticsComplete = allowLocalMembership &&
+      !canonicalViewQuery(currentViewQuery).conditions.some(
+        (condition) => condition.field === "label_group",
+      );
+    if (localSemanticsComplete) {
+      setTaskSearch((current) => {
+        if (!current || current.query !== taskQueryKey || current.status !== "ready") {
+          return current;
+        }
+        const merged = affectedTasks.map((task) =>
+          mergeTaskSummary(current.tasks.find((candidate) => candidate.id === task.id), task),
+        );
+        return reconcileTaskQueryMembership(
+          current,
+          merged,
+          (task) => taskMatchesCurrentQuery(task, after),
+        );
+      });
+    }
+    taskQueryRefreshCoordinatorRef.current?.request(
+      activeTaskQueryDependencySet,
+      dependencies,
+    );
+  }
+
   async function mutate(path: string, method: string, body: unknown) {
     setBusy(true);
     setError("");
@@ -2201,7 +2381,14 @@ export function TaskTracker({
       if (!response.ok || "error" in value) {
         throw new Error("error" in value ? value.error : "Request failed");
       }
-      setData((current) => applyMutationResult(current, value));
+      const before = dataRef.current;
+      const after = applyMutationResult(before, value);
+      dataRef.current = after;
+      setData((current) => {
+        const next = applyMutationResult(current, value);
+        dataRef.current = next;
+        return next;
+      });
       if ("taskIds" in value && "taskLabels" in value) {
         const replaced = new Set(value.taskIds);
         setTaskDetail((current) => current && replaced.has(current.task.id)
@@ -2252,7 +2439,45 @@ export function TaskTracker({
             }
           : current,
         );
-        setRefreshEpoch((current) => current + 1);
+      }
+      if (path.startsWith("/api/tasks")) {
+        const additionalDependencies = new Set<TaskQueryDependency>();
+        let affectedTasks: TaskRecord[] = [];
+        if ("task" in value) {
+          affectedTasks = [value.task];
+        } else if ("taskUpdates" in value) {
+          affectedTasks = value.taskUpdates;
+        } else if ("taskIds" in value && "taskLabels" in value) {
+          additionalDependencies.add("label");
+          additionalDependencies.add("label_group");
+          const affected = new Set(value.taskIds);
+          affectedTasks = after.tasks.filter((task) => affected.has(task.id));
+        } else {
+          const anchorMatch = path.match(/^\/api\/tasks\/([^/]+)\/(parent|subtasks)$/);
+          if (anchorMatch) {
+            const anchorId = decodeURIComponent(anchorMatch[1]!);
+            const affected = new Set<string>([anchorId]);
+            const beforeAnchor = before.tasks.find((task) => task.id === anchorId);
+            const afterAnchor = after.tasks.find((task) => task.id === anchorId);
+            if (beforeAnchor?.parentTaskId) affected.add(beforeAnchor.parentTaskId);
+            if (afterAnchor?.parentTaskId) affected.add(afterAnchor.parentTaskId);
+            if (anchorMatch[2] === "subtasks") {
+              const beforeIds = new Set(before.tasks.map((task) => task.id));
+              for (const task of after.tasks) {
+                if (!beforeIds.has(task.id)) affected.add(task.id);
+              }
+            }
+            additionalDependencies.add("parent");
+            additionalDependencies.add("subtasks");
+            affectedTasks = after.tasks.filter((task) => affected.has(task.id));
+          }
+        }
+        reconcileSuccessfulTaskMutation(
+          affectedTasks,
+          before,
+          after,
+          additionalDependencies,
+        );
       }
       return true;
     } catch (requestError) {
@@ -2317,7 +2542,10 @@ export function TaskTracker({
       }
       const { createdTask, ...snapshot } = value;
       const task = snapshot.tasks.find((item) => item.id === createdTask.id) ?? null;
+      const before = dataRef.current;
+      dataRef.current = snapshot;
       setData(snapshot);
+      if (task) reconcileSuccessfulTaskMutation([task], before, snapshot);
       return task;
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Task could not be created");
@@ -2453,13 +2681,16 @@ export function TaskTracker({
       }
       const retained = dataRef.current.tasks.find((task) => task.id === taskId);
       if (retained && retained.version > value.task.version) return retained;
+      dataRef.current = mergeTaskDetailContext(dataRef.current, value);
       setTaskDetail((current) => current?.task.id === taskId
         ? { ...value, task: mergeLoadedTask(current.task, value.task) }
         : current);
       setData((current) => {
         const currentTask = current.tasks.find((task) => task.id === taskId);
         if (currentTask && currentTask.version > value.task.version) return current;
-        return mergeTaskDetailContext(current, value);
+        const next = mergeTaskDetailContext(current, value);
+        dataRef.current = next;
+        return next;
       });
       return value.task;
     } catch (requestError) {
@@ -3675,7 +3906,7 @@ export function TaskTracker({
         />
       )}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} catalogReady={taskPropertyCatalogReady} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onShare={() => setDialog("share")} busy={busy} />}</div>}
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} catalogReady={taskPropertyCatalogReady} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onRelationMutation={(tasks, dependencies) => reconcileSuccessfulTaskMutation(tasks, dataRef.current, dataRef.current, dependencies)} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {pendingMoveTask && pendingMoveSourceProject && pendingMoveTargetProject && (
         <TaskMoveDialog
           task={pendingMoveTask}
@@ -4676,7 +4907,7 @@ function RotateComposerIcon() {
   return <span aria-hidden="true">↻</span>;
 }
 
-function TaskDetails({ task, data, catalogReady, onClose, onOpenTask, onSave, onMove, onSetParent, onCreateSubtask, onSetLabel, onRebase, onShare, busy }: { task: TaskRecord; data: AppSnapshot; catalogReady: boolean; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onMove: (input: Record<string, unknown>) => Promise<unknown>; onSetParent: (parentTaskId: string | null) => Promise<unknown>; onCreateSubtask: (title: string) => Promise<unknown>; onSetLabel: (labelId: string, active: boolean) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onShare: () => void; busy: boolean }) {
+function TaskDetails({ task, data, catalogReady, onClose, onOpenTask, onSave, onMove, onSetParent, onCreateSubtask, onSetLabel, onRebase, onRelationMutation, onShare, busy }: { task: TaskRecord; data: AppSnapshot; catalogReady: boolean; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onMove: (input: Record<string, unknown>) => Promise<unknown>; onSetParent: (parentTaskId: string | null) => Promise<unknown>; onCreateSubtask: (title: string) => Promise<unknown>; onSetLabel: (labelId: string, active: boolean) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onRelationMutation: (tasks: TaskRecord[], dependencies: TaskQueryDependency[]) => void; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [editingDescription, setEditingDescription] = useState(false);
@@ -4964,6 +5195,7 @@ function TaskDetails({ task, data, catalogReady, onClose, onOpenTask, onSave, on
             data={data}
             onOpenTask={onOpenTask}
             onRefresh={onRebase}
+            onMutation={onRelationMutation}
             canWrite
             busy={busy}
           />
@@ -5070,7 +5302,7 @@ function ReadOnlyTaskDetails({ task, data, onClose, onOpenTask }: { task: TaskRe
   const parent = task.parentTaskId ? data.tasks.find((item) => item.id === task.parentTaskId) : undefined;
   const subtasks = data.tasks.filter((item) => item.parentTaskId === task.id);
   const labels = labelsForTask(data, task.id);
-  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <TaskDescriptionMarkdown task={task} body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project ? `${project.taskCode} · ${project.name}` : "Unavailable"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="label-chip-list">{labels.map((label) => <LabelChip key={label.id} label={label} />)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskRelations task={task} data={data} onOpenTask={onOpenTask} onRefresh={async () => task} canWrite={false} busy={false} /><TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} description={task.description} /><TaskActivity task={task} currentUser={data.user} canWrite={false} /><div className="timestamps"><span>Created {longDate(task.createdAt, data.user.timezone)}</span><span>Updated {longDate(task.updatedAt, data.user.timezone)}</span></div></div></aside></div>;
+  return <div className="details-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><aside className="details-panel read-only"><header><div className="details-crumb"><span>{task.identifier}</span><small className="role-badge">Viewer</small></div><button className="icon-button" onClick={onClose}><X size={16} /></button></header><div className="details-body"><h1 className="read-only-title">{task.title}</h1>{task.description ? <TaskDescriptionMarkdown task={task} body={task.description} className="task-description-markdown" /> : <p className="task-description-empty">No description</p>}<div className="properties-grid"><PropertyValue label="Status" value={status?.name ?? "Unknown"} /><PropertyValue label="Priority" value={priorityMeta[task.priority].label} /><PropertyValue label="Assignee" value={assignee?.displayName ?? "No assignee"} /><PropertyValue label="Project" value={project ? `${project.taskCode} · ${project.name}` : "Unavailable"} /><PropertyValue label="Release" value={release?.name ?? "No release"} /><PropertyValue label="Due date" value={task.dueDate ? shortDate(task.dueDate) : "No due date"} /><PropertyValue label="Estimate" value={task.estimate == null ? "No estimate" : String(task.estimate)} /></div>{labels.length > 0 && <DetailsSection title="Labels" icon={<Tag size={14} />}><div className="label-chip-list">{labels.map((label) => <LabelChip key={label.id} label={label} />)}</div></DetailsSection>}{(parent || subtasks.length > 0) && <DetailsSection title="Hierarchy" icon={<Boxes size={14} />}><div className="details-links">{parent && <TaskReference label="Parent" task={parent} onOpen={onOpenTask} />}{subtasks.map((subtask) => <TaskReference key={subtask.id} label="Subtask" task={subtask} onOpen={onOpenTask} />)}</div></DetailsSection>}<TaskRelations task={task} data={data} onOpenTask={onOpenTask} onRefresh={async () => task} onMutation={() => undefined} canWrite={false} busy={false} /><TaskAttachments task={task} currentUser={data.user} users={data.users} canWrite={false} description={task.description} /><TaskActivity task={task} currentUser={data.user} canWrite={false} /><div className="timestamps"><span>Created {longDate(task.createdAt, data.user.timezone)}</span><span>Updated {longDate(task.updatedAt, data.user.timezone)}</span></div></div></aside></div>;
 }
 
 type RelativeRelationKind = "blocks" | "blocked_by" | "related" | "duplicate_of" | "duplicates";
@@ -5080,6 +5312,7 @@ function TaskRelations({
   data,
   onOpenTask,
   onRefresh,
+  onMutation,
   canWrite,
   busy,
 }: {
@@ -5087,6 +5320,7 @@ function TaskRelations({
   data: AppSnapshot;
   onOpenTask: (id: string) => void;
   onRefresh: (taskId: string) => Promise<TaskRecord | null>;
+  onMutation: (tasks: TaskRecord[], dependencies: TaskQueryDependency[]) => void;
   canWrite: boolean;
   busy: boolean;
 }) {
@@ -5145,6 +5379,7 @@ function TaskRelations({
     method: "POST" | "PATCH" | "DELETE",
     input: Record<string, unknown>,
     pendingId: string,
+    affectedTaskIds: string[],
   ) {
     setPendingRelationId(pendingId);
     setRelationError("");
@@ -5156,7 +5391,19 @@ function TaskRelations({
       });
       const value = await response.json() as { error?: string };
       if (!response.ok || value.error) throw new Error(value.error ?? "Relation could not be saved");
-      await onRefresh(task.id);
+      const refreshed = await onRefresh(task.id);
+      const affected = new Map(
+        data.tasks
+          .filter((candidate) => affectedTaskIds.includes(candidate.id))
+          .map((candidate) => [candidate.id, candidate]),
+      );
+      if (refreshed) affected.set(refreshed.id, refreshed);
+      onMutation(
+        [...affected.values()],
+        input.type === "duplicate_of" && method !== "DELETE"
+          ? ["relation", "status", "status_category"]
+          : ["relation"],
+      );
       return true;
     } catch (requestError) {
       setRelationError(requestError instanceof Error ? requestError.message : "Relation could not be saved");
@@ -5179,6 +5426,7 @@ function TaskRelations({
         idempotencyKey: crypto.randomUUID(),
       },
       "new",
+      [task.id, selectedTaskId],
     );
     if (saved) {
       setAdding(false);
@@ -5198,6 +5446,7 @@ function TaskRelations({
         taskVersion: task.version,
       },
       item.relation.id,
+      [task.id, item.target.id],
     );
   }
 
@@ -5207,6 +5456,7 @@ function TaskRelations({
       "DELETE",
       { version: item.relation.version },
       item.relation.id,
+      [task.id, item.target.id],
     );
   }
 
