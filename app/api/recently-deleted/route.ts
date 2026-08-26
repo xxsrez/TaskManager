@@ -14,6 +14,7 @@ export async function GET(request: Request) {
       type: parameters.has("type")
         ? parameters.get("type") as DeletableEntityType
         : undefined,
+      search: parameters.get("search"),
     });
   });
 }

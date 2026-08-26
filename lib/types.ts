@@ -370,6 +370,7 @@ export type RecentlyDeletedRecord = {
     canRestore: boolean;
     canPurge: boolean;
   };
+  purgeState: "ready" | "retry_required";
 };
 
 export type RecentlyDeletedPage = {
@@ -378,6 +379,26 @@ export type RecentlyDeletedPage = {
     hasMore: boolean;
     nextCursor: string | null;
   };
+};
+
+export type DeletionImpactCounts = {
+  tasks: number;
+  releases: number;
+  savedViews: number;
+  comments: number;
+  attachments: number;
+  releaseMemberships: number;
+};
+
+export type DeletionPreview = {
+  type: DeletableEntityType;
+  id: string;
+  publicId: string;
+  displayName: string;
+  context: string | null;
+  version: number;
+  confirmation: string;
+  impact: DeletionImpactCounts;
 };
 
 export type ViewFilterField =

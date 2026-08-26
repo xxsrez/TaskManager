@@ -438,6 +438,15 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    expired rows/jobs небольшими batches. `purge_after` — точный restore cutoff,
    но не SLA физического удаления; delayed run не возвращает restore право.
    Operational jobs и maintenance checkpoints не входят в logical backup.
+8. UI не добавляет tombstones в `AppSnapshot`: `Settings → Recently deleted`
+   лениво читает `/api/recently-deleted` с type/search-bound keyset cursor и
+   refetch после lifecycle sync. Owner перед permanent action получает
+   authoritative preview через
+   `/api/recently-deleted/{type}/{id}/preview?version=…`; Project counts
+   охватывают Tasks/Releases/scoped SavedViews/Comments/Attachments, Release —
+   сохраняемые Task memberships. После restore/purge клиент сбрасывает
+   независимо загруженные catalog pages и выполняет authoritative bootstrap,
+   поэтому рабочие surfaces, sidebar и корзина сходятся к одному состоянию.
 
 ## API-принципы
 

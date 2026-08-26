@@ -273,6 +273,60 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .settings-integration .codex-setup-body { padding: 0; overflow-x: hidden; }
 .settings-content .import-card.embedded { width: 100%; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .settings-content .import-card.embedded > div:first-child { display: none; }
+.recently-deleted-manager { min-width: 0; display: grid; gap: 14px; }
+.recently-deleted-toolbar { min-width: 0; display: grid; grid-template-columns: minmax(220px, 1fr) minmax(150px, 210px); gap: 10px; }
+.recently-deleted-search { min-width: 0; height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); color: var(--muted); }
+.recently-deleted-search:focus-within { border-color: var(--border-strong); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+.recently-deleted-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text); }
+.recently-deleted-filter { min-width: 0; height: 36px; display: flex; align-items: center; gap: 8px; padding-left: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); color: var(--muted); font-size: 11px; }
+.recently-deleted-filter select { min-width: 0; height: 34px; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text-secondary); }
+.recently-deleted-guidance { margin: -2px 0 0; color: var(--muted); font-size: 11px; }
+.recently-deleted-live { min-height: 0; overflow: hidden; color: #2f9160; font-size: 11px; }
+.recently-deleted-live:empty { display: none; }
+.recently-deleted-error { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--danger) 7%, var(--surface)); color: var(--danger); }
+.recently-deleted-error span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.recently-deleted-loading, .recently-deleted-empty { min-height: 150px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
+.recently-deleted-loading .spin { animation: spin .8s linear infinite; }
+.recently-deleted-empty { flex-direction: column; padding: 24px; border: 1px dashed var(--border-strong); border-radius: 9px; text-align: center; }
+.recently-deleted-empty b { color: var(--text); }
+.recently-deleted-empty span { max-width: 460px; font-size: 11px; }
+.recently-deleted-list { min-width: 0; display: grid; gap: 8px; }
+.recently-deleted-row { min-width: 0; display: grid; grid-template-columns: minmax(180px, 1.2fr) minmax(230px, 1fr) minmax(160px, auto); align-items: center; gap: 16px; padding: 13px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
+.recently-deleted-identity { min-width: 0; display: grid; gap: 3px; }
+.recently-deleted-identity > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recently-deleted-identity small, .recently-deleted-identity p { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
+.recently-deleted-identity p { margin-top: 3px; line-height: 1.35; }
+.recently-deleted-type { width: fit-content; padding: 2px 6px; border-radius: 999px; background: var(--active); color: var(--accent); font-size: 9px; font-weight: 650; text-transform: uppercase; }
+.recently-deleted-meta { min-width: 0; display: grid; gap: 5px; }
+.recently-deleted-meta > div { min-width: 0; display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 8px; }
+.recently-deleted-meta dt { color: var(--muted); font-size: 10px; }
+.recently-deleted-meta dd { min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; color: var(--text-secondary); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.recently-deleted-meta dd.expired { color: var(--danger); }
+.recently-deleted-actions { min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
+.recently-deleted-actions .button { min-height: 34px; width: 100%; }
+.purge-retry-state, .read-only-badge { align-self: center; color: var(--muted); font-size: 10px; }
+.purge-retry-state { color: var(--danger); }
+.recently-deleted-more { display: flex; justify-content: center; padding-top: 4px; }
+.deletion-dialog-backdrop { overflow-y: auto; }
+.modal.deletion-dialog { width: min(520px, calc(100vw - 28px)); overflow: hidden; }
+.deletion-dialog .dialog-header h2 { font-size: 14px; font-weight: 620; }
+.deletion-dialog-body { min-width: 0; display: grid; gap: 14px; padding: 16px; }
+.deletion-dialog-body p { color: var(--text-secondary); line-height: 1.45; }
+.deletion-warning { display: flex; align-items: flex-start; gap: 9px; padding: 10px; border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--danger) 7%, var(--surface)); }
+.deletion-warning svg { flex: 0 0 auto; color: var(--danger); }
+.deletion-preview-identity { min-width: 0; display: grid; gap: 2px; padding: 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
+.deletion-preview-identity b, .deletion-preview-identity small { overflow-wrap: anywhere; }
+.deletion-preview-identity small { color: var(--muted); }
+.deletion-impact { display: grid; gap: 4px; padding-left: 20px; color: var(--text-secondary); }
+.deletion-confirmation { min-width: 0; display: grid; gap: 7px; }
+.deletion-confirmation span { color: var(--text-secondary); font-size: 11px; }
+.deletion-confirmation code { color: var(--danger); user-select: all; }
+.deletion-confirmation input { min-width: 0; width: 100%; height: 38px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--surface-subtle); color: var(--text); }
+.deletion-dialog-footer { min-height: 52px; display: flex; justify-content: flex-end; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--border); }
+.button.deletion-primary { border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); background: color-mix(in srgb, var(--danger) 13%, var(--surface)); }
+.deletion-undo-toast { position: fixed; z-index: 130; right: max(16px, env(safe-area-inset-right)); bottom: max(16px, env(safe-area-inset-bottom)); max-width: min(440px, calc(100vw - 28px)); min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 13px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--raised); box-shadow: var(--shadow); }
+.deletion-undo-toast > span { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.deletion-undo-toast > button:not(.icon-button) { min-height: 32px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border-radius: 5px; color: var(--accent); cursor: pointer; }
 .surface-header { position: relative; z-index: 8; flex: 0 0 auto; background: color-mix(in srgb, var(--surface) 95%, transparent); border-bottom: 1px solid var(--border); backdrop-filter: blur(12px); }
 .title-row { height: 44px; display: flex; align-items: center; justify-content: space-between; padding: 0 12px 0 14px; }
 .title-cluster, .title-actions, .toolbar-left { min-width: 0; display: flex; align-items: center; gap: 6px; }
@@ -1480,6 +1534,23 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .settings-content .workflow-status-create { grid-template-columns: minmax(0, 1fr) 108px 44px; }
   .settings-content .workflow-status-row > form, .settings-content .label-settings-row > form { grid-template-columns: 34px minmax(0, 1fr); }
   .settings-content .workflow-status-row > form .button, .settings-content .label-settings-row > form .button { grid-column: 2; min-height: 40px; }
+  .recently-deleted-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .recently-deleted-search, .recently-deleted-filter { height: 44px; }
+  .recently-deleted-filter select { height: 42px; }
+  .recently-deleted-row { grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 13px 12px; overflow: hidden; }
+  .recently-deleted-identity > b { overflow-wrap: anywhere; white-space: normal; }
+  .recently-deleted-meta > div { grid-template-columns: 92px minmax(0, 1fr); }
+  .recently-deleted-actions { align-items: stretch; }
+  .recently-deleted-actions .button { min-height: 44px; white-space: normal; }
+  .recently-deleted-error { align-items: flex-start; flex-wrap: wrap; }
+  .recently-deleted-error .button { min-height: 44px; margin-left: auto; }
+  .modal-backdrop:has(.deletion-dialog) { padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left)); }
+  .modal.deletion-dialog { width: 100%; max-width: 100%; max-height: 100%; overflow-y: auto; }
+  .deletion-dialog .dialog-header, .deletion-dialog-footer .button, .deletion-confirmation input { min-height: 44px; }
+  .deletion-dialog-footer { flex-direction: column-reverse; }
+  .deletion-dialog-footer .button { width: 100%; }
+  .deletion-undo-toast { left: max(10px, env(safe-area-inset-left)); right: max(10px, env(safe-area-inset-right)); bottom: max(10px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
+  .deletion-undo-toast > button { min-height: 44px; }
 }
 
 @media (max-height: 480px) and (orientation: landscape) {

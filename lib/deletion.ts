@@ -19,6 +19,7 @@ import {
 } from "./domain";
 import type {
   AccessRole,
+  DeletionPreview,
   DeletableEntityType,
   RecentlyDeletedPage,
   RecentlyDeletedRecord,
@@ -201,15 +202,19 @@ export async function listRecentlyDeleted(
     limit?: number;
     cursor?: string | null;
     type?: DeletableEntityType;
+    search?: string | null;
   } = {},
 ): Promise<RecentlyDeletedPage> {
   const limit = normalizeLimit(input.limit);
   if (input.type !== undefined && !isEntityType(input.type)) {
     throw new ValidationError("Recently deleted entity type is invalid");
   }
+  const search = normalizeSearch(input.search);
   const cursor = decodeCursor(input.cursor ?? null);
-  if (cursor && cursor.filterType !== (input.type ?? null)) {
-    throw new ValidationError("Recently deleted cursor does not match the entity type filter");
+  if (cursor && (
+    cursor.filterType !== (input.type ?? null) || cursor.search !== search
+  )) {
+    throw new ValidationError("Recently deleted cursor does not match the active filters");
   }
   const cursorPredicate = cursor
     ? `WHERE (deleted_entities.deleted_at < ? OR (
@@ -225,6 +230,14 @@ export async function listRecentlyDeleted(
     : [];
   const typePredicate = input.type ? "AND deleted_entities.entity_type = ?" : "";
   const typeParameters = input.type ? [input.type] : [];
+  const searchPredicate = search
+    ? `AND (LOWER(deleted_entities.display_name) LIKE ? ESCAPE '\\'
+         OR LOWER(deleted_entities.public_id) LIKE ? ESCAPE '\\'
+         OR LOWER(COALESCE(deleted_entities.context_name, '')) LIKE ? ESCAPE '\\')`
+    : "";
+  const searchParameters = search
+    ? Array(3).fill(`%${escapeLike(search)}%`)
+    : [];
   const rows = await getD1().prepare(
     `WITH deleted_entities AS (
        SELECT 'task' AS entity_type, t.id, t.public_id,
@@ -270,6 +283,7 @@ export async function listRecentlyDeleted(
      ${cursorPredicate}
      ${cursorPredicate ? "AND" : "WHERE"} access_role IS NOT NULL
      ${typePredicate}
+     ${searchPredicate}
      ORDER BY deleted_entities.deleted_at DESC,
        deleted_entities.entity_type ASC, deleted_entities.id ASC
      LIMIT ?`,
@@ -288,6 +302,7 @@ export async function listRecentlyDeleted(
     currentUser.id,
     ...cursorParameters,
     ...typeParameters,
+    ...searchParameters,
     limit + 1,
   ).all<DbRow>();
   const visible = rows.results.slice(0, limit);
@@ -302,10 +317,103 @@ export async function listRecentlyDeleted(
             type: String(last.entity_type) as DeletableEntityType,
             id: String(last.id),
             filterType: input.type ?? null,
+            search,
           })
         : null,
     },
   };
+}
+
+export async function getDeletionPreview(
+  currentUser: UserRecord,
+  type: DeletableEntityType,
+  reference: string,
+  expectedVersion: number,
+): Promise<DeletionPreview> {
+  if (!isEntityType(type)) throw new ValidationError("Deleted entity type is invalid");
+  assertExpectedVersion(expectedVersion);
+  const current = await loadLifecycleRow(currentUser.id, type, reference);
+  if (current.accessRole !== "owner") {
+    throw new PermissionError("Owner access is required for permanent deletion");
+  }
+  if (current.projectDeletedAt) {
+    throw new ConflictError("Permanently delete the Project instead of its shadowed child");
+  }
+  if (!current.deletedAt) {
+    throw new ConflictError(`${entityLabel(type)} must be deleted before permanent deletion`);
+  }
+  if (current.version !== expectedVersion) {
+    throw new ConflictError(`${entityLabel(type)} was changed in another session`);
+  }
+
+  const row = await loadDeletionImpact(type, current.id);
+  if (!row) throw new NotFoundError(`${entityLabel(type)} not found`);
+  return {
+    type,
+    id: current.id,
+    publicId: current.publicId,
+    displayName: String(row.display_name),
+    context: nullableString(row.context_name),
+    version: current.version,
+    confirmation: PERMANENT_DELETE_CONFIRMATION,
+    impact: {
+      tasks: Number(row.task_count ?? 0),
+      releases: Number(row.release_count ?? 0),
+      savedViews: Number(row.saved_view_count ?? 0),
+      comments: Number(row.comment_count ?? 0),
+      attachments: Number(row.attachment_count ?? 0),
+      releaseMemberships: Number(row.release_membership_count ?? 0),
+    },
+  };
+}
+
+async function loadDeletionImpact(type: DeletableEntityType, id: string) {
+  const db = getD1();
+  if (type === "project") {
+    return db.prepare(
+      `SELECT p.name AS display_name, NULL AS context_name,
+         (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
+         (SELECT COUNT(*) FROM releases r WHERE r.project_id = p.id) AS release_count,
+         (SELECT COUNT(*) FROM saved_views v WHERE v.scope_project_id = p.id) AS saved_view_count,
+         (SELECT COALESCE(SUM(t.comment_count), 0) FROM tasks t
+           WHERE t.project_id = p.id) AS comment_count,
+         (SELECT COUNT(*) FROM attachments a JOIN tasks t ON t.id = a.task_id
+           WHERE t.project_id = p.id) AS attachment_count,
+         0 AS release_membership_count
+       FROM projects p WHERE p.id = ? AND p.deleted_at IS NOT NULL`,
+    ).bind(id).first<DbRow>();
+  }
+  if (type === "release") {
+    return db.prepare(
+      `SELECT r.name AS display_name, p.name AS context_name,
+         0 AS task_count, 0 AS release_count, 0 AS saved_view_count,
+         0 AS comment_count, 0 AS attachment_count,
+         (SELECT COUNT(*) FROM tasks t WHERE t.release_id = r.id)
+           AS release_membership_count
+       FROM releases r JOIN projects p ON p.id = r.project_id
+       WHERE r.id = ? AND r.deleted_at IS NOT NULL AND p.deleted_at IS NULL`,
+    ).bind(id).first<DbRow>();
+  }
+  if (type === "task") {
+    return db.prepare(
+      `SELECT t.identifier || ' ' || t.title AS display_name,
+         p.name AS context_name, 1 AS task_count, 0 AS release_count,
+         0 AS saved_view_count, t.comment_count AS comment_count,
+         (SELECT COUNT(*) FROM attachments a WHERE a.task_id = t.id)
+           AS attachment_count,
+         0 AS release_membership_count
+       FROM tasks t JOIN projects p ON p.id = t.project_id
+       WHERE t.id = ? AND t.deleted_at IS NOT NULL AND p.deleted_at IS NULL`,
+    ).bind(id).first<DbRow>();
+  }
+  return db.prepare(
+    `SELECT v.name AS display_name, p.name AS context_name,
+       0 AS task_count, 0 AS release_count, 1 AS saved_view_count,
+       0 AS comment_count, 0 AS attachment_count, 0 AS release_membership_count
+     FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
+     WHERE v.id = ? AND v.deleted_at IS NOT NULL
+       AND (v.scope_project_id IS NULL OR p.deleted_at IS NULL)`,
+  ).bind(id).first<DbRow>();
 }
 
 /**
@@ -882,9 +990,11 @@ function mapRecentlyDeleted(row: DbRow, currentUserId: string): RecentlyDeletedR
     version: Number(row.version),
     accessRole,
     actions: {
-      canRestore: canEditContent(accessRole) && row.purge_started_at == null,
+      canRestore: canEditContent(accessRole) && row.purge_started_at == null &&
+        Date.parse(String(row.purge_after)) > Date.now(),
       canPurge: accessRole === "owner",
     },
+    purgeState: row.purge_started_at == null ? "ready" : "retry_required",
   };
 }
 
@@ -958,6 +1068,7 @@ type DeletionCursor = {
   type: DeletableEntityType;
   id: string;
   filterType: DeletableEntityType | null;
+  search: string | null;
 };
 
 function encodeCursor(cursor: DeletionCursor) {
@@ -984,7 +1095,8 @@ function decodeCursor(value: string | null): DeletionCursor | null {
       !isEntityType(parsed.type) ||
       typeof parsed.id !== "string" ||
       !parsed.id ||
-      (parsed.filterType !== null && !isEntityType(parsed.filterType))
+      (parsed.filterType !== null && !isEntityType(parsed.filterType)) ||
+      (parsed.search !== null && typeof parsed.search !== "string")
     ) {
       throw new Error("invalid");
     }
@@ -993,10 +1105,25 @@ function decodeCursor(value: string | null): DeletionCursor | null {
       type: parsed.type,
       id: parsed.id,
       filterType: parsed.filterType,
+      search: parsed.search,
     };
   } catch {
     throw new ValidationError("Recently deleted cursor is invalid");
   }
+}
+
+function normalizeSearch(value: string | null | undefined) {
+  if (value == null) return null;
+  const normalized = value.trim().toLocaleLowerCase();
+  if (!normalized) return null;
+  if (normalized.length > 120) {
+    throw new ValidationError("Recently deleted search is too long");
+  }
+  return normalized;
+}
+
+function escapeLike(value: string) {
+  return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
 }
 
 function isEntityType(value: unknown): value is DeletableEntityType {

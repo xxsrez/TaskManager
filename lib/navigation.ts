@@ -9,6 +9,7 @@ export const settingsSections = [
   "labels",
   "integrations",
   "project-backup",
+  "recently-deleted",
 ] as const;
 export type SettingsSection = (typeof settingsSections)[number];
 

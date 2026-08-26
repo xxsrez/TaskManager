@@ -224,6 +224,27 @@ test("Settings Labels exposes the Label groups manager", () => {
   assert.match(markup, /aria-label="Label settings"/);
 });
 
+test("Settings exposes a lazy workspace-level Recently deleted surface", () => {
+  const markup = renderToStaticMarkup(createElement(SettingsSurface, {
+    section: "recently-deleted",
+    data: snapshot,
+    theme: "system",
+    sidebarCollapsed: false,
+    signOutPath: "/auth/signout",
+    onNavigate: () => undefined,
+    onProfile: () => undefined,
+    onAppearance: () => undefined,
+    onStatuses: () => undefined,
+    onLabels: () => undefined,
+  }));
+
+  assert.match(markup, /href="\/settings\/recently-deleted"/);
+  assert.match(markup, /aria-current="page"/);
+  assert.match(markup, /Restore deleted records or permanently remove owner-controlled data/);
+  assert.match(markup, /aria-label="Recently deleted items"/);
+  assert.match(markup, /Loading recently deleted/);
+});
+
 test("local Task changes invalidate an already loaded Activity projection", () => {
   const retained = {
     ...snapshot.tasks[0]!,

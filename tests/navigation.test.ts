@@ -90,6 +90,7 @@ test("settings sections keep canonical direct URLs and reject unknown sections",
     "labels",
     "integrations",
     "project-backup",
+    "recently-deleted",
   ] as const) {
     const target = parseNavigationPath(`/settings/${section}`);
     assert.ok(target);

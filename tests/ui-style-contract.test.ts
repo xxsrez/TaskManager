@@ -550,3 +550,15 @@ test("Settings navigation and forms collapse without mobile horizontal overflow"
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.settings-form-row[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   assert.match(css, /@media\s*\(max-height:\s*480px\)\s*and\s*\(orientation:\s*landscape\)/);
 });
+
+test("Recently deleted stays action-visible and overflow-safe at 390x844 and 844x390", () => {
+  assert.match(declarations(".recently-deleted-row"), /min-width:\s*0/);
+  assert.match(declarations(".recently-deleted-row"), /grid-template-columns:\s*minmax\(180px,\s*1\.2fr\)/);
+  assert.match(css, /\.recently-deleted-actions\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column/);
+  assert.doesNotMatch(css, /\.recently-deleted-actions[^}]*:hover/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.recently-deleted-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*overflow:\s*hidden/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.recently-deleted-actions \.button\s*\{[^}]*min-height:\s*44px/);
+  assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.modal\.deletion-dialog\s*\{[^}]*width:\s*100%;[^}]*overflow-y:\s*auto/);
+  assert.match(css, /\.deletion-confirmation input\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%/);
+  assert.match(taskTracker, /async function refreshAfterDeletionMutation\(\)[\s\S]*?setCatalogPages\(\{\}\)[\s\S]*?setCatalogEpoch[\s\S]*?setRecentlyDeletedEpoch/);
+});

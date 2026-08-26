@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createAttachment } from "../lib/attachments";
 import { configureActorResolverForTests } from "../lib/auth";
+import { createComment } from "../lib/comments";
 import {
   deleteEntity,
+  getDeletionPreview,
   listRecentlyDeleted,
   PERMANENT_DELETE_CONFIRMATION,
   purgeEntity,
@@ -34,6 +36,7 @@ import { getWorkspaceSync } from "../lib/workspace-sync";
 import type { UserRecord } from "../lib/types";
 import { createD1TestHarness } from "./helpers/d1";
 import { GET as recentlyDeletedRoute } from "../app/api/recently-deleted/route";
+import { GET as deletionPreviewRoute } from "../app/api/recently-deleted/[type]/[id]/preview/route";
 import { DELETE as deleteTaskRoute } from "../app/api/tasks/[id]/route";
 import { POST as purgeTaskRoute } from "../app/api/tasks/[id]/purge/route";
 import { POST as restoreTaskRoute } from "../app/api/tasks/[id]/restore/route";
@@ -259,6 +262,18 @@ test("ACL hides existence, Editors recover, and only the Owner can confirm idemp
     PermissionError,
   );
   await assert.rejects(
+    getDeletionPreview(editor, "task", task.id, deleted.version),
+    PermissionError,
+  );
+  await assert.rejects(
+    getDeletionPreview(viewer, "task", task.id, deleted.version),
+    PermissionError,
+  );
+  await assert.rejects(
+    getDeletionPreview(owner, "task", task.id, deleted.version + 1),
+    ConflictError,
+  );
+  await assert.rejects(
     purgeEntity(owner, "task", task.id, deleted.version, "delete"),
     ValidationError,
   );
@@ -289,6 +304,70 @@ test("ACL hides existence, Editors recover, and only the Owner can confirm idemp
     ),
     NotFoundError,
   );
+});
+
+test("owner-only permanent preview returns authoritative cascade and membership counts", async () => {
+  const { project, release, task, view } = await fixture("preview");
+  await createComment(owner, task.id, {
+    body: "Preview comment",
+    idempotencyKey: `preview-comment-${unique}`,
+  });
+  await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\npreview\n%%EOF"),
+    filename: "preview.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: `preview-file-${unique}`,
+  });
+  const deletedProject = await deleteEntity(owner, "project", project.id, project.version);
+  const projectPreview = await getDeletionPreview(
+    owner,
+    "project",
+    project.id,
+    deletedProject.version,
+  );
+  assert.deepEqual(projectPreview.impact, {
+    tasks: 1,
+    releases: 1,
+    savedViews: 1,
+    comments: 1,
+    attachments: 1,
+    releaseMemberships: 0,
+  });
+  assert.equal(projectPreview.displayName, project.name);
+  assert.equal(projectPreview.confirmation, PERMANENT_DELETE_CONFIRMATION);
+
+  configureActorResolverForTests(async () => ownerActor);
+  const response = await deletionPreviewRoute(new Request(
+    `https://task-manager.test/api/recently-deleted/project/${project.publicId}/preview?version=${deletedProject.version}`,
+  ), { params: Promise.resolve({ type: "project", id: project.publicId }) });
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json() as { impact: unknown }).impact, projectPreview.impact);
+  const staleResponse = await deletionPreviewRoute(new Request(
+    `https://task-manager.test/api/recently-deleted/project/${project.publicId}/preview?version=${deletedProject.version + 1}`,
+  ), { params: Promise.resolve({ type: "project", id: project.publicId }) });
+  assert.equal(staleResponse.status, 409);
+  const invalidTypeResponse = await deletionPreviewRoute(new Request(
+    `https://task-manager.test/api/recently-deleted/unknown/${project.publicId}/preview?version=${deletedProject.version}`,
+  ), { params: Promise.resolve({ type: "unknown", id: project.publicId }) });
+  assert.equal(invalidTypeResponse.status, 400);
+  const invalidVersionResponse = await deletionPreviewRoute(new Request(
+    `https://task-manager.test/api/recently-deleted/project/${project.publicId}/preview?version=0`,
+  ), { params: Promise.resolve({ type: "project", id: project.publicId }) });
+  assert.equal(invalidVersionResponse.status, 400);
+  configureActorResolverForTests(null);
+
+  await restoreEntity(owner, "project", project.id, deletedProject.version);
+  const currentRelease = (await getSnapshot(owner)).releases.find((item) => item.id === release.id)!;
+  const deletedRelease = await deleteEntity(owner, "release", release.id, currentRelease.version);
+  const releasePreview = await getDeletionPreview(
+    owner,
+    "release",
+    release.id,
+    deletedRelease.version,
+  );
+  assert.equal(releasePreview.impact.releaseMemberships, 1);
+  assert.equal(releasePreview.context, project.name);
+  assert.equal(view.scopeProjectId, project.id);
 });
 
 test("deleted Release references are neutral and inert until restore, then cleared only by purge", async () => {
@@ -404,6 +483,19 @@ test("HTTP lifecycle routes enforce CAS and Recently Deleted type pagination", a
   await assert.rejects(
     listRecentlyDeleted(owner, {
       type: "project",
+      cursor: firstPage.page.nextCursor,
+    }),
+    ValidationError,
+  );
+  const searched = await listRecentlyDeleted(owner, {
+    type: "task",
+    search: second.task.title,
+  });
+  assert.deepEqual(searched.items.map((item) => item.id), [second.task.id]);
+  await assert.rejects(
+    listRecentlyDeleted(owner, {
+      type: "task",
+      search: "different search",
       cursor: firstPage.page.nextCursor,
     }),
     ValidationError,

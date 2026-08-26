@@ -44,6 +44,7 @@ import {
   SlidersHorizontal,
   Sun,
   Tag,
+  Trash2,
   Upload,
   UserRound,
   UsersRound,
@@ -178,6 +179,8 @@ import {
 } from "@/components/comment-attachment-metadata";
 import { ContextualActionMenu } from "@/components/contextual-action-menu";
 import { ProjectBackupManager } from "@/components/project-backup-manager";
+import { RecentlyDeletedManager } from "@/components/recently-deleted-manager";
+import { workspaceSyncAffectsRecentlyDeleted } from "@/lib/deletion-client";
 import {
   isTaskMarkdownEscaped,
   parseTaskAttachmentReferences,
@@ -1192,6 +1195,7 @@ export function TaskTracker({
   >>>({});
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogEpoch, setCatalogEpoch] = useState(0);
+  const [recentlyDeletedEpoch, setRecentlyDeletedEpoch] = useState(0);
   const [catalogOrder, setCatalogOrder] = useState<"updated" | "name">("updated");
   const [catalogDirection, setCatalogDirection] = useState<"asc" | "desc">("desc");
   const completeCatalogFlights = useRef<Partial<Record<
@@ -1347,6 +1351,9 @@ export function TaskTracker({
     ) {
       setCatalogEpoch((current) => current + 1);
     }
+    if (workspaceSyncAffectsRecentlyDeleted(response)) {
+      setRecentlyDeletedEpoch((current) => current + 1);
+    }
     const activeTaskWasRemoved = activeTaskId !== null && removedTaskIds.has(activeTaskId);
     const surfaceWasRemoved =
       (surface.startsWith("project:") && removedProjectIds.has(surface.slice(8))) ||
@@ -1384,6 +1391,7 @@ export function TaskTracker({
     taskQueryGenerationRef.current += 1;
     setRefreshEpoch((current) => current + 1);
     setCatalogEpoch((current) => current + 1);
+    setRecentlyDeletedEpoch((current) => current + 1);
     if (activeTaskId !== null) setForcedTaskDetailId(activeTaskId);
     const surfaceWasRemoved =
       (surface.startsWith("project:") &&
@@ -1900,6 +1908,16 @@ export function TaskTracker({
         setPullRefreshing(false);
       }
     });
+  }
+
+  async function refreshAfterDeletionMutation() {
+    const incoming = await refreshTaskList();
+    // Catalog pages are independent lazy responses and can otherwise keep a
+    // restored Project/Release/View hidden after bootstrap has converged.
+    setCatalogPages({});
+    setCatalogEpoch((current) => current + 1);
+    setRecentlyDeletedEpoch((current) => current + 1);
+    return incoming;
   }
 
   async function loadMoreFilteredTasks() {
@@ -3970,6 +3988,8 @@ export function TaskTracker({
             onStatuses={(statuses) => setData((current) => ({ ...current, statuses: [...current.statuses.filter((status) => status.ownerUserId !== current.user.id), ...statuses] }))}
             onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))}
             onGroups={(labelGroups) => setData((current) => ({ ...current, labelGroups: [...(current.labelGroups ?? []).filter((group) => group.ownerUserId !== current.user.id), ...labelGroups] }))}
+            recentlyDeletedEpoch={recentlyDeletedEpoch}
+            onDeletionWorkspaceChanged={refreshAfterDeletionMutation}
           />
         ) : surface === "workspace" ? (
           <WorkspaceOverviewSurface
@@ -7083,6 +7103,7 @@ const settingsNavigation: Array<{
   ] },
   { group: "Data & backups", items: [
     { section: "project-backup", label: "Project backup", icon: <Database size={15} /> },
+    { section: "recently-deleted", label: "Recently deleted", icon: <Trash2 size={15} /> },
   ] },
 ];
 
@@ -7098,6 +7119,8 @@ export function SettingsSurface({
   onStatuses,
   onLabels,
   onGroups,
+  recentlyDeletedEpoch,
+  onDeletionWorkspaceChanged,
 }: {
   section: string;
   data: AppSnapshot;
@@ -7110,6 +7133,8 @@ export function SettingsSurface({
   onStatuses: (statuses: WorkflowStatusRecord[]) => void;
   onLabels: (labels: LabelRecord[]) => void;
   onGroups?: (groups: LabelGroupRecord[]) => void;
+  recentlyDeletedEpoch?: number;
+  onDeletionWorkspaceChanged?: () => Promise<unknown> | unknown;
 }) {
   const [labelGroupsOpen, setLabelGroupsOpen] = useState(false);
   const active = settingsNavigation.flatMap((group) => group.items)
@@ -7144,6 +7169,7 @@ export function SettingsSurface({
       {active === "labels" && <SettingsSectionHeader title="Labels" description="Manage labels without losing archived assignments or history." />}
       {active === "integrations" && <SettingsSectionHeader title="Codex setup" description="Connect through the published plugin and OAuth-safe flow." />}
       {active === "project-backup" && <SettingsSectionHeader title="Project backup" description="Export or atomically restore Projects that you currently own." />}
+      {active === "recently-deleted" && <SettingsSectionHeader title="Recently deleted" description="Restore deleted records or permanently remove owner-controlled data." />}
 
       {active === "profile" && <ProfileSettingsPanel key={profile.user.version} profile={profile} signOutPath={signOutPath} onProfile={onProfile} />}
       {active === "appearance" && <AppearanceSettingsPanel theme={theme} sidebarCollapsed={sidebarCollapsed} onChange={onAppearance} />}
@@ -7163,6 +7189,7 @@ export function SettingsSurface({
       </>}
       {active === "integrations" && <CodexSetupDialog embedded onClose={() => undefined} />}
       {active === "project-backup" && <ProjectBackupManager embedded initialSnapshot={data} />}
+      {active === "recently-deleted" && <RecentlyDeletedManager invalidationEpoch={recentlyDeletedEpoch} onWorkspaceChanged={onDeletionWorkspaceChanged} />}
     </article>
   </div>;
 }
