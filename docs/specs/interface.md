@@ -753,20 +753,21 @@ List повторяет плотную grouped-list модель Linear.
 Изменение применяется сразу; persisted state меняется только по правилам
 current/saved view.
 
-`Edit view` содержит name, scope, полный base filter builder, Display и
-обратимый archive. Его draft query всегда начинается с сохранённого
+`Edit view` содержит name, scope, полный base filter builder и Display. Его
+draft query всегда начинается с сохранённого
 `activeSavedView.query`, даже когда в URL активен temporary layer. При наличии
 temporary filters редактор показывает их count и явно сообщает, что они не
 войдут в `Save changes`; успешное сохранение и `Cancel` оставляют temporary
 layer активным. `Save changes` атомарно заменяет base query/display с текущей
 optimistic version, а conflict перечитывает View без partial overwrite.
 `Save as` создаёт независимую View из effective query и текущего Display.
-Архивный View не открывается по direct URL и не остаётся в sidebar; restore
+Новый пользовательский archive для Saved View недоступен. Legacy archived View
+не открывается по direct URL и не остаётся в sidebar; совместимый restore
 доступен в `All views`. Viewer видит saved и temporary formulas, может менять
 свой temporary layer, но не получает base write controls.
 
-`Delete` остаётся отдельным destructive action в overflow, не подменяет
-archive и не материализует Tasks. После recoverable delete View исчезает из
+`Delete` — пользовательский destructive action Saved View в overflow и не
+материализует Tasks. После recoverable delete View исчезает из
 sidebar/direct route и появляется в `Recently deleted`; restore возвращает ту
 же base formula, temporary-independent Display и scope. Owner-only permanent
 delete удаляет только View/direct grants. Deleted/missing filter reference

@@ -1,7 +1,7 @@
 import type { AccessRole } from "@/lib/types";
 
 export type ContextualEntityKind = "task" | "project" | "release" | "saved_view";
-export type ContextualActionId = "open" | "edit" | "share" | "archive" | "restore";
+export type ContextualActionId = "open" | "edit" | "share" | "archive" | "restore" | "delete";
 
 export type ContextualActionEntity = {
   kind: ContextualEntityKind;
@@ -19,7 +19,7 @@ export type ContextualActionContext = {
 export type ResolvedContextualAction = {
   id: ContextualActionId;
   label: string;
-  icon: "open" | "edit" | "share" | "archive" | "restore";
+  icon: "open" | "edit" | "share" | "archive" | "restore" | "delete";
   shortcut: string | null;
   destructive: boolean;
   disabledReason: string | null;
@@ -85,7 +85,7 @@ function taskActions(context: ContextualActionContext): ResolvedContextualAction
   const archived = count > 0 && context.entities.every((entity) => entity.archivedAt !== null);
   const archiveId = archived ? "restore" : "archive";
   const noun = count === 1 ? "Task" : "Tasks";
-  return [
+  const actions: ResolvedContextualAction[] = [
     action(context, {
       id: "open",
       label: "Open",
@@ -95,7 +95,11 @@ function taskActions(context: ContextualActionContext): ResolvedContextualAction
       disabledReason: count === 1 ? null : "Open is available for a single item.",
       confirmation: null,
     }),
-    action(context, {
+  ];
+  if (context.entities.every((entity) => entity.accessRole === "viewer")) {
+    return actions;
+  }
+  actions.push(action(context, {
       id: archiveId,
       label: count === 1 ? (archived ? "Restore" : "Archive") : `${archived ? "Restore" : "Archive"} ${count} ${noun}`,
       icon: archiveId,
@@ -103,13 +107,25 @@ function taskActions(context: ContextualActionContext): ResolvedContextualAction
       destructive: archiveId === "archive",
       disabledReason: taskArchiveReason(context.entities),
       confirmation: null,
-    }),
-  ];
+    }));
+  if (count === 1) {
+    actions.push(action(context, {
+      id: "delete",
+      label: "Delete task…",
+      icon: "delete",
+      shortcut: null,
+      destructive: true,
+      disabledReason: editReason(context.entities[0]!),
+      confirmation: null,
+    }));
+  }
+  return actions;
 }
 
 function singleEntityActions(context: ContextualActionContext): ResolvedContextualAction[] {
   const entity = context.entities[0]!;
   if (entity.kind === "saved_view" && entity.archivedAt !== null) {
+    if (entity.accessRole === "viewer") return [];
     return [action(context, {
       id: "restore",
       label: "Restore",
@@ -129,6 +145,7 @@ function singleEntityActions(context: ContextualActionContext): ResolvedContextu
     disabledReason: null,
     confirmation: null,
   })];
+  if (entity.accessRole === "viewer") return common;
 
   common.push(action(context, {
     id: "edit",
@@ -149,7 +166,7 @@ function singleEntityActions(context: ContextualActionContext): ResolvedContextu
     disabledReason: shareReason(entity),
     confirmation: null,
   }));
-  if (entity.kind !== "release") {
+  if (entity.kind !== "release" && entity.kind !== "saved_view") {
     const restoring = entity.archivedAt !== null;
     common.push(action(context, {
       id: restoring ? "restore" : "archive",
@@ -161,6 +178,15 @@ function singleEntityActions(context: ContextualActionContext): ResolvedContextu
       confirmation: restoring ? null : `Archive ${entity.label}?`,
     }));
   }
+  common.push(action(context, {
+    id: "delete",
+    label: `Delete ${entity.kind === "saved_view" ? "view" : entity.kind}…`,
+    icon: "delete",
+    shortcut: null,
+    destructive: true,
+    disabledReason: editReason(entity),
+    confirmation: null,
+  }));
   return common;
 }
 

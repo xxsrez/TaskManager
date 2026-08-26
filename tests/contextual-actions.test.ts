@@ -34,19 +34,19 @@ test("resolves one stable action set independently of its UI trigger", () => {
     [
       { id: "open", disabledReason: null },
       { id: "archive", disabledReason: null },
+      { id: "delete", disabledReason: null },
     ],
   );
-  assert.deepEqual(contextualActionIds(context), ["open", "archive"]);
+  assert.deepEqual(contextualActionIds(context), ["open", "archive", "delete"]);
 });
 
-test("keeps viewer mutations visible but disabled with a deterministic reason", () => {
+test("Viewer contextual menus expose no mutation controls", () => {
   const actions = resolveContextualActions({
     entities: [entity({ accessRole: "viewer" })],
   });
 
   assert.deepEqual(actions.map(({ id, disabledReason }) => ({ id, disabledReason })), [
     { id: "open", disabledReason: null },
-    { id: "archive", disabledReason: "Viewer access is read-only." },
   ]);
 });
 
@@ -110,14 +110,6 @@ test("builds one atomic bulk command with every current Task version", () => {
 });
 
 test("rejects direct execution of disabled and stale resolved commands", () => {
-  const viewerContext = { entities: [entity({ accessRole: "viewer" })] };
-  const viewerArchive = resolveContextualActions(viewerContext).find((action) => action.id === "archive");
-  assert.ok(viewerArchive);
-  assert.throws(
-    () => buildTaskArchiveCommand(viewerContext, viewerArchive),
-    /Viewer access is read-only/,
-  );
-
   const editableContext = { entities: [entity()] };
   const archive = resolveContextualActions(editableContext).find((action) => action.id === "archive");
   assert.ok(archive);
@@ -127,23 +119,25 @@ test("rejects direct execution of disabled and stale resolved commands", () => {
   );
 });
 
-test("exposes only existing MVP actions for Project, Release, and Saved View contexts", () => {
+test("keeps Archive separate from Delete and removes user-facing Saved View Archive", () => {
   assert.deepEqual(contextualActionIds({ entities: [entity({ kind: "project" })] }), [
     "open",
     "edit",
     "share",
     "archive",
+    "delete",
   ]);
   assert.deepEqual(contextualActionIds({ entities: [entity({ kind: "release" })] }), [
     "open",
     "edit",
     "share",
+    "delete",
   ]);
   assert.deepEqual(contextualActionIds({ entities: [entity({ kind: "saved_view" })] }), [
     "open",
     "edit",
     "share",
-    "archive",
+    "delete",
   ]);
 });
 
@@ -209,7 +203,7 @@ test("keyboard navigation wraps and skips disabled actions", () => {
   assert.equal(nextContextualActionIndex(mixed, 0, -1), 0);
 });
 
-test("renders the shared menu with accessible roles and disabled reasons", () => {
+test("renders the shared Viewer menu without mutation controls", () => {
   const actions = resolveContextualActions({
     entities: [entity({ accessRole: "viewer" })],
   });
@@ -223,7 +217,17 @@ test("renders the shared menu with accessible roles and disabled reasons", () =>
   }));
 
   assert.match(markup, /role="menu"/);
-  assert.equal((markup.match(/role="menuitem"/g) ?? []).length, 2);
-  assert.match(markup, /aria-disabled="true"/);
-  assert.match(markup, /Viewer access is read-only/);
+  assert.equal((markup.match(/role="menuitem"/g) ?? []).length, 1);
+  assert.doesNotMatch(markup, /Archive|Delete|Edit|Members &amp; access/);
+});
+
+test("Task delete stays single-only and every delete action is destructive", () => {
+  const single = resolveContextualActions({ entities: [entity()] });
+  assert.equal(single.find((action) => action.id === "delete")?.destructive, true);
+  assert.equal(single.find((action) => action.id === "delete")?.confirmation, null);
+
+  const bulk = resolveContextualActions({
+    entities: [entity(), entity({ id: "task-2" })],
+  });
+  assert.equal(bulk.some((action) => action.id === "delete"), false);
 });

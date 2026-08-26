@@ -51,6 +51,29 @@ test("share member actions keep a padded desktop hit target", () => {
   assert.match(rule, /padding:\s*0\s+[1-9][0-9]*px\s*;/);
 });
 
+test("entity deletion entrypoints stay touch-visible with 44px targets", () => {
+  assert.match(declarations(".entity-card-shell"), /position:\s*relative\s*;/);
+  assert.match(declarations(".release-row-shell"), /position:\s*relative\s*;/);
+  assert.match(declarations(".entity-card-action"), /cursor:\s*pointer\s*;/);
+  assert.match(declarations(".release-row-action"), /cursor:\s*pointer\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.release-row-action,\s*\.entity-card-action\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.mobile-sidebar-open \.sidebar-saved-view-item > button\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;[^}]*opacity:\s*1\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.title-row \.icon-button,\s*\.title-actions \.button\s*\{[^}]*min-width:\s*44px\s*;[^}]*min-height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.details-panel > header \.icon-button\s*\{[^}]*width:\s*44px\s*;[^}]*height:\s*44px\s*;/,
+  );
+});
+
 test("the application owns its reset without Tailwind Preflight", () => {
   assert.doesNotMatch(css, /@import\s+["']tailwindcss["']/);
   assert.match(css, /\*,\s*\*::before,\s*\*::after\s*\{\s*box-sizing:\s*border-box\s*;/);

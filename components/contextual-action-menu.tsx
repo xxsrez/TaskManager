@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Pencil,
   Share2,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -19,6 +20,7 @@ const menuIcon = {
   share: Share2,
   archive: Archive,
   restore: ArchiveRestore,
+  delete: Trash2,
 };
 
 export function ContextualActionMenu({

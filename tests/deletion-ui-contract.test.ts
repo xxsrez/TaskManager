@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -20,6 +21,9 @@ import {
   convergeDeletionWorkspace,
   deletionActionRequest,
   deletionErrorRequiresRefetch,
+  fetchReleaseDeletionPreview,
+  performDeletionAction,
+  pruneDeletedEntityFromCatalogPages,
   pruneDeletedEntityFromSnapshot,
   workspaceSyncAffectsRecentlyDeleted,
 } from "../lib/deletion-client";
@@ -62,6 +66,47 @@ test("delete, deleted restore, and permanent purge stay distinct client commands
     version: 6,
     confirmation: "DELETE PERMANENTLY",
   });
+
+  const released = deletionActionRequest(
+    "release",
+    "release-1",
+    "delete",
+    7,
+    undefined,
+    { confirmReleasedComposition: true },
+  );
+  assert.deepEqual(JSON.parse(String(released.init.body)), {
+    version: 7,
+    confirmReleasedComposition: true,
+  });
+});
+
+test("Undo sends the version returned by the successful delete", async () => {
+  const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    requests.push({
+      path: String(input),
+      body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+    });
+    return new Response(JSON.stringify({
+      entity: {
+        type: "task",
+        id: "task-1",
+        publicId: "11111111-1111-4111-8111-111111111111",
+        version: requests.length === 1 ? 9 : 10,
+        deletedAt: requests.length === 1 ? "2026-08-26T12:00:00.000Z" : null,
+        purgeAfter: requests.length === 1 ? cutoff : null,
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const deleted = await performDeletionAction("task", "task-1", "delete", 8, { fetcher });
+  assert.ok("entity" in deleted);
+  await performDeletionAction("task", "task-1", "restore_deleted", deleted.entity.version, { fetcher });
+
+  assert.deepEqual(requests, [
+    { path: "/api/tasks/task-1", body: { version: 8 } },
+    { path: "/api/tasks/task-1/restore", body: { version: 9 } },
+  ]);
 });
 
 test("Viewer gets no mutations while Editor and Owner follow restore and purge roles", () => {
@@ -161,6 +206,25 @@ test("delete cache pruning handles Project shadow and Release membership before 
     ],
     taskLabels: [{ taskId: "task-1" }, { taskId: "task-2" }],
     relations: [{ sourceTaskId: "task-1", targetTaskId: "task-2" }],
+    navigationCollections: {
+      projects: { items: [{ id: "project-1" }, { id: "project-2" }], total: 2, hasMore: false },
+      releases: {
+        items: [
+          { id: "release-1", projectId: "project-1" },
+          { id: "release-2", projectId: "project-2" },
+        ],
+        total: 2,
+        hasMore: false,
+      },
+      views: {
+        items: [
+          { id: "view-1", scopeProjectId: "project-1" },
+          { id: "view-2", scopeProjectId: null },
+        ],
+        total: 2,
+        hasMore: false,
+      },
+    },
   } as AppSnapshot;
   const projectPruned = pruneDeletedEntityFromSnapshot(snapshot, "project", "project-1");
   assert.deepEqual(projectPruned.projects.map((item) => item.id), ["project-2"]);
@@ -169,9 +233,109 @@ test("delete cache pruning handles Project shadow and Release membership before 
   assert.deepEqual(projectPruned.views.map((item) => item.id), ["view-2"]);
   assert.deepEqual(projectPruned.taskLabels.map((item) => item.taskId), ["task-2"]);
   assert.deepEqual(projectPruned.relations, []);
+  assert.deepEqual(projectPruned.navigationCollections?.projects.items.map((item) => item.id), ["project-2"]);
+  assert.deepEqual(projectPruned.navigationCollections?.releases.items.map((item) => item.id), ["release-2"]);
+  assert.deepEqual(projectPruned.navigationCollections?.views.items.map((item) => item.id), ["view-2"]);
+  assert.equal(projectPruned.navigationCollections?.projects.total, 1);
+  assert.equal(projectPruned.navigationCollections?.releases.total, 1);
+  assert.equal(projectPruned.navigationCollections?.views.total, 1);
 
   const releasePruned = pruneDeletedEntityFromSnapshot(snapshot, "release", "release-1");
   assert.equal(releasePruned.tasks.find((item) => item.id === "task-1")?.releaseId, null);
+
+  const hierarchySnapshot = {
+    ...snapshot,
+    tasks: [
+      { id: "parent", projectId: "project-2", releaseId: null, parentTaskId: null },
+      { id: "child", projectId: "project-2", releaseId: null, parentTaskId: "parent" },
+    ],
+  } as AppSnapshot;
+  const parentPruned = pruneDeletedEntityFromSnapshot(hierarchySnapshot, "task", "parent");
+  assert.deepEqual(parentPruned.tasks.map((task) => ({ id: task.id, parentTaskId: task.parentTaskId })), [
+    { id: "child", parentTaskId: null },
+  ]);
+
+  const catalogPages = pruneDeletedEntityFromCatalogPages({
+    projects: {
+      kind: "projects",
+      projects: snapshot.projects,
+      releases: [],
+      views: [],
+      page: { hasMore: false, nextCursor: null },
+      total: 2,
+    },
+    releases: {
+      kind: "releases",
+      projects: [],
+      releases: snapshot.releases,
+      views: [],
+      page: { hasMore: false, nextCursor: null },
+      total: 2,
+    },
+    views: {
+      kind: "views",
+      projects: [],
+      releases: [],
+      views: snapshot.views,
+      page: { hasMore: false, nextCursor: null },
+      total: 2,
+    },
+  }, "project", "project-1");
+  assert.deepEqual(catalogPages.projects?.projects.map((item) => item.id), ["project-2"]);
+  assert.deepEqual(catalogPages.releases?.releases.map((item) => item.id), ["release-2"]);
+  assert.deepEqual(catalogPages.views?.views.map((item) => item.id), ["view-2"]);
+  assert.equal(catalogPages.projects?.total, 1);
+  assert.equal(catalogPages.releases?.total, 1);
+  assert.equal(catalogPages.views?.total, 1);
+});
+
+test("released Release confirmation renders authoritative impact and blocks until acknowledged", () => {
+  const markup = renderToStaticMarkup(createElement(RecoverableDeleteDialog, {
+    target: {
+      type: "release",
+      displayName: "Task Manager 0.2",
+      context: "Task Manager",
+      description: "Tasks stay available.",
+      warning: "This Release is already released.",
+      impactLines: ["17 linked Tasks will keep their content and temporarily show no Release."],
+      acknowledgement: "Confirm changing the composition of this released Release.",
+    },
+    onConfirm: () => undefined,
+    onClose: () => undefined,
+  }));
+  assert.match(markup, /17 linked Tasks/);
+  assert.match(markup, /already released/);
+  assert.match(markup, /Confirm changing the composition/);
+  assert.match(markup, /disabled=""[^>]*>Move to Recently deleted/);
+});
+
+test("Release delete preview uses the authoritative active Release endpoint", async () => {
+  let requestPath = "";
+  let requestInit: RequestInit | undefined;
+  const preview = await fetchReleaseDeletionPreview(
+    "release/id",
+    12,
+    async (input, init) => {
+      requestPath = String(input);
+      requestInit = init;
+      return new Response(JSON.stringify({
+        type: "release",
+        id: "release/id",
+        publicId: "77777777-7777-4777-8777-777777777777",
+        displayName: "Task Manager 0.2",
+        context: "Task Manager",
+        version: 12,
+        status: "released",
+        taskMemberships: 17,
+        requiresReleasedCompositionConfirmation: true,
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  );
+
+  assert.equal(requestPath, "/api/releases/release%2Fid/deletion-preview?version=12");
+  assert.deepEqual(requestInit, { cache: "no-store" });
+  assert.equal(preview.taskMemberships, 17);
+  assert.equal(preview.requiresReleasedCompositionConfirmation, true);
 });
 
 test("sync entity changes invalidate trash and paginated rows merge without duplicates", () => {
@@ -216,6 +380,21 @@ test("a failed post-mutation refresh is visible and retries only convergence", a
   });
   assert.deepEqual(retried, { ok: true });
   assert.equal(refreshCalls, 2);
+});
+
+test("stale lifecycle failures close obsolete dialog and Undo controls before refetch", () => {
+  const source = readFileSync(
+    new URL("../components/task-tracker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /async function selfHealStaleDeletionState\(\) \{\s*setRecoverableDeletion\(null\);\s*setDeletionUndo\(null\);\s*await convergeDeletionState\(\);\s*\}/,
+  );
+  assert.match(
+    source,
+    /if \(deletionErrorRequiresRefetch\(requestError\)\) \{\s*await selfHealStaleDeletionState\(\);\s*\}/,
+  );
 });
 
 test("human-readable cutoff and entity explanations preserve deletion semantics", () => {

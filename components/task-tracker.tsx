@@ -178,9 +178,27 @@ import {
   useCommentAttachmentMetadata,
 } from "@/components/comment-attachment-metadata";
 import { ContextualActionMenu } from "@/components/contextual-action-menu";
+import {
+  DeletionUndoToast,
+  RecoverableDeleteDialog,
+  type RecoverableDeleteTarget,
+} from "@/components/deletion-dialogs";
 import { ProjectBackupManager } from "@/components/project-backup-manager";
-import { RecentlyDeletedManager } from "@/components/recently-deleted-manager";
-import { workspaceSyncAffectsRecentlyDeleted } from "@/lib/deletion-client";
+import {
+  DeletionConvergenceAlert,
+  RecentlyDeletedManager,
+} from "@/components/recently-deleted-manager";
+import {
+  convergeDeletionWorkspace,
+  deletionErrorRequiresRefetch,
+  fetchReleaseDeletionPreview,
+  notifyRecentlyDeletedChanged,
+  performDeletionAction,
+  pruneDeletedEntityFromCatalogPages,
+  pruneDeletedEntityFromSnapshot,
+  workspaceSyncAffectsRecentlyDeleted,
+  type DeletionLifecycleResult,
+} from "@/lib/deletion-client";
 import {
   isTaskMarkdownEscaped,
   parseTaskAttachmentReferences,
@@ -1028,6 +1046,19 @@ type ContextualMenuState = {
   restoreFocus: HTMLElement | null;
 };
 
+type RecoverableDeletionState = RecoverableDeleteTarget & {
+  id: string;
+  version: number;
+  confirmReleasedComposition: boolean;
+};
+
+type DeletionUndoState = {
+  type: RecoverableDeletionState["type"];
+  id: string;
+  version: number;
+  label: string;
+};
+
 export function nextAccountMenuFocusIndex(
   key: string,
   currentIndex: number,
@@ -1158,6 +1189,10 @@ export function TaskTracker({
   const selectionAnchorRef = useRef<string | null>(null);
   const previousKeyboardTaskIdsRef = useRef<string[]>([]);
   const [contextualMenu, setContextualMenu] = useState<ContextualMenuState | null>(null);
+  const [recoverableDeletion, setRecoverableDeletion] = useState<RecoverableDeletionState | null>(null);
+  const [deletionUndo, setDeletionUndo] = useState<DeletionUndoState | null>(null);
+  const [deletionBusy, setDeletionBusy] = useState(false);
+  const [deletionConvergenceError, setDeletionConvergenceError] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [draggingTaskId, setDraggingTaskId] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
@@ -1919,6 +1954,247 @@ export function TaskTracker({
     setRecentlyDeletedEpoch((current) => current + 1);
     const incoming = await refreshTaskList();
     return incoming;
+  }
+
+  const deletionFetcher: typeof fetch = (input, init) => {
+    if (typeof input !== "string") return fetch(input, init);
+    return fetch(scopedUiApiPath(input, workspaceScopeTokenRef.current), init);
+  };
+
+  async function convergeDeletionState() {
+    const convergence = await convergeDeletionWorkspace(refreshAfterDeletionMutation);
+    if (convergence.ok) {
+      setDeletionConvergenceError("");
+      return true;
+    }
+    setDeletionConvergenceError(convergence.message);
+    return false;
+  }
+
+  async function selfHealStaleDeletionState() {
+    setRecoverableDeletion(null);
+    setDeletionUndo(null);
+    await convergeDeletionState();
+  }
+
+  async function retryDeletionConvergence() {
+    if (deletionBusy) return;
+    setDeletionBusy(true);
+    await convergeDeletionState();
+    setDeletionBusy(false);
+  }
+
+  async function openRecoverableDelete(entity: ContextualActionEntity) {
+    setDialog(null);
+    setError("");
+    if (entity.kind === "release") {
+      setDeletionBusy(true);
+      try {
+        const preview = await fetchReleaseDeletionPreview(
+          entity.id,
+          entity.version,
+          deletionFetcher,
+        );
+        setRecoverableDeletion({
+          type: "release",
+          id: preview.id,
+          version: preview.version,
+          displayName: preview.displayName,
+          context: preview.context,
+          description: "This moves the Release to Recently deleted for 30 days. Tasks stay available, and their saved Release membership returns on restore.",
+          warning: preview.requiresReleasedCompositionConfirmation
+            ? "This Release is already released. Removing it changes the visible composition of released work."
+            : null,
+          impactLines: [
+            `${preview.taskMemberships.toLocaleString()} linked Task${preview.taskMemberships === 1 ? "" : "s"} will keep its content and temporarily show no Release.`,
+          ],
+          acknowledgement: preview.requiresReleasedCompositionConfirmation
+            ? "Confirm changing the composition of this released Release."
+            : null,
+          confirmReleasedComposition: preview.requiresReleasedCompositionConfirmation,
+        });
+      } catch (requestError) {
+        if (deletionErrorRequiresRefetch(requestError)) {
+          await selfHealStaleDeletionState();
+        }
+        setError(requestError instanceof Error ? requestError.message : "Release deletion impact could not be loaded");
+      } finally {
+        setDeletionBusy(false);
+      }
+      return;
+    }
+
+    if (entity.kind === "task") {
+      const task = dataRef.current.tasks.find((item) => item.id === entity.id);
+      if (!task) return;
+      const project = dataRef.current.projects.find((item) => item.id === task.projectId);
+      setRecoverableDeletion({
+        type: "task",
+        id: task.id,
+        version: taskMutationVersion(task),
+        displayName: `${task.identifier} · ${task.title}`,
+        context: project?.name ?? null,
+        description: "This moves the Task to Recently deleted for 30 days. Its content, comments, relations, Activity, and Attachments are kept. Archive remains a separate action.",
+        warning: null,
+        impactLines: [],
+        acknowledgement: null,
+        confirmReleasedComposition: false,
+      });
+      return;
+    }
+
+    if (entity.kind === "project") {
+      const project = dataRef.current.projects.find((item) => item.id === entity.id);
+      if (!project) return;
+      setRecoverableDeletion({
+        type: "project",
+        id: project.id,
+        version: project.version,
+        displayName: project.name,
+        context: project.taskCode,
+        description: "This moves the Project to Recently deleted for 30 days. Its Tasks, Releases, and project-scoped Saved Views temporarily disappear, but those children are not deleted independently. Archive remains a separate action.",
+        warning: "Restoring the Project removes only the Project shadow. Children deleted separately stay in Recently deleted.",
+        impactLines: [],
+        acknowledgement: null,
+        confirmReleasedComposition: false,
+      });
+      return;
+    }
+
+    const view = dataRef.current.views.find((item) => item.id === entity.id);
+    if (!view || view.archivedAt) return;
+    setRecoverableDeletion({
+      type: "saved_view",
+      id: view.id,
+      version: view.version,
+      displayName: view.name,
+      context: view.scopeProjectId ? "Project-scoped Saved View" : "Workspace Saved View",
+      description: "This moves the Saved View to Recently deleted for 30 days. Tasks, its saved formula, Display, and scope are preserved; temporary URL filters are never materialized into it.",
+      warning: null,
+      impactLines: [],
+      acknowledgement: null,
+      confirmReleasedComposition: false,
+    });
+  }
+
+  function pruneDeletionFromCatalogs(type: RecoverableDeletionState["type"], id: string) {
+    setCatalogPages((current) => pruneDeletedEntityFromCatalogPages(current, type, id));
+  }
+
+  function applyImmediateDeletionPrune(type: RecoverableDeletionState["type"], id: string) {
+    const next = pruneDeletedEntityFromSnapshot(dataRef.current, type, id);
+    dataRef.current = next;
+    setData(next);
+    pruneDeletionFromCatalogs(type, id);
+    setSelected((current) => {
+      if (type === "task") return new Set([...current].filter((taskId) => taskId !== id));
+      if (type !== "project") return current;
+      const retained = [...current].filter((taskId) => next.tasks.some((task) => task.id === taskId));
+      return new Set(retained);
+    });
+    setTaskSearch((current) => {
+      if (!current) return current;
+      const tasks = current.tasks
+        .filter((task) => type === "task" ? task.id !== id : type !== "project" || task.projectId !== id)
+        .map((task) => type === "release" && task.releaseId === id ? { ...task, releaseId: null } : task)
+        .map((task) => type === "task" && task.parentTaskId === id ? { ...task, parentTaskId: null } : task);
+      const taskIds = new Set(tasks.map((task) => task.id));
+      return { ...current, tasks, taskIds: current.taskIds.filter((taskId) => taskIds.has(taskId)) };
+    });
+    setTaskDetail((current) => current && next.tasks.some((task) => task.id === current.task.id) ? current : null);
+    setForcedTaskDetailId(null);
+    setPeekTaskId((current) => current && next.tasks.some((task) => task.id === current) ? current : null);
+    setRefreshEpoch((current) => current + 1);
+    setCatalogEpoch((current) => current + 1);
+    setRecentlyDeletedEpoch((current) => current + 1);
+  }
+
+  function navigateAfterRecoverableDelete(target: RecoverableDeletionState) {
+    const activeTask = activeTaskId
+      ? dataRef.current.tasks.find((task) => task.id === activeTaskId)
+      : null;
+    const removesActiveTask = target.type === "task" && activeTaskId === target.id ||
+      target.type === "project" && activeTask?.projectId === target.id;
+    if (removesActiveTask) closeTask();
+    if (target.type === "project" && (
+      surface === `project:${target.id}` ||
+      surface === `project-releases:${target.id}`
+    )) {
+      navigateSurface("projects", "list");
+    } else if (target.type === "release" && surface === `release:${target.id}`) {
+      const release = dataRef.current.releases.find((item) => item.id === target.id);
+      navigateSurface(release ? `project-releases:${release.projectId}` : "releases", "list");
+    } else if (target.type === "saved_view" && surface === `view:${target.id}`) {
+      navigateSurface("views", "list");
+    }
+  }
+
+  async function deleteRecoverably() {
+    const target = recoverableDeletion;
+    if (!target || deletionBusy) return;
+    setDeletionBusy(true);
+    setError("");
+    try {
+      const result = await performDeletionAction(
+        target.type,
+        target.id,
+        "delete",
+        target.version,
+        {
+          fetcher: deletionFetcher,
+          input: target.confirmReleasedComposition
+            ? { confirmReleasedComposition: true }
+            : {},
+        },
+      );
+      if (!("entity" in result)) throw new Error("Deletion response was incomplete");
+      const entity: DeletionLifecycleResult = result.entity;
+      navigateAfterRecoverableDelete(target);
+      applyImmediateDeletionPrune(target.type, target.id);
+      setRecoverableDeletion(null);
+      setDeletionUndo({
+        type: target.type,
+        id: target.id,
+        version: entity.version,
+        label: target.displayName,
+      });
+      notifyRecentlyDeletedChanged();
+      await convergeDeletionState();
+    } catch (requestError) {
+      if (deletionErrorRequiresRefetch(requestError)) {
+        await selfHealStaleDeletionState();
+      }
+      setError(requestError instanceof Error ? requestError.message : "Deletion failed");
+    } finally {
+      setDeletionBusy(false);
+    }
+  }
+
+  async function undoRecoverableDelete() {
+    const undo = deletionUndo;
+    if (!undo || deletionBusy) return;
+    setDeletionBusy(true);
+    setError("");
+    try {
+      const result = await performDeletionAction(
+        undo.type,
+        undo.id,
+        "restore_deleted",
+        undo.version,
+        { fetcher: deletionFetcher },
+      );
+      if (!("entity" in result)) throw new Error("Restore response was incomplete");
+      setDeletionUndo(null);
+      notifyRecentlyDeletedChanged();
+      await convergeDeletionState();
+    } catch (requestError) {
+      if (deletionErrorRequiresRefetch(requestError)) {
+        await selfHealStaleDeletionState();
+      }
+      setError(requestError instanceof Error ? requestError.message : "Restore failed");
+    } finally {
+      setDeletionBusy(false);
+    }
   }
 
   async function loadMoreFilteredTasks() {
@@ -3289,6 +3565,12 @@ export function TaskTracker({
         return;
       }
 
+      if (action.id === "delete") {
+        closeContextualActions();
+        await openRecoverableDelete(entity);
+        return;
+      }
+
       if (entity.kind === "task") {
         const command = buildTaskArchiveCommand(liveContext, action);
         const ok = await mutate(command.path, command.method, command.body);
@@ -3392,7 +3674,7 @@ export function TaskTracker({
       const layerOwnsKeyboard = Boolean(
         globalSearchOpen || mobileActionsOpen || mobileSidebarOpen ||
         accountMenuOpen || pendingProjectMove || dialog || peekTaskId ||
-        filterOpen || displayOpen || contextualMenu,
+        filterOpen || displayOpen || contextualMenu || recoverableDeletion,
       );
       const command = keyboardCommandFor(event, { layerOwnsKeyboard });
       if (!command) return;
@@ -3405,7 +3687,12 @@ export function TaskTracker({
       ) {
         return;
       }
-      if (activeTaskId && command !== "escape" && command !== "toggle-details") return;
+      if (
+        activeTaskId &&
+        command !== "escape" &&
+        command !== "toggle-details" &&
+        command !== "contextual-actions"
+      ) return;
 
       const focusHighlightedTask = () => {
         const taskId = highlightedTaskId;
@@ -3479,10 +3766,13 @@ export function TaskTracker({
       const integrationTaskId = highlightedTaskId ?? keyboardTaskIds[0] ?? null;
       if (command === "contextual-actions") {
         const focusedEntity = focusedContextualActionEntity(target);
+        const activeTaskEntity = activeTaskId
+          ? data.tasks.find((task) => task.id === activeTaskId)
+          : null;
         const taskEntities = resolveTaskTriggerContext(
           data.tasks.map(taskContextualEntity),
           selected,
-          focusedEntity?.kind === "task" ? focusedEntity.id : null,
+          activeTaskEntity?.id ?? (focusedEntity?.kind === "task" ? focusedEntity.id : null),
           integrationTaskId,
         );
         const claimed = dispatchTaskKeyboardIntegrationCommand(window, {
@@ -3589,7 +3879,7 @@ export function TaskTracker({
     // The handlers close over the state listed below; adding the local wrapper
     // functions themselves would recreate this listener on every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, contextualMenu, data, dialog, displayOpen, filterOpen, globalSearchOpen, highlightedTaskId, keyboardTaskIdsKey, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, selectableTaskIdsKey, selected, surface, surfaceContextualEntity, systemBackupBusy]);
+  }, [accountMenuOpen, activeTaskId, busy, canCreateTask, contextualMenu, data, dialog, displayOpen, filterOpen, globalSearchOpen, highlightedTaskId, keyboardTaskIdsKey, layout, mobileActionsOpen, mobileSidebarOpen, peekTaskId, pendingProjectMove, recoverableDeletion, selectableTaskIdsKey, selected, surface, surfaceContextualEntity, systemBackupBusy]);
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
@@ -3709,7 +3999,14 @@ export function TaskTracker({
                   <NavItem key={view.id} compact={false} icon={<Circle size={9} />} label={view.label} active={surface === view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface(view.id, "list")} count={taskCountForView(view.id, data, statusMap)} />
                 ))}
                 {sidebarViews.map((view) => (
-                  <NavItem key={view.id} compact={false} icon={<Zap size={13} />} label={view.name} active={surface === `view:${view.id}`} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onNavigate={() => navigateSurface(`view:${view.id}`, view.display.layout)} />
+                  <SidebarSavedViewItem
+                    key={view.id}
+                    view={view}
+                    active={surface === `view:${view.id}`}
+                    href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)}
+                    onNavigate={() => navigateSurface(`view:${view.id}`, view.display.layout)}
+                    onContextActions={(x, y, focus) => openContextualActions({ entities: [viewContextualEntity(view)] }, x, y, focus)}
+                  />
                 ))}
               </SidebarSection>
               <SidebarSection title="Projects" action={() => setDialog("project")}>
@@ -3838,7 +4135,7 @@ export function TaskTracker({
               {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => void openDialogWithCatalog("viewEdit", ["projects", "releases"])}><Zap size={14} />Edit view</button>}
               {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
               {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
-              {surfaceContextualEntity && <button className="icon-button" type="button" aria-label={`Open contextual actions for ${surfaceContextualEntity.label}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openContextualActions({ entities: [surfaceContextualEntity] }, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
+              {surfaceContextualEntity && canEditContent(surfaceContextualEntity.accessRole) && <button className="icon-button" type="button" aria-label={`Open contextual actions for ${surfaceContextualEntity.label}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openContextualActions({ entities: [surfaceContextualEntity] }, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>
           </div>
@@ -3971,6 +4268,11 @@ export function TaskTracker({
         )}
 
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError("")}><X size={14} /></button></div>}
+        {deletionConvergenceError && <DeletionConvergenceAlert
+          message={deletionConvergenceError}
+          busy={deletionBusy}
+          onRetry={() => void retryDeletionConvergence()}
+        />}
         {data.taskWindow?.truncated && !taskWindowLoading && !searchNeedle && <div className="snapshot-warning" role="status">Showing the {data.taskWindow.limit.toLocaleString()} most recently updated tasks. Narrow the workspace with a saved view or use the Agent API for the full collection.</div>}
         {(busy || taskWindowLoading) && <div className="progress-line" aria-label={busy ? "Saving" : "Loading remaining tasks"} />}
 
@@ -4054,7 +4356,20 @@ export function TaskTracker({
         />
       )}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} catalogReady={taskPropertyCatalogReady} onClose={closeTask} onOpenTask={openTask} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onRelationMutation={(tasks, dependencies) => reconcileSuccessfulTaskMutation(tasks, dataRef.current, dataRef.current, dependencies)} onShare={() => setDialog("share")} busy={busy} />}</div>}
+      {recoverableDeletion && <RecoverableDeleteDialog
+        target={recoverableDeletion}
+        busy={deletionBusy}
+        onConfirm={() => void deleteRecoverably()}
+        onClose={() => setRecoverableDeletion(null)}
+      />}
+      {deletionUndo && <DeletionUndoToast
+        label={deletionUndo.label}
+        busy={deletionBusy}
+        onUndo={() => void undoRecoverableDelete()}
+        onDismiss={() => setDeletionUndo(null)}
+      />}
+
+      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} catalogReady={taskPropertyCatalogReady} onClose={closeTask} onOpenTask={openTask} onContextActions={(x, y, focus) => openContextualActions({ entities: [taskContextualEntity(activeTask)] }, x, y, focus)} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onRelationMutation={(tasks, dependencies) => reconcileSuccessfulTaskMutation(tasks, dataRef.current, dataRef.current, dependencies)} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {pendingMoveTask && pendingMoveSourceProject && pendingMoveTargetProject && (
         <TaskMoveDialog
           task={pendingMoveTask}
@@ -4089,9 +4404,9 @@ export function TaskTracker({
       {dialog === "project" && <ProjectDialog currentUser={data.user} leadOptions={[data.user]} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const before = new Set(dataRef.current.projects.map((project) => project.id)); const ok = await mutate("/api/projects", "POST", input); if (!ok) return; const created = dataRef.current.projects.find((project) => !before.has(project.id)); setDialog(null); if (created) { const next = { surface: `project:${created.id}`, layout: "list" as const, taskId: null }; setSurface(next.surface); setLayout(next.layout); setActiveTaskId(null); const path = `/projects/${encodeURIComponent(created.publicId)}`; taskReturnPath.current = path; window.history.pushState(navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current), "", path); } }} busy={busy} />}
       {dialog === "projectEdit" && contextProjectRecord && <ProjectDialog project={contextProjectRecord} currentUser={data.user} leadOptions={projectMemberOptions(data, contextProjectRecord)} openTaskCount={openProjectTaskCount(contextProjectRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, ...input }); if (ok) setDialog(null); }} onArchive={async () => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, archived: !contextProjectRecord.archivedAt }); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialProjectId={contextProject} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} busy={busy} />}
+      {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} onDelete={() => void openRecoverableDelete(releaseContextualEntity(contextReleaseRecord))} busy={busy} />}
       {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} data={data} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} temporaryFilterCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={`${activeSavedView.id}:${activeSavedView.version}`} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } }} onArchive={async () => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, archived: true }); if (ok) { setDialog(null); navigateSurface("views", "list"); } }} busy={busy} />}
+      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={`${activeSavedView.id}:${activeSavedView.version}`} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
@@ -4106,6 +4421,20 @@ export function TaskTracker({
 
 function NavItem({ compact, icon, label, active, href, onNavigate, count }: { compact: boolean; icon: React.ReactNode; label: string; active: boolean; href: string; onNavigate: () => void; count?: number }) {
   return <a className={`nav-item ${active ? "active" : ""}`} href={href} aria-current={active ? "page" : undefined} aria-label={label} onClick={(event) => handleLocalLink(event, onNavigate)} title={label}><span className="nav-icon">{icon}</span>{!compact && <><span className="nav-label">{label}</span>{count !== undefined && <small className="nav-count">{count}</small>}</>}</a>;
+}
+
+function SidebarSavedViewItem({ view, active, href, onNavigate, onContextActions }: {
+  view: SavedViewRecord;
+  active: boolean;
+  href: string;
+  onNavigate: () => void;
+  onContextActions: (x: number, y: number, restoreFocus: HTMLElement | null) => void;
+}) {
+  const editable = canEditContent(view.accessRole);
+  return <div className="sidebar-saved-view-item">
+    <NavItem compact={false} icon={<Zap size={13} />} label={view.name} active={active} href={href} onNavigate={onNavigate} />
+    {editable && <button type="button" aria-label={`Open actions for ${view.name}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); onContextActions(rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={14} /></button>}
+  </div>;
 }
 
 function WorkspaceScopeSelector({ value, options, busy, onChange }: {
@@ -5079,7 +5408,7 @@ function RotateComposerIcon() {
   return <span aria-hidden="true">↻</span>;
 }
 
-function TaskDetails({ task, data, catalogReady, onClose, onOpenTask, onSave, onMove, onSetParent, onCreateSubtask, onSetLabel, onRebase, onRelationMutation, onShare, busy }: { task: TaskRecord; data: AppSnapshot; catalogReady: boolean; onClose: () => void; onOpenTask: (id: string) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onMove: (input: Record<string, unknown>) => Promise<unknown>; onSetParent: (parentTaskId: string | null) => Promise<unknown>; onCreateSubtask: (title: string) => Promise<unknown>; onSetLabel: (labelId: string, active: boolean) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onRelationMutation: (tasks: TaskRecord[], dependencies: TaskQueryDependency[]) => void; onShare: () => void; busy: boolean }) {
+function TaskDetails({ task, data, catalogReady, onClose, onOpenTask, onContextActions, onSave, onMove, onSetParent, onCreateSubtask, onSetLabel, onRebase, onRelationMutation, onShare, busy }: { task: TaskRecord; data: AppSnapshot; catalogReady: boolean; onClose: () => void; onOpenTask: (id: string) => void; onContextActions: (x: number, y: number, restoreFocus: HTMLElement | null) => void; onSave: (input: Record<string, unknown>) => Promise<unknown>; onMove: (input: Record<string, unknown>) => Promise<unknown>; onSetParent: (parentTaskId: string | null) => Promise<unknown>; onCreateSubtask: (title: string) => Promise<unknown>; onSetLabel: (labelId: string, active: boolean) => Promise<unknown>; onRebase: (taskId: string) => Promise<TaskRecord | null>; onRelationMutation: (tasks: TaskRecord[], dependencies: TaskQueryDependency[]) => void; onShare: () => void; busy: boolean }) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [editingDescription, setEditingDescription] = useState(false);
@@ -5213,7 +5542,7 @@ function TaskDetails({ task, data, catalogReady, onClose, onOpenTask, onSave, on
       <aside className="details-panel">
         <header>
           <div className="details-crumb"><span>{task.identifier}</span><button title="Copy link" onClick={() => void navigator.clipboard.writeText(window.location.href)}><Link2 size={13} /></button></div>
-          <div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" onClick={onClose}><X size={16} /></button></div>
+          <div><button className="button ghost" onClick={onShare}><Share2 size={13} />Share</button><button className="icon-button" type="button" aria-label={`Open contextual actions for ${task.identifier}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); onContextActions(rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button><button className="icon-button" onClick={onClose}><X size={16} /></button></div>
         </header>
         <div className="details-body">
           {showVersionConflict && (
@@ -5976,6 +6305,8 @@ function activityEventLabel(value: string) {
     task_moved: "moved the task",
     task_archived: "archived the task",
     task_restored: "restored the task",
+    task_deleted: "moved the task to Recently deleted",
+    task_delete_restored: "restored the task from Recently deleted",
     status_changed: "changed status",
     hierarchy_changed: "changed hierarchy",
     labels_changed: "changed labels",
@@ -6618,11 +6949,34 @@ function FilterValueEditor({ condition, data, onChange }: {
     return <input aria-label={`${condition.field} date`} type="date" value={String(condition.value ?? "")} onChange={(event) => onChange(event.target.value)} />;
   }
   const options = filterCatalogOptions(condition.field, data);
+  const selectedValues = Array.isArray(condition.value)
+    ? condition.value.map(String)
+    : [String(condition.value ?? "")];
+  const missingReleaseValues = condition.field === "release"
+    ? selectedValues.filter((value) => value && !options.some((option) => option.value === value))
+    : [];
+  const unavailableReleaseOptions = missingReleaseValues.map((persistedValue, index) => ({
+    value: `__unavailable_release_${index}`,
+    persistedValue,
+    label: "Unavailable release",
+    unavailable: true,
+  }));
+  const unavailableReleaseValues = new Map(
+    unavailableReleaseOptions.map((option) => [option.value, option.persistedValue]),
+  );
+  const valueOptions = [
+    ...unavailableReleaseOptions,
+    ...options.map((option) => ({ ...option, persistedValue: option.value, unavailable: false })),
+  ];
   if (condition.operator === "in" || condition.operator === "not_in") {
     const selected = new Set(Array.isArray(condition.value) ? condition.value : []);
-    return <select multiple aria-label={`${condition.field} values`} value={[...selected]} onChange={(event) => onChange([...event.currentTarget.selectedOptions].map((option) => option.value))}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>;
+    const displayed = [...selected].map((value) =>
+      unavailableReleaseOptions.find((option) => option.persistedValue === value)?.value ?? String(value)
+    );
+    return <select multiple aria-label={`${condition.field} values`} value={displayed} onChange={(event) => onChange([...event.currentTarget.selectedOptions].map((option) => unavailableReleaseValues.get(option.value) ?? option.value))}>{valueOptions.map((option) => <option key={option.value} value={option.value} disabled={option.unavailable}>{option.label}</option>)}</select>;
   }
-  return <select aria-label={`${condition.field} value`} value={String(condition.value ?? "")} onChange={(event) => onChange(event.target.value)}>{options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>;
+  const displayed = unavailableReleaseOptions[0]?.value ?? String(condition.value ?? "");
+  return <select aria-label={`${condition.field} value`} value={displayed} onChange={(event) => onChange(unavailableReleaseValues.get(event.target.value) ?? event.target.value)}>{valueOptions.map((option) => <option key={option.value} value={option.value} disabled={option.unavailable}>{option.label}</option>)}</select>;
 }
 
 function FilterChips({ data, query, onQuery, onEdit }: {
@@ -6720,7 +7074,11 @@ function filterConditionSummary(condition: ViewFilterCondition, data: AppSnapsho
   }
   const options = new Map(filterCatalogOptions(condition.field, data).map((item) => [item.value, item.label]));
   const values = Array.isArray(condition.value) ? condition.value : [String(condition.value)];
-  return `${field} ${filterOperatorLabels[condition.operator]} ${values.map((value) => options.get(String(value)) ?? String(value)).join(", ")}`;
+  return `${field} ${filterOperatorLabels[condition.operator]} ${values.map((value) => {
+    const resolved = options.get(String(value));
+    if (resolved) return resolved;
+    return condition.field === "release" ? "Unavailable release" : String(value);
+  }).join(", ")}`;
 }
 function DisplayPopover({ display, labelGroups, onLayout, onDisplay, onClose }: { display: ViewDisplay; labelGroups: LabelGroupRecord[]; onLayout: (value: Layout) => void; onDisplay: (changes: Partial<ViewDisplay>) => void; onClose: () => void }) {
   const emptyGroupsDisabled = display.groupBy === "status" || display.groupBy === "none";
@@ -7285,12 +7643,29 @@ export function ProjectDialog({ project, currentUser, leadOptions, openTaskCount
 }
 const releaseStatusOptions: ReleaseStatus[] = ["planned", "active", "released", "canceled"];
 
-export function ReleaseDialog({ release, projects, initialProjectId, openTaskCount, onClose, onSubmit, busy }: { release?: ReleaseRecord; projects: ProjectRecord[]; initialProjectId: string | null; openTaskCount: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
+export function ReleaseDialog({ release, projects, initialProjectId, openTaskCount, onClose, onSubmit, onDelete, busy }: { release?: ReleaseRecord; projects: ProjectRecord[]; initialProjectId: string | null; openTaskCount: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; onDelete?: () => void; busy: boolean }) {
   const [name, setName] = useState(release?.name ?? "");
   const [status, setStatus] = useState<ReleaseStatus>(release?.status ?? "planned");
   const terminalWarning = status === "released" && release?.status !== "released" && openTaskCount > 0;
   const reopenWarning = release?.status === "released" && status !== "released";
-  return <Modal onClose={onClose} className="project-dialog release-dialog" ariaLabel={release ? `Edit ${release.name}` : "Create release"}><form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ ...values, confirmOpenTasks: values.confirmOpenTasks === "on" }); }}><DialogHeader title={release ? "Edit release" : "Create release"} icon={<Rocket size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>Release name / version</span><input name="name" required autoFocus placeholder="v1.0" value={name} onChange={(event) => setName(event.target.value)} /></label><div className="project-form-grid"><label><span>Project</span><select name="projectId" required disabled={Boolean(release)} defaultValue={release?.projectId ?? initialProjectId ?? ""}><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Status</span><select name="status" value={status} onChange={(event) => setStatus(event.target.value as ReleaseStatus)}>{releaseStatusOptions.map((value) => <option key={value} value={value}>{projectStatusLabel(value)}</option>)}</select></label><label><span>Target date</span><input name="targetDate" type="date" defaultValue={release?.targetDate ?? ""} /></label></div><label><span>Markdown description</span><textarea name="description" rows={6} defaultValue={release?.description ?? ""} placeholder="Release outcome and scope…" /></label><label><span>Release notes</span><textarea name="releaseNotes" rows={7} defaultValue={release?.releaseNotes ?? ""} placeholder="Published changes, migration notes, and known limitations…" /></label>{terminalWarning && <label className="project-terminal-warning"><input name="confirmOpenTasks" type="checkbox" required /><span>This Release has {openTaskCount} open Task{openTaskCount === 1 ? "" : "s"}. Confirm publishing without changing their statuses.</span></label>}{reopenWarning && <p className="release-transition-note">Leaving Released clears the server release timestamp; Tasks remain unchanged.</p>}</div>{!projects.length && <p className="inline-note">Create a project before adding a release.</p>}<div className="project-dialog-footer"><span /> <div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim() || !projects.length}>{busy ? "Saving…" : release ? "Save changes" : "Create release"}</button></div></div></form></Modal>;
+  return <Modal onClose={onClose} className="project-dialog release-dialog" ariaLabel={release ? `Edit ${release.name}` : "Create release"}>
+    <form onSubmit={(event) => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void onSubmit({ ...values, confirmOpenTasks: values.confirmOpenTasks === "on" }); }}>
+      <DialogHeader title={release ? "Edit release" : "Create release"} icon={<Rocket size={17} />} onClose={onClose} />
+      <div className="form-stack project-form-stack">
+        <label><span>Release name / version</span><input name="name" required autoFocus placeholder="v1.0" value={name} onChange={(event) => setName(event.target.value)} /></label>
+        <div className="project-form-grid"><label><span>Project</span><select name="projectId" required disabled={Boolean(release)} defaultValue={release?.projectId ?? initialProjectId ?? ""}><option value="" disabled>Select project</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label><label><span>Status</span><select name="status" value={status} onChange={(event) => setStatus(event.target.value as ReleaseStatus)}>{releaseStatusOptions.map((value) => <option key={value} value={value}>{projectStatusLabel(value)}</option>)}</select></label><label><span>Target date</span><input name="targetDate" type="date" defaultValue={release?.targetDate ?? ""} /></label></div>
+        <label><span>Markdown description</span><textarea name="description" rows={6} defaultValue={release?.description ?? ""} placeholder="Release outcome and scope…" /></label>
+        <label><span>Release notes</span><textarea name="releaseNotes" rows={7} defaultValue={release?.releaseNotes ?? ""} placeholder="Published changes, migration notes, and known limitations…" /></label>
+        {terminalWarning && <label className="project-terminal-warning"><input name="confirmOpenTasks" type="checkbox" required /><span>This Release has {openTaskCount} open Task{openTaskCount === 1 ? "" : "s"}. Confirm publishing without changing their statuses.</span></label>}
+        {reopenWarning && <p className="release-transition-note">Leaving Released clears the server release timestamp; Tasks remain unchanged.</p>}
+      </div>
+      {!projects.length && <p className="inline-note">Create a project before adding a release.</p>}
+      <div className="project-dialog-footer">
+        {release && onDelete ? <button className="button ghost danger" type="button" disabled={busy} onClick={onDelete}><Trash2 size={14} />Delete release…</button> : <span />}
+        <div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim() || !projects.length}>{busy ? "Saving…" : release ? "Save changes" : "Create release"}</button></div>
+      </div>
+    </form>
+  </Modal>;
 }
 export function viewDialogDraftQuery(
   editing: boolean,
@@ -7300,7 +7675,7 @@ export function viewDialogDraftQuery(
   return canonicalViewQuery(editing ? view?.query : query);
 }
 
-export function ViewDialog({ view, editing, query, display, data, initialScopeProjectId, temporaryFilterCount = 0, onClose, onSubmit, onArchive, busy }: { view?: SavedViewRecord; editing: boolean; query: ViewQuery; display: ViewDisplay; data: AppSnapshot; initialScopeProjectId: string | null; temporaryFilterCount?: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; onArchive?: () => Promise<void>; busy: boolean }) {
+export function ViewDialog({ view, editing, query, display, data, initialScopeProjectId, temporaryFilterCount = 0, onClose, onSubmit, busy }: { view?: SavedViewRecord; editing: boolean; query: ViewQuery; display: ViewDisplay; data: AppSnapshot; initialScopeProjectId: string | null; temporaryFilterCount?: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
   const [name, setName] = useState(editing ? view?.name ?? "" : view ? `${view.name} copy` : "");
   const [scopeProjectId, setScopeProjectId] = useState(initialScopeProjectId ?? "");
   const [savedQueryDraft, setSavedQueryDraft] = useState<ViewQuery>(() => viewDialogDraftQuery(editing, view, query));
@@ -7309,7 +7684,7 @@ export function ViewDialog({ view, editing, query, display, data, initialScopePr
   const projects = data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole));
   const emptyGroupsDisabled = displayDraft.groupBy === "status" || displayDraft.groupBy === "none";
   const changeDisplayDraft = (changes: Partial<ViewDisplay>) => setDisplayDraft((current) => ({ ...current, ...changes }));
-  return <Modal onClose={onClose} className="project-dialog view-dialog" ariaLabel={editing ? `Edit ${view?.name ?? "Saved View"}` : "Save as view"}><form onSubmit={(event) => { event.preventDefault(); void onSubmit({ name, query: canonicalViewQuery(savedQueryDraft), display: displayDraft, scopeProjectId: scopeProjectId || null }); }}><DialogHeader title={editing ? "Edit view" : "Save as view"} icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>Scope</span><select name="scopeProjectId" value={scopeProjectId} disabled={!canMoveScope} onChange={(event) => setScopeProjectId(event.target.value)}><option value="">Workspace (global)</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></label>{editing && temporaryFilterCount > 0 && <p className="view-temporary-warning" role="note"><ListFilter size={14} /><span><b>{temporaryFilterCount} temporary filter{temporaryFilterCount === 1 ? " is" : "s are"} not part of this Saved View.</b> Saving keeps {temporaryFilterCount === 1 ? "it" : "them"} active only in the current URL until you choose Clear temporary.</span></p>}<section className="view-dialog-section" aria-labelledby="saved-view-filter-heading"><header><h3 id="saved-view-filter-heading">Saved filters</h3><span>{queryFilterCount(savedQueryDraft)} active</span></header><FilterLayerSummary data={data} query={savedQueryDraft} emptyCopy="No saved filters" /><FilterConditionEditor data={data} query={savedQueryDraft} onQuery={setSavedQueryDraft} clearLabel="Clear saved filters" /></section><section className="view-dialog-section" aria-labelledby="saved-view-display-heading"><header><h3 id="saved-view-display-heading">Display</h3></header><div className="view-display-editor"><div className="display-option"><span>Layout</span><div className="segmented wide"><button type="button" className={displayDraft.layout === "list" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "list" })}><LayoutList size={13} />List</button><button type="button" className={displayDraft.layout === "board" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "board" })}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={displayDraft.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; changeDisplayDraft({ groupBy, labelGroupId: groupBy === "label_group" ? displayDraft.labelGroupId ?? (data.labelGroups ?? []).find((group) => !group.archivedAt)?.id ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{displayDraft.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={displayDraft.labelGroupId ?? ""} onChange={(event) => changeDisplayDraft({ labelGroupId: event.target.value || null })}>{(data.labelGroups ?? []).filter((group) => !group.archivedAt || group.id === displayDraft.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}<label className="popover-field"><span>Order by</span><select value={displayDraft.orderBy} onChange={(event) => changeDisplayDraft({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={displayDraft.direction} disabled={displayDraft.orderBy === "manual"} onChange={(event) => changeDisplayDraft({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={displayDraft.visibleFields.includes(option.value)} onChange={() => changeDisplayDraft({ visibleFields: toggleViewField(displayDraft.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox"><input type="checkbox" checked={displayDraft.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => changeDisplayDraft({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label></div></section>{scopeProjectId ? <p className="dialog-copy">This view is limited to the selected Project and inherits its access.</p> : <p className="dialog-copy">A global view only returns Tasks the reader can already access.</p>}</div><div className="project-dialog-footer">{editing && onArchive ? <button className="button ghost danger" type="button" disabled={busy} onClick={() => { if (window.confirm(`Archive ${view?.name ?? "this Saved View"}? Its direct route will stop opening until restored.`)) void onArchive(); }}><Archive size={14} />Archive view</button> : <span />}<div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim()}>{busy ? "Saving…" : editing ? "Save changes" : "Save view"}</button></div></div></form></Modal>;
+  return <Modal onClose={onClose} className="project-dialog view-dialog" ariaLabel={editing ? `Edit ${view?.name ?? "Saved View"}` : "Save as view"}><form onSubmit={(event) => { event.preventDefault(); void onSubmit({ name, query: canonicalViewQuery(savedQueryDraft), display: displayDraft, scopeProjectId: scopeProjectId || null }); }}><DialogHeader title={editing ? "Edit view" : "Save as view"} icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>Scope</span><select name="scopeProjectId" value={scopeProjectId} disabled={!canMoveScope} onChange={(event) => setScopeProjectId(event.target.value)}><option value="">Workspace (global)</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></label>{editing && temporaryFilterCount > 0 && <p className="view-temporary-warning" role="note"><ListFilter size={14} /><span><b>{temporaryFilterCount} temporary filter{temporaryFilterCount === 1 ? " is" : "s are"} not part of this Saved View.</b> Saving keeps {temporaryFilterCount === 1 ? "it" : "them"} active only in the current URL until you choose Clear temporary.</span></p>}<section className="view-dialog-section" aria-labelledby="saved-view-filter-heading"><header><h3 id="saved-view-filter-heading">Saved filters</h3><span>{queryFilterCount(savedQueryDraft)} active</span></header><FilterLayerSummary data={data} query={savedQueryDraft} emptyCopy="No saved filters" /><FilterConditionEditor data={data} query={savedQueryDraft} onQuery={setSavedQueryDraft} clearLabel="Clear saved filters" /></section><section className="view-dialog-section" aria-labelledby="saved-view-display-heading"><header><h3 id="saved-view-display-heading">Display</h3></header><div className="view-display-editor"><div className="display-option"><span>Layout</span><div className="segmented wide"><button type="button" className={displayDraft.layout === "list" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "list" })}><LayoutList size={13} />List</button><button type="button" className={displayDraft.layout === "board" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "board" })}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={displayDraft.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; changeDisplayDraft({ groupBy, labelGroupId: groupBy === "label_group" ? displayDraft.labelGroupId ?? (data.labelGroups ?? []).find((group) => !group.archivedAt)?.id ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{displayDraft.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={displayDraft.labelGroupId ?? ""} onChange={(event) => changeDisplayDraft({ labelGroupId: event.target.value || null })}>{(data.labelGroups ?? []).filter((group) => !group.archivedAt || group.id === displayDraft.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}<label className="popover-field"><span>Order by</span><select value={displayDraft.orderBy} onChange={(event) => changeDisplayDraft({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={displayDraft.direction} disabled={displayDraft.orderBy === "manual"} onChange={(event) => changeDisplayDraft({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={displayDraft.visibleFields.includes(option.value)} onChange={() => changeDisplayDraft({ visibleFields: toggleViewField(displayDraft.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox"><input type="checkbox" checked={displayDraft.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => changeDisplayDraft({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label></div></section>{scopeProjectId ? <p className="dialog-copy">This view is limited to the selected Project and inherits its access.</p> : <p className="dialog-copy">A global view only returns Tasks the reader can already access.</p>}</div><div className="project-dialog-footer"><span /><div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim()}>{busy ? "Saving…" : editing ? "Save changes" : "Save view"}</button></div></div></form></Modal>;
 }
 
 function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
@@ -8287,7 +8662,26 @@ function SharedWithMeSurface({ data, tasks, statuses, users, onOpenProject, onOp
 function ViewsSurface({ data, statusMap, onOpen, onContextActions, onRestore, busy }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void; onContextActions: (view: SavedViewRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onRestore: (view: SavedViewRecord) => Promise<boolean>; busy: boolean }) {
   const activeViews = data.views.filter((view) => !view.archivedAt);
   const archivedViews = data.views.filter((view) => Boolean(view.archivedAt));
-  return <div className="views-collection"><div className="entity-grid">{builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}{activeViews.map((view) => <a className="entity-card" key={view.id} data-context-entity-kind="saved_view" data-context-entity-id={view.id} href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)} onContextMenu={(event) => { event.preventDefault(); onContextActions(view, event.clientX, event.clientY, event.currentTarget); }} onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>)}</div>{archivedViews.length > 0 && <section className="archived-view-section"><h2>Archived views</h2><div className="entity-grid">{archivedViews.map((view) => <article className="entity-card archived" key={view.id} data-context-entity-kind="saved_view" data-context-entity-id={view.id} onContextMenu={(event) => { event.preventDefault(); onContextActions(view, event.clientX, event.clientY, event.currentTarget); }}><div className="entity-icon"><Archive size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Archived</span></div><p>Unavailable in navigation and direct routes.</p><div className="progress-meta"><span>{view.display.layout}</span><button className="button ghost compact" type="button" disabled={busy || !canEditContent(view.accessRole)} onClick={() => void onRestore(view)}><ArchiveRestore size={13} />Restore</button></div></div></article>)}</div></section>}</div>;
+  return <div className="views-collection">
+    <div className="entity-grid">
+      {builtInViews.map((view) => <a className="entity-card" key={view.id} href={navigationPath({ surface: view.id, layout: "list", taskId: null }, data)} onClick={(event) => handleLocalLink(event, () => onOpen(view.id, "list"))}><div className="entity-icon"><Inbox size={18} /></div><div className="entity-card-copy"><div><h2>{view.label}</h2><span className="status-badge">Built-in</span></div><p>Workspace issue view</p><div className="progress-meta"><span>{taskCountForView(view.id, data, statusMap)} issues</span><span>List or board</span></div></div></a>)}
+      {activeViews.map((view) => {
+        const editable = canEditContent(view.accessRole);
+        return <div className="entity-card-shell" key={view.id}>
+          <a
+            className="entity-card"
+            data-context-entity-kind="saved_view"
+            data-context-entity-id={view.id}
+            href={navigationPath({ surface: `view:${view.id}`, layout: view.display.layout, taskId: null }, data)}
+            onContextMenu={editable ? (event) => { event.preventDefault(); onContextActions(view, event.clientX, event.clientY, event.currentTarget); } : undefined}
+            onClick={(event) => handleLocalLink(event, () => onOpen(`view:${view.id}`, view.display.layout))}
+          ><div className="entity-icon"><Zap size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Saved</span></div><p>{view.scopeProjectId ? "Project-scoped query" : "Workspace query"}</p><div className="progress-meta"><span>{view.display.layout}</span><span>Grouped by {view.display.groupBy}</span></div></div></a>
+          {editable && <button className="entity-card-action" type="button" aria-label={`Open actions for ${view.name}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); onContextActions(view, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
+        </div>;
+      })}
+    </div>
+    {archivedViews.length > 0 && <section className="archived-view-section"><h2>Archived views</h2><div className="entity-grid">{archivedViews.map((view) => <article className="entity-card archived" key={view.id}><div className="entity-icon"><Archive size={18} /></div><div className="entity-card-copy"><div><h2>{view.name}</h2><span className="status-badge">Archived</span></div><p>Unavailable in navigation and direct routes.</p><div className="progress-meta"><span>{view.display.layout}</span>{canEditContent(view.accessRole) && <button className="button ghost compact" type="button" disabled={busy} onClick={() => void onRestore(view)}><ArchiveRestore size={13} />Restore legacy archived view</button>}</div></div></article>)}</div></section>}
+  </div>;
 }
 const projectStatusOptions: ProjectStatus[] = ["planned", "active", "paused", "completed", "canceled"];
 
@@ -8360,8 +8754,50 @@ export function ReleaseOverview({ release, project, tasks, statuses, onEdit }: {
   return <section className="project-overview release-overview" aria-label={`${fullName} release summary`}><div className="project-overview-heading"><span className="project-overview-icon release-overview-icon"><Rocket size={20} /></span><div><span className="project-code">Release</span><h2>{fullName}</h2><p>{release.description ? "Native release scope" : "No description yet"}</p></div><div className="project-overview-actions"><span className={`status-badge release-${release.status}`}>{projectStatusLabel(release.status)}</span>{onEdit && <button className="button ghost compact" onClick={onEdit}>Edit</button>}</div></div><div className="project-overview-metadata"><span><b>{tasks.length}</b> Tasks</span><span><b>{openTasks}</b> open</span><span><b>{progress}%</b> complete</span>{release.targetDate && <span>Target <b>{shortDate(release.targetDate)}</b></span>}{release.releasedAt && <span>Released <b>{shortDate(release.releasedAt.slice(0, 10))}</b></span>}</div>{release.description && <MarkdownBody body={release.description} className="project-description-markdown" />}{release.releaseNotes && <section className="release-notes"><h3>Release notes</h3><MarkdownBody body={release.releaseNotes} className="project-description-markdown" /></section>}</section>;
 }
 
-function ProjectsSurface({ projects, tasks, statuses, users, onOpen, onContextActions, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; users: Map<string, UserRecord>; onOpen: (id: string) => void; onContextActions: (project: ProjectRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) { if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />; return <div className="entity-grid">{projects.map((project) => { const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt); const progress = completion(scoped, statuses); const lead = project.leadUserId ? users.get(project.leadUserId) : undefined; return <a className={`entity-card ${project.archivedAt ? "archived" : ""}`} key={project.id} data-context-entity-kind="project" data-context-entity-id={project.id} href={`/projects/${encodeURIComponent(project.publicId)}`} onContextMenu={(event) => { event.preventDefault(); onContextActions(project, event.clientX, event.clientY, event.currentTarget); }} onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><ProjectIcon project={project} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.archivedAt ? "archived" : project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="project-card-meta"><span>{lead ? `${lead.displayName} · Lead` : "No lead"}</span><span>{project.startDate ? `Start ${shortDate(project.startDate)}` : "No start"}</span><span>{project.targetDate ? `Target ${shortDate(project.targetDate)}` : "No target"}</span></div><div className="progress-meta"><span>{scoped.length} tasks</span><span>{progress}% complete</span></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div></div></a>; })}</div>; }
-function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onContextActions, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onContextActions: (release: ReleaseRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) { if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />; return <div className="release-list">{releases.map((release) => { const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt); const progress = completion(scoped, statuses); const project = projects.get(release.projectId); const releaseName = formatReleaseName(project?.name, release.name); return <a className="release-row" key={release.id} data-context-entity-kind="release" data-context-entity-id={release.id} aria-label={releaseName} title={releaseName} href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"} onContextMenu={(event) => { event.preventDefault(); onContextActions(release, event.clientX, event.clientY, event.currentTarget); }} onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{releaseName}</b><small>{scoped.length} Task{scoped.length === 1 ? "" : "s"}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.releasedAt ? `Released ${shortDate(release.releasedAt.slice(0, 10))}` : release.targetDate ? `Target ${shortDate(release.targetDate)}` : "No date"}</span></a>; })}</div>; }
+function ProjectsSurface({ projects, tasks, statuses, users, onOpen, onContextActions, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; users: Map<string, UserRecord>; onOpen: (id: string) => void; onContextActions: (project: ProjectRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) {
+  if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />;
+  return <div className="entity-grid">{projects.map((project) => {
+    const scoped = tasks.filter((task) => task.projectId === project.id && !task.archivedAt);
+    const progress = completion(scoped, statuses);
+    const lead = project.leadUserId ? users.get(project.leadUserId) : undefined;
+    const editable = canEditContent(project.accessRole);
+    return <div className="entity-card-shell" key={project.id}>
+      <a
+        className={`entity-card ${project.archivedAt ? "archived" : ""}`}
+        data-context-entity-kind="project"
+        data-context-entity-id={project.id}
+        href={`/projects/${encodeURIComponent(project.publicId)}`}
+        onContextMenu={editable ? (event) => { event.preventDefault(); onContextActions(project, event.clientX, event.clientY, event.currentTarget); } : undefined}
+        onClick={(event) => handleLocalLink(event, () => onOpen(project.id))}
+      ><div className="entity-icon" style={{ background: `${project.color}20`, color: project.color }}><ProjectIcon project={project} /></div><div className="entity-card-copy"><div><h2>{project.name}</h2><span className="status-badge">{project.archivedAt ? "archived" : project.status}</span></div><p>{project.summary || "No summary yet"}</p><div className="project-card-meta"><span>{lead ? `${lead.displayName} · Lead` : "No lead"}</span><span>{project.startDate ? `Start ${shortDate(project.startDate)}` : "No start"}</span><span>{project.targetDate ? `Target ${shortDate(project.targetDate)}` : "No target"}</span></div><div className="progress-meta"><span>{scoped.length} tasks</span><span>{progress}% complete</span></div><div className="progress-track"><span style={{ width: `${progress}%` }} /></div></div></a>
+      {editable && <button className="entity-card-action" type="button" aria-label={`Open actions for ${project.name}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); onContextActions(project, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
+    </div>;
+  })}</div>;
+}
+
+function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onContextActions, onCreate }: { releases: ReleaseRecord[]; projects: Map<string, ProjectRecord>; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; onOpen: (id: string) => void; onContextActions: (release: ReleaseRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) {
+  if (!releases.length) return <EmptyState entity="release" onCreate={onCreate} />;
+  return <div className="release-list">{releases.map((release) => {
+    const scoped = tasks.filter((task) => task.releaseId === release.id && !task.archivedAt);
+    const progress = completion(scoped, statuses);
+    const project = projects.get(release.projectId);
+    const releaseName = formatReleaseName(project?.name, release.name);
+    const editable = canEditContent(release.accessRole);
+    return <div className="release-row-shell" key={release.id}>
+      <a
+        className="release-row"
+        data-context-entity-kind="release"
+        data-context-entity-id={release.id}
+        aria-label={releaseName}
+        title={releaseName}
+        href={project ? `/projects/${encodeURIComponent(project.publicId)}/releases/${encodeURIComponent(release.publicId)}` : "/releases"}
+        onContextMenu={editable ? (event) => { event.preventDefault(); onContextActions(release, event.clientX, event.clientY, event.currentTarget); } : undefined}
+        onClick={(event) => handleLocalLink(event, () => onOpen(release.id))}
+      ><span className="release-icon"><Rocket size={16} /></span><span className="release-main"><b>{releaseName}</b><small>{scoped.length} Task{scoped.length === 1 ? "" : "s"}</small></span><span className={`status-badge release-${release.status}`}>{release.status}</span><span className="release-progress"><i><em style={{ width: `${progress}%` }} /></i><small>{progress}%</small></span><span className="release-date">{release.releasedAt ? `Released ${shortDate(release.releasedAt.slice(0, 10))}` : release.targetDate ? `Target ${shortDate(release.targetDate)}` : "No date"}</span></a>
+      {editable && <button className="release-row-action" type="button" aria-label={`Open actions for ${releaseName}`} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); onContextActions(release, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
+    </div>;
+  })}</div>;
+}
 function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZone: string }) {
   return (
     <div className="admin-surface">

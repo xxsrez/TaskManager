@@ -3,6 +3,8 @@ import type {
   DeletableEntityType,
   DeletionPreview,
   RecentlyDeletedPage,
+  WorkspaceCatalogKind,
+  WorkspaceCatalogPage,
   WorkspaceSyncResponse,
 } from "./types";
 
@@ -22,6 +24,18 @@ export type PermanentDeletionResponse = {
   type: DeletableEntityType;
   id: string;
   purged: true;
+};
+
+export type ReleaseDeletionPreview = {
+  type: "release";
+  id: string;
+  publicId: string;
+  displayName: string;
+  context: string | null;
+  version: number;
+  status: "planned" | "active" | "released" | "canceled";
+  taskMemberships: number;
+  requiresReleasedCompositionConfirmation: boolean;
 };
 
 export const RECENTLY_DELETED_CHANGED_EVENT = "task-manager:recently-deleted-changed";
@@ -74,6 +88,7 @@ export function deletionActionRequest(
   action: DeletionAction,
   version: number,
   confirmation?: string,
+  input: Record<string, unknown> = {},
 ) {
   const base = deletionEntityPath(type, id);
   return {
@@ -85,6 +100,7 @@ export function deletionActionRequest(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         version,
+        ...input,
         ...(action === "purge" ? { confirmation } : {}),
       }),
     } satisfies RequestInit,
@@ -96,7 +112,11 @@ export async function performDeletionAction(
   id: string,
   action: DeletionAction,
   version: number,
-  options: { confirmation?: string; fetcher?: typeof fetch } = {},
+  options: {
+    confirmation?: string;
+    input?: Record<string, unknown>;
+    fetcher?: typeof fetch;
+  } = {},
 ): Promise<RecoverableDeletionResponse | PermanentDeletionResponse> {
   const { path, init } = deletionActionRequest(
     type,
@@ -104,6 +124,7 @@ export async function performDeletionAction(
     action,
     version,
     options.confirmation,
+    options.input,
   );
   return readDeletionJson<RecoverableDeletionResponse | PermanentDeletionResponse>(
     await (options.fetcher ?? fetch)(path, init),
@@ -129,9 +150,14 @@ export function pruneDeletedEntityFromSnapshot(
   }
   const tasks = snapshot.tasks
     .filter((task) => !removedTaskIds.has(task.id))
-    .map((task) => type === "release" && task.releaseId === id
-      ? { ...task, releaseId: null }
-      : task);
+    .map((task) => {
+      const withoutDeletedParent = task.parentTaskId && removedTaskIds.has(task.parentTaskId)
+        ? { ...task, parentTaskId: null }
+        : task;
+      return type === "release" && withoutDeletedParent.releaseId === id
+        ? { ...withoutDeletedParent, releaseId: null }
+        : withoutDeletedParent;
+    });
   const projects = type === "project"
     ? snapshot.projects.filter((project) => project.id !== id)
     : snapshot.projects;
@@ -181,6 +207,39 @@ export function pruneDeletedEntityFromSnapshot(
   };
 }
 
+export function pruneDeletedEntityFromCatalogPages(
+  pages: Partial<Record<WorkspaceCatalogKind, WorkspaceCatalogPage>>,
+  type: DeletableEntityType,
+  id: string,
+) {
+  return Object.fromEntries(Object.entries(pages).map(([kind, page]) => {
+    if (!page) return [kind, page];
+    const projects = page.projects.filter((project) => type !== "project" || project.id !== id);
+    const releases = page.releases.filter((release) =>
+      type === "release"
+        ? release.id !== id
+        : type !== "project" || release.projectId !== id
+    );
+    const views = page.views.filter((view) =>
+      type === "saved_view"
+        ? view.id !== id
+        : type !== "project" || view.scopeProjectId !== id
+    );
+    const removed = page.kind === "projects"
+      ? page.projects.length - projects.length
+      : page.kind === "releases"
+        ? page.releases.length - releases.length
+        : page.views.length - views.length;
+    return [kind, {
+      ...page,
+      projects,
+      releases,
+      views,
+      total: Math.max(0, page.total - removed),
+    }];
+  })) as Partial<Record<WorkspaceCatalogKind, WorkspaceCatalogPage>>;
+}
+
 function pruneNavigationCollection<T>(
   collection: { items: T[]; total: number; hasMore: boolean },
   retain: (item: T) => boolean,
@@ -223,6 +282,17 @@ export async function fetchDeletionPreview(
 ) {
   const path = `/api/recently-deleted/${encodeURIComponent(type)}/${encodeURIComponent(id)}/preview?version=${encodeURIComponent(version)}`;
   return readDeletionJson<DeletionPreview>(
+    await fetcher(path, { cache: "no-store" }),
+  );
+}
+
+export async function fetchReleaseDeletionPreview(
+  id: string,
+  version: number,
+  fetcher: typeof fetch = fetch,
+) {
+  const path = `/api/releases/${encodeURIComponent(id)}/deletion-preview?version=${encodeURIComponent(version)}`;
+  return readDeletionJson<ReleaseDeletionPreview>(
     await fetcher(path, { cache: "no-store" }),
   );
 }

@@ -2261,6 +2261,8 @@ test("editable task details render the full Markdown description before editing"
   assert.match(markup, />Edit description</);
   assert.match(markup, />Attachments</);
   assert.match(markup, />Add files</);
+  assert.match(markup, /aria-label="Open contextual actions for TM-1"/);
+  assert.match(markup, /title="Actions \(Cmd\/Ctrl\+K\)"/);
   assert.doesNotMatch(markup, /class="details-description"/);
   assert.doesNotMatch(markup, />Save description</);
 });
@@ -2443,6 +2445,7 @@ test("viewer task details are read-only and expose no mutation controls", () => 
   assert.doesNotMatch(markup, />Add files</);
   assert.doesNotMatch(markup, /Leave a comment/);
   assert.doesNotMatch(markup, /aria-label="Edit Task labels"/);
+  assert.doesNotMatch(markup, /aria-label="Open contextual actions for TM-1"/);
 });
 
 test("comment drafts are isolated by authenticated user and task", () => {
@@ -3098,6 +3101,112 @@ test("Edit view drafts only the saved query and warns about temporary filters", 
   assert.match(markup, /Saved filters/);
   assert.match(markup, /Display/);
   assert.match(markup, /Save changes/);
+  assert.doesNotMatch(markup, /Archive view/);
+});
+
+test("a missing Release filter reference stays inert without leaking its UUID", () => {
+  const missingReleaseId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const view = {
+    id: "view-unavailable-release",
+    publicId: "44444444-5555-4666-8777-888888888889",
+    ownerUserId: "user-1",
+    name: "Unavailable release view",
+    scopeProjectId: "project-1",
+    query: {
+      version: 1 as const,
+      op: "all" as const,
+      conditions: [{ field: "release" as const, operator: "is" as const, value: missingReleaseId }],
+    },
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "priority" as const,
+      direction: "asc" as const,
+      showEmptyGroups: false,
+      visibleFields: ["release" as const],
+    },
+    version: 5,
+    accessRole: "owner" as const,
+  };
+  const markup = renderToStaticMarkup(createElement(ViewDialog, {
+    view,
+    editing: true,
+    query: view.query,
+    display: view.display,
+    data: { ...snapshot, releases: [] },
+    initialScopeProjectId: "project-1",
+    onClose: () => undefined,
+    onSubmit: async () => undefined,
+    busy: false,
+  }));
+
+  assert.match(markup, /Unavailable release/);
+  assert.match(markup, /<option[^>]*disabled=""[^>]*>Unavailable release<\/option>/);
+  assert.match(markup, /aria-label="Remove release filter"/);
+  assert.doesNotMatch(markup, new RegExp(missingReleaseId));
+});
+
+test("entity deletion entrypoints are visible to editors and hidden from viewers", () => {
+  const release = {
+    id: "release-entrypoint",
+    publicId: "22222222-2222-4222-8222-222222222229",
+    projectId: "project-1",
+    ownerUserId: "user-1",
+    creatorUserId: "user-1",
+    name: "0.2",
+    description: "",
+    status: "active" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 2,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const view = {
+    id: "view-entrypoint",
+    publicId: "44444444-5555-4666-8777-888888888890",
+    ownerUserId: "user-1",
+    name: "Current release",
+    scopeProjectId: null,
+    query: {},
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "priority" as const,
+      direction: "asc" as const,
+      showEmptyGroups: false,
+      visibleFields: ["release" as const],
+    },
+    version: 1,
+    accessRole: "owner" as const,
+  };
+  const data = { ...snapshot, releases: [release], views: [view] };
+  const renderSurface = (surface: "projects" | "releases" | "views") => renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: data,
+    initialNavigation: { surface, layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+
+  assert.match(renderSurface("projects"), /class="entity-card-action"[^>]*aria-label="Open actions for Task Manager"/);
+  assert.match(renderSurface("releases"), /class="release-row-action"[^>]*aria-label="Open actions for Task Manager 0\.2"/);
+  assert.match(renderSurface("views"), /class="entity-card-action"[^>]*aria-label="Open actions for Current release"/);
+  assert.match(renderSurface("projects"), /class="sidebar-saved-view-item"[\s\S]*aria-label="Open actions for Current release"/);
+
+  const viewerData = {
+    ...data,
+    projects: data.projects.map((project) => ({ ...project, accessRole: "viewer" as const })),
+    releases: data.releases.map((item) => ({ ...item, accessRole: "viewer" as const })),
+    views: data.views.map((item) => ({ ...item, accessRole: "viewer" as const })),
+  };
+  const viewerMarkup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: viewerData,
+    initialNavigation: { surface: "views", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+  assert.doesNotMatch(viewerMarkup, /class="entity-card-action"/);
+  assert.doesNotMatch(viewerMarkup, /class="sidebar-saved-view-item"[\s\S]*aria-label="Open actions for Current release"/);
 });
 
 test("sidebar release and view labels expose the full name while truncating visually", () => {
@@ -3485,10 +3594,12 @@ test("Release overview and edit dialog expose native lifecycle metadata", () => 
     openTaskCount: 1,
     onClose: () => undefined,
     onSubmit: async () => undefined,
+    onDelete: () => undefined,
     busy: false,
   }));
   for (const name of ["name", "projectId", "status", "targetDate", "description", "releaseNotes"]) {
     assert.match(dialog, new RegExp(`name="${name}"`));
   }
   assert.match(dialog, /Save changes/);
+  assert.match(dialog, /Delete release/);
 });

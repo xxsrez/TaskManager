@@ -8,6 +8,10 @@ export type RecoverableDeleteTarget = {
   type: DeletableEntityType;
   displayName: string;
   context?: string | null;
+  description?: string;
+  warning?: string | null;
+  impactLines?: string[];
+  acknowledgement?: string | null;
 };
 
 export function RecoverableDeleteDialog({
@@ -21,17 +25,26 @@ export function RecoverableDeleteDialog({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const [acknowledged, setAcknowledged] = useState(false);
   return <DeletionDialogFrame
     title={`Delete ${deletionTypeLabel(target.type)}?`}
     onClose={() => !busy && onClose()}
   >
     <div className="deletion-dialog-body">
       <p><b>{target.displayName}</b>{target.context ? ` · ${target.context}` : ""}</p>
-      <p>This moves the item to Recently deleted for 30 days. Archive remains a separate action.</p>
+      <p>{target.description ?? "This moves the item to Recently deleted for 30 days. Archive remains a separate action."}</p>
+      {target.warning && <p className="deletion-warning"><AlertTriangle size={17} aria-hidden="true" /><span>{target.warning}</span></p>}
+      {target.impactLines && target.impactLines.length > 0 && <ul className="deletion-impact" aria-label="Recoverable deletion impact">
+        {target.impactLines.map((line) => <li key={line}>{line}</li>)}
+      </ul>}
+      {target.acknowledgement && <label className="deletion-acknowledgement">
+        <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
+        <span>{target.acknowledgement}</span>
+      </label>}
     </div>
     <div className="deletion-dialog-footer">
       <button className="button secondary" type="button" disabled={busy} onClick={onClose}>Cancel</button>
-      <button className="button danger deletion-primary" type="button" disabled={busy} onClick={onConfirm}>
+      <button className="button danger deletion-primary" type="button" disabled={busy || Boolean(target.acknowledgement && !acknowledged)} onClick={onConfirm}>
         {busy ? "Deleting…" : "Move to Recently deleted"}
       </button>
     </div>

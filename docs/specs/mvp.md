@@ -707,9 +707,10 @@ immutable ID и может группировать Tasks по значения�
 - Встроенные views: `All tasks`, `Active`, `Backlog`, `My tasks` и `Archived`.
 - Пользователь может сохранить текущий эффективный результат под новым именем
   (`Save as`), открыть `Edit view` и атомарно заменить имя/base query/display
-  исходного Saved View (`Save changes`), отменить draft (`Cancel`) и обратимо
-  архивировать/восстановить Saved View. Архивный View исчезает из sidebar и
-  direct route, но остаётся в `All views` для restore.
+  исходного Saved View (`Save changes`) и отменить draft (`Cancel`). Новый
+  пользовательский archive для Saved View не создаётся; legacy archived View
+  исчезает из sidebar и direct route, но остаётся в `All views` только для
+  совместимого restore.
 - Delete SavedView отдельно переносит её в `Recently deleted` и не меняет ни
   одну Task. Restore возвращает ту же identity, base query, Display и scope;
   permanent purge удаляет только View и её direct grants. Ссылки filter AST на
