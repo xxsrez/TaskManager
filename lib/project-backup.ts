@@ -26,6 +26,10 @@ import {
   stageAttachmentBackupObjects,
 } from "./attachment-backup";
 import { restoreStoredFileStatements } from "./attachments";
+import {
+  projectRestorePurgeJobCleanupParameters,
+  projectRestorePurgeJobCleanupSql,
+} from "./system-backup-contract";
 
 type DbRow = Record<string, unknown>;
 
@@ -372,6 +376,12 @@ export async function applyProjectBackup(
   }
 
   const statements: D1PreparedStatement[] = [
+    db.prepare(projectRestorePurgeJobCleanupSql).bind(
+      ...projectRestorePurgeJobCleanupParameters(
+        session.project_id,
+        input.importId,
+      ),
+    ),
     db.prepare(`DELETE FROM comment_attachment_refs WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(session.project_id),
@@ -482,7 +492,7 @@ async function validateLiveDependenciesAndCollisions(
     db.prepare("SELECT id, owner_user_id, name, category FROM workflow_statuses"),
     db.prepare("SELECT id, owner_user_id, name FROM labels"),
     db.prepare("SELECT id FROM users"),
-    db.prepare("SELECT id, public_id, owner_user_id, task_code, archived_at FROM projects WHERE id <> ?").bind(backup.projectId),
+    db.prepare("SELECT id, public_id, owner_user_id, task_code, archived_at, deleted_at FROM projects WHERE id <> ?").bind(backup.projectId),
     db.prepare("SELECT id, public_id, project_id, identifier, sequence_number FROM tasks WHERE project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT id, public_id FROM releases WHERE project_id <> ?").bind(backup.projectId),
     db.prepare("SELECT id, public_id FROM saved_views WHERE scope_project_id IS NULL OR scope_project_id <> ?").bind(backup.projectId),
@@ -558,15 +568,15 @@ async function validateLiveDependenciesAndCollisions(
   }
   const referencedUsers = new Set<string>();
   const add = (value: unknown) => { if (typeof value === "string" && value) referencedUsers.add(value); };
-  for (const project of backup.tables.projects) { add(project.owner_user_id); add(project.creator_user_id); add(project.lead_user_id); }
-  for (const release of backup.tables.releases) { add(release.owner_user_id); add(release.creator_user_id); }
-  for (const task of backup.tables.tasks) { add(task.owner_user_id); add(task.creator_user_id); add(task.assignee_user_id); }
+  for (const project of backup.tables.projects) { add(project.owner_user_id); add(project.creator_user_id); add(project.lead_user_id); add(project.deleted_by_user_id); }
+  for (const release of backup.tables.releases) { add(release.owner_user_id); add(release.creator_user_id); add(release.deleted_by_user_id); }
+  for (const task of backup.tables.tasks) { add(task.owner_user_id); add(task.creator_user_id); add(task.assignee_user_id); add(task.deleted_by_user_id); }
   for (const attachment of backup.tables.attachments) add(attachment.uploader_user_id);
   for (const comment of backup.tables.comments) { add(comment.author_user_id); add(comment.resolved_by_user_id); }
   for (const event of backup.tables.activity_events) add(event.actor_user_id);
   for (const reaction of backup.tables.comment_reactions) add(reaction.user_id);
   for (const relation of backup.tables.task_relations) add(relation.creator_user_id);
-  for (const view of backup.tables.saved_views) add(view.owner_user_id);
+  for (const view of backup.tables.saved_views) { add(view.owner_user_id); add(view.deleted_by_user_id); }
   for (const record of backup.tables.external_records) add(record.owner_user_id);
   for (const id of referencedUsers) if (!users.has(id)) throw new ValidationError("Project backup references a user that no longer exists in this Site");
   assertNoEntityCollisions(backup, results.slice(3, 8), results[8]);
@@ -635,7 +645,8 @@ function assertNoEntityCollisions(
   collision(results[0].results, backup.tables.projects, ["id", "public_id"]);
   for (const row of results[0].results as DbRow[]) for (const project of backup.tables.projects) {
     if (
-      row.archived_at === null && project.archived_at === null &&
+      row.archived_at === null && row.deleted_at === null &&
+      project.archived_at === null && project.deleted_at === null &&
       row.owner_user_id === project.owner_user_id && row.task_code === project.task_code
     ) throw new ValidationError(`Project code ${String(project.task_code)} is already in use`);
   }

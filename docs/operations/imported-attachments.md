@@ -96,7 +96,7 @@ JSON или mapped links — отдельная destructive операция и 
 - При failed native create общий Attachment path удаляет новый object либо
   оставляет explicit failed metadata для bounded cleanup; outcome остаётся
   `blocked`.
-- При ошибке после migration восстановите current schema `13` system backup вместе с
+- При ошибке после migration восстановите current schema `14` system backup вместе с
   его verified attachment originals. Restore выдаёт новые environment-scoped
   object keys и не переиспользует source/live keys.
 - Не удаляйте production data, R2 objects или source evidence без отдельной

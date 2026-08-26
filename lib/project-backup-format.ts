@@ -17,7 +17,7 @@ import { isProjectTaskCode, PROJECT_TASK_CODE_ERROR } from "./project-task-code"
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 13 as const;
+export const projectBackupSchemaVersion = 14 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -58,7 +58,7 @@ export type ProjectSharingDescriptor = {
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -121,6 +121,52 @@ const legacyTaskDefinition: TableDefinition = {
     parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
     completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
     comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+  },
+};
+
+const legacyDeletionProjectDefinition: TableDefinition = {
+  name: "projects",
+  columns: ["id", "public_id", "owner_user_id", "creator_user_id", "name", "task_code", "task_sequence", "code_locked_at", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: {
+    task_sequence: { number: true, integer: true }, code_locked_at: { nullable: true },
+    lead_user_id: { nullable: true }, start_date: { nullable: true },
+    target_date: { nullable: true }, archived_at: { nullable: true },
+    version: { number: true, integer: true },
+  },
+};
+
+const legacyDeletionReleaseDefinition: TableDefinition = {
+  name: "releases",
+  columns: ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "version", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: {
+    target_date: { nullable: true }, released_at: { nullable: true },
+    version: { number: true, integer: true },
+  },
+};
+
+const legacyDeletionTaskDefinition: TableDefinition = {
+  name: "tasks",
+  columns: ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: {
+    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true },
+    project_id: { nullable: true }, release_id: { nullable: true },
+    estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true },
+    parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
+    completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
+    comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+  },
+};
+
+const legacyDeletionSavedViewDefinition: TableDefinition = {
+  name: "saved_views",
+  columns: ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "archived_at", "version", "created_at", "updated_at"],
+  orderBy: "id",
+  shapes: {
+    scope_project_id: { nullable: true }, archived_at: { nullable: true },
+    version: { number: true, integer: true },
   },
 };
 
@@ -218,7 +264,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const legacyAttachmentMigration = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 10;
   const legacyLabelGroups = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 11;
   const legacyCommentAttachmentRefs = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 12;
-  const supported = payload.schemaVersion === 2 || payload.schemaVersion === 3 || payload.schemaVersion === 4 || payload.schemaVersion === 5 || payload.schemaVersion === 6 || payload.schemaVersion === 7 || payload.schemaVersion === 8 || payload.schemaVersion === 9 || payload.schemaVersion === 10 || payload.schemaVersion === 11 || payload.schemaVersion === 12 || payload.schemaVersion === projectBackupSchemaVersion;
+  const legacyDeletionState = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 13;
+  const supported = typeof payload.schemaVersion === "number" && payload.schemaVersion >= 2 && payload.schemaVersion <= projectBackupSchemaVersion;
   exactKeys(payload, withoutAttachments ? [
     "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
     "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
@@ -265,8 +312,14 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     }
     const sourceDefinition = legacyIdentifiers && table.name === "projects"
       ? legacyProjectDefinition
+      : legacyDeletionState && table.name === "projects"
+        ? legacyDeletionProjectDefinition
       : legacyIdentifiers && table.name === "tasks"
         ? legacyTaskDefinition
+      : legacyDeletionState && table.name === "tasks"
+        ? legacyDeletionTaskDefinition
+      : legacyDeletionState && table.name === "releases"
+        ? legacyDeletionReleaseDefinition
       : legacyWorkflow && table.name === "workflow_statuses"
       ? legacyWorkflowStatusDefinition
       : legacyRelations && table.name === "task_relations"
@@ -281,6 +334,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
       : legacySavedViews && table.name === "saved_views" &&
           !values.some((row) => Object.hasOwn(object(row, "saved view"), "archived_at"))
         ? legacySavedViewDefinition
+      : legacyDeletionState && table.name === "saved_views"
+        ? legacyDeletionSavedViewDefinition
         : table;
     sourceNormalizedTables[table.name] = values.map((row, index) =>
       normalizeRow(sourceDefinition, row, index),
@@ -329,14 +384,20 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     if (legacyCommentAttachmentRefs && name === "comment_attachment_refs") continue;
     if (claimedCounts[name] !== count) throw new ValidationError(`Count mismatch for ${name}`);
   }
-  validateProjectRelationships(tables, sharing, body, !legacyCommentAttachmentRefs);
+  validateProjectRelationships(
+    tables,
+    sharing,
+    body,
+    !legacyCommentAttachmentRefs,
+    !legacyDeletionState,
+  );
   const objects = withoutAttachments
     ? []
     : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
@@ -378,9 +439,14 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   if (payload.sha256 !== checksum) {
     throw new ValidationError("Project backup checksum does not match its content");
   }
+  if (legacyDeletionState) {
+    tables = upgradeLegacyProjectDeletionState(tables);
+    validateProjectDeletionStates(tables);
+  }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+    tables,
     objects,
     sha256: checksum,
   } as ProjectBackup;
@@ -391,6 +457,7 @@ function validateProjectRelationships(
   sharing: ProjectSharingDescriptor[],
   identity: { projectId: string; projectPublicId: string; projectName: string; ownerUserId: string },
   validateCommentAttachmentRefs = true,
+  validateDeletionState = true,
 ) {
   if (tables.projects.length !== 1) throw new ValidationError("Project backup must contain exactly one project");
   const project = tables.projects[0]!;
@@ -404,6 +471,7 @@ function validateProjectRelationships(
   if (!Number.isSafeInteger(project.task_sequence) || Number(project.task_sequence) < 0) {
     throw new ValidationError("Project task sequence must be a non-negative integer");
   }
+  if (validateDeletionState) validateProjectDeletionStates(tables);
 
   const tasks = unique(tables.tasks, "id", "task");
   const comments = unique(tables.comments, "id", "comment");
@@ -981,6 +1049,51 @@ function validateProjectRelationships(
     if (grantees.has(descriptor.granteeUserId)) throw new ValidationError("Duplicate project sharing descriptor");
     grantees.add(descriptor.granteeUserId);
   }
+}
+
+function validateProjectDeletionStates(tables: ProjectBackupTables) {
+  for (const [entity, rows] of [
+    ["Project", tables.projects],
+    ["Release", tables.releases],
+    ["Task", tables.tasks],
+    ["Saved view", tables.saved_views],
+  ] as const) {
+    for (const row of rows) {
+      const values = [row.deleted_at, row.deleted_by_user_id, row.purge_after];
+      const empty = values.every((value) => value === null);
+      const complete = values.every((value) => typeof value === "string" && value.length > 0);
+      if (!empty && !complete) {
+        throw new ValidationError(`${entity} deletion state must be entirely empty or complete`);
+      }
+      if (empty) continue;
+      const deletedAt = Date.parse(String(row.deleted_at));
+      const purgeAfter = Date.parse(String(row.purge_after));
+      if (Number.isNaN(deletedAt) || Number.isNaN(purgeAfter)) {
+        throw new ValidationError(`${entity} deletion timestamps are invalid`);
+      }
+      if (purgeAfter <= deletedAt) {
+        throw new ValidationError(`${entity} purge_after must be later than deleted_at`);
+      }
+    }
+  }
+}
+
+function upgradeLegacyProjectDeletionState(
+  source: ProjectBackupTables,
+): ProjectBackupTables {
+  const withoutDeletionState = (row: BackupRow): BackupRow => ({
+    ...row,
+    deleted_at: null,
+    deleted_by_user_id: null,
+    purge_after: null,
+  });
+  return {
+    ...source,
+    projects: source.projects.map(withoutDeletionState),
+    releases: source.releases.map(withoutDeletionState),
+    tasks: source.tasks.map(withoutDeletionState),
+    saved_views: source.saved_views.map(withoutDeletionState),
+  };
 }
 
 function upgradeLegacyProjectWorkflow(source: ProjectBackupTables): ProjectBackupTables {

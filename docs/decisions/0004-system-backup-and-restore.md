@@ -40,6 +40,15 @@ Activity и не получают выдуманный backfill из текущ�
 совпадает с lifetime Task, а существующие 5 000 rows/table, 10 MB/container и
 1.5 MB/row guards отклоняют oversized export целиком.
 
+Дополнение 2026-08-26: единый recoverable deletion contract повышает
+`schemaVersion` до `14`. Snapshot сохраняет `deleted_at`,
+`deleted_by_user_id` и `purge_after` у Projects, Releases, Tasks и SavedViews;
+tuple только all-null либо all-set, actor существует, timestamps валидны и
+cutoff позже delete. Schemas `2`–`13` сначала проверяются по исходному checksum
+и только затем получают три `NULL` поля. Operational `entity_purge_jobs` не
+переносится: restore восстанавливает product deletion state, а новый runtime
+создаёт retry coordination при фактическом purge.
+
 ## Контекст
 
 Task Manager хранит структурированное product state в Sites D1: Users,
@@ -64,10 +73,10 @@ admin boundary.
    SQLite/SQL dump. Он включает все product, identity, ownership, ACL,
    provenance, native/historical comments, append-only Task Activity,
    reconciliation outcomes, reactions
-   и archived records, но не
+   archived records и recoverable deletion tuple, но не
    schema/migrations, hosted secrets,
-   Sites audience/deployments/analytics, browser-local preferences и
-   operational import staging и API credentials. Token hash является
+   Sites audience/deployments/analytics, browser-local preferences,
+   operational import/purge staging и API credentials. Token hash является
    authentication capability, а не переносимым product data.
 3. Export выполняет server-side admin check до чтения cross-user данных,
    считывает все включённые таблицы в одной D1 batch transaction и отдаёт файл
@@ -101,6 +110,11 @@ admin boundary.
     description ref блокируют export/validation до mutation. Container больше
     лимита отклоняется; unbounded base64 и неатомарный partial restore не
     являются fallback.
+13. Permanent Task/Project purge удаляет R2 originals до финального удаления
+    D1 metadata. Ошибка оставляет durable retryable operational job; logical
+    backup не переносит этот job и не может объявить незавершённый cleanup
+    выполненным. Bounded maintenance после `purge_after` не гарантирует точное
+    wall-clock время физического удаления.
 
 ## Последствия
 

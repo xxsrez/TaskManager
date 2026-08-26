@@ -11,6 +11,10 @@ import {
   validateProjectBackup,
   type ProjectBackupTables,
 } from "../lib/project-backup-format";
+import {
+  projectRestorePurgeJobCleanupParameters,
+  projectRestorePurgeJobCleanupSql,
+} from "../lib/system-backup-contract";
 
 const now = "2026-08-14T12:00:00.000Z";
 
@@ -27,13 +31,87 @@ test("project bundle validates one exact subtree without user identities", async
     externalRelationsOmitted: 1,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 13);
+  assert.equal(backup.schemaVersion, 14);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.counts.sharing, 1);
   assert.equal(validated.warnings.externalRelationsOmitted, 1);
   assert.equal("users" in validated.tables, false);
+});
+
+test("project restore clears live and incoming subtree purge jobs but preserves unrelated jobs", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE projects (id TEXT PRIMARY KEY);
+    CREATE TABLE releases (id TEXT PRIMARY KEY, project_id TEXT);
+    CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT);
+    CREATE TABLE saved_views (id TEXT PRIMARY KEY, scope_project_id TEXT);
+    CREATE TABLE user_import_rows (
+      import_id TEXT NOT NULL,
+      row_type TEXT NOT NULL,
+      row_json TEXT NOT NULL
+    );
+    CREATE TABLE entity_purge_jobs (
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      PRIMARY KEY (entity_type, entity_id)
+    );
+    INSERT INTO projects (id) VALUES ('project-1'), ('project-other');
+    INSERT INTO releases (id, project_id) VALUES
+      ('release-live', 'project-1'), ('release-other', 'project-other');
+    INSERT INTO tasks (id, project_id) VALUES
+      ('task-live', 'project-1'), ('task-other', 'project-other');
+    INSERT INTO saved_views (id, scope_project_id) VALUES
+      ('view-live', 'project-1'), ('view-other', 'project-other');
+  `);
+  const importId = "user-import:purge-cleanup";
+  const insertIncoming = database.prepare(
+    "INSERT INTO user_import_rows (import_id, row_type, row_json) VALUES (?, ?, ?)",
+  );
+  for (const [rowType, id] of [
+    ["projects", "project-1"],
+    ["releases", "release-incoming"],
+    ["tasks", "task-incoming"],
+    ["saved_views", "view-incoming"],
+  ]) {
+    insertIncoming.run(importId, rowType, JSON.stringify({ id }));
+  }
+  const insertJob = database.prepare(
+    "INSERT INTO entity_purge_jobs (entity_type, entity_id) VALUES (?, ?)",
+  );
+  for (const [entityType, entityId] of [
+    ["project", "project-1"],
+    ["release", "release-live"],
+    ["release", "release-incoming"],
+    ["task", "task-live"],
+    ["task", "task-incoming"],
+    ["saved_view", "view-live"],
+    ["saved_view", "view-incoming"],
+    ["project", "project-other"],
+    ["release", "release-other"],
+    ["task", "task-other"],
+    ["saved_view", "view-other"],
+  ]) {
+    insertJob.run(entityType, entityId);
+  }
+
+  database.prepare(projectRestorePurgeJobCleanupSql).run(
+    ...projectRestorePurgeJobCleanupParameters("project-1", importId),
+  );
+
+  assert.deepEqual(
+    database.prepare(
+      "SELECT entity_type, entity_id FROM entity_purge_jobs ORDER BY entity_type, entity_id",
+    ).all().map((row) => ({ ...row })),
+    [
+      { entity_type: "project", entity_id: "project-other" },
+      { entity_type: "release", entity_id: "release-other" },
+      { entity_type: "saved_view", entity_id: "view-other" },
+      { entity_type: "task", entity_id: "task-other" },
+    ],
+  );
+  database.close();
 });
 
 test("project backup validates and restores an expanded Project code", async () => {
@@ -182,6 +260,7 @@ test("schema 2 project bundles without attachments remain importable", async () 
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   tables.labels = current.tables.labels.map(legacyLabelRow);
+  stripDeletionState(tables);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
   );
@@ -228,6 +307,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
     labels: current.tables.labels.map(legacyLabelRow),
     comments: current.tables.comments.map(legacyCommentRow),
   };
+  stripDeletionState(tables);
   const body = {
     ...current,
     schemaVersion: 3,
@@ -260,12 +340,14 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
     labels: current.tables.labels.map(legacyLabelRow),
     comments: current.tables.comments.map(legacyCommentRow),
   };
+  stripDeletionState(tables);
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
     counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
   };
+  stripDeletionState(unsigned.tables);
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
   const validated = await validateProjectBackup(legacy);
@@ -293,6 +375,7 @@ test("schema 6 project bundles upgrade Label catalog metadata and keep assignmen
     },
     counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
   };
+  stripDeletionState(unsigned.tables);
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
   const validated = await validateProjectBackup(legacy);
@@ -315,6 +398,7 @@ test("schema 10 project bundles remain importable with empty attachment migratio
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
   );
+  stripDeletionState(tables);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
   );
@@ -352,6 +436,7 @@ test("schema 12 project bundles remain importable with an empty comment attachme
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
   );
+  stripDeletionState(tables);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
   );
@@ -394,6 +479,7 @@ test("schema 13 project bundles require the comment attachment index", async () 
     Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
   );
   const body = { ...current, tables, counts };
+  stripDeletionState(body.tables);
   delete (body as Partial<typeof current>).sha256;
   await assert.rejects(
     validateProjectBackup({
@@ -402,6 +488,85 @@ test("schema 13 project bundles require the comment attachment index", async () 
     }),
     /comment_attachment_refs/i,
   );
+});
+
+test("schema 14 project bundles preserve shadow deletion without reviving deleted children", async () => {
+  const tables = validProjectTables();
+  const purgeAfter = "2026-09-13T12:00:00.000Z";
+  tables.projects[0]!.deleted_at = now;
+  tables.projects[0]!.deleted_by_user_id = "user-owner";
+  tables.projects[0]!.purge_after = purgeAfter;
+  tables.tasks[0]!.deleted_at = now;
+  tables.tasks[0]!.deleted_by_user_id = "user-owner";
+  tables.tasks[0]!.purge_after = purgeAfter;
+
+  const validated = await validateProjectBackup(await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables,
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  }));
+
+  assert.equal(validated.schemaVersion, 14);
+  assert.equal(validated.tables.projects[0]?.deleted_at, now);
+  assert.equal(validated.tables.tasks[0]?.deleted_at, now);
+  assert.equal(validated.tables.tasks[1]?.deleted_at, null);
+});
+
+test("schema 14 project bundles reject incomplete or invalid deletion tuples", async () => {
+  const incomplete = validProjectTables();
+  incomplete.releases[0]!.deleted_at = now;
+  await assert.rejects(
+    createProjectBackup({
+      siteOrigin: "https://task-manager.example", tables: incomplete,
+      sharing: [], externalRelationsOmitted: 0, exportedAt: now,
+    }),
+    /deletion state must be entirely empty or complete/i,
+  );
+
+  const invalidCutoff = validProjectTables();
+  invalidCutoff.saved_views[0]!.deleted_at = now;
+  invalidCutoff.saved_views[0]!.deleted_by_user_id = "user-owner";
+  invalidCutoff.saved_views[0]!.purge_after = now;
+  await assert.rejects(
+    createProjectBackup({
+      siteOrigin: "https://task-manager.example", tables: invalidCutoff,
+      sharing: [], externalRelationsOmitted: 0, exportedAt: now,
+    }),
+    /purge_after must be later than deleted_at/i,
+  );
+});
+
+test("schema 13 project bundles gain empty deletion tuples only after checksum validation", async () => {
+  const current = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 0,
+    exportedAt: now,
+  });
+  const tables = structuredClone(current.tables) as unknown as Record<string, unknown>;
+  stripDeletionState(tables);
+  const body = {
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    schemaVersion: 13,
+    tables,
+  };
+  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
+  const validated = await validateProjectBackup(legacy);
+
+  assert.equal(validated.schemaVersion, 13);
+  for (const tableName of ["projects", "releases", "tasks", "saved_views"] as const) {
+    for (const row of validated.tables[tableName]) {
+      assert.equal(row.deleted_at, null);
+      assert.equal(row.deleted_by_user_id, null);
+      assert.equal(row.purge_after, null);
+    }
+  }
+
+  (legacy.tables as Record<string, Array<Record<string, unknown>>>).tasks[0]!.title = "Tampered";
+  await assert.rejects(validateProjectBackup(legacy), /checksum/i);
 });
 
 test("project bundle rejects tampering after checksum", async () => {
@@ -496,13 +661,16 @@ function validProjectTables(): ProjectBackupTables {
       task_code: "TM", task_sequence: 2, code_locked_at: now,
       summary: "", description: "", status: "active", lead_user_id: null,
       start_date: null, target_date: null, icon: "cube", color: "#8b7cf6",
-      archived_at: null, version: 1, created_at: now, updated_at: now,
+      archived_at: null, deleted_at: null, deleted_by_user_id: null,
+      purge_after: null, version: 1, created_at: now, updated_at: now,
     }],
     releases: [{
       id: "release-1", public_id: "22222222-2222-4222-8222-222222222222",
       project_id: "project-1", owner_user_id: "user-owner", creator_user_id: "user-owner",
       name: "UAT", description: "", status: "active", target_date: null,
-      released_at: null, release_notes: "", version: 1, created_at: now, updated_at: now,
+      released_at: null, release_notes: "", deleted_at: null,
+      deleted_by_user_id: null, purge_after: null, version: 1,
+      created_at: now, updated_at: now,
     }],
     tasks: [
       {
@@ -512,7 +680,8 @@ function validProjectTables(): ProjectBackupTables {
         priority: "none", assignee_user_id: null, project_id: "project-1",
         release_id: "release-1", estimate: null, due_date: null, parent_task_id: null,
         rank: 1000, started_at: null, completed_at: null, canceled_at: null,
-        archived_at: null, comment_count: 1, version: 1, created_at: now, updated_at: now,
+        archived_at: null, deleted_at: null, deleted_by_user_id: null,
+        purge_after: null, comment_count: 1, version: 1, created_at: now, updated_at: now,
       },
       {
         id: "task-2", public_id: "44444444-4444-4444-8444-444444444444",
@@ -521,7 +690,8 @@ function validProjectTables(): ProjectBackupTables {
         priority: "high", assignee_user_id: null, project_id: "project-1",
         release_id: null, estimate: 3, due_date: null, parent_task_id: "task-1",
         rank: 2000, started_at: null, completed_at: null, canceled_at: null,
-        archived_at: null, comment_count: 0, version: 1, created_at: now, updated_at: now,
+        archived_at: null, deleted_at: null, deleted_by_user_id: null,
+        purge_after: null, comment_count: 0, version: 1, created_at: now, updated_at: now,
       },
     ],
     task_identifier_aliases: [],
@@ -553,7 +723,9 @@ function validProjectTables(): ProjectBackupTables {
     saved_views: [{
       id: "view-1", public_id: "55555555-5555-4555-8555-555555555555",
       owner_user_id: "user-owner", name: "Project view", scope_project_id: "project-1",
-      query_json: "{}", display_json: "{}", archived_at: null, version: 1, created_at: now, updated_at: now,
+      query_json: "{}", display_json: "{}", archived_at: null,
+      deleted_at: null, deleted_by_user_id: null, purge_after: null,
+      version: 1, created_at: now, updated_at: now,
     }],
     external_records: [{
       id: "external-1", owner_user_id: "user-owner", target_type: "task",
@@ -638,6 +810,18 @@ function legacyCommentRow(row: Record<string, string | number | null>) {
   );
 }
 
+function stripDeletionState(tables: Record<string, unknown>) {
+  for (const tableName of ["projects", "releases", "tasks", "saved_views"]) {
+    const rows = tables[tableName];
+    if (!Array.isArray(rows)) continue;
+    tables[tableName] = rows.map((row) => Object.fromEntries(
+      Object.entries(row as Record<string, unknown>).filter(
+        ([key]) => !["deleted_at", "deleted_by_user_id", "purge_after"].includes(key),
+      ),
+    ));
+  }
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -658,6 +842,7 @@ function migratedDatabase() {
     "0028_hot_obadiah_stane.sql",
     "0029_steep_joseph.sql",
     "0032_expand_project_task_codes.sql",
+    "0033_amused_catseye.sql",
   ]) database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   return database;
 }

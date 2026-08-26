@@ -59,6 +59,22 @@ export function upgradeLegacySystemUsers(source: BackupTables): BackupTables {
   };
 }
 
+export function upgradeLegacySystemDeletionState(source: BackupTables): BackupTables {
+  const withoutDeletionState = (row: BackupRow): BackupRow => ({
+    ...row,
+    deleted_at: null,
+    deleted_by_user_id: null,
+    purge_after: null,
+  });
+  return {
+    ...source,
+    projects: source.projects.map(withoutDeletionState),
+    releases: source.releases.map(withoutDeletionState),
+    tasks: source.tasks.map(withoutDeletionState),
+    saved_views: source.saved_views.map(withoutDeletionState),
+  };
+}
+
 export function upgradeLegacySystemRelations(source: BackupTables): BackupTables {
   return {
     ...source,

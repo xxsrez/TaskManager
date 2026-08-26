@@ -31,6 +31,7 @@ import {
   stageAttachmentBackupObjects,
 } from "./attachment-backup";
 import { restoreStoredFileStatements } from "./attachments";
+import { systemRestoreOperationalResetSql } from "./system-backup-contract";
 
 export { maxSystemBackupBytes } from "./system-backup-format";
 
@@ -179,6 +180,7 @@ export async function applySystemBackup(
   }
 
   const statements: D1PreparedStatement[] = [];
+  statements.push(db.prepare(systemRestoreOperationalResetSql));
   statements.push(db.prepare("DELETE FROM task_sequences"));
   // OAuth grants/tokens and personal API credentials are deliberately excluded
   // from logical backups. A full restore revokes every authentication

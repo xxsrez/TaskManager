@@ -60,11 +60,11 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 
 | Модуль | Ответственность |
 |---|---|
-| Tasks | Task lifecycle, workflow, labels, subtasks, relations, rank |
+| Tasks | Task lifecycle, archive/delete/restore, workflow, labels, subtasks, relations, rank |
 | Comments | ACL-scoped native threads, idempotency, reactions и resolution |
-| Attachments | D1 metadata, private R2 objects, sniffing, range delivery, legacy reconciliation и cleanup |
-| Projects | Versioned Project metadata/lifecycle, lead/access guards, archive/restore и вычисляемый progress |
-| Releases | Release lifecycle, состав и project consistency |
+| Attachments | D1 metadata, private R2 objects, sniffing, range delivery, legacy reconciliation и R2-first purge cleanup |
+| Projects | Versioned metadata/lifecycle, lead/access guards, archive и deletion shadow subtree |
+| Releases | Release lifecycle, recoverable delete, сохранённый состав и project consistency |
 | Views | Filter AST, query compilation, grouping, ordering, display config |
 | Search | Identifier lookup и text search поверх разрешённого scope |
 | Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User и versioned Profile/Settings |
@@ -401,6 +401,44 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    authoritative record без reload. Agent Project/Release detail остаётся
    read-only и возвращает актуальные lifecycle fields/version.
 
+### Recoverable deletion и purge
+
+1. Task/Project/Release/SavedView delete и restore являются отдельными
+   versioned commands, а не значением `archived_at`. Repository повторяет
+   current effective Editor+ ACL и version в guarded UPDATE. Delete одной
+   server transaction назначает `deleted_at`, server actor и
+   `purge_after = deleted_at + 30 days`; restore очищает весь tuple и запрещён
+   после cutoff.
+2. Ordinary repository reads всегда исключают собственный `deleted_at` и
+   records под deleted Project. `Recently deleted` имеет отдельные ACL-scoped
+   queries и не переиспользует unscoped search/catalog. Delete создаёт sync
+   remove для рабочих projections, restore — upsert; stale cursor по-прежнему
+   приводит к безопасному reset.
+3. Project delete меняет только root tuple. Subtree скрывается через Project
+   predicate, поэтому child с собственным deletion tuple сохраняет его. Restore
+   Project очищает только root; отдельно deleted child остаётся вне ordinary
+   reads. Permanent Project purge получает counts, owner confirmation и один
+   cascade plan.
+4. Release delete не меняет `tasks.release_id`; ordinary Task projection и
+   filter executor трактуют deleted Release как неактивную membership. Restore
+   снова разрешает тот же ref. Permanent Release purge одной D1 transaction
+   очищает ссылки Tasks и удаляет Release. SavedView delete не меняет Tasks;
+   permanent purge удаляет только View и direct grants.
+5. Filter compiler разрешает catalog refs после ACL и active/deletion scope.
+   Deleted, purged или недоступный ref остаётся unresolved predicate с no
+   matches, а не удаляется из AST; suggestions и errors не возвращают его имя
+   или existence detail.
+6. Current Owner может permanent purge после отдельного confirmation. Для
+   metadata-only entity финальная D1 transaction идемпотентна. Для Task/Project
+   operational `entity_purge_jobs` сначала atomically claims bounded work,
+   удаляет все R2 originals и только после их подтверждённого отсутствия
+   финализирует D1 cascade. Partial R2 failure сохраняет job для retry и не
+   удаляет metadata преждевременно.
+7. Maintenance opportunistic: request path не чаще bounded throttle выбирает
+   expired rows/jobs небольшими batches. `purge_after` — точный restore cutoff,
+   но не SLA физического удаления; delayed run не возвращает restore право.
+   Operational jobs и maintenance checkpoints не входят в logical backup.
+
 ## API-принципы
 
 - Commands выражают доменное намерение, когда обычный PATCH может создать
@@ -463,7 +501,9 @@ bootstrap/reset объединяется с уже загруженным catalo
 revoke/delete отсутствующей записи; удаление применяет explicit sync remove,
 targeted not-found или snapshot с `catalogCoverage=complete`.
 SavedView создаётся через `POST /api/views`, а rename/query/display/scope и
-reversible archive/restore — через versioned `PATCH /api/views/{id}`. Одна
+reversible archive/restore — через versioned `PATCH /api/views/{id}`. Separate
+delete/restore commands меняют deletion tuple, а owner-only purge требует
+отдельного confirmation. Одна
 команда сохраняет query и полный Display JSON; D1 update trigger публикует
 authoritative upsert в workspace sync. Клиент удаляет архивный View из sidebar
 и активного route сразу после mutation либо sync из второй сессии.
@@ -673,7 +713,8 @@ optional/standalone Task semantics из ранних решений: кажда�
   повторяют UI, backup validators, OpenAPI projection и D1 insert/update guards;
 - `task_identifier_aliases` с нормализованным lookup index для прежних
   identifiers;
-- индексы по owner/status/archive, project/release и updated time;
+- индексы по owner/status/archive/deletion, `purge_after`, project/release и
+  updated time;
 - expression indexes по нормализованным task title/identifier, project
   name/summary и release name для prefix search;
 - versioned owner catalog `labels` с partial uniqueness active name и
@@ -704,6 +745,9 @@ optional/standalone Task semantics из ранних решений: кажда�
 - `workspace_sync_invalidations` как транзакционная trigger queue для fan-out
   bounded label context и ID-only invalidations остального lazy task context,
   а `workspace_sync_maintenance` — для throttled retention;
+- nullable all-or-none deletion tuple у Projects, Releases, Tasks и SavedViews;
+  operational `entity_purge_jobs` хранит claim/retry R2-first purge и намеренно
+  исключён из system/Project logical backup;
 - constraint или transactional validation project/release consistency;
 - стратегия fractional/lexicographic ranks с периодической локальной
   нормализацией.
@@ -779,6 +823,11 @@ User preferences.
     index equality для live native comments. Validators schema `2`–`12` после
     проверки исходного checksum добавляют пустой index для backward
     compatibility, не сканируя legacy bodies в restore edge set.
+14. Schema `14` переносит all-null/all-set deletion tuple Projects, Releases,
+    Tasks и SavedViews. `deleted_by_user_id` обязан ссылаться на User snapshot,
+    timestamps валидны и cutoff позже delete. Schemas `2`–`13` проверяются по
+    исходному checksum body и только затем получают три `NULL` поля.
+    `entity_purge_jobs` и maintenance checkpoints operational и не переносятся.
 
 ### Project backup и restore
 
@@ -796,11 +845,14 @@ User preferences.
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
-6. Current schema `13` сохраняет historical comments, Activity,
+6. Current schema `14` сохраняет historical comments, Activity,
    LabelGroup topology, comment/activity/attachment reconciliation outcomes и
-   normalized live Comment attachment refs;
+   normalized live Comment attachment refs, а также deletion tuple Project,
+   Releases, Tasks и scoped SavedViews. Project restore сохраняет собственный
+   tuple child и не оживляет отдельно deleted record;
    schema `2`–`8` получает deterministic legacy upgrades после проверки
-   исходного checksum и до записи staging rows.
+   исходного checksum и до записи staging rows; schema `2`–`13` получает
+   all-null deletion tuple после той же исходной checksum validation.
 
 ## Надёжность и проверка
 
@@ -821,6 +873,10 @@ User preferences.
 - Project portability tests покрывают format/checksum, boundary validation и
   transaction rollback; owner scope дополнительно проверяется repository
   predicates и live smoke.
+- Deletion tests покрывают tuple integrity, Editor/Viewer/Owner boundary,
+  restore cutoff, project shadow и отдельно deleted child, lossless Release
+  membership, inert SavedView refs, sync remove/upsert, owner-only confirmation
+  и повторяемый R2-first purge после partial failure.
 - UI tests проверяют одинаковую grouping composition list/board,
   selection/bulk actions, keyboard controls, Peek, drag rollback и сохранение
   views; Miniflare/D1 integration tests дополнительно проходят repository ACL,
@@ -862,6 +918,10 @@ User preferences.
 - Project bundle остаётся чувствительным пользовательским content. Same-Site
   owner binding и no-store response обязательны; sharing descriptors не должны
   превращаться в implicit grants.
+- Opportunistic purge может физически завершиться позже `purge_after`; UI и API
+  должны считать cutoff границей restore, а не обещанием точного cleanup time.
+  R2 error нельзя маскировать удалением D1 metadata: durable job обязан
+  оставаться retryable до подтверждённого отсутствия originals.
 - Если agent API не отделить от UI snapshot, рост descriptions/comment history
   создаст большой token и privacy blast radius. Summary/detail boundary должна
   проверяться schema и integration tests, а не только дисциплиной клиента.

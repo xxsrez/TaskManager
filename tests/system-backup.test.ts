@@ -15,12 +15,13 @@ import {
   type BackupTables,
 } from "../lib/system-backup-format";
 import { restoreStoredFileSql } from "../lib/attachments";
+import { systemRestoreOperationalResetSql } from "../lib/system-backup-contract";
 
 const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 13);
+  assert.equal(backup.schemaVersion, 14);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -28,6 +29,33 @@ test("a complete system snapshot validates and preserves application data", asyn
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.tables.tasks[0]?.title, "Ship backup support");
   assert.equal(validated.tables.access_grants[0]?.permission, "full_access");
+});
+
+test("system backups omit operational purge jobs and restore clears every stale claim", () => {
+  assert.equal(
+    tableDefinitions.map((table) => String(table.name)).includes(
+      "entity_purge_jobs",
+    ),
+    false,
+  );
+  const database = new DatabaseSync(":memory:");
+  database.exec(`CREATE TABLE entity_purge_jobs (
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    PRIMARY KEY (entity_type, entity_id)
+  )`);
+  database.prepare(
+    "INSERT INTO entity_purge_jobs (entity_type, entity_id) VALUES (?, ?)",
+  ).run("task", "task-stale");
+
+  database.exec(systemRestoreOperationalResetSql);
+
+  assert.equal(
+    database.prepare("SELECT COUNT(*) AS count FROM entity_purge_jobs").get()
+      ?.count,
+    0,
+  );
+  database.close();
 });
 
 test("system backup validates and restores an expanded Project code", async () => {
@@ -166,6 +194,7 @@ test("schema 2 system backups without attachments remain importable", async () =
   tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
   tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
   tables.labels = current.tables.labels.map(legacyLabelRow);
+  stripDeletionState(tables);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
   );
@@ -202,6 +231,7 @@ test("schema 3 system backups synthesize reserved workflow metadata before resto
     labels: current.tables.labels.map(legacyLabelRow),
     comments: current.tables.comments.map(legacyCommentRow),
   };
+  stripDeletionState(tables);
   const counts = {
     ...Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     workflow_statuses: legacyStatuses.length,
@@ -234,12 +264,14 @@ test("schema 4 system backups upgrade legacy relation identity and concurrency m
     labels: current.tables.labels.map(legacyLabelRow),
     comments: current.tables.comments.map(legacyCommentRow),
   };
+  stripDeletionState(tables);
   const unsigned = {
     ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
     schemaVersion: 4,
     counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
   };
+  stripDeletionState(unsigned.tables);
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
   const validated = await validateSystemBackup(legacy);
@@ -261,6 +293,7 @@ test("schema 6 system backups upgrade Label catalog metadata and keep assignment
     },
     counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
   };
+  stripDeletionState(unsigned.tables);
   const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
 
   const validated = await validateSystemBackup(legacy);
@@ -277,6 +310,7 @@ test("schema 10 system backups remain importable with empty attachment migration
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
   );
+  stripDeletionState(tables);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
   );
@@ -303,6 +337,7 @@ test("schema 12 system backups remain importable with an empty comment attachmen
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
   );
+  stripDeletionState(tables);
   const counts = Object.fromEntries(
     Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
   );
@@ -334,6 +369,7 @@ test("schema 13 system backups require the comment attachment index", async () =
     Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
   );
   const body = { ...current, tables, counts };
+  stripDeletionState(body.tables);
   delete (body as Partial<typeof current>).sha256;
   await assert.rejects(
     validateSystemBackup({
@@ -342,6 +378,84 @@ test("schema 13 system backups require the comment attachment index", async () =
     }),
     /comment_attachment_refs/i,
   );
+});
+
+test("schema 14 system backups preserve recoverable deletion state and project shadowing", async () => {
+  const tables = validTables();
+  const purgeAfter = "2026-09-13T12:00:00.000Z";
+  for (const row of [
+    tables.projects[0]!,
+    tables.releases[0]!,
+    tables.tasks[0]!,
+    tables.saved_views[0]!,
+  ]) {
+    row.deleted_at = now;
+    row.deleted_by_user_id = "user-admin";
+    row.purge_after = purgeAfter;
+  }
+
+  const validated = await validateSystemBackup(
+    await createSystemBackup(tables, now),
+  );
+
+  assert.equal(validated.schemaVersion, 14);
+  assert.equal(validated.tables.projects[0]?.purge_after, purgeAfter);
+  assert.equal(validated.tables.releases[0]?.deleted_by_user_id, "user-admin");
+  assert.equal(validated.tables.tasks[0]?.deleted_at, now);
+  assert.equal(validated.tables.tasks[1]?.deleted_at, null);
+  assert.equal(validated.tables.saved_views[0]?.purge_after, purgeAfter);
+});
+
+test("schema 14 system backups reject incomplete or invalid deletion tuples", async () => {
+  const incomplete = validTables();
+  incomplete.tasks[0]!.deleted_at = now;
+  await assert.rejects(
+    validateSystemBackup(await createSystemBackup(incomplete, now)),
+    /deletion state must be entirely empty or complete/i,
+  );
+
+  const invalidCutoff = validTables();
+  invalidCutoff.saved_views[0]!.deleted_at = now;
+  invalidCutoff.saved_views[0]!.deleted_by_user_id = "user-admin";
+  invalidCutoff.saved_views[0]!.purge_after = now;
+  await assert.rejects(
+    validateSystemBackup(await createSystemBackup(invalidCutoff, now)),
+    /purge_after must be later than deleted_at/i,
+  );
+
+  const unknownActor = validTables();
+  unknownActor.releases[0]!.deleted_at = now;
+  unknownActor.releases[0]!.deleted_by_user_id = "missing-user";
+  unknownActor.releases[0]!.purge_after = "2026-09-13T12:00:00.000Z";
+  await assert.rejects(
+    validateSystemBackup(await createSystemBackup(unknownActor, now)),
+    /deleted_by_user_id references a missing User/i,
+  );
+});
+
+test("schema 13 system backups gain empty deletion tuples only after checksum validation", async () => {
+  const current = await createSystemBackup(validTables(), now);
+  const tables = structuredClone(current.tables) as unknown as Record<string, unknown>;
+  stripDeletionState(tables);
+  const body = {
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    schemaVersion: 13,
+    tables,
+  };
+  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
+  const validated = await validateSystemBackup(legacy);
+
+  assert.equal(validated.schemaVersion, 13);
+  for (const tableName of ["projects", "releases", "tasks", "saved_views"] as const) {
+    for (const row of validated.tables[tableName]) {
+      assert.equal(row.deleted_at, null);
+      assert.equal(row.deleted_by_user_id, null);
+      assert.equal(row.purge_after, null);
+    }
+  }
+
+  (legacy.tables as Record<string, Array<Record<string, unknown>>>).tasks[0]!.title = "Tampered";
+  await assert.rejects(validateSystemBackup(legacy), /checksum does not match/i);
 });
 
 test("snapshot validation rejects content changed after export", async () => {
@@ -645,6 +759,9 @@ function validTables(): BackupTables {
         icon: "cube",
         color: "#8b7cf6",
         archived_at: null,
+        deleted_at: null,
+        deleted_by_user_id: null,
+        purge_after: null,
         version: 1,
         created_at: now,
         updated_at: now,
@@ -663,6 +780,9 @@ function validTables(): BackupTables {
         target_date: null,
         released_at: null,
         release_notes: "",
+        deleted_at: null,
+        deleted_by_user_id: null,
+        purge_after: null,
         version: 1,
         created_at: now,
         updated_at: now,
@@ -691,6 +811,9 @@ function validTables(): BackupTables {
         completed_at: null,
         canceled_at: null,
         archived_at: null,
+        deleted_at: null,
+        deleted_by_user_id: null,
+        purge_after: null,
         comment_count: 1,
         version: 1,
         created_at: now,
@@ -718,6 +841,9 @@ function validTables(): BackupTables {
         completed_at: null,
         canceled_at: null,
         archived_at: null,
+        deleted_at: null,
+        deleted_by_user_id: null,
+        purge_after: null,
         comment_count: 0,
         version: 1,
         created_at: now,
@@ -798,6 +924,9 @@ function validTables(): BackupTables {
         query_json: "{}",
         display_json: "{}",
         archived_at: null,
+        deleted_at: null,
+        deleted_by_user_id: null,
+        purge_after: null,
         version: 1,
         created_at: now,
         updated_at: now,
@@ -907,6 +1036,18 @@ function legacyCommentRow(row: Record<string, string | number | null>) {
   );
 }
 
+function stripDeletionState(tables: Record<string, unknown>) {
+  for (const tableName of ["projects", "releases", "tasks", "saved_views"]) {
+    const rows = tables[tableName];
+    if (!Array.isArray(rows)) continue;
+    tables[tableName] = rows.map((row) => Object.fromEntries(
+      Object.entries(row as Record<string, unknown>).filter(
+        ([key]) => !["deleted_at", "deleted_by_user_id", "purge_after"].includes(key),
+      ),
+    ));
+  }
+}
+
 function migratedDatabase() {
   const database = new DatabaseSync(":memory:");
   for (const migration of [
@@ -942,6 +1083,7 @@ function migratedDatabase() {
     "0029_steep_joseph.sql",
     "0030_absurd_blacklash.sql",
     "0032_expand_project_task_codes.sql",
+    "0033_amused_catseye.sql",
   ]) {
     database.exec(readFileSync(join(process.cwd(), "drizzle", migration), "utf8"));
   }

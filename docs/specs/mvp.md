@@ -72,7 +72,8 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   server-side до создания session.
 - Каноническая Settings surface доступна по section routes
   `/settings/profile`, `/settings/appearance`, `/settings/workflow-statuses`,
-  `/settings/labels`, `/settings/integrations` и `/settings/project-backup`;
+  `/settings/labels`, `/settings/integrations`,
+  `/settings/recently-deleted` и `/settings/project-backup`;
   direct URL, reload и browser history сохраняют выбранный раздел.
 - В профиле доступны versioned display name, verified email, IANA timezone,
   server-projected список связанных providers и sign out. Email и provider
@@ -106,13 +107,19 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   Shared resources считаются по owner и не дублируются у collaborator.
 - Отдельные system operations `Export backup` и `Import backup` доступны той же
   server-side admin boundary. Export включает всё D1 application state, включая
-  content, identities, ACL, provenance и archived records; hosted secrets,
-  deployment/audience state, analytics, schema и browser-local preferences не
+  content, identities, ACL, provenance, archived records и recoverable deletion
+  tuple основных сущностей; hosted secrets, deployment/audience state,
+  analytics, schema, browser-local preferences и operational purge jobs не
   входят.
 - Import поддерживает только полную замену. До mutation сервер проверяет format
   version, типы, уникальность, ссылки, owner/domain invariants и наличие
   текущей admin identity; затем staging atomically заменяет live state одной
   D1 transaction. Merge и partial restore отсутствуют.
+- Current logical backup schema `14` сохраняет `deleted_at`,
+  `deleted_by_user_id` и `purge_after` у Projects, Releases, Tasks и SavedViews.
+  Schemas `2`–`13` сначала проверяются по исходному checksum и только затем
+  получают пустой deletion tuple, поэтому upgrade не может легализовать
+  изменённый legacy payload.
 - Отдельный login-event или audit-event log пока не моделируется. Поэтому
   «last active» означает последний подтверждённый запрос, а не доказанный новый
   sign-in внутри уже действующей Sites session.
@@ -205,8 +212,32 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Доступность Viewer/Editor/Manager/Owner controls определяется только
   server-derived `accessRole`; owner workspace scope не повышает role и не
   служит условием показа mutation controls.
-- Необратимое удаление допускается только для Owner после отдельного
-  подтверждения; первый срез может ограничиться обратимым archive/restore.
+- Archive и delete — разные lifecycle. Archive обратимо убирает record из
+  обычной работы без запуска retention; `Delete` помещает Task, Project,
+  Release или SavedView в `Recently deleted` на 30 дней. Delete/restore
+  доступны той же роли Editor+, что обычное изменение content, а необратимый
+  `Delete permanently` — только current Owner после отдельного подтверждения.
+- Recoverable delete атомарно сохраняет `deleted_at`, server-verified
+  `deleted_by_user_id` и `purge_after = deleted_at + 30 days`. Все три поля
+  одновременно заполнены либо одновременно пусты. До `purge_after` record
+  можно восстановить; после cutoff restore запрещён, но физический purge
+  выполняется bounded opportunistic maintenance и не обещает точный
+  wall-clock момент удаления.
+- Обычные collection, search, navigation, pickers, filters и direct routes не
+  проецируют deleted records. `Recently deleted` — отдельный ACL-scoped read
+  contract; отсутствие либо недоступность record не раскрывается через URL,
+  counts или filter suggestions. Delete приходит в обычные surfaces как sync
+  remove, restore — как authoritative upsert.
+- Project delete является shadow для всего subtree: Project, его Tasks,
+  Releases и project-scoped SavedViews одновременно исчезают из рабочих
+  surfaces без переписывания deletion tuple каждого child. Restore Project
+  снимает только shadow Project и не восстанавливает child, который был удалён
+  отдельно до удаления Project.
+- Release delete не удаляет Tasks и сохраняет их внутренний `release_id` для
+  lossless restore; deleted Release не является picker/filter target и не
+  отображается как активное membership. Permanent purge Release атомарно
+  очищает оставшиеся Task links. SavedView delete/restore не меняет Tasks и
+  сохраняет base query, Display и scope.
 
 ## 5. Задачи
 
@@ -293,8 +324,12 @@ immutable ID и может группировать Tasks по значения�
   удаляя прежнюю историю изменений.
 - Архивная задача исключена из обычных views, но доступна через архив и может
   быть восстановлена.
-- Необратимое удаление требует отдельного подтверждения и не является
-  обязательным для первого вертикального среза.
+- Delete Task переносит её в `Recently deleted`, не меняя immutable identity,
+  content, subtasks, relations, Comments, Activity или Attachments. Restore в
+  пределах retention возвращает тот же record. Permanent purge удаляет
+  зависимые D1 rows только после успешного удаления всех R2 originals; failed
+  cleanup остаётся retryable и не оставляет live metadata, ложно объявленную
+  очищенной.
 
 ### 5.4 Иерархия и отношения
 
@@ -423,12 +458,13 @@ immutable ID и может группировать Tasks по значения�
   Каждая source row получает `migrated`/`exception`; offline повторный прогон не
   дублирует events. Raw evidence остаётся только в reconciliation/backup до
   отдельно разрешённого durable-data cleanup.
-- Project/system backup schema `13` сохраняет events, attachment migration
+- Project/system backup schema `14` сохраняет events, attachment migration
   outcomes, LabelGroup topology, normalized comment attachment refs и
-  reconciliation evidence. System backup дополнительно сохраняет versioned
-  profile preferences; schema `2`–`11` получает deterministic defaults для
-  новых User fields и пустой LabelGroup catalog, а schema `2`–`12` — пустой
-  comment attachment index.
+  reconciliation evidence вместе с recoverable deletion tuple. System backup
+  дополнительно сохраняет versioned profile preferences; schema `2`–`11`
+  получает deterministic defaults для новых User fields и пустой LabelGroup
+  catalog, schema `2`–`12` — пустой comment attachment index, а schema
+  `2`–`13` — пустой deletion tuple.
   Activity хранится до удаления Task; отдельного retention deletion нет.
   Logical export ограничен 5 000 rows на таблицу и общим размером package,
   поэтому превышение останавливает export явно, а не обрезает историю.
@@ -568,7 +604,9 @@ immutable ID и может группировать Tasks по значения�
   Tasks автоматически не закрываются.
 - Archive является обратимым: archived Project остаётся ACL-scoped record для
   Project index/direct URL и restore, но исключается из sidebar и create
-  pickers. Purge в этот slice не входит.
+  pickers. Delete отдельно помещает Project и shadow subtree в `Recently
+  deleted`; restore не снимает собственный deletion state его children, а
+  owner-only purge требует preview counts и отдельное подтверждение cascade.
 - Каждая Task принадлежит ровно одному Project. Code и allocator Project
   блокируются после первой Task; перенос выдаёт следующий identifier целевого
   Project и сохраняет прежний identifier как alias.
@@ -610,7 +648,11 @@ immutable ID и может группировать Tasks по значения�
   schema `6` добавляет Project task code/sequence и aliases прежних Task
   identifiers. Legacy schema `2`–`5` импортируются детерминированно, но Task без
   Project требует явного mapping.
-- Schema `13` включает `comment_attachment_refs`; schema `2`–`12` после
+- Schema `14` сохраняет deletion tuple Project, Releases, Tasks и scoped
+  SavedViews. Отдельно удалённый child остаётся deleted после exact Project
+  restore; schema `2`–`13` после проверки исходного checksum получает для всех
+  четырёх типов `null` deletion tuple. Schema `13` включает
+  `comment_attachment_refs`; schema `2`–`12` после
   проверки исходного checksum получает пустой index без попытки синтезировать
   historical edges из legacy comment bodies.
 - Restore materializes новые environment-scoped R2 keys до атомарного D1
@@ -640,6 +682,10 @@ immutable ID и может группировать Tasks по значения�
   Изменения должны быть заметны пользователю; полный audit log отложен.
 - Прогресс release считается по той же формуле, что и прогресс project, но
   только для задач release.
+- Delete Release не удаляет и не архивирует Tasks. До restore их сохранённая
+  membership не участвует в рабочих views/pickers; restore возвращает её без
+  ручного переназначения, а owner-only permanent purge очищает `release_id` у
+  Tasks до удаления Release row.
 
 ## 9. Views и фильтры
 
@@ -653,6 +699,12 @@ immutable ID и может группировать Tasks по значения�
   исходного Saved View (`Save changes`), отменить draft (`Cancel`) и обратимо
   архивировать/восстановить Saved View. Архивный View исчезает из sidebar и
   direct route, но остаётся в `All views` для restore.
+- Delete SavedView отдельно переносит её в `Recently deleted` и не меняет ни
+  одну Task. Restore возвращает ту же identity, base query, Display и scope;
+  permanent purge удаляет только View и её direct grants. Ссылки filter AST на
+  deleted, purged или недоступную сущность остаются unresolved/inert и дают
+  пустое условие, а не молча удаляются и не расширяют результат. После
+  доступного restore тот же immutable ref снова разрешается.
 - View может иметь global scope либо явный scope одного Project.
 - Project-scoped View имеет обязательный `scope_project_id`, жёстко ограничен
   этим Project и наследует его role. Он не получает отдельный `AccessGrant`.
@@ -1011,6 +1063,16 @@ created/updated/started/completed/canceled dates и archived state.
     sync как ACL-scoped upsert, исчезает из create pickers и восстанавливается
     из Project index/direct URL. Agent Project detail возвращает актуальные
     lifecycle metadata и version, но Project mutations остаются read-only.
+39. Editor отдельно удаляет и восстанавливает Task, Project, Release и
+    SavedView через `Recently deleted`: ordinary surfaces получают sync remove,
+    immutable identity/content сохраняются, Project shadow скрывает весь
+    subtree, но restore не оживляет отдельно deleted child; Release restore
+    возвращает прежнюю membership, а SavedView не меняет Tasks. После cutoff
+    restore запрещён. Только current Owner проходит отдельное permanent-delete
+    confirmation; Task/Project purge удаляет R2 originals до финальной metadata
+    cleanup и безопасно повторяется после сбоя. System и Project backup schema
+    `14` сохраняют deletion tuple, а legacy `2`–`13` получает пустые поля только
+    после checksum validation.
 
 ## 14. Рекомендуемые вертикальные срезы
 
@@ -1060,3 +1122,6 @@ created/updated/started/completed/canceled dates и archived state.
     picker/gallery/shortcut/drop/paste, multi-file progress/cancel/retry,
     draft isolation и responsive accessibility; browser renderer входит в
     следующий UI-срез.
+25. Единый recoverable deletion contract для Tasks, Projects, Releases и
+    SavedViews: `Recently deleted`, 30-day cutoff, project shadow, lossless
+    Release membership, owner-only R2-first purge и backup schema `14`.

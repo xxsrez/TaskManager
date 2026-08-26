@@ -128,6 +128,7 @@ Desktop-first shell повторяет композицию Linear:
   | Release / board | `/projects/{project-id}/releases/{release-id}`, `…/board` |
   | Issue details | `/issues/{issue-public-id}` |
   | Shared with me | `/shared` |
+  | Recently deleted | `/settings/recently-deleted` |
   | Administration | `/admin` |
 
 - URL saved view без layout открывает сохранённый `display.layout`; суффикс
@@ -497,6 +498,11 @@ List повторяет плотную grouped-list модель Linear.
   используют authoritative identifier из server response; stale/conflict не
   оставляет оптимистически показанный перенос.
 - Timestamps muted и доступны в нижней metadata section.
+- Task overflow отделяет `Archive` от destructive `Delete`. Delete требует
+  короткого confirmation, после success закрывает details/Peek, удаляет Task
+  из обычных surfaces и показывает bounded Undo toast, ведущий к тому же
+  versioned restore. `Delete permanently` в обычном меню отсутствует и доступен
+  только current Owner из `Recently deleted`.
 - Relations располагаются отдельной секцией с группами `Blocked by`,
   `Blocking`, `Related`, `Duplicate of` и `Duplicates`. Terminal blocker
   остаётся видимым под `Related` как resolved blocker; после reopen возвращается
@@ -640,6 +646,12 @@ List повторяет плотную grouped-list модель Linear.
   Edit dialog управляет name, code, summary, Markdown description, status,
   lead, start/target dates, icon/color и archive/restore. Locked code остаётся
   видимым read-only с причиной.
+- Project overflow содержит отдельные `Archive` и destructive `Delete`.
+  Delete предупреждает, что весь Project subtree временно исчезнет из рабочих
+  surfaces, но не утверждает, что children удалены независимо. Restore Project
+  из `Recently deleted` снимает только этот shadow; отдельно deleted Tasks,
+  Releases и Views остаются в корзине. Owner-only permanent delete показывает
+  counts Tasks, Releases, Views и Attachments до отдельного cascade confirmation.
 - Для current Owner overflow содержит `Export project backup`; action скачивает
   JSON bundle и не показывается Manager/Editor/Viewer. `Restore project` ведёт
   на общую import surface, чтобы deleted Project тоже можно было вернуть.
@@ -679,6 +691,11 @@ List повторяет плотную grouped-list модель Linear.
   confirmation, как требует MVP. Добавление/удаление Task через details,
   composer, drag-and-drop или Project move использует одно и то же предупреждение
   и не отправляет confirm flag до подтверждения User.
+- Release overflow отделяет lifecycle edit от `Delete`. Confirmation прямо
+  говорит, что Tasks не удаляются; до restore Release исчезает из обычных
+  picker/filter chips, а сохранённая membership остаётся внутренней. Owner-only
+  permanent delete из `Recently deleted` показывает число Tasks, у которых
+  будет очищен Release.
 
 ## 10. Views, filters и display options
 
@@ -748,6 +765,14 @@ optimistic version, а conflict перечитывает View без partial ove
 доступен в `All views`. Viewer видит saved и temporary formulas, может менять
 свой temporary layer, но не получает base write controls.
 
+`Delete` остаётся отдельным destructive action в overflow, не подменяет
+archive и не материализует Tasks. После recoverable delete View исчезает из
+sidebar/direct route и появляется в `Recently deleted`; restore возвращает ту
+же base formula, temporary-independent Display и scope. Owner-only permanent
+delete удаляет только View/direct grants. Deleted/missing filter reference
+показывается одинаковым unresolved token без имени и existence hint; условие
+даёт ноль совпадений, а не удаляется из формулы и не расширяет результат.
+
 ## 11. Search и contextual command actions
 
 - `/` или search icon открывает global search overlay по доступным tasks,
@@ -808,7 +833,8 @@ Linear, но они обязаны использовать тот же visual l
 - Settings — отдельная responsive surface с общей left settings navigation.
   На mobile navigation становится горизонтальной scrollable section bar без
   horizontal overflow content. Канонические разделы: `Profile`, `Appearance`,
-  `Workflow statuses`, `Labels`, `Codex setup` и `Project backup`.
+  `Workflow statuses`, `Labels`, `Codex setup`, `Recently deleted` и `Project
+  backup`.
 - Каждый раздел имеет собственный `/settings/<section>` URL. Обычная ссылка,
   modifier-click, reload, back и forward сохраняют выбранный раздел.
 - `Profile` использует compact form rows для versioned display name, read-only
@@ -904,6 +930,30 @@ Linear, но они обязаны использовать тот же visual l
 - После успешного Project restore UI показывает итоговые counts и даёт
   основной action `Open Task Manager`.
 
+### 12.6 Recently deleted
+
+- `Settings → Recently deleted` — единая ACL-scoped surface для Tasks,
+  Projects, Releases и SavedViews. Она использует tabs/entity filter, search и
+  deterministic pagination; row показывает type, identifier/name, deleted by,
+  deletion time и human-readable остаток до cutoff без email/internal IDs.
+- Editor+ видит `Restore` пока server `purge_after` не наступил. Restore
+  disabled после cutoff даже если bounded cleanup ещё не успел физически
+  удалить row; UI не обещает точный wall-clock purge и обновляется по
+  authoritative response/sync.
+- `Delete permanently` видит только current Owner. Оно всегда открывает
+  отдельный destructive dialog: Task/SavedView показывает точную identity,
+  Release — число очищаемых Task memberships, Project — counts всего cascade и
+  Attachments. Primary action нельзя объединять с Restore или Undo.
+- Project row объясняет shadow: обычный restore возвращает Project subtree, но
+  separately deleted child остаётся в `Recently deleted`. Release row поясняет,
+  что Tasks сохраняются; SavedView row — что Tasks не меняются.
+- Unknown, purged, revoked и чужой ref выглядят одинаково как `not found`.
+  Success удаляет row из surface; transient R2 cleanup failure оставляет
+  owner-visible retryable state без заявления, что permanent delete завершён.
+- На mobile entity filter, search, row metadata и actions складываются в одну
+  колонку, touch targets не меньше `44px`, destructive dialog не создаёт
+  horizontal overflow.
+
 ## 13. Keyboard contract
 
 Shortcuts активны только когда focus не находится в text editor/input и host
@@ -996,6 +1046,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Login/profile | Та же visual system | Адаптируем | ChatGPT/Google identity model |
 | Administration | Compact metrics + dense user table | Адаптируем | Operational aggregates, не Linear analytics |
 | Project backup utility | Compact staged wizard | Адаптируем | Только current Project Owner |
+| Recently deleted | Единая корзина Tasks/Projects/Releases/Views | Адаптируем | 30-day cutoff, Project shadow и Owner-only purge без Teams/workspace entities |
 
 ## 17. Проверка и приёмка
 

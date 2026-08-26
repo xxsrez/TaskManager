@@ -11,6 +11,7 @@ import {
 import type { BackupRow, BackupScalar } from "./system-backup-contract";
 import {
   upgradeLegacySystemComments,
+  upgradeLegacySystemDeletionState,
   upgradeLegacySystemIdentifiers,
   upgradeLegacySystemLabelGroups,
   upgradeLegacySystemLabels,
@@ -41,7 +42,7 @@ export type TableDefinition = {
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -53,7 +54,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 13 as const;
+export const systemBackupSchemaVersion = 14 as const;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 5000;
 const maxStagedRowBytes = 1_500_000;
@@ -66,6 +67,7 @@ const timestampColumns = new Set([
   "canceled_at",
   "archived_at",
   "deleted_at",
+  "purge_after",
   "resolved_at",
   "released_at",
   "imported_at",
@@ -115,14 +117,14 @@ export const tableDefinitions = [
     archived_at: { nullable: true },
     version: { number: true, integer: true },
   }),
-  definition("projects", ["id", "public_id", "owner_user_id", "creator_user_id", "name", "task_code", "task_sequence", "code_locked_at", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"], "id", {
-    task_sequence: { number: true, integer: true }, code_locked_at: { nullable: true }, lead_user_id: { nullable: true }, start_date: { nullable: true }, target_date: { nullable: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
+  definition("projects", ["id", "public_id", "owner_user_id", "creator_user_id", "name", "task_code", "task_sequence", "code_locked_at", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "deleted_at", "deleted_by_user_id", "purge_after", "version", "created_at", "updated_at"], "id", {
+    task_sequence: { number: true, integer: true }, code_locked_at: { nullable: true }, lead_user_id: { nullable: true }, start_date: { nullable: true }, target_date: { nullable: true }, archived_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, version: { number: true, integer: true },
   }),
-  definition("releases", ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "version", "created_at", "updated_at"], "id", {
-    target_date: { nullable: true }, released_at: { nullable: true }, version: { number: true, integer: true },
+  definition("releases", ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "deleted_at", "deleted_by_user_id", "purge_after", "version", "created_at", "updated_at"], "id", {
+    target_date: { nullable: true }, released_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, version: { number: true, integer: true },
   }),
-  definition("tasks", ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"], "id", {
-    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+  definition("tasks", ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "deleted_at", "deleted_by_user_id", "purge_after", "comment_count", "version", "created_at", "updated_at"], "id", {
+    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, comment_count: { number: true, integer: true }, version: { number: true, integer: true },
   }),
   definition("task_identifier_aliases", ["id", "task_id", "identifier", "created_at"], "task_id, identifier"),
   definition("attachments", ["id", "public_id", "task_id", "uploader_user_id", "original_filename", "display_name", "media_type", "byte_size", "checksum_sha256", "object_key", "kind", "state", "image_width", "image_height", "variant_metadata_json", "idempotency_key", "upload_expires_at", "failure_code", "version", "created_at", "updated_at", "deleted_at"], "task_id, created_at, id", {
@@ -158,8 +160,8 @@ export const tableDefinitions = [
   definition("task_relations", ["id", "source_task_id", "target_task_id", "type", "creator_user_id", "idempotency_key", "version", "created_at", "updated_at"], "id", {
     version: { number: true, integer: true },
   }),
-  definition("saved_views", ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "archived_at", "version", "created_at", "updated_at"], "id", {
-    scope_project_id: { nullable: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
+  definition("saved_views", ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "archived_at", "deleted_at", "deleted_by_user_id", "purge_after", "version", "created_at", "updated_at"], "id", {
+    scope_project_id: { nullable: true }, archived_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, version: { number: true, integer: true },
   }),
   definition("external_records", ["id", "owner_user_id", "target_type", "target_id", "source", "source_id", "source_url", "metadata_json", "imported_at"], "id", {
     source_url: { nullable: true },
@@ -249,6 +251,52 @@ const legacyTaskDefinition = definition(
     parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
     completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
     comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+  },
+);
+
+const legacyDeletionProjectDefinition = definition(
+  "projects",
+  ["id", "public_id", "owner_user_id", "creator_user_id", "name", "task_code", "task_sequence", "code_locked_at", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"],
+  "id",
+  {
+    task_sequence: { number: true, integer: true }, code_locked_at: { nullable: true },
+    lead_user_id: { nullable: true }, start_date: { nullable: true },
+    target_date: { nullable: true }, archived_at: { nullable: true },
+    version: { number: true, integer: true },
+  },
+);
+
+const legacyDeletionReleaseDefinition = definition(
+  "releases",
+  ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "version", "created_at", "updated_at"],
+  "id",
+  {
+    target_date: { nullable: true }, released_at: { nullable: true },
+    version: { number: true, integer: true },
+  },
+);
+
+const legacyDeletionTaskDefinition = definition(
+  "tasks",
+  ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"],
+  "id",
+  {
+    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true },
+    project_id: { nullable: true }, release_id: { nullable: true },
+    estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true },
+    parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
+    completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
+    comment_count: { number: true, integer: true }, version: { number: true, integer: true },
+  },
+);
+
+const legacyDeletionSavedViewDefinition = definition(
+  "saved_views",
+  ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "archived_at", "version", "created_at", "updated_at"],
+  "id",
+  {
+    scope_project_id: { nullable: true }, archived_at: { nullable: true },
+    version: { number: true, integer: true },
   },
 );
 
@@ -361,6 +409,7 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   const legacyLabelGroups = typeof schemaVersion === "number" && schemaVersion <= 11;
   const legacyUserSettings = typeof schemaVersion === "number" && schemaVersion <= 11;
   const legacyCommentAttachmentRefs = typeof schemaVersion === "number" && schemaVersion <= 12;
+  const legacyDeletionState = typeof schemaVersion === "number" && schemaVersion <= 13;
   const supported = typeof schemaVersion === "number" && schemaVersion >= 2 && schemaVersion <= systemBackupSchemaVersion;
   assertOnlyKeys(
     payload,
@@ -405,8 +454,14 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
       ? legacyUserDefinition
       : legacyIdentifiers && table.name === "projects"
       ? legacyProjectDefinition
+      : legacyDeletionState && table.name === "projects"
+        ? legacyDeletionProjectDefinition
       : legacyIdentifiers && table.name === "tasks"
         ? legacyTaskDefinition
+      : legacyDeletionState && table.name === "tasks"
+        ? legacyDeletionTaskDefinition
+      : legacyDeletionState && table.name === "releases"
+        ? legacyDeletionReleaseDefinition
       : legacyWorkflow && table.name === "workflow_statuses"
       ? legacyWorkflowStatusDefinition
       : legacyRelations && table.name === "task_relations"
@@ -421,6 +476,8 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
       : legacySavedViews && table.name === "saved_views" &&
           !sourceRows.some((row) => Object.hasOwn(object(row, "saved view"), "archived_at"))
         ? legacySavedViewDefinition
+      : legacyDeletionState && table.name === "saved_views"
+        ? legacyDeletionSavedViewDefinition
         : table;
     sourceNormalizedTables[table.name] = sourceRows.map((row, index) =>
       normalizeBackupRow(sourceDefinition, row, index),
@@ -443,14 +500,14 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   if (legacyHistoricalComments) tables = upgradeLegacySystemComments(tables);
   if (legacyUserSettings) tables = upgradeLegacySystemUsers(tables);
   const counts = countTables(tables);
-  validateRelationships(tables, !legacyCommentAttachmentRefs);
+  validateRelationships(tables, !legacyCommentAttachmentRefs, !legacyDeletionState);
   const objects = withoutAttachments
     ? []
     : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
     ...(!withoutAttachments
       ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
       : {}),
@@ -474,10 +531,14 @@ export async function validateSystemBackup(value: unknown): Promise<SystemBackup
   };
   const checksum = await sha256(JSON.stringify(body));
   if (payload.sha256 !== checksum) throw new ValidationError("Backup checksum does not match its content");
+  if (legacyDeletionState) {
+    tables = upgradeLegacySystemDeletionState(tables);
+    validateDeletionStates(tables);
+  }
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13,
+    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
     siteOrigin: withoutAttachments
       ? null
       : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
@@ -521,6 +582,7 @@ export function normalizeDbRow(table: TableDefinition, value: Record<string, unk
 function validateRelationships(
   tables: BackupTables,
   validateCommentAttachmentRefs = true,
+  validateDeletionState = true,
 ) {
   const users = uniqueIndex(tables.users, ["id"], "users");
   uniqueIndex(tables.user_identities, ["provider", "provider_account_key"], "user identities");
@@ -531,6 +593,7 @@ function validateRelationships(
     validTimeZone(user.timezone);
   }
   for (const identity of tables.user_identities) requireReference(users, identity.user_id, "Identity user");
+  if (validateDeletionState) validateDeletionStates(tables);
 
   const activeGrants = new Set(
     tables.access_grants
@@ -580,7 +643,9 @@ function validateRelationships(
   const projects = uniqueIndex(tables.projects, ["id"], "projects");
   uniqueIndex(tables.projects, ["public_id"], "project public IDs");
   uniqueIndex(
-    tables.projects.filter((project) => project.archived_at === null),
+    tables.projects.filter(
+      (project) => project.archived_at === null && project.deleted_at === null,
+    ),
     ["owner_user_id", "task_code"],
     "active project owner/task code",
   );
@@ -1204,6 +1269,37 @@ function validateRelationships(
         ? ["manager", "editor", "viewer", "full_access"]
         : ["editor", "viewer", "full_access"];
     if (!allowedPermissions.includes(String(grant.permission))) throw new ValidationError("Unsupported grant permission");
+  }
+}
+
+function validateDeletionStates(tables: BackupTables) {
+  const users = new Set(tables.users.map((user) => String(user.id)));
+  for (const [entity, rows] of [
+    ["Project", tables.projects],
+    ["Release", tables.releases],
+    ["Task", tables.tasks],
+    ["Saved view", tables.saved_views],
+  ] as const) {
+    for (const row of rows) {
+      const values = [row.deleted_at, row.deleted_by_user_id, row.purge_after];
+      const empty = values.every((value) => value === null);
+      const complete = values.every((value) => typeof value === "string" && value.length > 0);
+      if (!empty && !complete) {
+        throw new ValidationError(`${entity} deletion state must be entirely empty or complete`);
+      }
+      if (empty) continue;
+      const deletedAt = Date.parse(String(row.deleted_at));
+      const purgeAfter = Date.parse(String(row.purge_after));
+      if (Number.isNaN(deletedAt) || Number.isNaN(purgeAfter)) {
+        throw new ValidationError(`${entity} deletion timestamps are invalid`);
+      }
+      if (purgeAfter <= deletedAt) {
+        throw new ValidationError(`${entity} purge_after must be later than deleted_at`);
+      }
+      if (!users.has(String(row.deleted_by_user_id))) {
+        throw new ValidationError(`${entity} deleted_by_user_id references a missing User`);
+      }
+    }
   }
 }
 

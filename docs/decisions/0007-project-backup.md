@@ -30,6 +30,13 @@ checksum.
 subtree; schemas `2`–`9` нормализуются с пустыми activity tables без synthetic
 history. Native actor Users проверяются как существующие same-Site dependencies.
 
+Дополнение 2026-08-26: Project bundle `schemaVersion` повышена до `14` и
+сохраняет `deleted_at`, `deleted_by_user_id`, `purge_after` у Project, Releases,
+Tasks и scoped SavedViews. Schemas `2`–`13` получают all-null tuple только после
+успешной проверки исходного checksum. Project shadow delete не переписывает
+child tuples, поэтому exact restore не оживляет отдельно deleted child.
+Operational purge jobs не входят в bundle; R2-first cleanup возобновляет runtime.
+
 ## Контекст
 
 Владельцу Project нужна доступная без application-admin роли страховка от
@@ -47,7 +54,8 @@ ADR-0004 для этого не подходит: он раскрывает со
    внутреннюю hierarchy/relations, native/historical comments, Task Activity,
    reconciliation outcomes/reactions, provenance и
    snapshot используемых
-   WorkflowStatuses/Labels. Users, UserIdentities, API credentials, hosted
+   WorkflowStatuses/Labels и recoverable deletion tuple subtree. Users,
+   UserIdentities, API credentials, hosted
    secrets, global SavedViews и данные других Projects не включаются.
 3. Bundle привязан к исходным immutable IDs, current owner и тому же Site.
    Первая версия поддерживает только точный restore исходного Project, без
@@ -69,6 +77,10 @@ ADR-0004 для этого не подходит: он раскрывает со
    заменяют live object keys. Thumbnail пересоздаётся. Общий container ограничен
    25 MB и полностью проверяет size/checksum, Task ownership и description
    embeds до staging.
+9. Exact restore сохраняет собственный deletion tuple каждого child. Если
+   Project deleted только как shadow, child с all-null tuple возвращается вместе
+   с Project; child с собственным tuple остаётся в `Recently deleted`. Restore
+   не создаёт и не переносит operational purge jobs.
 
 ## Последствия
 

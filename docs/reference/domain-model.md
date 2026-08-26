@@ -146,8 +146,9 @@ Projection не включает content полей этих records. Exported b
 
 `SystemBackup` — переносимый versioned JSON envelope со всеми product tables.
 Он сохраняет внутренние/public IDs, ownership, versions, timestamps, archived
-state, joins, relations, revoked grants и external provenance. Hosted secrets,
-Sites configuration, schema/migrations и operational staging в него не входят.
+state, recoverable deletion tuple, joins, relations, revoked grants и external
+provenance. Hosted secrets, Sites configuration, schema/migrations,
+operational staging и purge jobs в него не входят.
 
 `AdminImportSession` — operational metadata preflight/import:
 
@@ -171,7 +172,7 @@ immutable identity Project, current owner, его subtree, internal joins и
 relations, native/historical comments, reconciliation outcomes/reactions,
 dependency snapshots используемых
 catalogs, active sharing
-descriptors, warnings и SHA-256. Это переносимая страховка владельца, но не
+descriptors, deletion tuple каждого included record, warnings и SHA-256. Это переносимая страховка владельца, но не
 отдельная live entity и не ACL capability.
 
 `UserImportSession` изолирует staged Project restore:
@@ -273,6 +274,40 @@ Editor, Manager и Owner controls продолжают выводиться то
 resource role. Omitted scope у Agent API и внутренних non-UI callers сохраняет
 ACL union и не меняет их семантику.
 
+## Recoverable deletion
+
+Task, Project, Release и SavedView используют один tuple:
+
+| Поле | Семантика |
+|---|---|
+| `deleted_at` | Server instant recoverable delete; `NULL` для не-deleted record |
+| `deleted_by_user_id` | Server-verified User, выполнивший delete; заполнен только вместе с `deleted_at` |
+| `purge_after` | `deleted_at + 30 days`; после этого cutoff restore запрещён |
+
+Tuple либо целиком `NULL`, либо содержит три валидных значения, причём
+`purge_after > deleted_at`. Archive хранится отдельным `archived_at`, не
+запускает retention и не считается delete. Обычные ACL-scoped repository reads
+добавляют `deleted_at IS NULL`; `Recently deleted` использует отдельную
+ACL-scoped проекцию и не расширяет role. Editor+ может delete/restore, current
+Owner — permanent purge после отдельного confirmation.
+
+Project deletion — shadow subtree, а не массовое переписывание children:
+deleted Project делает его Tasks, Releases и scoped SavedViews невидимыми в
+обычных reads, даже когда их собственный tuple пуст. Restore очищает только
+Project tuple; собственный non-null tuple child сохраняется, поэтому отдельно
+deleted child не оживает. Release deletion сохраняет `Task.release_id` для
+lossless restore; permanent Release purge сначала очищает эти ссылки.
+SavedView deletion не меняет Tasks, query/display или scope. Deleted/purged/
+недоступный immutable ref внутри filter AST не отбрасывается: executor трактует
+его как unresolved условие без совпадений, чтобы query не расширился и не
+раскрыл existence metadata.
+
+После cutoff bounded opportunistic maintenance может физически удалить row
+позже; точный wall-clock purge не гарантируется. Для Task/Project с native
+Attachments operational retry job сначала удаляет R2 originals и только затем
+финализирует D1 metadata cascade. Этот job — runtime coordination state, не
+product entity и не часть logical backup.
+
 ## Task
 
 | Поле | Тип | Обязательность | Семантика |
@@ -297,6 +332,7 @@ ACL union и не меняет их семантику.
 | `completed_at` | instant | нет | Соответствует completed category |
 | `canceled_at` | instant | нет | Соответствует canceled category |
 | `archived_at` | instant | нет | Soft archive |
+| `deleted_at`, `deleted_by_user_id`, `purge_after` | tuple | нет | Recoverable delete, actor и 30-day cutoff; только all-null либо all-set |
 | `comment_count` | integer | да | Производный count unified native/historical comments без soft-deleted tombstones |
 | `created_at` | instant | да | Серверное время создания |
 | `updated_at` | instant | да | Серверное время последнего изменения |
@@ -404,8 +440,11 @@ Schema `11` добавляет `attachment_migration_outcomes`; schema `2`–`10
 перенесёнными.
 System backup schema `12` добавляет versioned `theme`, `sidebar_preference` и
 User `version`; schema `2`–`11` получает `system`, `expanded` и version `1`
-после проверки исходного checksum. Project backup остаётся на schema `11`,
-поскольку User records в Project bundle не входят.
+после проверки исходного checksum. Это User-only изменение не повышало Project
+backup, который на этом этапе оставался schema `11`.
+Logical backup schema `14` добавляет deletion tuple Projects, Releases, Tasks и
+SavedViews в system и Project formats. Legacy schema `2`–`13` сначала
+проверяется в исходной форме и затем получает три `NULL` поля на каждый record.
 
 ### CommentAttachmentRef
 
@@ -585,6 +624,7 @@ status, на который ссылаются задачи или SavedViews, �
 | `start_date`, `target_date` | Плановые даты, optional |
 | `icon`, `color` | Визуальная identity, optional |
 | `archived_at` | Soft archive |
+| `deleted_at`, `deleted_by_user_id`, `purge_after` | Recoverable delete tuple; Project является shadow root subtree |
 | `created_at`, `updated_at`, `version` | Технические metadata |
 
 Project progress вычисляется запросом по задачам, а не хранится как независимо
@@ -599,6 +639,10 @@ Project version. Terminal status не меняет Tasks, а при наличи
 требует отдельный confirm flag. `archived_at` — обратимое состояние и не
 отменяет ACL; archived Project исключается из create/navigation pickers, но
 остаётся доступен в Project index/direct detail для restore.
+`deleted_at` исключает Project и весь subtree из ordinary reads. Child tuple
+при shadow delete не меняется; Project restore не очищает собственный
+`deleted_at` child. Permanent purge каскадирует subtree только после counts,
+owner confirmation и R2-first cleanup.
 
 ## Release
 
@@ -614,6 +658,7 @@ Project version. Terminal status не меняет Tasks, а при наличи
 | `target_date` | Плановая дата, optional |
 | `released_at` | Фактический server instant, только для released |
 | `release_notes` | Редактируемый Markdown |
+| `deleted_at`, `deleted_by_user_id`, `purge_after` | Recoverable delete tuple; Task membership сохраняется до purge |
 | `created_at`, `updated_at`, `version` | Технические metadata |
 
 На уровне MVP `Release` объединяет удобство Linear project milestone и смысл
@@ -627,6 +672,9 @@ Release mutation требует current `version` и effective Project role `edi
 `release_id` Task, затрагивающее выпущенный Release, требует отдельный
 `confirmReleasedComposition`; Project/Release compatibility и current status
 повторно проверяются server-side, а Task status автоматически не меняется.
+Recoverable Release delete не очищает `Task.release_id`; ordinary projections
+трактуют membership как недоступную, пока Release deleted. Restore возвращает
+её, permanent purge очищает links атомарно до удаления Release.
 
 ## LabelGroup
 
@@ -723,6 +771,7 @@ source positions не выдаются.
 | `show_empty_groups` | Показывать ли пустые колонки/группы |
 | `hidden_groups` | Явно скрытые значения группировки |
 | `archived_at` | Nullable timestamp обратимого исключения из navigation/direct route |
+| `deleted_at`, `deleted_by_user_id`, `purge_after` | Recoverable delete tuple без изменения Tasks/query/display |
 | `created_at`, `updated_at`, `version` | Технические metadata |
 
 Пример формы фильтра; MVP UI создаёт только `all`, но версия формата позволяет
@@ -751,6 +800,9 @@ ACL-scoped SavedView repository contract. Update атомарно проверя
 Editor-or-higher role и optimistic `version`; смена access scope дополнительно
 требует Owner и write access к целевому Project. Project-scoped query не может
 ссылаться на другой Project или его Release.
+Delete/restore используют тот же write-role и optimistic contract, но не
+смешиваются с archive. Permanent purge owner-only удаляет только View/direct
+grants; Tasks, base query semantics и temporary URL layer не материализуются.
 
 ## Инварианты и атомарные операции
 
@@ -831,6 +883,20 @@ Editor-or-higher role и optimistic `version`; смена access scope допо�
 25. CommentAttachmentRef соединяет только live native Comment и ready
     Attachment той же Task. Comment write, index replacement, Activity/sync и
     delete guard атомарны; edge не даёт отдельного доступа к Comment или binary.
+26. Deletion tuple Task/Project/Release/SavedView только all-null либо all-set;
+    actor существует, timestamps валидны, `purge_after > deleted_at`. Restore
+    после cutoff запрещён независимо от задержки maintenance.
+27. Deleted Project shadow исключает subtree из ordinary reads, но не меняет
+    tuple children. Project restore очищает только root tuple; отдельно deleted
+    child сохраняется. Project purge owner-only каскадирует subtree после
+    preview и R2-first cleanup.
+28. Release delete сохраняет Task membership; restore её возвращает, а purge
+    атомарно очищает links. SavedView delete/purge никогда не удаляет Tasks.
+29. Deleted/purged/недоступный filter ref не раскрывает identity и не удаляется
+    из AST: unresolved condition возвращает no matches, а не расширенный query.
+30. Logical backup schema `14` сохраняет deletion tuple четырёх entity types;
+    legacy schemas `2`–`13` получают all-null tuple только после проверки
+    исходного checksum. Operational purge jobs не входят в backup/restore.
 
 ## Намеренно не моделируется
 

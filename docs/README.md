@@ -125,8 +125,9 @@ inspection, retry safety, recoverable cleanup, details/composer UI,
 server-generated thumbnails, description images и lazy multi-session
 invalidation. Agent REST/MCP добавляют paginated metadata, private binary
 delivery, OpenAI native file input, versioned attachment delete и native
-relation commands. Attachment-aware system/Project backup schema `13`, Task
-Activity, normalized live Comment attachment refs, browser authoring для
+relation commands. Current system/Project backup schema `14` переносит
+recoverable deletion tuple поверх введённых schema `13` normalized live
+Comment attachment refs; Task Activity, browser authoring для
 root/reply/edit и lazy Comment renderer реализованы с LabelGroup topology,
 versioned User preferences, legacy compatibility и resumable legacy attachment
 reconciliation. Authoring и renderer переиспользуют private Task Attachment
