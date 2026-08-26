@@ -8,7 +8,11 @@
 
 export function accessibleTaskWhere(taskAlias: string): string {
   assertSqlAlias(taskAlias);
-  return `(
+  return `${taskAlias}.deleted_at IS NULL AND (${taskAlias}.project_id IS NULL OR EXISTS (
+    SELECT 1 FROM projects visible_project
+    WHERE visible_project.id = ${taskAlias}.project_id
+      AND visible_project.deleted_at IS NULL
+  )) AND (
     (${taskAlias}.project_id IS NOT NULL AND (
       EXISTS (SELECT 1 FROM projects access_project
         WHERE access_project.id = ${taskAlias}.project_id AND access_project.owner_user_id = ?)
@@ -29,7 +33,11 @@ export function accessibleTaskWhere(taskAlias: string): string {
 
 export function editableTaskWhere(taskAlias: string): string {
   assertSqlAlias(taskAlias);
-  return `(
+  return `${taskAlias}.deleted_at IS NULL AND (${taskAlias}.project_id IS NULL OR EXISTS (
+    SELECT 1 FROM projects visible_project
+    WHERE visible_project.id = ${taskAlias}.project_id
+      AND visible_project.deleted_at IS NULL
+  )) AND (
     (${taskAlias}.project_id IS NOT NULL AND (
       EXISTS (
         SELECT 1 FROM projects access_project
@@ -53,10 +61,15 @@ export function editableTaskWhere(taskAlias: string): string {
   )`;
 }
 
-export function taskAccessRoleSql(taskAlias: string, projectAlias: string): string {
+export function taskAccessRoleSql(
+  taskAlias: string,
+  projectAlias: string,
+  includeDeleted = false,
+): string {
   assertSqlAlias(taskAlias);
   assertSqlAlias(projectAlias);
   return `CASE
+      WHEN ${includeDeleted ? "0" : `${taskAlias}.deleted_at IS NOT NULL OR (${taskAlias}.project_id IS NOT NULL AND ${projectAlias}.deleted_at IS NOT NULL)`} THEN NULL
       WHEN ${taskAlias}.project_id IS NOT NULL AND ${projectAlias}.owner_user_id = ? THEN 'owner'
       WHEN ${taskAlias}.project_id IS NOT NULL THEN (
         SELECT CASE access_grant.permission
@@ -89,9 +102,11 @@ export function taskAccessRoleSql(taskAlias: string, projectAlias: string): stri
     END`;
 }
 
-export function projectAccessRoleSql(projectAlias: string): string {
+export function projectAccessRoleSql(projectAlias: string, includeDeleted = false): string {
   assertSqlAlias(projectAlias);
-  return `CASE WHEN ${projectAlias}.owner_user_id = ? THEN 'owner' ELSE (
+  return `CASE
+    WHEN ${includeDeleted ? "0" : `${projectAlias}.deleted_at IS NOT NULL`} THEN NULL
+    WHEN ${projectAlias}.owner_user_id = ? THEN 'owner' ELSE (
       SELECT CASE access_grant.permission
         WHEN 'full_access' THEN 'manager'
         WHEN 'manager' THEN 'manager'
@@ -110,10 +125,12 @@ export function projectAccessRoleSql(projectAlias: string): string {
 export function savedViewAccessRoleSql(
   viewAlias: string,
   projectAlias: string,
+  includeDeleted = false,
 ): string {
   assertSqlAlias(viewAlias);
   assertSqlAlias(projectAlias);
   return `CASE
+      WHEN ${includeDeleted ? "0" : `${viewAlias}.deleted_at IS NOT NULL OR (${viewAlias}.scope_project_id IS NOT NULL AND ${projectAlias}.deleted_at IS NOT NULL)`} THEN NULL
       WHEN ${viewAlias}.scope_project_id IS NOT NULL AND ${projectAlias}.owner_user_id = ? THEN 'owner'
       WHEN ${viewAlias}.scope_project_id IS NOT NULL THEN (
         SELECT CASE access_grant.permission

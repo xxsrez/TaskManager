@@ -237,6 +237,9 @@ export const projects = sqliteTable(
     icon: text("icon").notNull().default("cube"),
     color: text("color").notNull().default("#8b7cf6"),
     archivedAt: text("archived_at"),
+    deletedAt: text("deleted_at"),
+    deletedByUserId: text("deleted_by_user_id"),
+    purgeAfter: text("purge_after"),
     version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -250,6 +253,7 @@ export const projects = sqliteTable(
       table.ownerUserId,
       table.archivedAt,
     ),
+    index("idx_projects_deleted_purge").on(table.deletedAt, table.purgeAfter),
     index("idx_projects_name_search").on(sql`lower(${table.name})`),
     index("idx_projects_summary_search").on(sql`lower(${table.summary})`),
   ],
@@ -353,6 +357,9 @@ export const releases = sqliteTable(
     targetDate: text("target_date"),
     releasedAt: text("released_at"),
     releaseNotes: text("release_notes").notNull().default(""),
+    deletedAt: text("deleted_at"),
+    deletedByUserId: text("deleted_by_user_id"),
+    purgeAfter: text("purge_after"),
     version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -361,6 +368,7 @@ export const releases = sqliteTable(
     uniqueIndex("idx_releases_public_id").on(table.publicId),
     index("idx_releases_project_status").on(table.projectId, table.status),
     index("idx_releases_name_search").on(sql`lower(${table.name})`),
+    index("idx_releases_deleted_purge").on(table.deletedAt, table.purgeAfter),
   ],
 );
 
@@ -388,6 +396,9 @@ export const tasks = sqliteTable(
     completedAt: text("completed_at"),
     canceledAt: text("canceled_at"),
     archivedAt: text("archived_at"),
+    deletedAt: text("deleted_at"),
+    deletedByUserId: text("deleted_by_user_id"),
+    purgeAfter: text("purge_after"),
     commentCount: integer("comment_count").notNull().default(0),
     version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -427,6 +438,7 @@ export const tasks = sqliteTable(
     index("idx_tasks_updated_id").on(table.updatedAt, table.id),
     index("idx_tasks_title_search").on(sql`lower(${table.title})`),
     index("idx_tasks_identifier_search").on(sql`lower(${table.identifier})`),
+    index("idx_tasks_deleted_purge").on(table.deletedAt, table.purgeAfter),
   ],
 );
 
@@ -750,6 +762,30 @@ export const workspaceSyncMaintenance = sqliteTable("workspace_sync_maintenance"
   lastRunAt: text("last_run_at").notNull(),
 });
 
+// Operational durable claim for irreversible entity cleanup. The row is
+// created before any R2 object is removed, which closes restore while a
+// partially completed purge remains retryable.
+export const entityPurgeJobs = sqliteTable(
+  "entity_purge_jobs",
+  {
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    entityPublicId: text("entity_public_id").notNull(),
+    actorUserId: text("actor_user_id").notNull(),
+    sourceVersion: integer("source_version").notNull(),
+    startedAt: text("started_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    attemptCount: integer("attempt_count").notNull().default(1),
+    completedAt: text("completed_at"),
+    receiptExpiresAt: text("receipt_expires_at"),
+  },
+  (table) => [
+    primaryKey({ columns: [table.entityType, table.entityId] }),
+    index("idx_entity_purge_jobs_updated").on(table.updatedAt),
+    index("idx_entity_purge_jobs_receipt_expiry").on(table.receiptExpiresAt),
+  ],
+);
+
 // Ephemeral trigger queue. An AFTER INSERT trigger fans each row out to the
 // current task audience and removes it in the same transaction.
 export const workspaceSyncInvalidations = sqliteTable("workspace_sync_invalidations", {
@@ -869,6 +905,9 @@ export const savedViews = sqliteTable(
     queryJson: text("query_json").notNull().default("{}"),
     displayJson: text("display_json").notNull().default("{}"),
     archivedAt: text("archived_at"),
+    deletedAt: text("deleted_at"),
+    deletedByUserId: text("deleted_by_user_id"),
+    purgeAfter: text("purge_after"),
     version: integer("version").notNull().default(1),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -877,6 +916,7 @@ export const savedViews = sqliteTable(
     uniqueIndex("idx_saved_views_public_id").on(table.publicId),
     index("idx_saved_views_scope_project").on(table.scopeProjectId),
     index("idx_saved_views_archive_updated").on(table.archivedAt, table.updatedAt),
+    index("idx_saved_views_deleted_purge").on(table.deletedAt, table.purgeAfter),
   ],
 );
 

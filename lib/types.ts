@@ -68,6 +68,9 @@ export type ProjectRecord = {
   icon: string;
   color: string;
   archivedAt?: string | null;
+  deletedAt?: string | null;
+  deletedByUserId?: string | null;
+  purgeAfter?: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -88,6 +91,9 @@ export type ReleaseRecord = {
   targetDate: string | null;
   releasedAt: string | null;
   releaseNotes: string;
+  deletedAt?: string | null;
+  deletedByUserId?: string | null;
+  purgeAfter?: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -116,6 +122,9 @@ export type TaskRecord = {
   completedAt: string | null;
   canceledAt: string | null;
   archivedAt: string | null;
+  deletedAt?: string | null;
+  deletedByUserId?: string | null;
+  purgeAfter?: string | null;
   commentCount: number;
   version: number;
   /** Client-only version of a loaded detail projection retained across a newer summary merge. */
@@ -332,10 +341,43 @@ export type SavedViewRecord = {
   query: ViewQuery;
   display: ViewDisplay;
   archivedAt?: string | null;
+  deletedAt?: string | null;
+  deletedByUserId?: string | null;
+  purgeAfter?: string | null;
   version: number;
   createdAt?: string;
   updatedAt?: string;
   accessRole: AccessRole;
+};
+
+export type DeletableEntityType = "task" | "project" | "release" | "saved_view";
+
+export type RecentlyDeletedRecord = {
+  type: DeletableEntityType;
+  id: string;
+  publicId: string;
+  displayName: string;
+  context: string | null;
+  deletedAt: string;
+  deletedBy: {
+    displayName: string;
+    isCurrentUser: boolean;
+  };
+  purgeAfter: string;
+  version: number;
+  accessRole: AccessRole;
+  actions: {
+    canRestore: boolean;
+    canPurge: boolean;
+  };
+};
+
+export type RecentlyDeletedPage = {
+  items: RecentlyDeletedRecord[];
+  page: {
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
 };
 
 export type ViewFilterField =

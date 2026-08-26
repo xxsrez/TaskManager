@@ -330,14 +330,14 @@ function accessibleWorkspaceOwnersStatement(db: D1Database, userId: string) {
        SELECT ? AS id
        UNION
        SELECT p.owner_user_id FROM projects p
-       WHERE p.owner_user_id = ? OR EXISTS (
+       WHERE p.deleted_at IS NULL AND (p.owner_user_id = ? OR EXISTS (
          SELECT 1 FROM access_grants ag
          WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
            AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-       )
+       ))
        UNION
        SELECT t.owner_user_id FROM tasks t
-       WHERE t.project_id IS NULL AND (
+       WHERE t.project_id IS NULL AND t.deleted_at IS NULL AND (
          t.owner_user_id = ? OR EXISTS (
            SELECT 1 FROM access_grants ag
            WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
@@ -346,7 +346,7 @@ function accessibleWorkspaceOwnersStatement(db: D1Database, userId: string) {
        )
        UNION
        SELECT v.owner_user_id FROM saved_views v
-       WHERE v.scope_project_id IS NULL AND (
+       WHERE v.scope_project_id IS NULL AND v.deleted_at IS NULL AND (
          v.owner_user_id = ? OR EXISTS (
            SELECT 1 FROM access_grants ag
            WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
@@ -379,7 +379,8 @@ function workspaceCatalogOwnerPredicate(
   return {
     sql: `(${expression} = ? OR EXISTS (
       SELECT 1 FROM projects catalog_project
-      WHERE catalog_project.owner_user_id = ${expression} AND (
+      WHERE catalog_project.deleted_at IS NULL
+        AND catalog_project.owner_user_id = ${expression} AND (
         catalog_project.owner_user_id = ? OR EXISTS (
           SELECT 1 FROM access_grants catalog_grant
           WHERE catalog_grant.resource_type = 'project'
@@ -391,6 +392,7 @@ function workspaceCatalogOwnerPredicate(
     ) OR EXISTS (
       SELECT 1 FROM tasks catalog_task
       WHERE catalog_task.project_id IS NULL
+        AND catalog_task.deleted_at IS NULL
         AND catalog_task.owner_user_id = ${expression} AND (
           catalog_task.owner_user_id = ? OR EXISTS (
             SELECT 1 FROM access_grants catalog_task_grant
@@ -426,6 +428,8 @@ function snapshotTaskIdScopeCte(scope: ResolvedWorkspaceScope | null) {
       )
     END AS is_visible
   FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+  WHERE t.deleted_at IS NULL
+    AND (t.project_id IS NULL OR p.deleted_at IS NULL)
 ), visible_task_ids AS (
   SELECT id FROM scoped_task_ids WHERE is_visible = 1 AND ${predicate.sql}
   ORDER BY updated_at DESC, id DESC LIMIT ?
@@ -435,10 +439,23 @@ function snapshotTaskIdScopeCte(scope: ResolvedWorkspaceScope | null) {
 const snapshotTaskProjection = `
   t.id, t.public_id, t.owner_user_id, t.creator_user_id,
   t.identifier, t.sequence_number, t.title, NULL AS description,
-  t.status_id, t.priority, t.assignee_user_id, t.project_id, t.release_id,
-  t.estimate, t.due_date, t.parent_task_id, t.rank,
+  t.status_id, t.priority, t.assignee_user_id, t.project_id,
+  CASE WHEN t.release_id IS NULL OR EXISTS (
+    SELECT 1 FROM releases active_release
+    WHERE active_release.id = t.release_id AND active_release.deleted_at IS NULL
+  ) THEN t.release_id ELSE NULL END AS release_id,
+  t.estimate, t.due_date,
+  CASE WHEN t.parent_task_id IS NULL OR EXISTS (
+    SELECT 1 FROM tasks active_parent
+    JOIN projects active_parent_project ON active_parent_project.id = active_parent.project_id
+    WHERE active_parent.id = t.parent_task_id
+      AND active_parent.deleted_at IS NULL
+      AND active_parent_project.deleted_at IS NULL
+  ) THEN t.parent_task_id ELSE NULL END AS parent_task_id,
+  t.rank,
   t.started_at, t.completed_at, t.canceled_at, t.archived_at,
-  t.comment_count, t.version, t.created_at, t.updated_at`;
+  t.comment_count, t.deleted_at, t.deleted_by_user_id, t.purge_after,
+  t.version, t.created_at, t.updated_at`;
 
 export async function getOrCreateUser(actor: Actor): Promise<UserRecord> {
   const db = getD1();
@@ -760,6 +777,7 @@ export async function getSnapshot(
              SELECT r.*,
                ${projectAccessRoleSql("p")} AS access_role
              FROM releases r JOIN projects p ON p.id = r.project_id
+             WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
            ), recent_ids AS (
              SELECT id FROM scoped WHERE access_role IS NOT NULL
                AND ${projectWorkspace.sql}
@@ -827,7 +845,8 @@ export async function getSnapshot(
            WHERE ((s.owner_user_id = ?
               OR EXISTS (
                 SELECT 1 FROM projects p
-                WHERE p.owner_user_id = s.owner_user_id AND (
+                WHERE p.deleted_at IS NULL
+                  AND p.owner_user_id = s.owner_user_id AND (
                   p.owner_user_id = ? OR EXISTS (
                     SELECT 1 FROM access_grants ag
                     WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
@@ -854,6 +873,8 @@ export async function getSnapshot(
                     )
                   ))
                 )
+                AND t.deleted_at IS NULL
+                AND (t.project_id IS NULL OR p.deleted_at IS NULL)
                 AND ${workspacePredicate(
                   "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
                   workspaceScope,
@@ -882,7 +903,7 @@ export async function getSnapshot(
            FROM users u
            WHERE u.id = ? OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE (
+             WHERE p.deleted_at IS NULL AND (
                p.owner_user_id = ? OR EXISTS (
                  SELECT 1 FROM access_grants actor_grant
                  WHERE actor_grant.resource_type = 'project'
@@ -901,7 +922,7 @@ export async function getSnapshot(
              )
            ) OR EXISTS (
              SELECT 1 FROM tasks t
-             WHERE t.project_id IS NULL AND (
+             WHERE t.project_id IS NULL AND t.deleted_at IS NULL AND (
                t.owner_user_id = ? OR EXISTS (
                  SELECT 1 FROM access_grants actor_grant
                  WHERE actor_grant.resource_type = 'task'
@@ -938,7 +959,7 @@ export async function getSnapshot(
            WHERE ag.revoked_at IS NULL AND (
              (ag.resource_type = 'project' AND EXISTS (
                SELECT 1 FROM projects p
-               WHERE p.id = ag.resource_id AND (
+               WHERE p.id = ag.resource_id AND p.deleted_at IS NULL AND (
                  p.owner_user_id = ? OR EXISTS (
                    SELECT 1 FROM access_grants actor_grant
                    WHERE actor_grant.resource_type = 'project'
@@ -951,6 +972,7 @@ export async function getSnapshot(
              (ag.resource_type = 'task' AND EXISTS (
                SELECT 1 FROM tasks t
                WHERE t.id = ag.resource_id AND t.project_id IS NULL
+                 AND t.deleted_at IS NULL
                  AND (t.owner_user_id = ? OR EXISTS (
                    SELECT 1 FROM access_grants actor_grant
                    WHERE actor_grant.resource_type = 'task'
@@ -962,6 +984,7 @@ export async function getSnapshot(
              (ag.resource_type = 'saved_view' AND EXISTS (
                SELECT 1 FROM saved_views v
                WHERE v.id = ag.resource_id AND v.scope_project_id IS NULL
+                 AND v.deleted_at IS NULL
                  AND v.owner_user_id = ?
                  AND ${workspacePredicate("v.owner_user_id", workspaceScope).sql}
              ))
@@ -1265,6 +1288,7 @@ export async function getWorkspaceCatalogPage(
              p.owner_user_id AS workspace_owner_user_id,
              ${projectAccessRoleSql("p")} AS access_role
            FROM releases r JOIN projects p ON p.id = r.project_id
+           WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
          )`
       : `WITH scoped AS (
            SELECT v.*,
@@ -1415,7 +1439,8 @@ export async function getWorkspaceSyncProjection(
              p.owner_user_id AS workspace_owner_user_id,
              ${projectAccessRoleSql("p")} AS access_role
            FROM releases r JOIN projects p ON p.id = r.project_id
-           WHERE r.id IN (${releasePlaceholders})
+           WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
+             AND r.id IN (${releasePlaceholders})
          )
          SELECT * FROM scoped WHERE access_role IS NOT NULL AND ${projectWorkspace.sql}`,
       )
@@ -1662,8 +1687,9 @@ export async function searchWorkspace(
          END AS access_role
        FROM tasks t
        JOIN projects p ON p.id = t.project_id
-       LEFT JOIN releases r ON r.id = t.release_id
+       LEFT JOIN releases r ON r.id = t.release_id AND r.deleted_at IS NULL
        WHERE t.archived_at IS NULL AND p.archived_at IS NULL
+         AND t.deleted_at IS NULL AND p.deleted_at IS NULL
      ), visible AS MATERIALIZED (
        SELECT * FROM scoped WHERE access_role IS NOT NULL
      )
@@ -1724,7 +1750,8 @@ export async function searchWorkspace(
          p.name AS project_name, p.public_id AS project_public_id,
          ${projectAccessRoleSql("p")} AS access_role
        FROM releases r JOIN projects p ON p.id = r.project_id
-       WHERE p.archived_at IS NULL
+       WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
+         AND p.archived_at IS NULL
      ), visible AS MATERIALIZED (
        SELECT * FROM scoped WHERE access_role IS NOT NULL
      )
@@ -1888,7 +1915,12 @@ export async function queryTaskSummaries(
   const scopeProject = input.scopeProjectId
     ? await loadAccessibleProject(currentUser.id, String(input.scopeProjectId))
     : null;
-  await validateTaskFilterReferences(currentUser, query, scopeProject);
+  await validateTaskFilterReferences(
+    currentUser,
+    query,
+    scopeProject,
+    surface.startsWith("view:"),
+  );
 
   const builtInSurfaces = new Set(["mine", "all", "active", "backlog", "archived", "shared"]);
   if (surface.startsWith("view:")) {
@@ -1962,7 +1994,33 @@ export async function queryTaskSummaries(
        JOIN workflow_statuses s ON s.id = t.status_id
        LEFT JOIN projects p ON p.id = t.project_id
      ), visible_tasks AS (
-       SELECT * FROM scoped WHERE access_role IS NOT NULL
+       SELECT
+         scoped.id, scoped.public_id, scoped.owner_user_id,
+         scoped.creator_user_id, scoped.identifier, scoped.sequence_number,
+         scoped.title, scoped.description, scoped.status_id, scoped.priority,
+         scoped.assignee_user_id, scoped.project_id,
+         CASE WHEN scoped.release_id IS NULL OR EXISTS (
+           SELECT 1 FROM releases active_release
+           WHERE active_release.id = scoped.release_id
+             AND active_release.deleted_at IS NULL
+         ) THEN scoped.release_id ELSE NULL END AS release_id,
+         scoped.estimate, scoped.due_date,
+         CASE WHEN scoped.parent_task_id IS NULL OR EXISTS (
+           SELECT 1 FROM tasks active_parent
+           LEFT JOIN projects active_parent_project
+             ON active_parent_project.id = active_parent.project_id
+           WHERE active_parent.id = scoped.parent_task_id
+             AND active_parent.deleted_at IS NULL
+             AND (active_parent.project_id IS NULL
+               OR active_parent_project.deleted_at IS NULL)
+         ) THEN scoped.parent_task_id ELSE NULL END AS parent_task_id,
+         scoped.rank, scoped.started_at, scoped.completed_at,
+         scoped.canceled_at, scoped.archived_at, scoped.comment_count,
+         scoped.deleted_at, scoped.deleted_by_user_id, scoped.purge_after,
+         scoped.version, scoped.created_at, scoped.updated_at,
+         scoped.status_category, scoped.workspace_owner_user_id,
+         scoped.access_role
+       FROM scoped WHERE access_role IS NOT NULL
      )
      SELECT
        v.id, v.public_id, v.owner_user_id, v.creator_user_id,
@@ -2067,36 +2125,41 @@ export async function getAdminOverview(
          COALESCE(attachment_stats.deleted_attachment_count, 0) AS deleted_attachment_count
        FROM users u
        LEFT JOIN (
-         SELECT owner_user_id,
+         SELECT t.owner_user_id,
                 COUNT(*) AS task_count,
                 SUM(CASE
-                  WHEN datetime(updated_at) >= datetime('now', '-7 days')
+                  WHEN datetime(t.updated_at) >= datetime('now', '-7 days')
                   THEN 1 ELSE 0
                 END) AS recent_task_count,
-                MAX(updated_at) AS last_task_activity_at
-         FROM tasks
-         GROUP BY owner_user_id
+                MAX(t.updated_at) AS last_task_activity_at
+         FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         WHERE t.deleted_at IS NULL
+           AND (t.project_id IS NULL OR p.deleted_at IS NULL)
+         GROUP BY t.owner_user_id
        ) task_stats ON task_stats.owner_user_id = u.id
        LEFT JOIN (
          SELECT owner_user_id,
                 COUNT(*) AS project_count,
                 MAX(updated_at) AS last_project_activity_at
-         FROM projects
+         FROM projects WHERE deleted_at IS NULL
          GROUP BY owner_user_id
        ) project_stats ON project_stats.owner_user_id = u.id
        LEFT JOIN (
-         SELECT owner_user_id,
+         SELECT r.owner_user_id,
                 COUNT(*) AS release_count,
-                MAX(updated_at) AS last_release_activity_at
-         FROM releases
-         GROUP BY owner_user_id
+                MAX(r.updated_at) AS last_release_activity_at
+         FROM releases r JOIN projects p ON p.id = r.project_id
+         WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
+         GROUP BY r.owner_user_id
        ) release_stats ON release_stats.owner_user_id = u.id
        LEFT JOIN (
-         SELECT owner_user_id,
+         SELECT v.owner_user_id,
                 COUNT(*) AS view_count,
-                MAX(updated_at) AS last_view_activity_at
-         FROM saved_views
-         GROUP BY owner_user_id
+                MAX(v.updated_at) AS last_view_activity_at
+         FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
+         WHERE v.deleted_at IS NULL
+           AND (v.scope_project_id IS NULL OR p.deleted_at IS NULL)
+         GROUP BY v.owner_user_id
        ) view_stats ON view_stats.owner_user_id = u.id
        LEFT JOIN (
          SELECT COALESCE(p.owner_user_id, t.owner_user_id) AS owner_user_id,
@@ -2110,6 +2173,8 @@ export async function getAdminOverview(
                   AS deleted_attachment_count
          FROM attachments a JOIN tasks t ON t.id = a.task_id
          LEFT JOIN projects p ON p.id = t.project_id
+         WHERE t.deleted_at IS NULL
+           AND (t.project_id IS NULL OR p.deleted_at IS NULL)
          GROUP BY COALESCE(p.owner_user_id, t.owner_user_id)
        ) attachment_stats ON attachment_stats.owner_user_id = u.id
        ORDER BY datetime(u.updated_at) DESC, datetime(u.created_at) DESC`,
@@ -2174,7 +2239,7 @@ export async function createTask(
             FROM tasks WHERE project_id = projects.id)
          ),
          code_locked_at = COALESCE(code_locked_at, ?)
-       WHERE id = ? AND archived_at IS NULL AND (
+       WHERE id = ? AND archived_at IS NULL AND deleted_at IS NULL AND (
          owner_user_id = ? OR EXISTS (
            SELECT 1 FROM access_grants ag
            WHERE ag.resource_type = 'project' AND ag.resource_id = projects.id
@@ -2335,11 +2400,13 @@ export async function createSubtask(
            code_locked_at = COALESCE(code_locked_at, ?),
            version = version + 1,
            updated_at = ?
-         WHERE id = ? AND archived_at IS NULL AND status <> 'canceled'
+         WHERE id = ? AND archived_at IS NULL AND deleted_at IS NULL
+           AND status <> 'canceled'
            AND EXISTS (
              SELECT 1 FROM tasks parent
              WHERE parent.id = ? AND parent.project_id = projects.id
                AND parent.version = ? AND parent.archived_at IS NULL
+               AND parent.deleted_at IS NULL
            )
            AND (
              owner_user_id = ? OR EXISTS (
@@ -2372,6 +2439,7 @@ export async function createSubtask(
          FROM projects p JOIN tasks parent ON parent.project_id = p.id
          WHERE p.id = ? AND parent.id = ? AND parent.version = ?
            AND parent.archived_at IS NULL AND p.archived_at IS NULL
+           AND parent.deleted_at IS NULL AND p.deleted_at IS NULL
            AND p.status <> 'canceled'
            AND (
              p.owner_user_id = ? OR EXISTS (
@@ -2614,7 +2682,8 @@ export async function updateTask(
     projectId = targetProject.id;
   }
 
-  let releaseId = task.releaseId;
+  const storedReleaseId = internalTaskReleaseId(task);
+  let releaseId = storedReleaseId;
   let selectedRelease: ReleaseRecord | null = null;
   if (Object.hasOwn(input, "releaseId")) {
     selectedRelease = input.releaseId
@@ -2683,7 +2752,7 @@ export async function updateTask(
     ["priority", task.priority, nextPriority],
     ["assigneeUserId", task.assigneeUserId, assigneeUserId],
     ["projectId", task.projectId, projectId],
-    ["releaseId", task.releaseId, releaseId],
+    ["releaseId", storedReleaseId, releaseId],
     ["estimate", task.estimate, estimate],
     ["dueDate", task.dueDate, dueDate],
     ["rank", task.rank, rank],
@@ -2718,31 +2787,13 @@ export async function updateTask(
         assignee_user_id = ?, project_id = ?, release_id = ?, estimate = ?, due_date = ?, rank = ?,
         started_at = ?, completed_at = ?, canceled_at = ?, archived_at = ?,
         version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ?${descriptionPredicate.sql} AND (
-         (tasks.project_id IS NOT NULL AND (
-           EXISTS (
-             SELECT 1 FROM projects p
-             WHERE p.id = tasks.project_id AND p.owner_user_id = ?
-           ) OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project'
-               AND ag.resource_id = tasks.project_id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               AND ag.permission IN ('editor', 'manager', 'full_access')
-           )
-         )) OR (tasks.project_id IS NULL AND (
-           owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'task' AND ag.resource_id = tasks.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               AND ag.permission IN ('editor', 'full_access')
-           )
-         ))
-       )
+       WHERE id = ? AND version = ?${descriptionPredicate.sql}
+         AND ${editableTaskPredicate}
        AND (
          ? = 1 OR release_id IS ? OR NOT EXISTS (
            SELECT 1 FROM releases locked_release
            WHERE locked_release.id IN (tasks.release_id, ?)
+             AND locked_release.deleted_at IS NULL
              AND locked_release.status = 'released'
          )
        )`,
@@ -2819,7 +2870,8 @@ export async function reorderTask(
   let statusId = task.statusId;
   let nextPriority = task.priority;
   let assigneeUserId = task.assigneeUserId;
-  let releaseId = task.releaseId;
+  const storedReleaseId = internalTaskReleaseId(task);
+  let releaseId = storedReleaseId;
   if (groupBy === "status") {
     statusId = targetGroupValue!;
     await loadStatus(task.ownerUserId, statusId);
@@ -2916,7 +2968,7 @@ export async function reorderTask(
     ["status", task.statusId, statusId],
     ["priority", task.priority, nextPriority],
     ["assigneeUserId", task.assigneeUserId, assigneeUserId],
-    ["releaseId", task.releaseId, releaseId],
+    ["releaseId", storedReleaseId, releaseId],
     ["rank", task.rank, rank],
   ]);
   if (!Object.keys(changes).length) return task;
@@ -2958,11 +3010,15 @@ export async function reorderTask(
            ))
            AND (? IS NULL OR EXISTS (
              SELECT 1 FROM releases selected_release
-             WHERE selected_release.id = ? AND selected_release.project_id = tasks.project_id
+             WHERE selected_release.id = ?
+               AND selected_release.project_id = tasks.project_id
+               AND selected_release.deleted_at IS NULL
            ))
            AND (? = 1 OR release_id IS ? OR NOT EXISTS (
              SELECT 1 FROM releases locked_release
-             WHERE locked_release.id IN (tasks.release_id, ?) AND locked_release.status = 'released'
+             WHERE locked_release.id IN (tasks.release_id, ?)
+               AND locked_release.deleted_at IS NULL
+               AND locked_release.status = 'released'
            ))`,
       ).bind(
         statusId,
@@ -3160,6 +3216,8 @@ export async function moveTask(
     JOIN projects source ON source.id = moving.project_id
     JOIN projects target ON target.id = ?
     WHERE moving.id = ? AND moving.version = ? AND moving.project_id = ?
+      AND moving.deleted_at IS NULL
+      AND source.deleted_at IS NULL AND target.deleted_at IS NULL
       AND target.archived_at IS NULL AND target.status <> 'canceled'
       AND (
         source.owner_user_id = ? OR EXISTS (
@@ -3195,6 +3253,7 @@ export async function moveTask(
           SELECT 1 FROM releases selected_release
           WHERE selected_release.id = ?
             AND selected_release.project_id = target.id
+            AND selected_release.deleted_at IS NULL
         )
       )
       AND (
@@ -3215,6 +3274,7 @@ export async function moveTask(
         ? = 1 OR NOT EXISTS (
           SELECT 1 FROM releases locked_release
           WHERE locked_release.id IN (moving.release_id, ?)
+            AND locked_release.deleted_at IS NULL
             AND locked_release.status = 'released'
         )
       )`;
@@ -3490,7 +3550,8 @@ export async function bulkMoveTasks(
       `UPDATE projects SET task_sequence = ?, code_locked_at = COALESCE(code_locked_at, ?),
          version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND task_sequence = ?
-         AND archived_at IS NULL AND status <> 'canceled' AND (
+         AND archived_at IS NULL AND deleted_at IS NULL
+         AND status <> 'canceled' AND (
            owner_user_id = ? OR EXISTS (
              SELECT 1 FROM access_grants target_grant
              WHERE target_grant.resource_type = 'project'
@@ -3548,7 +3609,8 @@ export async function bulkMoveTasks(
            AND ${editableTaskPredicate}
            AND EXISTS (
              SELECT 1 FROM projects target
-             WHERE target.id = ? AND target.archived_at IS NULL AND target.status <> 'canceled'
+             WHERE target.id = ? AND target.archived_at IS NULL
+               AND target.deleted_at IS NULL AND target.status <> 'canceled'
                AND (target.owner_user_id = ? OR EXISTS (
                  SELECT 1 FROM access_grants target_grant
                  WHERE target_grant.resource_type = 'project'
@@ -3574,7 +3636,9 @@ export async function bulkMoveTasks(
            ))
            AND (? = 1 OR NOT EXISTS (
              SELECT 1 FROM releases current_release
-             WHERE current_release.id = tasks.release_id AND current_release.status = 'released'
+             WHERE current_release.id = tasks.release_id
+               AND current_release.deleted_at IS NULL
+               AND current_release.status = 'released'
            ))`,
       ).bind(
         targetProject.id,
@@ -3840,10 +3904,12 @@ export async function bulkUpdateTasks(
                SELECT 1 FROM releases selected_release
                WHERE selected_release.id = ?
                  AND selected_release.project_id = tasks.project_id
+                 AND selected_release.deleted_at IS NULL
              ))
              AND (? = 1 OR NOT EXISTS (
                SELECT 1 FROM releases locked_release
                WHERE locked_release.id IN (tasks.release_id, ?)
+                 AND locked_release.deleted_at IS NULL
                  AND locked_release.status = 'released'
              ))`,
         )
@@ -4991,6 +5057,7 @@ export async function updateProject(
       `SELECT COUNT(*) AS count
        FROM tasks t JOIN workflow_statuses s ON s.id = t.status_id
        WHERE t.project_id = ? AND t.archived_at IS NULL
+         AND t.deleted_at IS NULL
          AND s.category NOT IN ('completed', 'canceled')`,
     ).bind(project.id).first<{ count: number }>();
     if (Number(open?.count ?? 0) > 0) {
@@ -5012,7 +5079,7 @@ export async function updateProject(
          name = ?, task_code = ?, summary = ?, description = ?, status = ?,
          lead_user_id = ?, start_date = ?, target_date = ?, icon = ?, color = ?,
          archived_at = ?, version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ?
+       WHERE id = ? AND version = ? AND deleted_at IS NULL
          AND (
            owner_user_id = ? OR EXISTS (
              SELECT 1 FROM access_grants actor_grant
@@ -5144,6 +5211,7 @@ export async function updateRelease(
       `SELECT COUNT(*) AS count
        FROM tasks t JOIN workflow_statuses s ON s.id = t.status_id
        WHERE t.release_id = ? AND t.archived_at IS NULL
+         AND t.deleted_at IS NULL
          AND s.category NOT IN ('completed', 'canceled')`,
     ).bind(release.id).first<{ count: number }>();
     if (Number(open?.count ?? 0) > 0) {
@@ -5160,16 +5228,18 @@ export async function updateRelease(
     `UPDATE releases SET
        name = ?, description = ?, status = ?, target_date = ?, released_at = ?,
        release_notes = ?, version = version + 1, updated_at = ?
-     WHERE id = ? AND version = ?
+     WHERE id = ? AND version = ? AND deleted_at IS NULL
        AND (
          ? = 0 OR ? = 1 OR status = 'released' OR NOT EXISTS (
            SELECT 1 FROM tasks t JOIN workflow_statuses s ON s.id = t.status_id
            WHERE t.release_id = releases.id AND t.archived_at IS NULL
+             AND t.deleted_at IS NULL
              AND s.category NOT IN ('completed', 'canceled')
          )
        )
        AND EXISTS (
-         SELECT 1 FROM projects p WHERE p.id = releases.project_id AND (
+         SELECT 1 FROM projects p WHERE p.id = releases.project_id
+           AND p.deleted_at IS NULL AND (
            p.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM access_grants ag
              WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
@@ -5278,9 +5348,10 @@ export async function updateSavedView(
     `UPDATE saved_views SET
        owner_user_id = ?, name = ?, scope_project_id = ?, query_json = ?,
        display_json = ?, archived_at = ?, version = version + 1, updated_at = ?
-     WHERE id = ? AND version = ? AND (
+     WHERE id = ? AND version = ? AND deleted_at IS NULL AND (
        (scope_project_id IS NOT NULL AND EXISTS (
-         SELECT 1 FROM projects p WHERE p.id = saved_views.scope_project_id AND (
+         SELECT 1 FROM projects p WHERE p.id = saved_views.scope_project_id
+           AND p.deleted_at IS NULL AND (
            p.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM access_grants ag
              WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
@@ -5384,6 +5455,7 @@ async function validateTaskFilterReferences(
   currentUser: UserRecord,
   query: ViewQuery,
   scopeProject: ProjectRecord | null,
+  allowInertMissingReferences = false,
 ) {
   const conditions = canonicalViewQuery(query).conditions;
   const projectIds = filterReferenceValues(conditions, "project");
@@ -5398,14 +5470,28 @@ async function validateTaskFilterReferences(
     throw new ValidationError("A project-scoped Saved View cannot filter outside its Project");
   }
 
-  let projects: ProjectRecord[];
-  let releases: ReleaseRecord[];
-  try {
-    [projects, releases] = await Promise.all([
-      Promise.all(projectIds.map((id) => loadAccessibleProject(currentUser.id, id))),
-      Promise.all(releaseIds.map((id) => loadAccessibleRelease(currentUser.id, id))),
-    ]);
-  } catch {
+  // Runtime filters are logical references. A reference that was later
+  // deleted or purged remains a valid, inert predicate instead of disclosing
+  // whether that resource still exists. Creation/update validation stays
+  // strict in validateSavedViewReferences.
+  const [projectCandidates, releaseCandidates] = await Promise.all([
+    Promise.all(projectIds.map((id) =>
+      loadAccessibleProject(currentUser.id, id).catch(() => null)
+    )),
+    Promise.all(releaseIds.map((id) =>
+      loadAccessibleRelease(currentUser.id, id).catch(() => null)
+    )),
+  ]);
+  const projects = projectCandidates.filter(
+    (project): project is ProjectRecord => project !== null,
+  );
+  const releases = releaseCandidates.filter(
+    (release): release is ReleaseRecord => release !== null,
+  );
+  if (
+    !allowInertMissingReferences &&
+    (projects.length !== projectIds.length || releases.length !== releaseIds.length)
+  ) {
     throw new ValidationError("Task filter reference is inaccessible");
   }
   if (scopeProject && releases.some((release) => release.projectId !== scopeProject.id)) {
@@ -5432,7 +5518,7 @@ async function validateTaskFilterReferences(
          WHERE s.id IN (${filterPlaceholders(statusIds.length)}) AND (
            s.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE p.owner_user_id = s.owner_user_id AND (
+             WHERE p.deleted_at IS NULL AND p.owner_user_id = s.owner_user_id AND (
                p.owner_user_id = ? OR EXISTS (
                  SELECT 1 FROM access_grants ag
                  WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
@@ -5453,7 +5539,7 @@ async function validateTaskFilterReferences(
          WHERE u.id IN (${filterPlaceholders(assigneeIds.length)}) AND (
            u.id = ? OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE (p.owner_user_id = ? OR EXISTS (
+             WHERE p.deleted_at IS NULL AND (p.owner_user_id = ? OR EXISTS (
                SELECT 1 FROM access_grants actor_grant
                WHERE actor_grant.resource_type = 'project'
                  AND actor_grant.resource_id = p.id
@@ -5480,7 +5566,7 @@ async function validateTaskFilterReferences(
          WHERE l.id IN (${filterPlaceholders(labelIds.length)}) AND (
            l.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE p.owner_user_id = l.owner_user_id AND (
+             WHERE p.deleted_at IS NULL AND p.owner_user_id = l.owner_user_id AND (
                p.owner_user_id = ? OR EXISTS (
                  SELECT 1 FROM access_grants ag
                  WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
@@ -5506,7 +5592,9 @@ async function validateTaskFilterReferences(
     try {
       await loadAccessibleTask(currentUser.id, taskId);
     } catch {
-      throw new ValidationError("Saved View parent filter is inaccessible");
+      if (!allowInertMissingReferences) {
+        throw new ValidationError("Saved View parent filter is inaccessible");
+      }
     }
   }
 }
@@ -5553,7 +5641,8 @@ async function validateAccessibleLabelGroupReferences(
     const rows = await db.prepare(
       `SELECT g.id FROM label_groups g WHERE g.id IN (${sqlPlaceholders(refs.groupIds)}) AND (
          g.owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM projects p WHERE p.owner_user_id = g.owner_user_id AND (
+           SELECT 1 FROM projects p WHERE p.deleted_at IS NULL
+             AND p.owner_user_id = g.owner_user_id AND (
              p.owner_user_id = ? OR EXISTS (
                SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
                  AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
@@ -5571,7 +5660,8 @@ async function validateAccessibleLabelGroupReferences(
       `SELECT l.id FROM labels l WHERE l.id IN (${sqlPlaceholders(refs.labelIds)})
        AND l.group_id IN (${sqlPlaceholders(refs.groupIds)}) AND (
          l.owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM projects p WHERE p.owner_user_id = l.owner_user_id AND (
+           SELECT 1 FROM projects p WHERE p.deleted_at IS NULL
+             AND p.owner_user_id = l.owner_user_id AND (
              p.owner_user_id = ? OR EXISTS (
                SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
                  AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
@@ -5761,7 +5851,7 @@ export async function transferProjectOwnership(
       db.prepare(
         `UPDATE projects
          SET owner_user_id = ?, version = version + 1, updated_at = ?
-         WHERE id = ? AND owner_user_id = ?`,
+         WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL`,
       )
       .bind(targetUserId, now, project.id, currentUser.id),
       db.prepare(
@@ -5815,6 +5905,20 @@ async function loadAccessibleTasks(userId: string, taskIds: string[]) {
     .prepare(
       `WITH scoped AS (
          SELECT t.*,
+           CASE WHEN t.release_id IS NULL OR EXISTS (
+             SELECT 1 FROM releases active_release
+             WHERE active_release.id = t.release_id
+               AND active_release.deleted_at IS NULL
+           ) THEN t.release_id ELSE NULL END AS visible_release_id,
+           CASE WHEN t.parent_task_id IS NULL OR EXISTS (
+             SELECT 1 FROM tasks active_parent
+             LEFT JOIN projects active_parent_project
+               ON active_parent_project.id = active_parent.project_id
+             WHERE active_parent.id = t.parent_task_id
+               AND active_parent.deleted_at IS NULL
+               AND (active_parent.project_id IS NULL
+                 OR active_parent_project.deleted_at IS NULL)
+           ) THEN t.parent_task_id ELSE NULL END AS visible_parent_task_id,
            ${taskAccessRoleSql("t", "p")} AS access_role
          FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
          WHERE t.id IN (${placeholders}) OR t.public_id IN (${placeholders})
@@ -5861,7 +5965,8 @@ export async function loadAccessibleRelease(userId: string, releaseId: string) {
          SELECT r.*,
            ${projectAccessRoleSql("p")} AS access_role
          FROM releases r JOIN projects p ON p.id = r.project_id
-         WHERE r.id = ? OR r.public_id = ?
+         WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
+           AND (r.id = ? OR r.public_id = ?)
        ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
     )
     .bind(userId, userId, releaseId, releaseId)
@@ -6191,6 +6296,9 @@ function mapProject(row: DbRow): ProjectRecord {
     icon: String(row.icon ?? "cube"),
     color: String(row.color),
     archivedAt: nullableString(row.archived_at),
+    deletedAt: nullableString(row.deleted_at),
+    deletedByUserId: nullableString(row.deleted_by_user_id),
+    purgeAfter: nullableString(row.purge_after),
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -6211,6 +6319,9 @@ function mapRelease(row: DbRow): ReleaseRecord {
     targetDate: nullableString(row.target_date),
     releasedAt: nullableString(row.released_at),
     releaseNotes: String(row.release_notes ?? ""),
+    deletedAt: nullableString(row.deleted_at),
+    deletedByUserId: nullableString(row.deleted_by_user_id),
+    purgeAfter: nullableString(row.purge_after),
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
@@ -6218,8 +6329,13 @@ function mapRelease(row: DbRow): ReleaseRecord {
   };
 }
 
+const internalTaskReferences = new WeakMap<
+  TaskRecord,
+  { releaseId: string | null; parentTaskId: string | null }
+>();
+
 function mapTask(row: DbRow): TaskRecord {
-  return {
+  const task: TaskRecord = {
     id: String(row.id),
     publicId: String(row.public_id),
     ownerUserId: String(row.owner_user_id),
@@ -6232,21 +6348,37 @@ function mapTask(row: DbRow): TaskRecord {
     priority: String(row.priority) as Priority,
     assigneeUserId: nullableString(row.assignee_user_id),
     projectId: String(row.project_id),
-    releaseId: nullableString(row.release_id),
+    releaseId: Object.hasOwn(row, "visible_release_id")
+      ? nullableString(row.visible_release_id)
+      : nullableString(row.release_id),
     estimate: row.estimate == null ? null : Number(row.estimate),
     dueDate: nullableString(row.due_date),
-    parentTaskId: nullableString(row.parent_task_id),
+    parentTaskId: Object.hasOwn(row, "visible_parent_task_id")
+      ? nullableString(row.visible_parent_task_id)
+      : nullableString(row.parent_task_id),
     rank: Number(row.rank),
     startedAt: nullableString(row.started_at),
     completedAt: nullableString(row.completed_at),
     canceledAt: nullableString(row.canceled_at),
     archivedAt: nullableString(row.archived_at),
+    deletedAt: nullableString(row.deleted_at),
+    deletedByUserId: nullableString(row.deleted_by_user_id),
+    purgeAfter: nullableString(row.purge_after),
     commentCount: Number(row.comment_count ?? 0),
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     accessRole: effectiveRole(row.access_role),
   };
+  internalTaskReferences.set(task, {
+    releaseId: nullableString(row.release_id),
+    parentTaskId: nullableString(row.parent_task_id),
+  });
+  return task;
+}
+
+function internalTaskReleaseId(task: TaskRecord) {
+  return internalTaskReferences.get(task)?.releaseId ?? task.releaseId;
 }
 
 function mapLabel(row: DbRow): LabelRecord {
@@ -6317,6 +6449,9 @@ function mapView(row: DbRow): SavedViewRecord {
     query: parseStoredViewQuery(row.query_json),
     display: parseStoredViewDisplay(row.display_json),
     archivedAt: nullableString(row.archived_at),
+    deletedAt: nullableString(row.deleted_at),
+    deletedByUserId: nullableString(row.deleted_by_user_id),
+    purgeAfter: nullableString(row.purge_after),
     version: Number(row.version),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
