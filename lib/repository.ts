@@ -2563,7 +2563,9 @@ export async function setTaskParent(
     eventType: "hierarchy_changed",
     payload: {
       changes: {
-        parentTaskId: { before: oldParentTaskId, after: parentTaskId },
+        // Keep a deleted parent opaque in ordinary child Activity while the
+        // guarded mutation still compares the stored internal edge below.
+        parentTaskId: { before: task.parentTaskId, after: parentTaskId },
       },
     },
     createdAt: now,

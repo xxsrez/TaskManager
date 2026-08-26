@@ -717,6 +717,20 @@ test("Task delete and restore preserve content while child hierarchy and relatio
   });
   assert.equal(detached.parentTaskId, null);
   assert.equal(reparented.parentTaskId, replacementIdentity.id);
+  const detachedHierarchyEvent = (await listTaskActivity(owner, firstChild.id, { limit: 20 }))
+    .events.find((event) => {
+      if (event.eventType !== "hierarchy_changed") return false;
+      const changes = event.payload.changes as Record<string, unknown> | undefined;
+      const parentChange = changes?.parentTaskId as Record<string, unknown> | undefined;
+      return parentChange?.after === null;
+    });
+  const detachedChanges = detachedHierarchyEvent?.payload.changes as
+    | Record<string, unknown>
+    | undefined;
+  const detachedParentChange = detachedChanges?.parentTaskId as
+    | Record<string, unknown>
+    | undefined;
+  assert.equal(detachedParentChange?.before, null);
 
   const beforeRestore = await getSnapshot(owner);
   await restoreEntity(owner, "task", task.id, deleted.version);
