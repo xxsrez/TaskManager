@@ -10,6 +10,7 @@ import { createComment, listTaskComments } from "../lib/comments";
 import {
   deleteEntity,
   getDeletionPreview,
+  getProjectDeletionPreview,
   getReleaseDeletionPreview,
   listRecentlyDeleted,
   PERMANENT_DELETE_CONFIRMATION,
@@ -39,6 +40,7 @@ import {
   moveTask,
   queryTaskSummaries,
   reorderTask,
+  revokeAccess,
   setTaskParent,
   updateRelease,
   updateSavedView,
@@ -51,6 +53,7 @@ import { createD1TestHarness } from "./helpers/d1";
 import { GET as recentlyDeletedRoute } from "../app/api/recently-deleted/route";
 import { GET as deletionPreviewRoute } from "../app/api/recently-deleted/[type]/[id]/preview/route";
 import { GET as releaseDeletionPreviewRoute } from "../app/api/releases/[id]/deletion-preview/route";
+import { GET as projectDeletionPreviewRoute } from "../app/api/projects/[id]/deletion-preview/route";
 import { DELETE as deleteReleaseRoute } from "../app/api/releases/[id]/route";
 import { DELETE as deleteTaskRoute } from "../app/api/tasks/[id]/route";
 import { POST as purgeTaskRoute } from "../app/api/tasks/[id]/purge/route";
@@ -1224,19 +1227,41 @@ test("hidden released membership stays confirmation-protected and reorder preser
 });
 
 test("Project shadow restore preserves its whole subtree and purge removes R2 plus legacy grants", async () => {
-  const editor = await getOrCreateUser({
+  const editorActor = {
     ...ownerActor,
     providerAccountKey: `project-delete-editor-${unique}`,
     displayName: "Project Delete Editor",
     email: `project-delete-editor-${unique}@example.test`,
-  });
-  const viewer = await getOrCreateUser({
+  };
+  const managerActor = {
+    ...ownerActor,
+    providerAccountKey: `project-delete-manager-${unique}`,
+    displayName: "Project Delete Manager",
+    email: `project-delete-manager-${unique}@example.test`,
+  };
+  const viewerActor = {
     ...ownerActor,
     providerAccountKey: `project-delete-viewer-${unique}`,
     displayName: "Project Delete Viewer",
     email: `project-delete-viewer-${unique}@example.test`,
-  });
+  };
+  const revokedActor = {
+    ...ownerActor,
+    providerAccountKey: `project-delete-revoked-${unique}`,
+    displayName: "Project Delete Revoked Editor",
+    email: `project-delete-revoked-${unique}@example.test`,
+  };
+  const editor = await getOrCreateUser(editorActor);
+  const manager = await getOrCreateUser(managerActor);
+  const viewer = await getOrCreateUser(viewerActor);
+  const revoked = await getOrCreateUser(revokedActor);
   const { project, release, task, view } = await fixture("project-complete");
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: manager.email,
+    permission: "manager",
+  });
   await grantAccess(owner, {
     resourceType: "project",
     resourceId: project.id,
@@ -1248,6 +1273,12 @@ test("Project shadow restore preserves its whole subtree and purge removes R2 pl
     resourceId: project.id,
     email: viewer.email,
     permission: "viewer",
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: revoked.email,
+    permission: "editor",
   });
   const archivedIdentity = await createTask(owner, {
     title: `Archived project child ${unique}`,
@@ -1309,12 +1340,99 @@ test("Project shadow restore preserves its whole subtree and purge removes R2 pl
     secondView.id,
     secondView.version,
   );
+  const archivedView = await createSavedView(owner, {
+    name: `Archived View ${unique}`,
+    scopeProjectId: project.id,
+    query: { projectId: project.id },
+  });
+  await updateSavedView(owner, archivedView.id, {
+    version: archivedView.version,
+    archived: true,
+  });
   const globalView = await createSavedView(owner, {
     name: `Global project reference ${unique}`,
     query: { projectId: project.id },
   });
+  const revokedGrant = (await getSnapshot(owner)).collaborators.find(
+    (grant) => grant.resourceId === project.id && grant.userId === revoked.id,
+  )!;
+  await revokeAccess(owner, revokedGrant.grantId);
   const liveBeforeDelete = await getSnapshot(owner);
   const projectBeforeDelete = liveBeforeDelete.projects.find((item) => item.id === project.id)!;
+  const activePreview = await getProjectDeletionPreview(
+    owner,
+    project.publicId,
+    projectBeforeDelete.version,
+  );
+  assert.deepEqual(activePreview, {
+    type: "project",
+    id: project.id,
+    publicId: project.publicId,
+    displayName: project.name,
+    context: project.taskCode,
+    version: projectBeforeDelete.version,
+    impact: {
+      tasks: 3,
+      releases: 2,
+      savedViews: 3,
+      comments: 2,
+      attachments: 2,
+    },
+    activeNavigation: {
+      releases: 1,
+      savedViews: 1,
+    },
+  });
+  assert.deepEqual(
+    await getProjectDeletionPreview(editor, project.id, projectBeforeDelete.version),
+    activePreview,
+  );
+  assert.deepEqual(
+    await getProjectDeletionPreview(manager, project.id, projectBeforeDelete.version),
+    activePreview,
+  );
+  await assert.rejects(
+    getProjectDeletionPreview(viewer, project.id, projectBeforeDelete.version),
+    PermissionError,
+  );
+  await assert.rejects(
+    getProjectDeletionPreview(revoked, project.id, projectBeforeDelete.version),
+    NotFoundError,
+  );
+  await assert.rejects(
+    getProjectDeletionPreview(owner, "project-never-existed", projectBeforeDelete.version),
+    NotFoundError,
+  );
+  await assert.rejects(
+    getProjectDeletionPreview(owner, project.id, projectBeforeDelete.version + 1),
+    ConflictError,
+  );
+
+  configureActorResolverForTests(async () => ownerActor);
+  const activePreviewResponse = await projectDeletionPreviewRoute(new Request(
+    `https://task-manager.test/api/projects/${project.publicId}/deletion-preview?version=${projectBeforeDelete.version}`,
+  ), { params: Promise.resolve({ id: project.publicId }) });
+  assert.equal(activePreviewResponse.status, 200);
+  assert.deepEqual(await activePreviewResponse.json(), activePreview);
+  const stalePreviewResponse = await projectDeletionPreviewRoute(new Request(
+    `https://task-manager.test/api/projects/${project.publicId}/deletion-preview?version=${projectBeforeDelete.version + 1}`,
+  ), { params: Promise.resolve({ id: project.publicId }) });
+  assert.equal(stalePreviewResponse.status, 409);
+  const invalidPreviewResponse = await projectDeletionPreviewRoute(new Request(
+    `https://task-manager.test/api/projects/${project.publicId}/deletion-preview?version=0`,
+  ), { params: Promise.resolve({ id: project.publicId }) });
+  assert.equal(invalidPreviewResponse.status, 400);
+  configureActorResolverForTests(async () => viewerActor);
+  const viewerPreviewResponse = await projectDeletionPreviewRoute(new Request(
+    `https://task-manager.test/api/projects/${project.publicId}/deletion-preview?version=${projectBeforeDelete.version}`,
+  ), { params: Promise.resolve({ id: project.publicId }) });
+  assert.equal(viewerPreviewResponse.status, 403);
+  configureActorResolverForTests(async () => revokedActor);
+  const revokedPreviewResponse = await projectDeletionPreviewRoute(new Request(
+    `https://task-manager.test/api/projects/${project.publicId}/deletion-preview?version=${projectBeforeDelete.version}`,
+  ), { params: Promise.resolve({ id: project.publicId }) });
+  assert.equal(revokedPreviewResponse.status, 404);
+  configureActorResolverForTests(null);
   const rankBeforeDelete = (await database.prepare(
     "SELECT rank FROM tasks WHERE id = ?",
   ).bind(archivedTask.id).first<{ rank: number }>())!.rank;
@@ -1327,6 +1445,10 @@ test("Project shadow restore preserves its whole subtree and purge removes R2 pl
     project.id,
     projectBeforeDelete.version,
   );
+  await assert.rejects(
+    getProjectDeletionPreview(owner, project.id, deletedProject.version),
+    NotFoundError,
+  );
   const preview = await getDeletionPreview(
     owner,
     "project",
@@ -1336,7 +1458,7 @@ test("Project shadow restore preserves its whole subtree and purge removes R2 pl
   assert.deepEqual(preview.impact, {
     tasks: 3,
     releases: 2,
-    savedViews: 2,
+    savedViews: 3,
     comments: 2,
     attachments: 2,
     releaseMemberships: 0,

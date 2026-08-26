@@ -233,6 +233,11 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   surfaces без переписывания deletion tuple каждого child. Restore Project
   снимает только shadow Project и не восстанавливает child, который был удалён
   отдельно до удаления Project.
+- Перед recoverable Project delete UI читает versioned Editor+ preview с
+  физическими counts Tasks, Releases, project-scoped SavedViews, Comments и
+  Attachments, а также отдельными `activeNavigation.releases` и
+  `activeNavigation.savedViews`, исключающими уже deleted/archived navigation
+  children. Это позволяет не вычитать скрытые ранее rows из global totals.
 - Release delete не удаляет Tasks и сохраняет их внутренний `release_id` для
   lossless restore; deleted Release не является picker/filter target и не
   отображается как активное membership. Permanent purge Release атомарно

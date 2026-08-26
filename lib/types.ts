@@ -401,6 +401,23 @@ export type DeletionPreview = {
   impact: DeletionImpactCounts;
 };
 
+export type ProjectDeletionPreview = {
+  type: "project";
+  id: string;
+  publicId: string;
+  displayName: string;
+  context: string;
+  version: number;
+  impact: Pick<
+    DeletionImpactCounts,
+    "tasks" | "releases" | "savedViews" | "comments" | "attachments"
+  >;
+  activeNavigation: {
+    releases: number;
+    savedViews: number;
+  };
+};
+
 export type ReleaseDeletionPreview = {
   type: "release";
   id: string;

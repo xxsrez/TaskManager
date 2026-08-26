@@ -24,6 +24,7 @@ import type {
   AccessRole,
   DeletionPreview,
   DeletableEntityType,
+  ProjectDeletionPreview,
   ReleaseDeletionPreview,
   RecentlyDeletedPage,
   RecentlyDeletedRecord,
@@ -37,6 +38,15 @@ const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 const MAINTENANCE_BATCH_SIZE = 25;
 export const PERMANENT_DELETE_CONFIRMATION = "DELETE PERMANENTLY";
+
+const PROJECT_PHYSICAL_IMPACT_SQL = `
+  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
+  (SELECT COUNT(*) FROM releases r WHERE r.project_id = p.id) AS release_count,
+  (SELECT COUNT(*) FROM saved_views v WHERE v.scope_project_id = p.id) AS saved_view_count,
+  (SELECT COUNT(*) FROM comments c JOIN tasks t ON t.id = c.task_id
+    WHERE t.project_id = p.id) AS comment_count,
+  (SELECT COUNT(*) FROM attachments a JOIN tasks t ON t.id = a.task_id
+    WHERE t.project_id = p.id) AS attachment_count`;
 
 type LifecycleRow = {
   id: string;
@@ -415,18 +425,64 @@ export async function getReleaseDeletionPreview(
   };
 }
 
+export async function getProjectDeletionPreview(
+  currentUser: UserRecord,
+  reference: string,
+  expectedVersion: number,
+): Promise<ProjectDeletionPreview> {
+  assertExpectedVersion(expectedVersion);
+  const row = await getD1().prepare(
+    `SELECT p.id, p.public_id, p.name AS display_name,
+       p.task_code AS context_name, p.version, p.deleted_at,
+       ${projectAccessRoleSql("p")} AS access_role,
+       ${PROJECT_PHYSICAL_IMPACT_SQL},
+       (SELECT COUNT(*) FROM releases active_release
+         WHERE active_release.project_id = p.id
+           AND active_release.deleted_at IS NULL) AS active_navigation_release_count,
+       (SELECT COUNT(*) FROM saved_views active_view
+         WHERE active_view.scope_project_id = p.id
+           AND active_view.deleted_at IS NULL
+           AND active_view.archived_at IS NULL) AS active_navigation_saved_view_count
+     FROM projects p WHERE p.id = ? OR p.public_id = ? LIMIT 1`,
+  ).bind(
+    currentUser.id,
+    currentUser.id,
+    reference,
+    reference,
+  ).first<DbRow>();
+  if (!row?.access_role) throw new NotFoundError("Project not found");
+  requireEditor(String(row.access_role) as AccessRole);
+  if (row.deleted_at != null) throw new NotFoundError("Project not found");
+  if (Number(row.version) !== expectedVersion) {
+    throw new ConflictError("Project was changed in another session");
+  }
+  return {
+    type: "project",
+    id: String(row.id),
+    publicId: String(row.public_id),
+    displayName: String(row.display_name),
+    context: String(row.context_name),
+    version: Number(row.version),
+    impact: {
+      tasks: Number(row.task_count ?? 0),
+      releases: Number(row.release_count ?? 0),
+      savedViews: Number(row.saved_view_count ?? 0),
+      comments: Number(row.comment_count ?? 0),
+      attachments: Number(row.attachment_count ?? 0),
+    },
+    activeNavigation: {
+      releases: Number(row.active_navigation_release_count ?? 0),
+      savedViews: Number(row.active_navigation_saved_view_count ?? 0),
+    },
+  };
+}
+
 async function loadDeletionImpact(type: DeletableEntityType, id: string) {
   const db = getD1();
   if (type === "project") {
     return db.prepare(
       `SELECT p.name AS display_name, NULL AS context_name,
-         (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
-         (SELECT COUNT(*) FROM releases r WHERE r.project_id = p.id) AS release_count,
-         (SELECT COUNT(*) FROM saved_views v WHERE v.scope_project_id = p.id) AS saved_view_count,
-         (SELECT COUNT(*) FROM comments c JOIN tasks t ON t.id = c.task_id
-           WHERE t.project_id = p.id) AS comment_count,
-         (SELECT COUNT(*) FROM attachments a JOIN tasks t ON t.id = a.task_id
-           WHERE t.project_id = p.id) AS attachment_count,
+         ${PROJECT_PHYSICAL_IMPACT_SQL},
          0 AS release_membership_count
        FROM projects p WHERE p.id = ? AND p.deleted_at IS NOT NULL`,
     ).bind(id).first<DbRow>();

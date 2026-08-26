@@ -317,6 +317,11 @@ cascade, затем очищает subtree grants, включая legacy direct 
 grants. Ошибка R2 сохраняет tombstone и retry job; повторный запуск безопасно
 продолжает после уже удалённых objects.
 
+Active Project deletion preview доступен effective Editor+ и возвращает две
+группы точных counts: весь физический cascade и `activeNavigation` только для
+ещё представленных в navigation totals Releases и project-scoped SavedViews.
+Archived и отдельно deleted descendants входят только в физический impact.
+
 После cutoff bounded opportunistic maintenance может физически удалить row
 позже; точный wall-clock purge не гарантируется. Для Task/Project с native
 Attachments operational retry job сначала удаляет R2 originals и только затем

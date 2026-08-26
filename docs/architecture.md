@@ -425,6 +425,10 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    физическим rows. Purge читает distinct subtree object keys и удаляет их из
    R2 bounded chunks; только затем D1 cascade очищает children и Project grants,
    включая legacy direct Task/scoped-View grants.
+   Перед recoverable delete `GET /api/projects/{id}/deletion-preview?version=…`
+   возвращает Editor+ active Project identity, физические cascade counts и
+   отдельно counts ещё видимых Releases/project-scoped SavedViews для точной
+   коррекции navigation totals; stale version отклоняется до delete.
 4. Release delete не меняет `tasks.release_id`; ordinary Task projection и
    filter executor трактуют deleted Release как неактивную membership. Restore
    снова разрешает тот же ref. Permanent Release purge одной D1 transaction
