@@ -3,8 +3,6 @@ import type {
   DeletableEntityType,
   DeletionPreview,
   RecentlyDeletedPage,
-  WorkspaceCatalogKind,
-  WorkspaceCatalogPage,
   WorkspaceSyncResponse,
 } from "./types";
 
@@ -37,6 +35,42 @@ export type ReleaseDeletionPreview = {
   taskMemberships: number;
   requiresReleasedCompositionConfirmation: boolean;
 };
+
+export type ProjectDeletionPreview = {
+  type: "project";
+  id: string;
+  publicId: string;
+  displayName: string;
+  context: string | null;
+  version: number;
+  impact: {
+    tasks: number;
+    releases: number;
+    savedViews: number;
+    comments: number;
+    attachments: number;
+  };
+  activeNavigation?: {
+    releases: number;
+    savedViews: number;
+  };
+};
+
+export type ProjectActiveNavigationCounts = NonNullable<
+  ProjectDeletionPreview["activeNavigation"]
+>;
+
+export function projectDeletionImpactLines(
+  preview: Pick<ProjectDeletionPreview, "impact">,
+) {
+  const { impact } = preview;
+  return [
+    `${impact.tasks.toLocaleString()} Task${impact.tasks === 1 ? "" : "s"} will be hidden by the Project shadow.`,
+    `${impact.releases.toLocaleString()} Release${impact.releases === 1 ? "" : "s"} will be hidden.`,
+    `${impact.savedViews.toLocaleString()} project-scoped Saved View${impact.savedViews === 1 ? "" : "s"} will be hidden.`,
+    `${impact.comments.toLocaleString()} comment${impact.comments === 1 ? "" : "s"} and ${impact.attachments.toLocaleString()} Attachment${impact.attachments === 1 ? "" : "s"} stay stored for restore.`,
+  ];
+}
 
 export const RECENTLY_DELETED_CHANGED_EVENT = "task-manager:recently-deleted-changed";
 
@@ -140,6 +174,7 @@ export function pruneDeletedEntityFromSnapshot(
   snapshot: AppSnapshot,
   type: DeletableEntityType,
   id: string,
+  projectActiveNavigation?: ProjectActiveNavigationCounts,
 ): AppSnapshot {
   const removedTaskIds = new Set<string>();
   if (type === "task") removedTaskIds.add(id);
@@ -184,71 +219,54 @@ export function pruneDeletedEntityFromSnapshot(
       !removedTaskIds.has(relation.sourceTaskId) &&
       !removedTaskIds.has(relation.targetTaskId)
     ),
-    navigationCollections: snapshot.navigationCollections
+    navigationCollections: snapshot.navigationCollections && (
+      type !== "project" || projectActiveNavigation
+    )
       ? {
           projects: pruneNavigationCollection(
             snapshot.navigationCollections.projects,
             (project) => type !== "project" || project.id !== id,
+            type === "project" ? 1 : 0,
           ),
           releases: pruneNavigationCollection(
             snapshot.navigationCollections.releases,
             (release) => type === "release"
               ? release.id !== id
               : type !== "project" || release.projectId !== id,
+            type === "release"
+              ? 1
+              : type === "project"
+                ? projectActiveNavigation?.releases ?? 0
+                : 0,
           ),
           views: pruneNavigationCollection(
             snapshot.navigationCollections.views,
             (view) => type === "saved_view"
               ? view.id !== id
               : type !== "project" || view.scopeProjectId !== id,
+            type === "saved_view"
+              ? 1
+              : type === "project"
+                ? projectActiveNavigation?.savedViews ?? 0
+                : 0,
           ),
         }
       : undefined,
   };
 }
 
-export function pruneDeletedEntityFromCatalogPages(
-  pages: Partial<Record<WorkspaceCatalogKind, WorkspaceCatalogPage>>,
-  type: DeletableEntityType,
-  id: string,
-) {
-  return Object.fromEntries(Object.entries(pages).map(([kind, page]) => {
-    if (!page) return [kind, page];
-    const projects = page.projects.filter((project) => type !== "project" || project.id !== id);
-    const releases = page.releases.filter((release) =>
-      type === "release"
-        ? release.id !== id
-        : type !== "project" || release.projectId !== id
-    );
-    const views = page.views.filter((view) =>
-      type === "saved_view"
-        ? view.id !== id
-        : type !== "project" || view.scopeProjectId !== id
-    );
-    const removed = page.kind === "projects"
-      ? page.projects.length - projects.length
-      : page.kind === "releases"
-        ? page.releases.length - releases.length
-        : page.views.length - views.length;
-    return [kind, {
-      ...page,
-      projects,
-      releases,
-      views,
-      total: Math.max(0, page.total - removed),
-    }];
-  })) as Partial<Record<WorkspaceCatalogKind, WorkspaceCatalogPage>>;
-}
-
 function pruneNavigationCollection<T>(
   collection: { items: T[]; total: number; hasMore: boolean },
   retain: (item: T) => boolean,
+  removedTotal: number,
 ) {
   const items = collection.items.filter(retain);
+  const total = Math.max(items.length, collection.total - removedTotal);
   return {
     ...collection,
     items,
-    total: Math.max(0, collection.total - (collection.items.length - items.length)),
+    total,
+    hasMore: total > items.length,
   };
 }
 
@@ -293,6 +311,17 @@ export async function fetchReleaseDeletionPreview(
 ) {
   const path = `/api/releases/${encodeURIComponent(id)}/deletion-preview?version=${encodeURIComponent(version)}`;
   return readDeletionJson<ReleaseDeletionPreview>(
+    await fetcher(path, { cache: "no-store" }),
+  );
+}
+
+export async function fetchProjectDeletionPreview(
+  id: string,
+  version: number,
+  fetcher: typeof fetch = fetch,
+) {
+  const path = `/api/projects/${encodeURIComponent(id)}/deletion-preview?version=${encodeURIComponent(version)}`;
+  return readDeletionJson<ProjectDeletionPreview>(
     await fetcher(path, { cache: "no-store" }),
   );
 }

@@ -21,9 +21,10 @@ import {
   convergeDeletionWorkspace,
   deletionActionRequest,
   deletionErrorRequiresRefetch,
+  fetchProjectDeletionPreview,
   fetchReleaseDeletionPreview,
   performDeletionAction,
-  pruneDeletedEntityFromCatalogPages,
+  projectDeletionImpactLines,
   pruneDeletedEntityFromSnapshot,
   workspaceSyncAffectsRecentlyDeleted,
 } from "../lib/deletion-client";
@@ -226,7 +227,12 @@ test("delete cache pruning handles Project shadow and Release membership before 
       },
     },
   } as AppSnapshot;
-  const projectPruned = pruneDeletedEntityFromSnapshot(snapshot, "project", "project-1");
+  const projectPruned = pruneDeletedEntityFromSnapshot(
+    snapshot,
+    "project",
+    "project-1",
+    { releases: 1, savedViews: 1 },
+  );
   assert.deepEqual(projectPruned.projects.map((item) => item.id), ["project-2"]);
   assert.deepEqual(projectPruned.releases.map((item) => item.id), ["release-2"]);
   assert.deepEqual(projectPruned.tasks.map((item) => item.id), ["task-2"]);
@@ -254,39 +260,47 @@ test("delete cache pruning handles Project shadow and Release membership before 
   assert.deepEqual(parentPruned.tasks.map((task) => ({ id: task.id, parentTaskId: task.parentTaskId })), [
     { id: "child", parentTaskId: null },
   ]);
+});
 
-  const catalogPages = pruneDeletedEntityFromCatalogPages({
-    projects: {
-      kind: "projects",
-      projects: snapshot.projects,
-      releases: [],
-      views: [],
-      page: { hasMore: false, nextCursor: null },
-      total: 2,
+test("navigation totals use authoritative counts even when deleted rows were never loaded", () => {
+  const hiddenRows = {
+    projects: [{ id: "project-other" }],
+    releases: [{ id: "release-other", projectId: "project-other" }],
+    tasks: [],
+    views: [{ id: "view-other", scopeProjectId: null }],
+    taskLabels: [],
+    relations: [],
+    navigationCollections: {
+      projects: { items: [{ id: "project-other" }], total: 6, hasMore: true },
+      releases: { items: [{ id: "release-other", projectId: "project-other" }], total: 12, hasMore: true },
+      views: { items: [{ id: "view-other", scopeProjectId: null }], total: 9, hasMore: true },
     },
-    releases: {
-      kind: "releases",
-      projects: [],
-      releases: snapshot.releases,
-      views: [],
-      page: { hasMore: false, nextCursor: null },
-      total: 2,
-    },
-    views: {
-      kind: "views",
-      projects: [],
-      releases: [],
-      views: snapshot.views,
-      page: { hasMore: false, nextCursor: null },
-      total: 2,
-    },
-  }, "project", "project-1");
-  assert.deepEqual(catalogPages.projects?.projects.map((item) => item.id), ["project-2"]);
-  assert.deepEqual(catalogPages.releases?.releases.map((item) => item.id), ["release-2"]);
-  assert.deepEqual(catalogPages.views?.views.map((item) => item.id), ["view-2"]);
-  assert.equal(catalogPages.projects?.total, 1);
-  assert.equal(catalogPages.releases?.total, 1);
-  assert.equal(catalogPages.views?.total, 1);
+  } as unknown as AppSnapshot;
+
+  const releasePruned = pruneDeletedEntityFromSnapshot(hiddenRows, "release", "release-hidden");
+  assert.equal(releasePruned.navigationCollections?.releases.total, 11);
+  assert.deepEqual(releasePruned.navigationCollections?.releases.items.map((item) => item.id), ["release-other"]);
+
+  const viewPruned = pruneDeletedEntityFromSnapshot(hiddenRows, "saved_view", "view-hidden");
+  assert.equal(viewPruned.navigationCollections?.views.total, 8);
+  assert.deepEqual(viewPruned.navigationCollections?.views.items.map((item) => item.id), ["view-other"]);
+
+  const projectPruned = pruneDeletedEntityFromSnapshot(
+    hiddenRows,
+    "project",
+    "project-hidden",
+    { releases: 4, savedViews: 3 },
+  );
+  assert.equal(projectPruned.navigationCollections?.projects.total, 5);
+  assert.equal(projectPruned.navigationCollections?.releases.total, 8);
+  assert.equal(projectPruned.navigationCollections?.views.total, 6);
+
+  const withoutActiveCounts = pruneDeletedEntityFromSnapshot(
+    hiddenRows,
+    "project",
+    "project-hidden",
+  );
+  assert.equal(withoutActiveCounts.navigationCollections, undefined);
 });
 
 test("released Release confirmation renders authoritative impact and blocks until acknowledged", () => {
@@ -336,6 +350,71 @@ test("Release delete preview uses the authoritative active Release endpoint", as
   assert.deepEqual(requestInit, { cache: "no-store" });
   assert.equal(preview.taskMemberships, 17);
   assert.equal(preview.requiresReleasedCompositionConfirmation, true);
+});
+
+test("Project delete preview returns physical impact and active navigation counts", async () => {
+  let requestPath = "";
+  let requestInit: RequestInit | undefined;
+  const preview = await fetchProjectDeletionPreview(
+    "project/id",
+    13,
+    async (input, init) => {
+      requestPath = String(input);
+      requestInit = init;
+      return new Response(JSON.stringify({
+        type: "project",
+        id: "project/id",
+        publicId: "88888888-8888-4888-8888-888888888888",
+        displayName: "Task Manager",
+        context: "TM",
+        version: 13,
+        impact: {
+          tasks: 21,
+          releases: 7,
+          savedViews: 5,
+          comments: 34,
+          attachments: 8,
+        },
+        activeNavigation: { releases: 4, savedViews: 3 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  );
+
+  assert.equal(requestPath, "/api/projects/project%2Fid/deletion-preview?version=13");
+  assert.deepEqual(requestInit, { cache: "no-store" });
+  assert.deepEqual(preview.impact, {
+    tasks: 21,
+    releases: 7,
+    savedViews: 5,
+    comments: 34,
+    attachments: 8,
+  });
+  assert.deepEqual(preview.activeNavigation, { releases: 4, savedViews: 3 });
+
+  const impactLines = projectDeletionImpactLines(preview);
+  assert.deepEqual(impactLines, [
+    "21 Tasks will be hidden by the Project shadow.",
+    "7 Releases will be hidden.",
+    "5 project-scoped Saved Views will be hidden.",
+    "34 comments and 8 Attachments stay stored for restore.",
+  ]);
+  const markup = renderToStaticMarkup(createElement(RecoverableDeleteDialog, {
+    target: {
+      type: "project",
+      displayName: preview.displayName,
+      context: preview.context,
+      description: "Project descendants temporarily disappear.",
+      warning: "Restoring the Project removes only the Project shadow.",
+      impactLines,
+      acknowledgement: null,
+    },
+    onConfirm: () => undefined,
+    onClose: () => undefined,
+  }));
+  assert.match(markup, /21 Tasks/);
+  assert.match(markup, /7 Releases/);
+  assert.match(markup, /5 project-scoped Saved Views/);
+  assert.match(markup, /34 comments and 8 Attachments/);
 });
 
 test("sync entity changes invalidate trash and paginated rows merge without duplicates", () => {
@@ -394,6 +473,29 @@ test("stale lifecycle failures close obsolete dialog and Undo controls before re
   assert.match(
     source,
     /if \(deletionErrorRequiresRefetch\(requestError\)\) \{\s*await selfHealStaleDeletionState\(\);\s*\}/,
+  );
+});
+
+test("preview failures preserve edit state and successful deletion invalidates catalog pages", () => {
+  const source = readFileSync(
+    new URL("../components/task-tracker.tsx", import.meta.url),
+    "utf8",
+  );
+  const openStart = source.indexOf("async function openRecoverableDelete");
+  const releaseStart = source.indexOf('if (entity.kind === "release")', openStart);
+  const projectStart = source.indexOf('if (entity.kind === "project")', releaseStart);
+  const taskStart = source.indexOf('if (entity.kind === "task")', releaseStart);
+  const releaseBranch = source.slice(releaseStart, taskStart);
+  const projectBranch = source.slice(projectStart, source.indexOf("const view =", projectStart));
+  assert.ok(releaseBranch.indexOf("await fetchReleaseDeletionPreview") >= 0);
+  assert.ok(releaseBranch.indexOf("setDialog(null)") > releaseBranch.indexOf("await fetchReleaseDeletionPreview"));
+  assert.ok(projectBranch.indexOf("await fetchProjectDeletionPreview") >= 0);
+  assert.ok(projectBranch.indexOf("setDialog(null)") > projectBranch.indexOf("await fetchProjectDeletionPreview"));
+  assert.doesNotMatch(releaseBranch.slice(0, releaseBranch.indexOf("await fetchReleaseDeletionPreview")), /setDialog\(null\)/);
+  assert.doesNotMatch(projectBranch.slice(0, projectBranch.indexOf("await fetchProjectDeletionPreview")), /setDialog\(null\)/);
+  assert.match(
+    source,
+    /function applyImmediateDeletionPrune[\s\S]*?setCatalogPages\(\{\}\);[\s\S]*?async function deleteRecoverably/,
   );
 });
 

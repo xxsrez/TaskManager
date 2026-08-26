@@ -7,6 +7,7 @@ import {
   buildTaskArchiveCommand,
   contextualActionIds,
   nextContextualActionIndex,
+  resolveKeyboardContextualEntities,
   resolveContextualActions,
   resolveTaskTriggerContext,
   type ContextualActionEntity,
@@ -178,6 +179,25 @@ test("keyboard context prefers a focused Task, then selection, then highlight", 
   assert.deepEqual(
     resolveTaskTriggerContext(tasks, new Set(), null, "task-c").map((task) => task.id),
     ["task-c"],
+  );
+});
+
+test("keyboard context gives a focused non-Task entity priority over open Task details", () => {
+  const tasks = [entity({ id: "task-active" }), entity({ id: "task-selected" })];
+  const activeTask = tasks[0]!;
+  const selected = new Set(["task-active", "task-selected"]);
+
+  for (const kind of ["project", "release", "saved_view"] as const) {
+    const focused = entity({ kind, id: `${kind}-focused` });
+    assert.deepEqual(
+      resolveKeyboardContextualEntities(tasks, selected, focused, activeTask, "task-selected"),
+      [focused],
+    );
+  }
+
+  assert.deepEqual(
+    resolveKeyboardContextualEntities(tasks, selected, null, activeTask, "task-selected").map((item) => item.id),
+    ["task-active"],
   );
 });
 

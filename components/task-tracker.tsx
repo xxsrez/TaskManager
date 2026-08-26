@@ -191,13 +191,15 @@ import {
 import {
   convergeDeletionWorkspace,
   deletionErrorRequiresRefetch,
+  fetchProjectDeletionPreview,
   fetchReleaseDeletionPreview,
   notifyRecentlyDeletedChanged,
   performDeletionAction,
-  pruneDeletedEntityFromCatalogPages,
+  projectDeletionImpactLines,
   pruneDeletedEntityFromSnapshot,
   workspaceSyncAffectsRecentlyDeleted,
   type DeletionLifecycleResult,
+  type ProjectActiveNavigationCounts,
 } from "@/lib/deletion-client";
 import {
   isTaskMarkdownEscaped,
@@ -218,6 +220,7 @@ import {
 } from "@/lib/task-keyboard";
 import {
   buildTaskArchiveCommand,
+  resolveKeyboardContextualEntities,
   resolveContextualActions,
   resolveTaskTriggerContext,
   type ContextualActionContext,
@@ -1050,6 +1053,7 @@ type RecoverableDeletionState = RecoverableDeleteTarget & {
   id: string;
   version: number;
   confirmReleasedComposition: boolean;
+  projectActiveNavigation?: ProjectActiveNavigationCounts;
 };
 
 type DeletionUndoState = {
@@ -1985,7 +1989,7 @@ export function TaskTracker({
   }
 
   async function openRecoverableDelete(entity: ContextualActionEntity) {
-    setDialog(null);
+    if (deletionBusy) return;
     setError("");
     if (entity.kind === "release") {
       setDeletionBusy(true);
@@ -2013,6 +2017,7 @@ export function TaskTracker({
             : null,
           confirmReleasedComposition: preview.requiresReleasedCompositionConfirmation,
         });
+        setDialog(null);
       } catch (requestError) {
         if (deletionErrorRequiresRefetch(requestError)) {
           await selfHealStaleDeletionState();
@@ -2028,6 +2033,7 @@ export function TaskTracker({
       const task = dataRef.current.tasks.find((item) => item.id === entity.id);
       if (!task) return;
       const project = dataRef.current.projects.find((item) => item.id === task.projectId);
+      setDialog(null);
       setRecoverableDeletion({
         type: "task",
         id: task.id,
@@ -2046,23 +2052,41 @@ export function TaskTracker({
     if (entity.kind === "project") {
       const project = dataRef.current.projects.find((item) => item.id === entity.id);
       if (!project) return;
-      setRecoverableDeletion({
-        type: "project",
-        id: project.id,
-        version: project.version,
-        displayName: project.name,
-        context: project.taskCode,
-        description: "This moves the Project to Recently deleted for 30 days. Its Tasks, Releases, and project-scoped Saved Views temporarily disappear, but those children are not deleted independently. Archive remains a separate action.",
-        warning: "Restoring the Project removes only the Project shadow. Children deleted separately stay in Recently deleted.",
-        impactLines: [],
-        acknowledgement: null,
-        confirmReleasedComposition: false,
-      });
+      setDeletionBusy(true);
+      try {
+        const preview = await fetchProjectDeletionPreview(
+          project.id,
+          project.version,
+          deletionFetcher,
+        );
+        setRecoverableDeletion({
+          type: "project",
+          id: preview.id,
+          version: preview.version,
+          displayName: preview.displayName,
+          context: preview.context,
+          description: "This moves the Project to Recently deleted for 30 days. Its Tasks, Releases, and project-scoped Saved Views temporarily disappear, but those children are not deleted independently. Archive remains a separate action.",
+          warning: "Restoring the Project removes only the Project shadow. Children deleted separately stay in Recently deleted.",
+          impactLines: projectDeletionImpactLines(preview),
+          acknowledgement: null,
+          confirmReleasedComposition: false,
+          projectActiveNavigation: preview.activeNavigation,
+        });
+        setDialog(null);
+      } catch (requestError) {
+        if (deletionErrorRequiresRefetch(requestError)) {
+          await selfHealStaleDeletionState();
+        }
+        setError(requestError instanceof Error ? requestError.message : "Project deletion impact could not be loaded");
+      } finally {
+        setDeletionBusy(false);
+      }
       return;
     }
 
     const view = dataRef.current.views.find((item) => item.id === entity.id);
     if (!view || view.archivedAt) return;
+    setDialog(null);
     setRecoverableDeletion({
       type: "saved_view",
       id: view.id,
@@ -2077,15 +2101,17 @@ export function TaskTracker({
     });
   }
 
-  function pruneDeletionFromCatalogs(type: RecoverableDeletionState["type"], id: string) {
-    setCatalogPages((current) => pruneDeletedEntityFromCatalogPages(current, type, id));
-  }
-
-  function applyImmediateDeletionPrune(type: RecoverableDeletionState["type"], id: string) {
-    const next = pruneDeletedEntityFromSnapshot(dataRef.current, type, id);
+  function applyImmediateDeletionPrune(target: RecoverableDeletionState) {
+    const { type, id } = target;
+    const next = pruneDeletedEntityFromSnapshot(
+      dataRef.current,
+      type,
+      id,
+      target.projectActiveNavigation,
+    );
     dataRef.current = next;
     setData(next);
-    pruneDeletionFromCatalogs(type, id);
+    setCatalogPages({});
     setSelected((current) => {
       if (type === "task") return new Set([...current].filter((taskId) => taskId !== id));
       if (type !== "project") return current;
@@ -2150,7 +2176,7 @@ export function TaskTracker({
       if (!("entity" in result)) throw new Error("Deletion response was incomplete");
       const entity: DeletionLifecycleResult = result.entity;
       navigateAfterRecoverableDelete(target);
-      applyImmediateDeletionPrune(target.type, target.id);
+      applyImmediateDeletionPrune(target);
       setRecoverableDeletion(null);
       setDeletionUndo({
         type: target.type,
@@ -3769,36 +3795,33 @@ export function TaskTracker({
         const activeTaskEntity = activeTaskId
           ? data.tasks.find((task) => task.id === activeTaskId)
           : null;
-        const taskEntities = resolveTaskTriggerContext(
+        const entities = resolveKeyboardContextualEntities(
           data.tasks.map(taskContextualEntity),
           selected,
-          activeTaskEntity?.id ?? (focusedEntity?.kind === "task" ? focusedEntity.id : null),
+          focusedEntity,
+          activeTaskEntity ? taskContextualEntity(activeTaskEntity) : null,
           integrationTaskId,
         );
-        const claimed = dispatchTaskKeyboardIntegrationCommand(window, {
-          command,
-          taskId: focusedEntity?.kind === "task"
-            ? focusedEntity.id
-            : taskEntities.length === 1
-              ? taskEntities[0]!.id
-              : integrationTaskId,
-          selectedTaskIds: taskEntities.length
-            ? taskEntities.map((entity) => entity.id)
-            : [...selected],
-          surface,
-        });
+        const taskEntities = entities.filter((entity) => entity.kind === "task");
+        const primaryEntity = entities.length === 1 ? entities[0]! : null;
+        const claimed = primaryEntity?.kind === "task" || taskEntities.length > 1
+          ? dispatchTaskKeyboardIntegrationCommand(window, {
+              command,
+              taskId: primaryEntity?.kind === "task" ? primaryEntity.id : null,
+              selectedTaskIds: taskEntities.map((entity) => entity.id),
+              surface,
+            })
+          : false;
         event.preventDefault();
         if (!claimed) {
-          const entities = taskEntities.length
-            ? taskEntities
-            : focusedEntity
-              ? [focusedEntity]
-              : surfaceContextualEntity
-                ? [surfaceContextualEntity]
-                : [];
-          if (entities.length) {
+          const contextualEntities = entities.length
+            ? entities
+            : surfaceContextualEntity
+              ? [surfaceContextualEntity]
+              : [];
+          if (contextualEntities.length) {
             openContextualActions(
-              { entities },
+              { entities: contextualEntities },
               Math.max(8, window.innerWidth / 2 - 120),
               Math.max(8, window.innerHeight / 3),
               document.activeElement instanceof HTMLElement

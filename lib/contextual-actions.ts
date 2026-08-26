@@ -226,6 +226,23 @@ export function resolveTaskTriggerContext(
   return fallback ? [fallback] : [];
 }
 
+export function resolveKeyboardContextualEntities(
+  tasks: ContextualActionEntity[],
+  selectedTaskIds: ReadonlySet<string>,
+  focusedEntity: ContextualActionEntity | null,
+  activeTaskEntity: ContextualActionEntity | null,
+  highlightedTaskId: string | null,
+) {
+  if (focusedEntity && focusedEntity.kind !== "task") return [focusedEntity];
+  if (!focusedEntity && activeTaskEntity?.kind === "task") return [activeTaskEntity];
+  return resolveTaskTriggerContext(
+    tasks,
+    selectedTaskIds,
+    focusedEntity?.kind === "task" ? focusedEntity.id : null,
+    highlightedTaskId,
+  );
+}
+
 export function nextContextualActionIndex(
   actions: ResolvedContextualAction[],
   current: number,
