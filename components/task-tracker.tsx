@@ -1911,12 +1911,13 @@ export function TaskTracker({
   }
 
   async function refreshAfterDeletionMutation() {
-    const incoming = await refreshTaskList();
     // Catalog pages are independent lazy responses and can otherwise keep a
-    // restored Project/Release/View hidden after bootstrap has converged.
+    // restored Project/Release/View hidden. Invalidate before the network read
+    // so a failed bootstrap cannot retain privileged stale catalog controls.
     setCatalogPages({});
     setCatalogEpoch((current) => current + 1);
     setRecentlyDeletedEpoch((current) => current + 1);
+    const incoming = await refreshTaskList();
     return incoming;
   }
 

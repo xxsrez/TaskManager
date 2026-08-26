@@ -9,6 +9,7 @@ import {
   deletionImpactLines,
 } from "../components/deletion-dialogs";
 import {
+  DeletionConvergenceAlert,
   deletionExplanation,
   mergeDeletedRows,
   recentlyDeletedActions,
@@ -16,6 +17,7 @@ import {
 } from "../components/recently-deleted-manager";
 import {
   DeletionRequestError,
+  convergeDeletionWorkspace,
   deletionActionRequest,
   deletionErrorRequiresRefetch,
   pruneDeletedEntityFromSnapshot,
@@ -183,8 +185,37 @@ test("sync entity changes invalidate trash and paginated rows merge without dupl
     publicId: "33333333-3333-4333-8333-333333333333",
   }]).map((item) => item.id), ["task-1", "task-2"]);
   assert.equal(deletionErrorRequiresRefetch(new DeletionRequestError("stale", 409)), true);
+  assert.equal(deletionErrorRequiresRefetch(new DeletionRequestError("role changed", 403)), true);
   assert.equal(deletionErrorRequiresRefetch(new DeletionRequestError("gone", 404)), true);
   assert.equal(deletionErrorRequiresRefetch(new DeletionRequestError("failed", 500)), false);
+});
+
+test("a failed post-mutation refresh is visible and retries only convergence", async () => {
+  let refreshCalls = 0;
+  const failed = await convergeDeletionWorkspace(async () => {
+    refreshCalls += 1;
+    throw new Error("Bootstrap unavailable");
+  });
+  assert.deepEqual(failed, {
+    ok: false,
+    message: "The deletion action completed, but workspace data could not be refreshed. Bootstrap unavailable",
+  });
+  assert.equal(refreshCalls, 1);
+
+  const markup = renderToStaticMarkup(createElement(DeletionConvergenceAlert, {
+    message: failed.ok ? "" : failed.message,
+    busy: false,
+    onRetry: () => undefined,
+  }));
+  assert.match(markup, /role="alert"/);
+  assert.match(markup, /server mutation already succeeded/);
+  assert.match(markup, /Retry workspace refresh/);
+
+  const retried = await convergeDeletionWorkspace(async () => {
+    refreshCalls += 1;
+  });
+  assert.deepEqual(retried, { ok: true });
+  assert.equal(refreshCalls, 2);
 });
 
 test("human-readable cutoff and entity explanations preserve deletion semantics", () => {

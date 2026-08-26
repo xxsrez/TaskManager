@@ -560,5 +560,5 @@ test("Recently deleted stays action-visible and overflow-safe at 390x844 and 844
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.recently-deleted-actions \.button\s*\{[^}]*min-height:\s*44px/);
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.modal\.deletion-dialog\s*\{[^}]*width:\s*100%;[^}]*overflow-y:\s*auto/);
   assert.match(css, /\.deletion-confirmation input\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%/);
-  assert.match(taskTracker, /async function refreshAfterDeletionMutation\(\)[\s\S]*?setCatalogPages\(\{\}\)[\s\S]*?setCatalogEpoch[\s\S]*?setRecentlyDeletedEpoch/);
+  assert.match(taskTracker, /async function refreshAfterDeletionMutation\(\)[\s\S]*?setCatalogPages\(\{\}\)[\s\S]*?setCatalogEpoch[\s\S]*?setRecentlyDeletedEpoch[\s\S]*?await refreshTaskList\(\)/);
 });

@@ -6,9 +6,10 @@ import { PermanentDeleteDialog, deletionTypeLabel } from "@/components/deletion-
 import {
   DeletionRequestError,
   RECENTLY_DELETED_CHANGED_EVENT,
+  convergeDeletionWorkspace,
+  deletionErrorRequiresRefetch,
   fetchDeletionPreview,
   fetchRecentlyDeleted,
-  deletionErrorRequiresRefetch,
   notifyRecentlyDeletedChanged,
   performDeletionAction,
 } from "@/lib/deletion-client";
@@ -50,6 +51,8 @@ export function RecentlyDeletedManager({
   const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [pendingPurge, setPendingPurge] = useState<PendingPurge | null>(null);
   const [purgeError, setPurgeError] = useState("");
+  const [convergenceError, setConvergenceError] = useState("");
+  const [convergenceBusy, setConvergenceBusy] = useState(false);
   const [localEpoch, setLocalEpoch] = useState(0);
   const [clockEpoch, setClockEpoch] = useState(() => Date.now());
   const requestRef = useRef(0);
@@ -128,7 +131,7 @@ export function RecentlyDeletedManager({
       setItems((current) => current.filter((candidate) => deletedRowKey(candidate) !== key));
       setStatus(`${deletionTypeLabel(item.type)} restored.`);
       notifyRecentlyDeletedChanged();
-      await Promise.resolve(onWorkspaceChanged?.()).catch(() => undefined);
+      await convergeAfterMutation();
       searchRef.current?.focus();
     } catch (requestError) {
       handleMutationError(requestError, "This item changed in another session. The list was refreshed.");
@@ -171,7 +174,7 @@ export function RecentlyDeletedManager({
       setStatus(`${deletionTypeLabel(preview.type)} permanently deleted.`);
       closePermanentDelete(false);
       notifyRecentlyDeletedChanged();
-      await Promise.resolve(onWorkspaceChanged?.()).catch(() => undefined);
+      await convergeAfterMutation();
       window.setTimeout(() => searchRef.current?.focus(), 0);
     } catch (requestError) {
       if (requestError instanceof DeletionRequestError && requestError.status >= 500) {
@@ -196,6 +199,28 @@ export function RecentlyDeletedManager({
     setError(requestError instanceof Error ? requestError.message : "The action could not be completed");
   }
 
+  async function convergeAfterMutation() {
+    const result = await convergeDeletionWorkspace(onWorkspaceChanged);
+    if (result.ok) {
+      setConvergenceError("");
+      return;
+    }
+    setConvergenceError(result.message);
+  }
+
+  async function retryConvergence() {
+    if (convergenceBusy) return;
+    setConvergenceBusy(true);
+    const result = await convergeDeletionWorkspace(onWorkspaceChanged);
+    if (result.ok) {
+      setConvergenceError("");
+      setStatus("Workspace data refreshed.");
+    } else {
+      setConvergenceError(result.message);
+    }
+    setConvergenceBusy(false);
+  }
+
   return <section className="recently-deleted-manager" aria-label="Recently deleted items">
     <div className="recently-deleted-toolbar">
       <label className="recently-deleted-search"><Search size={14} aria-hidden="true" /><input
@@ -216,6 +241,11 @@ export function RecentlyDeletedManager({
     </div>
     <p className="recently-deleted-guidance">Items can be restored for 30 days. Physical cleanup may finish later; the expiry shown here is the restore cutoff.</p>
     <div className="recently-deleted-live" role="status" aria-live="polite">{status}</div>
+    {convergenceError && <DeletionConvergenceAlert
+      message={convergenceError}
+      busy={convergenceBusy}
+      onRetry={() => void retryConvergence()}
+    />}
     {error && <div className="recently-deleted-error" role="alert"><AlertCircle size={15} /><span>{error}</span><button className="button ghost compact" type="button" onClick={reload}>Retry</button></div>}
     {loading ? <div className="recently-deleted-loading" role="status"><LoaderCircle className="spin" size={17} />Loading recently deleted…</div>
       : items.length === 0 ? <div className="recently-deleted-empty"><Trash2 size={22} /><b>Nothing in Recently deleted</b><span>{search.trim() || type !== "all" ? "Try a different search or type." : "Deleted Tasks, Projects, Releases, and Saved Views appear here."}</span></div>
@@ -247,6 +277,24 @@ export function RecentlyDeletedManager({
     {nextCursor && !loading && <div className="recently-deleted-more"><button className="button secondary" type="button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "Loading…" : "Load more"}</button></div>}
     {pendingPurge && <PermanentDeleteDialog preview={pendingPurge.preview} busy={busyKey === `${pendingPurge.preview.type}:${pendingPurge.preview.id}`} error={purgeError} onConfirm={(confirmation) => void purge(confirmation)} onClose={() => closePermanentDelete()} />}
   </section>;
+}
+
+export function DeletionConvergenceAlert({
+  message,
+  busy,
+  onRetry,
+}: {
+  message: string;
+  busy: boolean;
+  onRetry: () => void;
+}) {
+  return <div className="recently-deleted-error deletion-convergence-error" role="alert">
+    <AlertCircle size={15} />
+    <span>{message} The server mutation already succeeded; retry only the workspace refresh.</span>
+    <button className="button ghost compact" type="button" disabled={busy} onClick={onRetry}>
+      {busy ? "Refreshing…" : "Retry workspace refresh"}
+    </button>
+  </div>;
 }
 
 export function mergeDeletedRows(

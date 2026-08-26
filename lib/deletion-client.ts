@@ -37,7 +37,30 @@ export class DeletionRequestError extends Error {
 
 export function deletionErrorRequiresRefetch(error: unknown) {
   return error instanceof DeletionRequestError &&
-    (error.status === 404 || error.status === 409);
+    (error.status === 403 || error.status === 404 || error.status === 409);
+}
+
+export type DeletionConvergenceResult =
+  | { ok: true }
+  | { ok: false; message: string };
+
+/** Retry only the authoritative read after a lifecycle mutation has committed. */
+export async function convergeDeletionWorkspace(
+  refresh?: () => Promise<unknown> | unknown,
+): Promise<DeletionConvergenceResult> {
+  if (!refresh) return { ok: true };
+  try {
+    await refresh();
+    return { ok: true };
+  } catch (error) {
+    const detail = error instanceof Error && error.message
+      ? ` ${error.message}`
+      : "";
+    return {
+      ok: false,
+      message: `The deletion action completed, but workspace data could not be refreshed.${detail}`,
+    };
+  }
 }
 
 export function deletionEntityPath(type: DeletableEntityType, id: string) {
