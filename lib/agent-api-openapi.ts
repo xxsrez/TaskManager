@@ -84,7 +84,7 @@ export const agentApiOpenApi = {
     title: "Task Manager Agent API",
     version: "1.0.0",
     description:
-      "OAuth-first API for compact task discovery and task execution. Personal tokens remain available for development and scripts. Administrative, backup, sharing, and credential-management operations are intentionally absent.",
+      "OAuth-first API for compact task discovery and task execution. Recoverably deleted records and records hidden by a deleted parent Project are absent from every read and mutation target; archived=true never opts into deleted data. Personal tokens remain available for development and scripts. Administrative, backup, sharing, deletion management, and credential-management operations are intentionally absent.",
   },
   servers: [{ url: "/api/agent/v1" }],
   security: [{ oauth2: ["api:read"] }, { personalToken: [] }],
@@ -92,7 +92,7 @@ export const agentApiOpenApi = {
     "/workspace": {
       get: {
         operationId: "getWorkspace",
-        summary: "Get accessible workspace counts and workflow statuses",
+        summary: "Get live accessible workspace counts and workflow statuses",
         responses: {
           "200": envelopeResponse("Workspace summary", {
             type: "object",
@@ -105,11 +105,16 @@ export const agentApiOpenApi = {
     "/projects": {
       get: {
         operationId: "listProjects",
-        summary: "List accessible projects without project descriptions",
+        summary: "List live accessible projects without project descriptions",
         parameters: [
           ...listParameters,
           { name: "search", in: "query", schema: { type: "string", maxLength: 200 } },
-          { name: "archived", in: "query", schema: { type: "boolean", default: false } },
+          {
+            name: "archived",
+            in: "query",
+            description: "Archive-state filter only; deleted records are always excluded.",
+            schema: { type: "boolean", default: false },
+          },
         ],
         responses: {
           "200": listResponse("Project summaries", {
@@ -135,7 +140,7 @@ export const agentApiOpenApi = {
     "/releases": {
       get: {
         operationId: "listReleases",
-        summary: "List accessible releases without descriptions or release notes",
+        summary: "List live accessible releases without descriptions or release notes",
         parameters: [
           ...listParameters,
           { name: "project_ref", in: "query", schema: { type: "string" } },
@@ -174,12 +179,17 @@ export const agentApiOpenApi = {
     "/views": {
       get: {
         operationId: "listSavedViews",
-        summary: "List accessible native Saved Views with query and Display state",
+        summary: "List live accessible native Saved Views with query and Display state",
         parameters: [
           ...listParameters,
           { name: "project_ref", in: "query", schema: { type: "string" } },
           { name: "search", in: "query", schema: { type: "string", maxLength: 200 } },
-          { name: "archived", in: "query", schema: { type: "boolean", default: false } },
+          {
+            name: "archived",
+            in: "query",
+            description: "Archive-state filter only; deleted records are always excluded.",
+            schema: { type: "boolean", default: false },
+          },
         ],
         responses: {
           "200": listResponse("Saved View records", {
@@ -245,7 +255,7 @@ export const agentApiOpenApi = {
     "/tasks": {
       get: {
         operationId: "listTasks",
-        summary: "Search compact task summaries; task bodies are never returned",
+        summary: "Search live compact task summaries; task bodies are never returned",
         parameters: [
           ...listParameters,
           { name: "project_ref", in: "query", schema: { type: "string" } },
@@ -271,7 +281,12 @@ export const agentApiOpenApi = {
             explode: true,
           },
           { name: "assignee", in: "query", schema: { enum: ["me", "unassigned"] } },
-          { name: "archived", in: "query", schema: { type: "boolean", default: false } },
+          {
+            name: "archived",
+            in: "query",
+            description: "Archive-state filter only; deleted records are always excluded.",
+            schema: { type: "boolean", default: false },
+          },
           { name: "search", in: "query", schema: { type: "string", maxLength: 200 } },
           {
             name: "order",

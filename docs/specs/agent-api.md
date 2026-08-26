@@ -184,6 +184,17 @@ restore атомарно отзывает все authentication capabilities, ч
   уже ACL-разрешённой Task. Author содержит `displayName` и `isCurrentUser` без
   User ID/email.
 
+Recoverable deletion является отдельной product surface и не расширяет Agent
+API. Все collections, detail, workspace counts и Task subresources работают
+только с live records: непосредственно удалённая сущность и любой child
+удалённого Project отсутствуют до content projection и отвечают так же, как
+неизвестный ref. `archived=true` меняет только archive predicate и никогда не
+включает удалённые records. Удалённый Release не появляется в release list или
+detail и не проецируется как active metadata Task (`release=null`), хотя его
+внутренняя Task membership сохраняется для lossless product restore. Delete,
+restore, Recently deleted и irreversible purge через Agent REST/MCP намеренно
+не предоставляются.
+
 ## 5. REST v1
 
 Базовый prefix: `/api/agent/v1`. OpenAPI 3.1 доступен через
@@ -237,6 +248,13 @@ scope и чтения актуальной query/display конфигураци�
 или SavedView mutation появится только вместе с отдельно документированным
 OAuth scope. Task query принимает явные filters и не зависит от UI display
 configuration.
+
+Любой Task command сначала разрешает live Task и live Project. Canonical refs
+Project, Release, parent Task и relation peer также обязаны быть live; deleted
+target fail-closed как `not_found`, без различия между существующей удалённой и
+неизвестной записью. Поэтому один repository guard одинаково закрывает generic
+Task patch, move/hierarchy/relations, comments, Activity и Attachments для REST
+и MCP, не полагаясь на client validation.
 
 ### 5.1 Remote MCP connector
 
@@ -380,6 +398,9 @@ name. Неизвестные parameters отклоняются.
 `TaskSummary` содержит `ref`, `identifier`, `title`, status, priority,
 compact project/release/assignee/labels, dueDate, updatedAt, version и
 `contextHints`. Summary сообщает о наличии detail context, но не передаёт body.
+Удалённые Tasks и Tasks удалённого Project не входят в summary/detail; если
+только Release удалён, Task остаётся live, а compact и detail projection
+возвращают `release=null` до восстановления Release.
 
 `Label` содержит canonical `lbl_...` ref, name, color, description,
 `archivedAt`, version и только флаг `owner.isCurrentUser`; internal ID и owner
@@ -408,6 +429,9 @@ task counts, progress, updatedAt и version; detail добавляет descripti
 release notes. Project/Release detail возвращают `workflowStatuses`, валидные
 для создания Task в этом scope. Задачи release читаются через
 `GET /tasks?release_ref=...`.
+Counts и compact releases включают только live records; deleted Project
+скрывает весь subtree, а deleted SavedView или project-scoped View удалённого
+Project отсутствует даже при `archived=true`.
 
 ## 7. Task commands
 

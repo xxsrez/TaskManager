@@ -22,14 +22,29 @@ import {
 } from "../app/api/agent/v1/tasks/[ref]/relations/[relationRef]/route";
 import { issueApiCredential } from "../lib/api-credentials";
 import {
+  parseAgentProjectListQuery,
+  parseAgentReleaseListQuery,
+  parseAgentSavedViewListQuery,
+  parseAgentTaskListQuery,
+} from "../lib/agent-api-contract";
+import {
   getAgentProjectDetail,
+  getAgentReleaseDetail,
+  getAgentSavedViewDetail,
   getAgentTaskDetail,
+  getAgentWorkspace,
   listAgentLabels,
+  listAgentProjects,
+  listAgentReleases,
+  listAgentSavedViews,
+  listAgentTasks,
 } from "../lib/agent-api-repository";
+import { NotFoundError } from "../lib/domain";
 import {
   createLabel,
   createProject,
   createRelease,
+  createSavedView,
   createTask,
   getOrCreateUser,
   getSnapshot,
@@ -39,9 +54,12 @@ import {
 import { createD1TestHarness } from "./helpers/d1";
 
 let dispose: (() => Promise<void>) | undefined;
+let database: D1Database;
 
 before(async () => {
   const harness = await createD1TestHarness();
+  database = harness.database;
+  await ensureDeletionColumns(database);
   dispose = harness.dispose;
 });
 
@@ -516,6 +534,223 @@ test("MCP exposes the same Project-code projection, assignee, Label replacement,
   assert.equal(duplicateRemoved.deleted, true);
 });
 
+test("Agent REST and MCP exclude recoverably deleted records and effective Project subtrees", async () => {
+  const owner = await getOrCreateUser(actor("agent-deletion-owner"));
+  await createProject(owner, { name: "Deleted Agent Project", taskCode: "DAP" });
+  await createProject(owner, { name: "Live Agent Project", taskCode: "LAP" });
+  const initial = await getSnapshot(owner);
+  const deletedProject = initial.projects.find(
+    (item) => item.name === "Deleted Agent Project",
+  )!;
+  const liveProject = initial.projects.find(
+    (item) => item.name === "Live Agent Project",
+  )!;
+
+  await createRelease(owner, {
+    projectId: deletedProject.id,
+    name: "Deleted through Project",
+  });
+  await createRelease(owner, {
+    projectId: liveProject.id,
+    name: "Directly deleted Release",
+  });
+  const releases = (await getSnapshot(owner)).releases;
+  const projectRelease = releases.find(
+    (item) => item.projectId === deletedProject.id,
+  )!;
+  const deletedRelease = releases.find(
+    (item) => item.projectId === liveProject.id,
+  )!;
+
+  const projectTask = await createTask(owner, {
+    title: "Hidden with Project",
+    projectId: deletedProject.id,
+    releaseId: projectRelease.id,
+  });
+  const deletedTask = await createTask(owner, {
+    title: "Directly deleted Task",
+    projectId: liveProject.id,
+  });
+  const releaseTask = await createTask(owner, {
+    title: "Task keeps deleted Release membership",
+    projectId: liveProject.id,
+    releaseId: deletedRelease.id,
+  });
+  const projectView = await createSavedView(owner, {
+    name: "Hidden with Project View",
+    scopeProjectId: deletedProject.id,
+    query: {},
+    display: { layout: "list" },
+  });
+  const deletedView = await createSavedView(owner, {
+    name: "Directly deleted View",
+    query: {},
+    display: { layout: "list" },
+  });
+  const deletedTaskVersion = (
+    await getAgentTaskDetail(owner, deletedTask.publicId)
+  ).version;
+  const context = {
+    authorizationId: "agent-deletion-test",
+    authorizationType: "personal_token" as const,
+    clientId: "agent-deletion-test",
+    scopes: ["api:read", "api:write"] as Array<"api:read" | "api:write">,
+    user: owner,
+    expiresAt: null,
+    resource: null,
+  };
+  const beforeDeletion = await getAgentWorkspace(context);
+  const deletedAt = "2026-08-26T08:00:00.000Z";
+  const purgeAfter = "2026-09-25T08:00:00.000Z";
+
+  await markDeleted("projects", deletedProject.id, owner.id, deletedAt, purgeAfter, true);
+  await markDeleted("releases", deletedRelease.id, owner.id, deletedAt, purgeAfter);
+  await markDeleted("tasks", deletedTask.id, owner.id, deletedAt, purgeAfter, true);
+  await markDeleted("saved_views", deletedView.id, owner.id, deletedAt, purgeAfter, true);
+
+  const workspace = await getAgentWorkspace(context);
+  assert.equal(workspace.counts.projects, beforeDeletion.counts.projects - 1);
+  assert.equal(workspace.counts.releases, beforeDeletion.counts.releases - 2);
+  assert.equal(workspace.counts.savedViews, beforeDeletion.counts.savedViews - 2);
+  assert.equal(workspace.counts.tasks.total, beforeDeletion.counts.tasks.total - 2);
+
+  const tasks = await listAgentTasks(
+    owner,
+    await parseAgentTaskListQuery(new URLSearchParams("limit=200")),
+  );
+  assert.equal(tasks.data.some((item) => item.ref === projectTask.publicId), false);
+  assert.equal(tasks.data.some((item) => item.ref === deletedTask.publicId), false);
+  const visibleReleaseTask = tasks.data.find(
+    (item) => item.ref === releaseTask.publicId,
+  )!;
+  assert.equal(visibleReleaseTask.release, null);
+  assert.equal(
+    (await getAgentTaskDetail(owner, releaseTask.publicId)).release,
+    null,
+  );
+  assert.equal(
+    (await database.prepare("SELECT release_id FROM tasks WHERE id = ?")
+      .bind(releaseTask.id)
+      .first<{ release_id: string }>())?.release_id,
+    deletedRelease.id,
+  );
+
+  const archivedTasks = await listAgentTasks(
+    owner,
+    await parseAgentTaskListQuery(new URLSearchParams("limit=200&archived=true")),
+  );
+  assert.equal(archivedTasks.data.some((item) => item.ref === deletedTask.publicId), false);
+  const archivedProjects = await listAgentProjects(
+    owner,
+    await parseAgentProjectListQuery(new URLSearchParams("limit=200&archived=true")),
+  );
+  assert.equal(
+    archivedProjects.data.some((item) => item.ref === deletedProject.publicId),
+    false,
+  );
+  const archivedViews = await listAgentSavedViews(
+    owner,
+    await parseAgentSavedViewListQuery(new URLSearchParams("limit=200&archived=true")),
+  );
+  assert.equal(archivedViews.data.some((item) => item.ref === deletedView.publicId), false);
+
+  const liveReleases = await listAgentReleases(
+    owner,
+    await parseAgentReleaseListQuery(new URLSearchParams("limit=200")),
+  );
+  assert.equal(liveReleases.data.some((item) => item.ref === deletedRelease.publicId), false);
+  assert.equal(liveReleases.data.some((item) => item.ref === projectRelease.publicId), false);
+  const liveProjectDetail = await getAgentProjectDetail(owner, liveProject.publicId);
+  assert.equal(liveProjectDetail.releases.length, 0);
+  assert.equal(liveProjectDetail.releaseCount, 0);
+  assert.equal(liveProjectDetail.taskCounts.total, 1);
+
+  await assert.rejects(
+    getAgentProjectDetail(owner, deletedProject.publicId),
+    NotFoundError,
+  );
+  await assert.rejects(
+    getAgentReleaseDetail(owner, deletedRelease.publicId),
+    NotFoundError,
+  );
+  await assert.rejects(
+    getAgentSavedViewDetail(owner, deletedView.publicId),
+    NotFoundError,
+  );
+  await assert.rejects(
+    getAgentSavedViewDetail(owner, projectView.publicId),
+    NotFoundError,
+  );
+  await assert.rejects(
+    getAgentTaskDetail(owner, deletedTask.publicId),
+    NotFoundError,
+  );
+  await assert.rejects(
+    getAgentTaskDetail(owner, projectTask.publicId),
+    NotFoundError,
+  );
+
+  const credential = await issueApiCredential(owner, {
+    name: "Agent deletion parity",
+    scopes: ["api:write"],
+    expiresInDays: 1,
+  });
+  const authorization = { authorization: `Bearer ${credential.token}` };
+  const updateDeleted = await updateAgentTaskRoute(
+    jsonRequest(
+      `https://example.test/api/agent/v1/tasks/${deletedTask.publicId}`,
+      authorization,
+      { version: deletedTaskVersion, title: "Must stay hidden" },
+      "PATCH",
+    ),
+    taskContext(deletedTask.publicId),
+  );
+  assert.equal(updateDeleted.status, 404);
+  const createInDeletedProject = await createAgentTaskRoute(jsonRequest(
+    "https://example.test/api/agent/v1/tasks",
+    authorization,
+    { title: "Must not be created", projectRef: deletedProject.publicId },
+    "POST",
+  ));
+  assert.equal(createInDeletedProject.status, 404);
+  const createInDeletedRelease = await createAgentTaskRoute(jsonRequest(
+    "https://example.test/api/agent/v1/tasks",
+    authorization,
+    {
+      title: "Must not enter deleted Release",
+      projectRef: liveProject.publicId,
+      releaseRef: deletedRelease.publicId,
+    },
+    "POST",
+  ));
+  assert.equal(createInDeletedRelease.status, 404);
+  const deletedParent = await setAgentTaskParentRoute(
+    jsonRequest(
+      `https://example.test/api/agent/v1/tasks/${releaseTask.publicId}/parent`,
+      authorization,
+      {
+        version: (await getAgentTaskDetail(owner, releaseTask.publicId)).version,
+        parentTaskRef: deletedTask.publicId,
+      },
+      "PUT",
+    ),
+    taskContext(releaseTask.publicId),
+  );
+  assert.equal(deletedParent.status, 404);
+  assert.match(
+    await mcpCallFailure(credential.token, "get_task", {
+      taskRef: projectTask.publicId,
+    }),
+    /not found/i,
+  );
+  assert.match(
+    await mcpCallFailure(credential.token, "list_task_comments", {
+      taskRef: deletedTask.publicId,
+    }),
+    /not found/i,
+  );
+});
+
 function actor(name: string) {
   return {
     provider: "chatgpt" as const,
@@ -544,6 +779,45 @@ function taskContext(ref: string) {
 
 function relationContext(ref: string, relationRef: string) {
   return { params: Promise.resolve({ ref, relationRef }) };
+}
+
+async function ensureDeletionColumns(target: D1Database) {
+  for (const table of ["projects", "releases", "tasks", "saved_views"]) {
+    const columns = await target.prepare(`PRAGMA table_info(${table})`)
+      .all<{ name: string }>();
+    const names = new Set(columns.results.map((column) => column.name));
+    for (const [name, type] of [
+      ["deleted_at", "TEXT"],
+      ["deleted_by_user_id", "TEXT"],
+      ["purge_after", "TEXT"],
+    ] as const) {
+      if (!names.has(name)) {
+        await target.prepare(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`).run();
+      }
+    }
+  }
+}
+
+async function markDeleted(
+  table: "projects" | "releases" | "tasks" | "saved_views",
+  id: string,
+  actorId: string,
+  deletedAt: string,
+  purgeAfter: string,
+  archived = false,
+) {
+  await database.prepare(
+    `UPDATE ${table}
+     SET deleted_at = ?, deleted_by_user_id = ?, purge_after = ?
+       ${archived ? ", archived_at = ?" : ""}
+     WHERE id = ?`,
+  ).bind(
+    deletedAt,
+    actorId,
+    purgeAfter,
+    ...(archived ? [deletedAt] : []),
+    id,
+  ).run();
 }
 
 async function mcpCall(

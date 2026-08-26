@@ -149,6 +149,8 @@ test("Saved View collection parser binds pagination to scope and archive filters
 
 test("OpenAPI exposes task work but no administration or sharing operations", () => {
   const paths = Object.keys(agentApiOpenApi.paths);
+  assert.match(agentApiOpenApi.info.description, /deleted records/i);
+  assert.equal(paths.some((path) => /deleted|trash|purge/i.test(path)), false);
   assert.equal(paths.includes("/tasks"), true);
   assert.equal(paths.includes("/tasks/{ref}"), true);
   assert.equal(paths.includes("/tasks/{ref}/move"), true);
@@ -165,6 +167,15 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/releases"), true);
   assert.equal(paths.includes("/views"), true);
   assert.equal(paths.includes("/views/{ref}"), true);
+  for (const path of ["/projects", "/views", "/tasks"] as const) {
+    const archived = agentApiOpenApi.paths[path].get.parameters.find(
+      (parameter) => parameter.name === "archived",
+    );
+    assert.match(
+      String(archived && "description" in archived ? archived.description : ""),
+      /deleted records are always excluded/i,
+    );
+  }
   assert.equal(
     agentApiOpenApi.components.schemas.ProjectSummary.properties.taskCode.pattern,
     "^[A-Z0-9](?:[A-Z0-9-]{0,10}[A-Z0-9])?$",

@@ -22,6 +22,15 @@ comment endpoints, что native discussions. После lossless runtime cutove
 `external-context` удалён из REST/OpenAPI/MCP; source URLs, attachment links и
 branch metadata не входят в Agent contract.
 
+Дополнение 2026-08-26: recoverable deletion управляется только product
+surface. Agent REST/MCP исключает непосредственно удалённые records и весь
+subtree удалённого Project до content projection; `archived=true` не является
+доступом к корзине. Удалённый Release скрывается из Task metadata без очистки
+внутренней membership, чтобы product restore оставался lossless. Любая Agent
+mutation требует live target и live referenced Project/Release/Task; deleted и
+unknown refs отвечают одинаковым `not_found`. Delete/restore/purge endpoints и
+новый OAuth scope не добавляются.
+
 ## Контекст
 
 Web UI использует Sites-authenticated JSON routes и полный

@@ -103,7 +103,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get Task Manager workspace",
       description:
-        "Start here. Returns the signed-in user, connector capabilities, accessible counts, and workflow status catalog.",
+        "Start here. Returns the signed-in user, connector capabilities, live accessible counts, and workflow status catalog. Recoverably deleted records are excluded.",
       inputSchema: z.object({}),
       annotations: readAnnotations,
       _meta: toolSecurity("api:read"),
@@ -116,7 +116,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "List projects",
       description:
-        "Lists every project accessible through ownership or sharing. Use search to resolve a project before filtering tasks or releases.",
+        "Lists every live project accessible through ownership or sharing. Deleted Projects and their children are excluded even when archived=true. Use search to resolve a project before filtering tasks or releases.",
       inputSchema: z.object({
         ...paginationSchema,
         search: z.string().min(1).max(200).optional(),
@@ -164,7 +164,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get project",
       description:
-        "Returns project details, releases, task counts, access role, and the workflow statuses valid when creating tasks in this project.",
+        "Returns live project details, live releases, live task counts, access role, and the workflow statuses valid when creating tasks in this project. A deleted Project is indistinguishable from an unknown ref.",
       inputSchema: z.object({ projectRef: reference("Canonical project ref from list_projects.") }),
       annotations: readAnnotations,
       _meta: toolSecurity("api:read"),
@@ -178,7 +178,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "List releases",
       description:
-        "Lists accessible releases. Filter by projectRef, lifecycle status, or search text; omit projectRef to search across all projects.",
+        "Lists live accessible releases under live Projects. Filter by projectRef, lifecycle status, or search text; omit projectRef to search across all projects.",
       inputSchema: z.object({
         ...paginationSchema,
         projectRef: reference("Canonical project ref.").optional(),
@@ -205,7 +205,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get release",
       description:
-        "Returns release details, project identity, task counts, progress, notes, and workflow statuses for tasks in the release.",
+        "Returns live release details, project identity, live task counts, progress, notes, and workflow statuses for tasks in the release. A deleted Release or parent Project is indistinguishable from an unknown ref.",
       inputSchema: z.object({ releaseRef: reference("Canonical release ref from list_releases.") }),
       annotations: readAnnotations,
       _meta: toolSecurity("api:read"),
@@ -219,7 +219,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "List saved views",
       description:
-        "Lists native Saved Views with their current query, Display contract, scope, access, and version. Archived views are excluded by default.",
+        "Lists live native Saved Views with their current query, Display contract, scope, access, and version. Deleted Views and Views under a deleted Project are always excluded; archived views are excluded by default.",
       inputSchema: z.object({
         ...paginationSchema,
         projectRef: reference("Canonical project ref from list_projects.").optional(),
@@ -243,7 +243,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get saved view",
       description:
-        "Returns one Saved View with its canonical scope, current query, complete Display contract, access, archive state, and optimistic version.",
+        "Returns one live Saved View with its canonical scope, current query, complete Display contract, access, archive state, and optimistic version. A deleted View or project-scoped View under a deleted Project is indistinguishable from an unknown ref.",
       inputSchema: z.object({ viewRef: reference("Canonical Saved View ref from list_views.") }),
       annotations: readAnnotations,
       _meta: toolSecurity("api:read"),
@@ -257,7 +257,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "List and filter tasks",
       description:
-        "Lists compact task summaries across everything the user can access. Filter by projectRef and releaseRef independently or together; omit both to get all accessible tasks. Continue with nextCursor only when more results are needed, then call get_task for the selected task.",
+        "Lists compact live task summaries across everything the user can access. Deleted Tasks and Tasks under a deleted Project are always excluded, including when archived=true. A deleted Release is not exposed as active Task metadata. Filter by projectRef and releaseRef independently or together; omit both to get all accessible tasks. Continue with nextCursor only when more results are needed, then call get_task for the selected task.",
       inputSchema: z.object({
         ...paginationSchema,
         projectRef: reference("Canonical project ref from list_projects.").optional(),
@@ -298,7 +298,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Get task",
       description:
-        "Gets a complete task after selection: description, lifecycle, project/release, relations, subtasks, native attachment count, access, version, and valid workflow statuses. Call list_task_attachments only when attachment metadata is needed.",
+        "Gets a complete live task after selection: description, lifecycle, project/release, relations, subtasks, native attachment count, access, version, and valid workflow statuses. Deleted Tasks and Tasks under a deleted Project are indistinguishable from unknown refs; a deleted Release is omitted from Task metadata. Call list_task_attachments only when attachment metadata is needed.",
       inputSchema: z.object({ taskRef: reference("Task ref or identifier. Prefer the canonical ref from list_tasks.") }),
       annotations: readAnnotations,
       _meta: toolSecurity("api:read"),

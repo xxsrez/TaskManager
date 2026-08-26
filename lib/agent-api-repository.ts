@@ -96,8 +96,10 @@ const taskScopeCte = (detail: boolean) => `WITH scoped_tasks AS (
   FROM tasks t
   JOIN workflow_statuses s ON s.id = t.status_id
   LEFT JOIN projects p ON p.id = t.project_id
-  LEFT JOIN releases r ON r.id = t.release_id
+  LEFT JOIN releases r ON r.id = t.release_id AND r.deleted_at IS NULL
   LEFT JOIN users assignee ON assignee.id = t.assignee_user_id
+  WHERE t.deleted_at IS NULL
+    AND (p.id IS NULL OR p.deleted_at IS NULL)
 ), visible_tasks AS (
   SELECT * FROM scoped_tasks WHERE access_role IS NOT NULL
 )`;
@@ -126,6 +128,7 @@ const projectScopeCte = `WITH scoped_projects AS (
   SELECT p.*,
     ${projectAccessRoleSql("p")} AS access_role
   FROM projects p
+  WHERE p.deleted_at IS NULL
 ), visible_projects AS (
   SELECT * FROM scoped_projects WHERE access_role IS NOT NULL
 )`;
@@ -134,6 +137,7 @@ const releaseScopeCte = `WITH scoped_releases AS (
   SELECT r.*, p.public_id AS project_public_id, p.name AS project_name,
     ${projectAccessRoleSql("p")} AS access_role
   FROM releases r JOIN projects p ON p.id = r.project_id
+  WHERE r.deleted_at IS NULL AND p.deleted_at IS NULL
 ), visible_releases AS (
   SELECT * FROM scoped_releases WHERE access_role IS NOT NULL
 )`;
@@ -142,6 +146,8 @@ const savedViewScopeCte = `WITH scoped_views AS (
   SELECT v.*, p.public_id AS project_public_id, p.name AS project_name,
     ${savedViewAccessRoleSql("v", "p")} AS access_role
   FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
+  WHERE v.deleted_at IS NULL
+    AND (v.scope_project_id IS NULL OR (p.id IS NOT NULL AND p.deleted_at IS NULL))
 ), visible_views AS (
   SELECT * FROM scoped_views WHERE access_role IS NOT NULL
 )`;
@@ -309,7 +315,8 @@ export async function listAgentProjects(
       `${projectScopeCte}
        SELECT p.*, p.updated_at AS cursor_value,
          ${taskCategoryCounts("p.id")},
-         (SELECT COUNT(*) FROM releases r WHERE r.project_id = p.id)
+         (SELECT COUNT(*) FROM releases r
+          WHERE r.project_id = p.id AND r.deleted_at IS NULL)
            AS release_count
        FROM visible_projects p
        WHERE ${predicates.join(" AND ")}
@@ -339,7 +346,7 @@ export async function getAgentProjectDetail(
     getD1()
       .prepare(
         `SELECT r.* FROM releases r
-       WHERE r.project_id = ?
+       WHERE r.project_id = ? AND r.deleted_at IS NULL
        ORDER BY CASE r.status
          WHEN 'active' THEN 0 WHEN 'planned' THEN 1
          WHEN 'released' THEN 2 ELSE 3 END,
@@ -537,7 +544,8 @@ export async function getAgentWorkspace(
          WHERE s.archived_at IS NULL AND (s.owner_user_id = ?
             OR EXISTS (
               SELECT 1 FROM projects p
-              WHERE p.owner_user_id = s.owner_user_id AND (
+              WHERE p.owner_user_id = s.owner_user_id
+                AND p.deleted_at IS NULL AND (
                 p.owner_user_id = ? OR EXISTS (
                   SELECT 1 FROM access_grants ag
                   WHERE ag.resource_type = 'project'
@@ -548,7 +556,8 @@ export async function getAgentWorkspace(
             ))
             OR EXISTS (
               SELECT 1 FROM tasks t
-              WHERE t.status_id = s.id AND t.project_id IS NULL AND (
+              WHERE t.status_id = s.id AND t.project_id IS NULL
+                AND t.deleted_at IS NULL AND (
                 t.owner_user_id = ? OR EXISTS (
                   SELECT 1 FROM access_grants ag
                   WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
@@ -829,7 +838,8 @@ export async function listAgentLabels(
      WHERE (? = 1 OR l.archived_at IS NULL) AND (
        l.owner_user_id = ? OR EXISTS (
          SELECT 1 FROM projects p
-         WHERE p.owner_user_id = l.owner_user_id AND (
+         WHERE p.owner_user_id = l.owner_user_id
+           AND p.deleted_at IS NULL AND (
            p.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM access_grants ag
              WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
@@ -875,7 +885,8 @@ export async function listAgentLabelGroups(currentUser: UserRecord, includeArchi
      FROM label_groups g
      WHERE (? = 1 OR g.archived_at IS NULL) AND (
        g.owner_user_id = ? OR EXISTS (
-         SELECT 1 FROM projects p WHERE p.owner_user_id = g.owner_user_id AND (
+         SELECT 1 FROM projects p WHERE p.owner_user_id = g.owner_user_id
+           AND p.deleted_at IS NULL AND (
            p.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
                AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
@@ -1389,7 +1400,8 @@ async function loadAccessibleProjectRow(
     .prepare(
       `${projectScopeCte}
        SELECT p.*${withCounts ? `, ${taskCategoryCounts("p.id")},
-         (SELECT COUNT(*) FROM releases r WHERE r.project_id = p.id) AS release_count` : ""}
+         (SELECT COUNT(*) FROM releases r
+          WHERE r.project_id = p.id AND r.deleted_at IS NULL) AS release_count` : ""}
        FROM visible_projects p WHERE p.public_id = ? LIMIT 1`,
     )
     .bind(userId, userId, reference)
@@ -1854,7 +1866,8 @@ function taskCategoryCounts(projectExpression: string, releaseExpression?: strin
   const releasePredicate = releaseExpression
     ? ` AND t.release_id = ${releaseExpression}`
     : "";
-  const base = `t.project_id = ${projectExpression}${releasePredicate} AND t.archived_at IS NULL`;
+  const base = `t.project_id = ${projectExpression}${releasePredicate}
+    AND t.archived_at IS NULL AND t.deleted_at IS NULL`;
   return `(SELECT COUNT(*) FROM tasks t WHERE ${base}) AS task_total,
     (SELECT COUNT(*) FROM tasks t JOIN workflow_statuses s ON s.id = t.status_id
       WHERE ${base} AND s.category = 'backlog') AS task_backlog,
