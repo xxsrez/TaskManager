@@ -23,6 +23,13 @@ export async function DELETE(
   const input = await readJson(request);
   const { id } = await context.params;
   return withUser(async (user) => ({
-    entity: await deleteEntity(user, "release", id, Number(input.version)),
+    entity: await deleteEntity(
+      user,
+      "release",
+      id,
+      Number(input.version),
+      new Date(),
+      { confirmReleasedComposition: input.confirmReleasedComposition === true },
+    ),
   }));
 }

@@ -5,7 +5,10 @@ import {
   activityEventAfterPreviousChange,
   newActivityId,
 } from "./activity-write";
-import { purgeTaskAttachmentObjects } from "./attachments";
+import {
+  purgeProjectAttachmentObjects,
+  purgeTaskAttachmentObjects,
+} from "./attachments";
 import {
   projectAccessRoleSql,
   savedViewAccessRoleSql,
@@ -21,6 +24,7 @@ import type {
   AccessRole,
   DeletionPreview,
   DeletableEntityType,
+  ReleaseDeletionPreview,
   RecentlyDeletedPage,
   RecentlyDeletedRecord,
   UserRecord,
@@ -44,6 +48,7 @@ type LifecycleRow = {
   accessRole: AccessRole;
   projectId: string | null;
   projectDeletedAt: string | null;
+  releaseStatus: "planned" | "active" | "released" | "canceled" | null;
 };
 
 export type EntityDeletionResult = {
@@ -61,6 +66,7 @@ export async function deleteEntity(
   reference: string,
   expectedVersion: number,
   now = new Date(),
+  options: { confirmReleasedComposition?: boolean } = {},
 ): Promise<EntityDeletionResult> {
   assertExpectedVersion(expectedVersion);
   const current = await loadLifecycleRow(currentUser.id, type, reference);
@@ -79,6 +85,12 @@ export async function deleteEntity(
   }
   if (current.version !== expectedVersion) {
     throw new ConflictError(`${entityLabel(type)} was changed in another session`);
+  }
+  if (
+    type === "release" && current.releaseStatus === "released" &&
+    options.confirmReleasedComposition !== true
+  ) {
+    throw new ValidationError("Confirm deleting the composition of a released Release");
   }
 
   const deletedAt = now.toISOString();
@@ -367,6 +379,42 @@ export async function getDeletionPreview(
   };
 }
 
+export async function getReleaseDeletionPreview(
+  currentUser: UserRecord,
+  reference: string,
+  expectedVersion: number,
+): Promise<ReleaseDeletionPreview> {
+  assertExpectedVersion(expectedVersion);
+  const current = await loadLifecycleRow(currentUser.id, "release", reference);
+  if (current.deletedAt || current.projectDeletedAt) {
+    throw new NotFoundError("Release not found");
+  }
+  requireEditor(current.accessRole);
+  if (current.version !== expectedVersion) {
+    throw new ConflictError("Release was changed in another session");
+  }
+  const row = await getD1().prepare(
+    `SELECT r.name AS display_name, p.name AS context_name, r.status,
+       (SELECT COUNT(*) FROM tasks t WHERE t.release_id = r.id) AS task_memberships
+     FROM releases r JOIN projects p ON p.id = r.project_id
+     WHERE r.id = ? AND r.version = ? AND r.deleted_at IS NULL
+       AND p.deleted_at IS NULL`,
+  ).bind(current.id, expectedVersion).first<DbRow>();
+  if (!row) throw new ConflictError("Release was changed in another session");
+  const status = String(row.status) as ReleaseDeletionPreview["status"];
+  return {
+    type: "release",
+    id: current.id,
+    publicId: current.publicId,
+    displayName: String(row.display_name),
+    context: String(row.context_name),
+    version: current.version,
+    status,
+    taskMemberships: Number(row.task_memberships ?? 0),
+    requiresReleasedCompositionConfirmation: status === "released",
+  };
+}
+
 async function loadDeletionImpact(type: DeletableEntityType, id: string) {
   const db = getD1();
   if (type === "project") {
@@ -375,7 +423,7 @@ async function loadDeletionImpact(type: DeletableEntityType, id: string) {
          (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id) AS task_count,
          (SELECT COUNT(*) FROM releases r WHERE r.project_id = p.id) AS release_count,
          (SELECT COUNT(*) FROM saved_views v WHERE v.scope_project_id = p.id) AS saved_view_count,
-         (SELECT COALESCE(SUM(t.comment_count), 0) FROM tasks t
+         (SELECT COUNT(*) FROM comments c JOIN tasks t ON t.id = c.task_id
            WHERE t.project_id = p.id) AS comment_count,
          (SELECT COUNT(*) FROM attachments a JOIN tasks t ON t.id = a.task_id
            WHERE t.project_id = p.id) AS attachment_count,
@@ -506,6 +554,26 @@ async function deleteTaskWithActivity(
     ),
     activity.statement,
     activityBatchAssertion(db, `assert:${newActivityId()}`, deletedAt),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT child.id, 'task' FROM tasks child
+       WHERE child.parent_task_id = ? AND child.deleted_at IS NULL`,
+    ).bind(current.id),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT child.id, 'task_detail' FROM tasks child
+       WHERE child.parent_task_id = ? AND child.deleted_at IS NULL`,
+    ).bind(current.id),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT related.id, 'task_detail' FROM tasks related
+       WHERE related.deleted_at IS NULL AND related.id IN (
+         SELECT CASE WHEN relation.source_task_id = ?
+           THEN relation.target_task_id ELSE relation.source_task_id END
+         FROM task_relations relation
+         WHERE relation.source_task_id = ? OR relation.target_task_id = ?
+       )`,
+    ).bind(current.id, current.id, current.id),
   ]);
   const row = updated.results[0] as DbRow | undefined;
   if (!row) throw new ConflictError("Task was changed in another session");
@@ -538,6 +606,26 @@ async function restoreTaskWithActivity(
     ).bind(restoredAt, current.id, expectedVersion, restoredAt),
     activity.statement,
     activityBatchAssertion(db, `assert:${newActivityId()}`, restoredAt),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT child.id, 'task' FROM tasks child
+       WHERE child.parent_task_id = ? AND child.deleted_at IS NULL`,
+    ).bind(current.id),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT child.id, 'task_detail' FROM tasks child
+       WHERE child.parent_task_id = ? AND child.deleted_at IS NULL`,
+    ).bind(current.id),
+    db.prepare(
+      `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+       SELECT related.id, 'task_detail' FROM tasks related
+       WHERE related.deleted_at IS NULL AND related.id IN (
+         SELECT CASE WHEN relation.source_task_id = ?
+           THEN relation.target_task_id ELSE relation.source_task_id END
+         FROM task_relations relation
+         WHERE relation.source_task_id = ? OR relation.target_task_id = ?
+       )`,
+    ).bind(current.id, current.id, current.id),
   ]);
   const row = updated.results[0] as DbRow | undefined;
   if (!row) throw new ConflictError("Task was changed in another session");
@@ -633,6 +721,7 @@ async function loadLifecycleRow(
     accessRole: String(row.access_role) as AccessRole,
     projectId: nullableString(row.project_id),
     projectDeletedAt: nullableString(row.project_deleted_at),
+    releaseStatus: type === "release" ? nullableReleaseStatus(row.status) : null,
   };
 }
 
@@ -740,21 +829,13 @@ async function purgeProject(
   completedAt: string,
 ) {
   const db = getD1();
-  const [tasks, attachments] = await db.batch<DbRow>([
-    db.prepare("SELECT id FROM tasks WHERE project_id = ? ORDER BY id").bind(current.id),
+  const [attachments] = await db.batch<DbRow>([
     db.prepare(
       `SELECT a.stored_file_id FROM attachments a
        JOIN tasks t ON t.id = a.task_id WHERE t.project_id = ?`,
     ).bind(current.id),
   ]);
-  for (const row of tasks.results) {
-    const attachmentCount = await db.prepare(
-      "SELECT COUNT(*) AS count FROM attachments WHERE task_id = ?",
-    ).bind(String(row.id)).first<{ count: number }>();
-    if (Number(attachmentCount?.count ?? 0) > 0) {
-      await purgeTaskAttachmentObjects(String(row.id));
-    }
-  }
+  if (attachments.results.length) await purgeProjectAttachmentObjects(current.id);
   const storedFileIds = attachments.results.flatMap((row) =>
     row.stored_file_id ? [String(row.stored_file_id)] : []
   );
@@ -794,6 +875,14 @@ async function purgeProject(
          SELECT id FROM saved_views WHERE scope_project_id = ?
        ))`,
     ).bind(current.id, current.id, current.id),
+    db.prepare(
+      `DELETE FROM access_grants WHERE
+       (resource_type = 'task' AND resource_id IN (
+         SELECT id FROM tasks WHERE project_id = ?
+       )) OR (resource_type = 'saved_view' AND resource_id IN (
+         SELECT id FROM saved_views WHERE scope_project_id = ?
+       ))`,
+    ).bind(current.id, current.id),
     db.prepare("DELETE FROM tasks WHERE project_id = ?").bind(current.id),
     db.prepare("DELETE FROM releases WHERE project_id = ?").bind(current.id),
     db.prepare("DELETE FROM saved_views WHERE scope_project_id = ?").bind(current.id),
@@ -1023,7 +1112,12 @@ function lifecycleRowFromMutation(row: DbRow, current?: LifecycleRow): Lifecycle
     accessRole: current?.accessRole ?? "owner",
     projectId: current?.projectId ?? null,
     projectDeletedAt: current?.projectDeletedAt ?? null,
+    releaseStatus: current?.releaseStatus ?? null,
   };
+}
+
+function nullableReleaseStatus(value: unknown): LifecycleRow["releaseStatus"] {
+  return value == null ? null : String(value) as LifecycleRow["releaseStatus"];
 }
 
 function tableFor(type: Exclude<DeletableEntityType, "task">) {

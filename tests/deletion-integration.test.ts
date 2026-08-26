@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { createAttachment } from "../lib/attachments";
+import {
+  createAttachment,
+  listTaskAttachments,
+} from "../lib/attachments";
+import { listTaskActivity } from "../lib/activity";
 import { configureActorResolverForTests } from "../lib/auth";
-import { createComment } from "../lib/comments";
+import { createComment, listTaskComments } from "../lib/comments";
 import {
   deleteEntity,
   getDeletionPreview,
+  getReleaseDeletionPreview,
   listRecentlyDeleted,
   PERMANENT_DELETE_CONFIRMATION,
   purgeEntity,
@@ -23,12 +28,18 @@ import {
   createRelease,
   createSavedView,
   createTask,
+  bulkUpdateTasks,
   getAdminOverview,
   getOrCreateUser,
   getSnapshot,
   getTask,
+  getTaskDetail,
   grantAccess,
+  moveTask,
   queryTaskSummaries,
+  setTaskParent,
+  updateRelease,
+  updateSavedView,
   updateTask,
 } from "../lib/repository";
 import { configureRuntimeEnvironment } from "../lib/runtime-environment";
@@ -37,9 +48,12 @@ import type { UserRecord } from "../lib/types";
 import { createD1TestHarness } from "./helpers/d1";
 import { GET as recentlyDeletedRoute } from "../app/api/recently-deleted/route";
 import { GET as deletionPreviewRoute } from "../app/api/recently-deleted/[type]/[id]/preview/route";
+import { GET as releaseDeletionPreviewRoute } from "../app/api/releases/[id]/deletion-preview/route";
+import { DELETE as deleteReleaseRoute } from "../app/api/releases/[id]/route";
 import { DELETE as deleteTaskRoute } from "../app/api/tasks/[id]/route";
 import { POST as purgeTaskRoute } from "../app/api/tasks/[id]/purge/route";
 import { POST as restoreTaskRoute } from "../app/api/tasks/[id]/restore/route";
+import { createTaskRelation } from "../lib/task-relations";
 
 const ownerActor = {
   provider: "chatgpt" as const,
@@ -540,11 +554,25 @@ test("R2 cleanup failure and D1 rollback leave an irreversible retryable purge c
     claimedMediaType: "application/pdf",
     idempotencyKey: `purge-${unique}`,
   });
+  const secondAttachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\nsecond recoverable purge\n%%EOF"),
+    filename: "purge-second.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: `purge-second-${unique}`,
+  });
   const deleted = await deleteEntity(owner, "task", task.id, task.version);
+  let deleteCalls = 0;
   const failingBucket = new Proxy(bucket, {
     get(target, property) {
       if (property === "delete") {
-        return async () => { throw new Error("synthetic R2 delete failure"); };
+        return async (keys: string | string[]) => {
+          deleteCalls += 1;
+          if (deleteCalls === 1) {
+            await target.delete(keys);
+            return;
+          }
+          throw new Error("synthetic R2 delete failure after one object");
+        };
       }
       const value = Reflect.get(target, property, target) as unknown;
       return typeof value === "function" ? value.bind(target) : value;
@@ -553,9 +581,16 @@ test("R2 cleanup failure and D1 rollback leave an irreversible retryable purge c
   configureRuntimeEnvironment({ DB: database, ATTACHMENTS: failingBucket });
   await assert.rejects(
     purgeEntity(owner, "task", task.id, deleted.version, PERMANENT_DELETE_CONFIRMATION),
-    /synthetic R2 delete failure/,
+    /synthetic R2 delete failure after one object/,
   );
   assert.ok(await database.prepare("SELECT id FROM tasks WHERE id = ?").bind(task.id).first());
+  const firstObjectAfterFailure = await bucket.head(attachment.objectKey);
+  const secondObjectAfterFailure = await bucket.head(secondAttachment.objectKey);
+  assert.notEqual(Boolean(firstObjectAfterFailure), Boolean(secondObjectAfterFailure));
+  assert.equal((await database.prepare(
+    `SELECT attempt_count FROM entity_purge_jobs
+     WHERE entity_type = 'task' AND entity_id = ?`,
+  ).bind(task.id).first<{ attempt_count: number }>())!.attempt_count, 1);
   await assert.rejects(
     restoreEntity(owner, "task", task.id, deleted.version),
     /permanent deletion has started/,
@@ -572,14 +607,795 @@ test("R2 cleanup failure and D1 rollback leave an irreversible retryable purge c
   );
   assert.ok(await database.prepare("SELECT id FROM tasks WHERE id = ?").bind(task.id).first());
   assert.ok(await database.prepare("SELECT id FROM attachments WHERE id = ?").bind(attachment.id).first());
+  assert.ok(await database.prepare("SELECT id FROM attachments WHERE id = ?").bind(secondAttachment.id).first());
   await database.prepare("DROP TRIGGER synthetic_task_purge_failure").run();
   await purgeEntity(owner, "task", task.id, deleted.version, PERMANENT_DELETE_CONFIRMATION);
   assert.equal(await database.prepare("SELECT id FROM tasks WHERE id = ?").bind(task.id).first(), null);
   assert.equal(await bucket.head(attachment.objectKey), null);
+  assert.equal(await bucket.head(secondAttachment.objectKey), null);
   const receipt = await database.prepare(
     `SELECT completed_at, receipt_expires_at FROM entity_purge_jobs
      WHERE entity_type = 'task' AND entity_id = ?`,
   ).bind(task.id).first<{ completed_at: string; receipt_expires_at: string }>();
   assert.ok(receipt?.completed_at);
   assert.ok(receipt?.receipt_expires_at);
+});
+
+test("Task delete and restore preserve content while child hierarchy and relation caches converge", async () => {
+  const { project, task: originalTask } = await fixture("task-lossless");
+  const peerIdentity = await createTask(owner, {
+    title: `Peer ${unique}`,
+    projectId: project.id,
+  });
+  const replacementIdentity = await createTask(owner, {
+    title: `Replacement parent ${unique}`,
+    projectId: project.id,
+  });
+  const firstChildIdentity = await createTask(owner, {
+    title: `Detach child ${unique}`,
+    projectId: project.id,
+  });
+  const secondChildIdentity = await createTask(owner, {
+    title: `Reparent child ${unique}`,
+    projectId: project.id,
+  });
+  const retainedChildIdentity = await createTask(owner, {
+    title: `Retained child ${unique}`,
+    projectId: project.id,
+  });
+  const task = await updateTask(owner, originalTask.id, {
+    version: originalTask.version,
+    title: `Lossless parent ${unique}`,
+    description: "Description retained across recoverable deletion",
+  });
+  const firstChild = await setTaskParent(owner, firstChildIdentity.id, {
+    version: (await getTask(owner, firstChildIdentity.id)).version,
+    parentTaskId: task.id,
+  });
+  const secondChild = await setTaskParent(owner, secondChildIdentity.id, {
+    version: (await getTask(owner, secondChildIdentity.id)).version,
+    parentTaskId: task.id,
+  });
+  const retainedChild = await setTaskParent(owner, retainedChildIdentity.id, {
+    version: (await getTask(owner, retainedChildIdentity.id)).version,
+    parentTaskId: task.id,
+  });
+  const peer = await getTask(owner, peerIdentity.id);
+  await createTaskRelation(owner, task.id, {
+    targetTaskId: peer.id,
+    type: "related",
+    direction: "outgoing",
+    idempotencyKey: `delete-relation-${unique}`,
+  });
+  await createComment(owner, task.id, {
+    body: "Comment retained across recoverable deletion",
+    idempotencyKey: `delete-comment-${unique}`,
+  });
+  const firstAttachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("%PDF-1.7\nfirst retained file\n%%EOF"),
+    filename: "first-retained.pdf",
+    claimedMediaType: "application/pdf",
+    idempotencyKey: `delete-attachment-a-${unique}`,
+  });
+  const secondAttachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("second retained file"),
+    filename: "second-retained.txt",
+    claimedMediaType: "text/plain",
+    idempotencyKey: `delete-attachment-b-${unique}`,
+  });
+  const beforeDelete = await getSnapshot(owner);
+  const currentTask = await getTask(owner, task.id);
+  const deleted = await deleteEntity(owner, "task", task.id, currentTask.version);
+
+  const firstHiddenParent = await getTask(owner, firstChild.id);
+  const secondHiddenParent = await getTask(owner, secondChild.id);
+  const retainedHiddenParent = await getTask(owner, retainedChild.id);
+  assert.equal(firstHiddenParent.parentTaskId, null);
+  assert.equal(secondHiddenParent.parentTaskId, null);
+  assert.equal(retainedHiddenParent.parentTaskId, null);
+  assert.equal(firstHiddenParent.version, firstChild.version);
+  assert.equal(secondHiddenParent.version, secondChild.version);
+  assert.equal(retainedHiddenParent.version, retainedChild.version);
+  const deleteSync = await getWorkspaceSync(owner, beforeDelete.syncCursor!);
+  assert.equal(deleteSync.changes.tasks.remove.includes(task.id), true);
+  assert.deepEqual(
+    new Set(deleteSync.changes.tasks.upsert.map((item) => item.id)),
+    new Set([firstChild.id, secondChild.id, retainedChild.id]),
+  );
+  assert.equal(deleteSync.changes.invalidations.taskDetails.includes(firstChild.id), true);
+  assert.equal(deleteSync.changes.invalidations.taskDetails.includes(secondChild.id), true);
+  assert.equal(deleteSync.changes.invalidations.taskDetails.includes(retainedChild.id), true);
+  assert.equal(deleteSync.changes.invalidations.taskDetails.includes(peer.id), true);
+
+  const detached = await setTaskParent(owner, firstChild.id, {
+    version: firstHiddenParent.version,
+    parentTaskId: null,
+  });
+  const reparented = await setTaskParent(owner, secondChild.id, {
+    version: secondHiddenParent.version,
+    parentTaskId: replacementIdentity.id,
+  });
+  assert.equal(detached.parentTaskId, null);
+  assert.equal(reparented.parentTaskId, replacementIdentity.id);
+
+  const beforeRestore = await getSnapshot(owner);
+  await restoreEntity(owner, "task", task.id, deleted.version);
+  const restoreSync = await getWorkspaceSync(owner, beforeRestore.syncCursor!);
+  assert.equal(
+    restoreSync.changes.tasks.upsert.some((item) =>
+      item.id === retainedChild.id && item.parentTaskId === task.id
+    ),
+    true,
+  );
+  assert.equal(restoreSync.changes.invalidations.taskDetails.includes(retainedChild.id), true);
+  assert.equal(restoreSync.changes.invalidations.taskDetails.includes(peer.id), true);
+  const restored = await getTask(owner, task.id);
+  assert.equal(restored.identifier, task.identifier);
+  assert.equal(restored.title, task.title);
+  assert.equal(restored.description, task.description);
+  assert.equal((await getTask(owner, firstChild.id)).parentTaskId, null);
+  assert.equal((await getTask(owner, secondChild.id)).parentTaskId, replacementIdentity.id);
+  assert.equal((await getTask(owner, retainedChild.id)).parentTaskId, task.id);
+  assert.equal((await listTaskComments(owner, task.id)).totalCount, 1);
+  assert.equal((await listTaskAttachments(owner, task.id)).totalCount, 2);
+  assert.ok(await bucket.head(firstAttachment.objectKey));
+  assert.ok(await bucket.head(secondAttachment.objectKey));
+  const detail = await getTaskDetail(owner, task.id);
+  assert.equal(detail.relations.length, 1);
+  assert.equal(detail.relatedTasks.some((item) => item.id === peer.id), true);
+  const eventTypes = new Set(
+    (await listTaskActivity(owner, task.id, { limit: 50 })).events.map((event) => event.eventType),
+  );
+  assert.equal(eventTypes.has("task_deleted"), true);
+  assert.equal(eventTypes.has("task_delete_restored"), true);
+  assert.equal(eventTypes.has("relation_created"), true);
+});
+
+test("released Release delete is previewed and confirmed with CAS while membership stays lossless", async () => {
+  const { project, release, task, view } = await fixture("released-delete");
+  const archivedIdentity = await createTask(owner, {
+    title: `Archived release member ${unique}`,
+    projectId: project.id,
+    releaseId: release.id,
+  });
+  const archivedTask = await updateTask(owner, archivedIdentity.id, {
+    version: (await getTask(owner, archivedIdentity.id)).version,
+    archived: true,
+  });
+  const comment = await createComment(owner, task.id, {
+    body: "Release purge must not delete this comment",
+    idempotencyKey: `release-comment-${unique}`,
+  });
+  const attachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("release attachment retained"),
+    filename: "release-retained.txt",
+    claimedMediaType: "text/plain",
+    idempotencyKey: `release-attachment-${unique}`,
+  });
+  const released = await updateRelease(owner, release.id, {
+    version: release.version,
+    status: "released",
+    confirmOpenTasks: true,
+  });
+  const releaseEditor = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: `release-preview-editor-${unique}`,
+    displayName: "Release Preview Editor",
+    email: `release-preview-editor-${unique}@example.test`,
+  });
+  const releaseViewer = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: `release-preview-viewer-${unique}`,
+    displayName: "Release Preview Viewer",
+    email: `release-preview-viewer-${unique}@example.test`,
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: releaseEditor.email,
+    permission: "editor",
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: releaseViewer.email,
+    permission: "viewer",
+  });
+  const preview = await getReleaseDeletionPreview(owner, release.publicId, released.version);
+  assert.deepEqual(preview, {
+    type: "release",
+    id: release.id,
+    publicId: release.publicId,
+    displayName: release.name,
+    context: project.name,
+    version: released.version,
+    status: "released",
+    taskMemberships: 2,
+    requiresReleasedCompositionConfirmation: true,
+  });
+  assert.equal(
+    (await getReleaseDeletionPreview(releaseEditor, release.id, released.version)).taskMemberships,
+    2,
+  );
+  await assert.rejects(
+    getReleaseDeletionPreview(releaseViewer, release.id, released.version),
+    PermissionError,
+  );
+
+  configureActorResolverForTests(async () => ownerActor);
+  const previewResponse = await releaseDeletionPreviewRoute(new Request(
+    `https://task-manager.test/api/releases/${release.publicId}/deletion-preview?version=${released.version}`,
+  ), { params: Promise.resolve({ id: release.publicId }) });
+  assert.equal(previewResponse.status, 200);
+  assert.equal(
+    (await previewResponse.json() as { taskMemberships: number }).taskMemberships,
+    2,
+  );
+  const renamed = await updateRelease(owner, release.id, {
+    version: released.version,
+    name: `${release.name} authoritative`,
+  });
+  const staleDelete = await deleteReleaseRoute(new Request(
+    "https://task-manager.test/api/releases/x",
+    {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: released.version,
+        confirmReleasedComposition: true,
+      }),
+    },
+  ), { params: Promise.resolve({ id: release.publicId }) });
+  assert.equal(staleDelete.status, 409);
+  const unconfirmedDelete = await deleteReleaseRoute(new Request(
+    "https://task-manager.test/api/releases/x",
+    {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: renamed.version }),
+    },
+  ), { params: Promise.resolve({ id: release.publicId }) });
+  assert.equal(unconfirmedDelete.status, 400);
+  const deletedResponse = await deleteReleaseRoute(new Request(
+    "https://task-manager.test/api/releases/x",
+    {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: renamed.version,
+        confirmReleasedComposition: true,
+      }),
+    },
+  ), { params: Promise.resolve({ id: release.publicId }) });
+  assert.equal(deletedResponse.status, 200);
+  const deleted = await deletedResponse.json() as { entity: { version: number } };
+  configureActorResolverForTests(null);
+
+  const renamedView = await updateSavedView(owner, view.id, {
+    version: view.version,
+    name: `${view.name} renamed while Release deleted`,
+  });
+  assert.match(JSON.stringify(renamedView.query), new RegExp(release.id));
+  const failingDatabase = new Proxy(database, {
+    get(target, property) {
+      if (property === "prepare") {
+        return (query: string) => {
+          if (
+            query.includes("FROM releases r JOIN projects p ON p.id = r.project_id") &&
+            query.includes("(r.id = ? OR r.public_id = ?)")
+          ) {
+            throw new Error("synthetic release lookup infrastructure failure");
+          }
+          return target.prepare(query);
+        };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as unknown as D1Database;
+  configureRuntimeEnvironment({ DB: failingDatabase, ATTACHMENTS: bucket });
+  await assert.rejects(
+    updateSavedView(owner, view.id, {
+      version: renamedView.version,
+      name: `${renamedView.name} unavailable lookup`,
+    }),
+    /synthetic release lookup infrastructure failure/,
+  );
+  configureRuntimeEnvironment({ DB: database, ATTACHMENTS: bucket });
+  await assert.rejects(
+    updateSavedView(owner, view.id, {
+      version: renamedView.version,
+      query: { releaseId: "release-never-known" },
+    }),
+    ValidationError,
+  );
+  await createProject(owner, {
+    name: `Release move target ${unique}`,
+    taskCode: `RM${unique}`,
+  });
+  const targetProject = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === `Release move target ${unique}`,
+  )!;
+  await assert.rejects(
+    updateSavedView(owner, view.id, {
+      version: renamedView.version,
+      scopeProjectId: targetProject.id,
+    }),
+    ValidationError,
+  );
+  await assert.rejects(
+    createTask(owner, {
+      title: "Cannot assign a deleted Release",
+      projectId: project.id,
+      releaseId: release.id,
+    }),
+    NotFoundError,
+  );
+  const unassignedIdentity = await createTask(owner, {
+    title: `Unassigned while Release deleted ${unique}`,
+    projectId: project.id,
+  });
+  const unassigned = await getTask(owner, unassignedIdentity.id);
+  await assert.rejects(
+    updateTask(owner, unassigned.id, {
+      version: unassigned.version,
+      releaseId: release.id,
+    }),
+    NotFoundError,
+  );
+  await assert.rejects(
+    bulkUpdateTasks(owner, {
+      ids: [unassigned.id],
+      versions: { [unassigned.id]: unassigned.version },
+      field: "releaseId",
+      value: release.id,
+    }),
+    NotFoundError,
+  );
+  await assert.rejects(
+    moveTask(owner, task.id, {
+      version: (await getTask(owner, task.id)).version,
+      targetProjectId: targetProject.id,
+    }),
+    /explicitly clear the current Release/,
+  );
+
+  await restoreEntity(owner, "release", release.id, deleted.entity.version);
+  assert.equal((await getTask(owner, task.id)).releaseId, release.id);
+  assert.equal((await getTask(owner, archivedTask.id)).releaseId, release.id);
+  const liveRelease = (await getSnapshot(owner)).releases.find(
+    (item) => item.id === release.id,
+  )!;
+  const deletedAgain = await deleteEntity(
+    owner,
+    "release",
+    release.id,
+    liveRelease.version,
+    new Date(),
+    { confirmReleasedComposition: true },
+  );
+  const taskVersionBeforePurge = (await database.prepare(
+    "SELECT version FROM tasks WHERE id = ?",
+  ).bind(task.id).first<{ version: number }>())!.version;
+  await purgeEntity(
+    owner,
+    "release",
+    release.id,
+    deletedAgain.version,
+    PERMANENT_DELETE_CONFIRMATION,
+  );
+  const taskAfterPurge = await getTask(owner, task.id);
+  assert.equal(taskAfterPurge.releaseId, null);
+  assert.equal(taskAfterPurge.version, taskVersionBeforePurge + 1);
+  assert.ok(await database.prepare("SELECT id FROM comments WHERE id = ?").bind(comment.id).first());
+  assert.ok(await database.prepare("SELECT id FROM attachments WHERE id = ?").bind(attachment.id).first());
+  assert.ok(await bucket.head(attachment.objectKey));
+  const storedQuery = await database.prepare(
+    "SELECT query_json FROM saved_views WHERE id = ?",
+  ).bind(view.id).first<{ query_json: string }>();
+  assert.match(storedQuery!.query_json, new RegExp(release.id));
+  const afterPurgeRename = await updateSavedView(owner, view.id, {
+    version: renamedView.version,
+    name: `${renamedView.name} after purge`,
+  });
+  assert.match(JSON.stringify(afterPurgeRename.query), new RegExp(release.id));
+  const predicateRemoved = await updateSavedView(owner, view.id, {
+    version: afterPurgeRename.version,
+    query: {},
+  });
+  assert.equal(predicateRemoved.query.releaseId, undefined);
+});
+
+test("Project shadow restore preserves its whole subtree and purge removes R2 plus legacy grants", async () => {
+  const editor = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: `project-delete-editor-${unique}`,
+    displayName: "Project Delete Editor",
+    email: `project-delete-editor-${unique}@example.test`,
+  });
+  const viewer = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: `project-delete-viewer-${unique}`,
+    displayName: "Project Delete Viewer",
+    email: `project-delete-viewer-${unique}@example.test`,
+  });
+  const { project, release, task, view } = await fixture("project-complete");
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: editor.email,
+    permission: "editor",
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: viewer.email,
+    permission: "viewer",
+  });
+  const archivedIdentity = await createTask(owner, {
+    title: `Archived project child ${unique}`,
+    projectId: project.id,
+  });
+  const archivedTask = await updateTask(owner, archivedIdentity.id, {
+    version: (await getTask(owner, archivedIdentity.id)).version,
+    archived: true,
+  });
+  const deletedIdentity = await createTask(owner, {
+    title: `Separately deleted project child ${unique}`,
+    projectId: project.id,
+  });
+  const deletedChild = await getTask(owner, deletedIdentity.id);
+  await createComment(owner, task.id, {
+    body: "Project comment one",
+    idempotencyKey: `project-comment-a-${unique}`,
+  });
+  await createComment(owner, deletedChild.id, {
+    body: "Project comment two on separately deleted Task",
+    idempotencyKey: `project-comment-b-${unique}`,
+  });
+  const firstAttachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("project object one"),
+    filename: "project-one.txt",
+    claimedMediaType: "text/plain",
+    idempotencyKey: `project-object-a-${unique}`,
+  });
+  const secondAttachment = await createAttachment(owner, deletedChild.id, {
+    body: new TextEncoder().encode("project object two"),
+    filename: "project-two.txt",
+    claimedMediaType: "text/plain",
+    idempotencyKey: `project-object-b-${unique}`,
+  });
+  const deletedTask = await deleteEntity(
+    owner,
+    "task",
+    deletedChild.id,
+    (await getTask(owner, deletedChild.id)).version,
+  );
+  const secondRelease = await createRelease(owner, {
+    name: `Separately deleted Release ${unique}`,
+    projectId: project.id,
+  });
+  const deletedRelease = await deleteEntity(
+    owner,
+    "release",
+    secondRelease.id,
+    secondRelease.version,
+  );
+  const secondView = await createSavedView(owner, {
+    name: `Separately deleted View ${unique}`,
+    scopeProjectId: project.id,
+    query: { projectId: project.id },
+  });
+  const deletedView = await deleteEntity(
+    owner,
+    "saved_view",
+    secondView.id,
+    secondView.version,
+  );
+  const globalView = await createSavedView(owner, {
+    name: `Global project reference ${unique}`,
+    query: { projectId: project.id },
+  });
+  const liveBeforeDelete = await getSnapshot(owner);
+  const projectBeforeDelete = liveBeforeDelete.projects.find((item) => item.id === project.id)!;
+  const rankBeforeDelete = (await database.prepare(
+    "SELECT rank FROM tasks WHERE id = ?",
+  ).bind(archivedTask.id).first<{ rank: number }>())!.rank;
+  const statusDefinitionsBefore = await database.prepare(
+    "SELECT COUNT(*) AS count FROM workflow_statuses WHERE owner_user_id = ?",
+  ).bind(owner.id).first<{ count: number }>();
+  const deletedProject = await deleteEntity(
+    owner,
+    "project",
+    project.id,
+    projectBeforeDelete.version,
+  );
+  const preview = await getDeletionPreview(
+    owner,
+    "project",
+    project.id,
+    deletedProject.version,
+  );
+  assert.deepEqual(preview.impact, {
+    tasks: 3,
+    releases: 2,
+    savedViews: 2,
+    comments: 2,
+    attachments: 2,
+    releaseMemberships: 0,
+  });
+  assert.deepEqual((await queryTaskSummaries(owner, {
+    surface: `view:${globalView.id}`,
+    query: globalView.query,
+  })).taskIds, []);
+  await restoreEntity(owner, "project", project.id, deletedProject.version);
+  const restoredSnapshot = await getSnapshot(owner);
+  const restoredProject = restoredSnapshot.projects.find((item) => item.id === project.id)!;
+  assert.equal(restoredProject.taskCode, projectBeforeDelete.taskCode);
+  assert.equal(restoredProject.taskSequence, projectBeforeDelete.taskSequence);
+  assert.equal(
+    (await database.prepare("SELECT rank FROM tasks WHERE id = ?").bind(archivedTask.id)
+      .first<{ rank: number }>())!.rank,
+    rankBeforeDelete,
+  );
+  assert.equal(
+    (await database.prepare(
+      "SELECT COUNT(*) AS count FROM workflow_statuses WHERE owner_user_id = ?",
+    ).bind(owner.id).first<{ count: number }>())!.count,
+    statusDefinitionsBefore!.count,
+  );
+  assert.equal(
+    (await getSnapshot(editor)).projects.find((item) => item.id === project.id)?.accessRole,
+    "editor",
+  );
+  assert.equal(
+    (await getSnapshot(viewer)).projects.find((item) => item.id === project.id)?.accessRole,
+    "viewer",
+  );
+  assert.equal((await listRecentlyDeleted(owner)).items.some(
+    (item) => item.id === deletedTask.id,
+  ), true);
+  assert.equal((await listRecentlyDeleted(owner)).items.some(
+    (item) => item.id === deletedRelease.id,
+  ), true);
+  assert.equal((await listRecentlyDeleted(owner)).items.some(
+    (item) => item.id === deletedView.id,
+  ), true);
+  assert.deepEqual(new Set((await queryTaskSummaries(owner, {
+    surface: `view:${globalView.id}`,
+    query: globalView.query,
+  })).taskIds), new Set([task.id]));
+
+  await database.batch([
+    database.prepare(
+      `INSERT INTO access_grants
+       (id, resource_type, resource_id, owner_user_id, grantee_user_id,
+        granted_by_user_id, permission)
+       VALUES (?, 'task', ?, ?, ?, ?, 'editor')`,
+    ).bind(`legacy-task-grant-${unique}`, task.id, owner.id, editor.id, owner.id),
+    database.prepare(
+      `INSERT INTO access_grants
+       (id, resource_type, resource_id, owner_user_id, grantee_user_id,
+        granted_by_user_id, permission)
+       VALUES (?, 'saved_view', ?, ?, ?, ?, 'editor')`,
+    ).bind(`legacy-view-grant-${unique}`, view.id, owner.id, editor.id, owner.id),
+  ]);
+  const ownerBeforeSecondDelete = await getSnapshot(owner);
+  const editorBeforeSecondDelete = await getSnapshot(editor);
+  const viewerBeforeSecondDelete = await getSnapshot(viewer);
+  const deletedAgain = await deleteEntity(
+    owner,
+    "project",
+    project.id,
+    restoredProject.version,
+  );
+  assert.equal(
+    (await getWorkspaceSync(owner, ownerBeforeSecondDelete.syncCursor!)).resetRequired,
+    true,
+  );
+  assert.equal(
+    (await getWorkspaceSync(editor, editorBeforeSecondDelete.syncCursor!)).resetRequired,
+    true,
+  );
+  assert.equal(
+    (await getWorkspaceSync(viewer, viewerBeforeSecondDelete.syncCursor!)).resetRequired,
+    true,
+  );
+  const failingBucket = new Proxy(bucket, {
+    get(target, property) {
+      if (property === "delete") {
+        return async () => { throw new Error("synthetic Project R2 delete failure"); };
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  configureRuntimeEnvironment({ DB: database, ATTACHMENTS: failingBucket });
+  await assert.rejects(
+    purgeEntity(
+      owner,
+      "project",
+      project.id,
+      deletedAgain.version,
+      PERMANENT_DELETE_CONFIRMATION,
+    ),
+    /synthetic Project R2 delete failure/,
+  );
+  assert.ok(await database.prepare("SELECT id FROM projects WHERE id = ?").bind(project.id).first());
+  await assert.rejects(
+    restoreEntity(owner, "project", project.id, deletedAgain.version),
+    /permanent deletion has started/,
+  );
+  configureRuntimeEnvironment({ DB: database, ATTACHMENTS: bucket });
+  await purgeEntity(
+    owner,
+    "project",
+    project.id,
+    deletedAgain.version,
+    PERMANENT_DELETE_CONFIRMATION,
+  );
+  assert.equal(await database.prepare("SELECT id FROM projects WHERE id = ?").bind(project.id).first(), null);
+  assert.equal(await database.prepare("SELECT id FROM tasks WHERE project_id = ?").bind(project.id).first(), null);
+  assert.equal(await database.prepare("SELECT id FROM releases WHERE project_id = ?").bind(project.id).first(), null);
+  assert.equal(await database.prepare("SELECT id FROM saved_views WHERE scope_project_id = ?").bind(project.id).first(), null);
+  assert.equal((await database.prepare(
+    `SELECT COUNT(*) AS count FROM access_grants
+     WHERE (resource_type = 'project' AND resource_id = ?)
+        OR (resource_type = 'task' AND resource_id IN (?, ?))
+        OR (resource_type = 'saved_view' AND resource_id IN (?, ?))`,
+  ).bind(project.id, task.id, deletedChild.id, view.id, secondView.id)
+    .first<{ count: number }>())!.count, 0);
+  assert.equal(await bucket.head(firstAttachment.objectKey), null);
+  assert.equal(await bucket.head(secondAttachment.objectKey), null);
+  assert.deepEqual((await queryTaskSummaries(owner, {
+    surface: `view:${globalView.id}`,
+    query: globalView.query,
+  })).taskIds, []);
+  assert.equal((await getSnapshot(editor)).projects.some((item) => item.id === project.id), false);
+  assert.equal((await getSnapshot(viewer)).projects.some((item) => item.id === project.id), false);
+  assert.ok(release.id);
+});
+
+test("Saved View lifecycle preserves formula, display, scope, identity, and ACL without touching Tasks", async () => {
+  const editor = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: `view-delete-editor-${unique}`,
+    displayName: "View Delete Editor",
+    email: `view-delete-editor-${unique}@example.test`,
+  });
+  const viewer = await getOrCreateUser({
+    ...ownerActor,
+    providerAccountKey: `view-delete-viewer-${unique}`,
+    displayName: "View Delete Viewer",
+    email: `view-delete-viewer-${unique}@example.test`,
+  });
+  const { task } = await fixture("view-lifecycle");
+  const globalView = await createSavedView(owner, {
+    name: `Global deletion view ${unique}`,
+    query: { priorities: ["high", "urgent"] },
+    display: { layout: "board", groupBy: "priority", orderBy: "updated" },
+  });
+  await grantAccess(owner, {
+    resourceType: "saved_view",
+    resourceId: globalView.id,
+    email: editor.email,
+    permission: "editor",
+  });
+  await grantAccess(owner, {
+    resourceType: "saved_view",
+    resourceId: globalView.id,
+    email: viewer.email,
+    permission: "viewer",
+  });
+  const baselineTaskCount = (await getSnapshot(owner)).tasks.length;
+  const editorView = (await getSnapshot(editor)).views.find((item) => item.id === globalView.id)!;
+  const deleted = await deleteEntity(
+    editor,
+    "saved_view",
+    globalView.publicId,
+    editorView.version,
+  );
+  await assert.rejects(
+    restoreEntity(viewer, "saved_view", globalView.id, deleted.version),
+    PermissionError,
+  );
+  await restoreEntity(editor, "saved_view", globalView.id, deleted.version);
+  const restored = (await getSnapshot(owner)).views.find((item) => item.id === globalView.id)!;
+  assert.equal(restored.publicId, globalView.publicId);
+  assert.equal(restored.ownerUserId, globalView.ownerUserId);
+  assert.equal(restored.name, globalView.name);
+  assert.equal(restored.scopeProjectId, null);
+  assert.deepEqual(restored.query, globalView.query);
+  assert.deepEqual(restored.display, globalView.display);
+  assert.equal((await getSnapshot(owner)).tasks.length, baselineTaskCount);
+  assert.equal((await getTask(owner, task.id)).id, task.id);
+
+  const deletedAgain = await deleteEntity(
+    editor,
+    "saved_view",
+    globalView.id,
+    restored.version,
+  );
+  await assert.rejects(
+    purgeEntity(
+      editor,
+      "saved_view",
+      globalView.id,
+      deletedAgain.version,
+      PERMANENT_DELETE_CONFIRMATION,
+    ),
+    PermissionError,
+  );
+  await purgeEntity(
+    owner,
+    "saved_view",
+    globalView.id,
+    deletedAgain.version,
+    PERMANENT_DELETE_CONFIRMATION,
+  );
+  assert.equal(await database.prepare(
+    "SELECT id FROM saved_views WHERE id = ?",
+  ).bind(globalView.id).first(), null);
+  assert.equal((await database.prepare(
+    `SELECT COUNT(*) AS count FROM access_grants
+     WHERE resource_type = 'saved_view' AND resource_id = ?`,
+  ).bind(globalView.id).first<{ count: number }>())!.count, 0);
+  assert.equal((await getSnapshot(owner)).tasks.length, baselineTaskCount);
+});
+
+test("Task purge detaches children, removes owned data, and never reuses its identifier sequence", async () => {
+  const { project, task } = await fixture("task-purge-complete");
+  const childIdentity = await createTask(owner, {
+    title: `Purge child ${unique}`,
+    projectId: project.id,
+  });
+  const child = await setTaskParent(owner, childIdentity.id, {
+    version: (await getTask(owner, childIdentity.id)).version,
+    parentTaskId: task.id,
+  });
+  const relatedIdentity = await createTask(owner, {
+    title: `Purge relation peer ${unique}`,
+    projectId: project.id,
+  });
+  const related = await getTask(owner, relatedIdentity.id);
+  await createTaskRelation(owner, task.id, {
+    targetTaskId: related.id,
+    type: "blocks",
+    direction: "outgoing",
+    idempotencyKey: `purge-relation-${unique}`,
+  });
+  await createComment(owner, task.id, {
+    body: "Purged Task comment",
+    idempotencyKey: `purge-comment-${unique}`,
+  });
+  const attachment = await createAttachment(owner, task.id, {
+    body: new TextEncoder().encode("purged Task object"),
+    filename: "purged-task.txt",
+    claimedMediaType: "text/plain",
+    idempotencyKey: `purge-object-${unique}`,
+  });
+  const current = await getTask(owner, task.id);
+  const deleted = await deleteEntity(owner, "task", task.id, current.version);
+  await purgeEntity(
+    owner,
+    "task",
+    task.id,
+    deleted.version,
+    PERMANENT_DELETE_CONFIRMATION,
+  );
+  const detachedChild = await getTask(owner, child.id);
+  assert.equal(detachedChild.parentTaskId, null);
+  assert.equal(detachedChild.version, child.version + 1);
+  assert.equal((await getTaskDetail(owner, related.id)).relations.length, 0);
+  assert.equal(await database.prepare("SELECT id FROM comments WHERE task_id = ?").bind(task.id).first(), null);
+  assert.equal(await database.prepare("SELECT id FROM activity_events WHERE task_id = ?").bind(task.id).first(), null);
+  assert.equal(await database.prepare("SELECT id FROM attachments WHERE task_id = ?").bind(task.id).first(), null);
+  assert.equal(await bucket.head(attachment.objectKey), null);
+  const replacementIdentity = await createTask(owner, {
+    title: `After purge sequence ${unique}`,
+    projectId: project.id,
+  });
+  const replacement = await getTask(owner, replacementIdentity.id);
+  assert.equal(replacement.sequenceNumber > task.sequenceNumber, true);
+  assert.notEqual(replacement.identifier, task.identifier);
 });

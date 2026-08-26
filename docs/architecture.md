@@ -418,16 +418,27 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    predicate, поэтому child с собственным deletion tuple сохраняет его. Restore
    Project очищает только root; отдельно deleted child остаётся вне ordinary
    reads. Permanent Project purge получает counts, owner confirmation и один
-   cascade plan.
+   cascade plan. Preview считает archived и отдельно deleted descendants по
+   физическим rows. Purge читает distinct subtree object keys и удаляет их из
+   R2 bounded chunks; только затем D1 cascade очищает children и Project grants,
+   включая legacy direct Task/scoped-View grants.
 4. Release delete не меняет `tasks.release_id`; ordinary Task projection и
    filter executor трактуют deleted Release как неактивную membership. Restore
    снова разрешает тот же ref. Permanent Release purge одной D1 transaction
    очищает ссылки Tasks и удаляет Release. SavedView delete не меняет Tasks;
    permanent purge удаляет только View и direct grants.
+   Recoverable preview `GET /api/releases/{id}/deletion-preview?version=…`
+   возвращает Editor+ только active Release status и полный stored membership
+   count. DELETE released Release требует `confirmReleasedComposition=true` и
+   повторяет CAS, поэтому preview не является разрешением после version race.
 5. Filter compiler разрешает catalog refs после ACL и active/deletion scope.
    Deleted, purged или недоступный ref остаётся unresolved predicate с no
    matches, а не удаляется из AST; suggestions и errors не возвращают его имя
    или existence detail.
+   SavedView update tolerates missing Release id только если exact id уже был в
+   stored query и scope остаётся прежним; unknown infrastructure errors не
+   превращаются в inert refs. Remove predicate разрешён, но Release purge не
+   выполняет rewrite AST.
 6. Current Owner может permanent purge после отдельного confirmation. Для
    metadata-only entity финальная D1 transaction идемпотентна. Для Task/Project
    operational `entity_purge_jobs` сначала atomically claims bounded work,
@@ -447,6 +458,13 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    сохраняемые Task memberships. После restore/purge клиент сбрасывает
    независимо загруженные catalog pages и выполняет authoritative bootstrap,
    поэтому рабочие surfaces, sidebar и корзина сходятся к одному состоянию.
+9. Task lifecycle сохраняет internal hierarchy edge. Пока parent deleted,
+   ordinary child summary маскирует `parent_task_id`; delete/restore отдельно
+   публикуют child Task upsert/detail и relation-peer detail invalidations без
+   child version bump. Detach/reparent сравнивает stored edge, а restore parent
+   никогда не восстанавливает edge поверх последующего user mutation. Task
+   purge уже физически отсоединяет оставшихся children и повышает только их
+   versions.
 
 ## API-принципы
 
@@ -884,8 +902,10 @@ User preferences.
   predicates и live smoke.
 - Deletion tests покрывают tuple integrity, Editor/Viewer/Owner boundary,
   restore cutoff, project shadow и отдельно deleted child, lossless Release
-  membership, inert SavedView refs, sync remove/upsert, owner-only confirmation
-  и повторяемый R2-first purge после partial failure.
+  membership, released-delete preview/CAS, inert и safely editable stored
+  SavedView refs, child/relation invalidations, project grant/reset fanout,
+  sync remove/upsert, owner-only confirmation и повторяемый R2-first purge после
+  partial multi-object failure.
 - UI tests проверяют одинаковую grouping composition list/board,
   selection/bulk actions, keyboard controls, Peek, drag rollback и сохранение
   views; Miniflare/D1 integration tests дополнительно проходят repository ACL,

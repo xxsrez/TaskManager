@@ -1079,7 +1079,7 @@ export async function purgeAttachmentGarbage(now = new Date()) {
 export async function purgeTaskAttachmentObjects(taskId: string) {
   const rows = await getD1()
     .prepare(
-      `SELECT COALESCE(sf.object_key, a.object_key) AS object_key
+      `SELECT DISTINCT COALESCE(sf.object_key, a.object_key) AS object_key
        FROM attachments a
        LEFT JOIN stored_files sf ON sf.id = a.stored_file_id
        WHERE a.task_id = ?`,
@@ -1088,6 +1088,28 @@ export async function purgeTaskAttachmentObjects(taskId: string) {
     .all<{ object_key: string }>();
   const bucket = getAttachmentBucket();
   for (const row of rows.results) await bucket.delete(row.object_key);
+  return { deletedObjects: rows.results.length };
+}
+
+export async function purgeProjectAttachmentObjects(projectId: string) {
+  const rows = await getD1()
+    .prepare(
+      `SELECT DISTINCT COALESCE(sf.object_key, a.object_key) AS object_key
+       FROM attachments a
+       JOIN tasks t ON t.id = a.task_id
+       LEFT JOIN stored_files sf ON sf.id = a.stored_file_id
+       WHERE t.project_id = ?
+       ORDER BY object_key`,
+    )
+    .bind(projectId)
+    .all<{ object_key: string }>();
+  const bucket = getAttachmentBucket();
+  const chunkSize = 1_000;
+  for (let offset = 0; offset < rows.results.length; offset += chunkSize) {
+    await bucket.delete(
+      rows.results.slice(offset, offset + chunkSize).map((row) => row.object_key),
+    );
+  }
   return { deletedObjects: rows.results.length };
 }
 

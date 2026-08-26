@@ -238,6 +238,13 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   отображается как активное membership. Permanent purge Release атомарно
   очищает оставшиеся Task links. SavedView delete/restore не меняет Tasks и
   сохраняет base query, Display и scope.
+- Delete/restore Task не каскадирует subtasks. Пока parent deleted, ordinary
+  child projection скрывает parent ref; detach/reparent использует внутренний
+  stored ref и сохраняется после restore. Parent lifecycle публикует child
+  summary/detail и relation-detail invalidations без ложного повышения child
+  version. Permanent Task purge отсоединяет оставшихся children, удаляет
+  relations/Comments/Activity/Attachments после R2 cleanup и не возвращает
+  identifier sequence в allocator.
 
 ## 5. Задачи
 
@@ -686,6 +693,10 @@ immutable ID и может группировать Tasks по значения�
   membership не участвует в рабочих views/pickers; restore возвращает её без
   ручного переназначения, а owner-only permanent purge очищает `release_id` у
   Tasks до удаления Release row.
+- До recoverable delete Release UI получает authoritative status и count всех
+  stored Task memberships, включая archived и deleted Tasks. Delete Release со
+  status `released` требует отдельный `confirmReleasedComposition=true`; preview
+  version и DELETE CAS исключают подтверждение устаревшего состава.
 
 ## 9. Views и фильтры
 
@@ -705,6 +716,10 @@ immutable ID и может группировать Tasks по значения�
   deleted, purged или недоступную сущность остаются unresolved/inert и дают
   пустое условие, а не молча удаляются и не расширяют результат. После
   доступного restore тот же immutable ref снова разрешается.
+- Update существующего SavedView может сохранить или удалить уже stored missing
+  Release ref только при неизменном scope, поэтому rename остаётся возможным.
+  Новый missing ref и scope move с таким ref отклоняются; permanent Release
+  purge никогда не удаляет и не переписывает predicate в SavedView AST.
 - View может иметь global scope либо явный scope одного Project.
 - Project-scoped View имеет обязательный `scope_project_id`, жёстко ограничен
   этим Project и наследует его role. Он не получает отдельный `AccessGrant`.

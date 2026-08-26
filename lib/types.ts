@@ -401,6 +401,18 @@ export type DeletionPreview = {
   impact: DeletionImpactCounts;
 };
 
+export type ReleaseDeletionPreview = {
+  type: "release";
+  id: string;
+  publicId: string;
+  displayName: string;
+  context: string;
+  version: number;
+  status: ReleaseStatus;
+  taskMemberships: number;
+  requiresReleasedCompositionConfirmation: boolean;
+};
+
 export type ViewFilterField =
   | "status"
   | "status_category"

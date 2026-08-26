@@ -2531,7 +2531,8 @@ export async function setTaskParent(
   if (parentTaskId === task.id) {
     throw new ValidationError("A Task cannot be its own parent");
   }
-  if (parentTaskId === task.parentTaskId) return task;
+  const storedParentTaskId = internalTaskParentId(task);
+  if (parentTaskId === storedParentTaskId) return task;
 
   if (parentTaskId) {
     const parent = await loadAccessibleTask(currentUser.id, parentTaskId);
@@ -2555,7 +2556,7 @@ export async function setTaskParent(
   }
 
   const now = new Date().toISOString();
-  const oldParentTaskId = task.parentTaskId;
+  const oldParentTaskId = storedParentTaskId;
   const db = getD1();
   const activity = activityEventStatement(db, currentUser, {
     taskId: task.id,
@@ -3143,6 +3144,7 @@ export async function moveTask(
     throw new ValidationError("Tasks cannot be moved to a canceled Project");
   }
 
+  const storedReleaseId = internalTaskReleaseId(task);
   const currentRelease = task.releaseId
     ? await loadAccessibleRelease(currentUser.id, task.releaseId)
     : null;
@@ -3155,7 +3157,7 @@ export async function moveTask(
     if (selectedRelease) requireContentEdit(selectedRelease.accessRole);
     assertReleaseProject(targetProject.id, selectedRelease?.projectId ?? null);
     releaseId = selectedRelease?.id ?? null;
-  } else if (task.releaseId) {
+  } else if (storedReleaseId) {
     throw new ValidationError(
       "Choose a Release in the target Project or explicitly clear the current Release",
     );
@@ -3190,7 +3192,7 @@ export async function moveTask(
     )
     .bind(task.id)
     .first<{ has_children: number }>();
-  if (task.parentTaskId || Number(hierarchy?.has_children ?? 0) === 1) {
+  if (internalTaskParentId(task) || Number(hierarchy?.has_children ?? 0) === 1) {
     throw new ValidationError(
       "Detach or reparent this Task hierarchy before moving it to another Project",
     );
@@ -3499,7 +3501,7 @@ export async function bulkMoveTasks(
   }
 
   const clearRelease = input.clearRelease === true;
-  if (movingTasks.some((task) => task.releaseId) && !clearRelease) {
+  if (movingTasks.some((task) => internalTaskReleaseId(task)) && !clearRelease) {
     throw new ValidationError("Confirm clearing incompatible Releases before moving Tasks");
   }
   const currentReleases = await Promise.all(
@@ -5333,7 +5335,14 @@ export async function updateSavedView(
   const display = Object.hasOwn(input, "display")
     ? validateViewDisplay(input.display)
     : view.display;
-  await validateSavedViewReferences(currentUser, query, display, nextScopeProject);
+  await validateSavedViewReferences(currentUser, query, display, nextScopeProject, {
+    allowedMissingReleaseIds: scopeChanged
+      ? new Set<string>()
+      : new Set(filterReferenceValues(
+          canonicalViewQuery(view.query).conditions,
+          "release",
+        )),
+  });
   const archivedAt = Object.hasOwn(input, "archived")
     ? input.archived === true
       ? view.archivedAt ?? new Date().toISOString()
@@ -5394,6 +5403,7 @@ async function validateSavedViewReferences(
   query: ViewQuery,
   display: import("./types").ViewDisplay,
   scopeProject: ProjectRecord | null,
+  options: { allowedMissingReleaseIds?: ReadonlySet<string> } = {},
 ) {
   const canonical = canonicalViewQuery(query);
   const snapshot = await getSnapshot(currentUser);
@@ -5409,15 +5419,30 @@ async function validateSavedViewReferences(
     throw new ValidationError("A project-scoped Saved View cannot filter outside its Project");
   }
   let projects: ProjectRecord[];
-  let releases: ReleaseRecord[];
+  let releaseCandidates: Array<ReleaseRecord | null>;
   try {
-    [projects, releases] = await Promise.all([
+    [projects, releaseCandidates] = await Promise.all([
       Promise.all(projectIds.map((id) => loadAccessibleProject(currentUser.id, id))),
-      Promise.all(releaseIds.map((id) => loadAccessibleRelease(currentUser.id, id))),
+      Promise.all(releaseIds.map(async (id) => {
+        try {
+          return await loadAccessibleRelease(currentUser.id, id);
+        } catch (error) {
+          if (error instanceof NotFoundError && options.allowedMissingReleaseIds?.has(id)) {
+            return null;
+          }
+          throw error;
+        }
+      })),
     ]);
-  } catch {
-    throw new ValidationError("Saved View project or release filter is inaccessible");
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      throw new ValidationError("Saved View project or release filter is inaccessible");
+    }
+    throw error;
   }
+  const releases = releaseCandidates.filter(
+    (release): release is ReleaseRecord => release !== null,
+  );
   if (scopeProject && releases.some((release) => release?.projectId !== scopeProject.id)) {
     throw new ValidationError("Saved View release must belong to its scoped Project");
   }
@@ -6379,6 +6404,10 @@ function mapTask(row: DbRow): TaskRecord {
 
 function internalTaskReleaseId(task: TaskRecord) {
   return internalTaskReferences.get(task)?.releaseId ?? task.releaseId;
+}
+
+function internalTaskParentId(task: TaskRecord) {
+  return internalTaskReferences.get(task)?.parentTaskId ?? task.parentTaskId;
 }
 
 function mapLabel(row: DbRow): LabelRecord {

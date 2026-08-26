@@ -302,6 +302,21 @@ SavedView deletion не меняет Tasks, query/display или scope. Deleted/
 его как unresolved условие без совпадений, чтобы query не расширился и не
 раскрыл existence metadata.
 
+Task deletion также не переписывает hierarchy: active child хранит прежний
+`parent_task_id`, но ordinary projection временно возвращает `null`. Delete и
+restore публикуют child summary/detail и relation-peer detail invalidations без
+повышения version child. Если child был detach/reparent, пока parent deleted,
+restore parent не откатывает это самостоятельное изменение. Только permanent
+Task purge окончательно очищает оставшиеся child links с versioned Task upsert;
+монотонный Project sequence при этом не уменьшается и identifier не переиспользуется.
+
+Permanent Project preview считает все физически хранимые Tasks, Releases,
+scoped SavedViews, Comments и Attachments, включая archived и отдельно deleted
+descendants. Project purge удаляет distinct R2 keys bounded chunks до D1
+cascade, затем очищает subtree grants, включая legacy direct Task/scoped-View
+grants. Ошибка R2 сохраняет tombstone и retry job; повторный запуск безопасно
+продолжает после уже удалённых objects.
+
 После cutoff bounded opportunistic maintenance может физически удалить row
 позже; точный wall-clock purge не гарантируется. Для Task/Project с native
 Attachments operational retry job сначала удаляет R2 originals и только затем
@@ -675,6 +690,10 @@ Release mutation требует current `version` и effective Project role `edi
 Recoverable Release delete не очищает `Task.release_id`; ordinary projections
 трактуют membership как недоступную, пока Release deleted. Restore возвращает
 её, permanent purge очищает links атомарно до удаления Release.
+Перед recoverable delete UI читает ACL-scoped authoritative status и полный
+stored membership count. Для current status `released` DELETE требует
+`confirmReleasedComposition=true`; preview и DELETE используют одну optimistic
+version, поэтому concurrent metadata/status change даёт conflict до mutation.
 
 ## LabelGroup
 
@@ -894,6 +913,10 @@ grants; Tasks, base query semantics и temporary URL layer не материал
     атомарно очищает links. SavedView delete/purge никогда не удаляет Tasks.
 29. Deleted/purged/недоступный filter ref не раскрывает identity и не удаляется
     из AST: unresolved condition возвращает no matches, а не расширенный query.
+    При update SavedView missing Release ref разрешён только когда тот же ref
+    уже присутствовал в stored query и scope не меняется: View можно rename или
+    удалить predicate, но нельзя добавить новый missing ref или перенести его в
+    другой scope. Purge Release никогда не переписывает SavedView AST.
 30. Logical backup schema `14` сохраняет deletion tuple четырёх entity types;
     legacy schemas `2`–`13` получают all-null tuple только после проверки
     исходного checksum. Operational purge jobs не входят в backup/restore.
