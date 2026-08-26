@@ -395,7 +395,10 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
 3. Любая Task mutation, меняющая membership выпущенного Release, требует
    `confirmReleasedComposition`. Repository проверяет current и target Release;
    Task update и Project move повторяют released-status guard в SQL, поэтому
-   concurrent lifecycle transition не создаёт скрытую смену состава.
+   concurrent lifecycle transition не создаёт скрытую смену состава. Проверка
+   использует сохранённый внутренний ref и продолжает действовать, пока
+   recoverably deleted Release скрыт из ordinary Task projection. Rank reorder
+   внутри видимой группы `No release` membership не меняет и сохраняет этот ref.
 4. Release update trigger публикует compact upsert в общий sync journal; sidebar,
    qualified names, list, filters и открытый overview принимают один
    authoritative record без reload. Agent Project/Release detail остаётся

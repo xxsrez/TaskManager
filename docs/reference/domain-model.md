@@ -690,6 +690,9 @@ Release mutation требует current `version` и effective Project role `edi
 Recoverable Release delete не очищает `Task.release_id`; ordinary projections
 трактуют membership как недоступную, пока Release deleted. Restore возвращает
 её, permanent purge очищает links атомарно до удаления Release.
+Изменение или очистка такой скрытой membership всё ещё проверяет сохранённый
+Release status и для `released` требует `confirmReleasedComposition`; обычная
+перестановка rank внутри видимой `No release` группы сохраняет внутренний ref.
 Перед recoverable delete UI читает ACL-scoped authoritative status и полный
 stored membership count. Для current status `released` DELETE требует
 `confirmReleasedComposition=true`; preview и DELETE используют одну optimistic

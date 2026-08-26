@@ -28,6 +28,7 @@ import {
   createRelease,
   createSavedView,
   createTask,
+  bulkMoveTasks,
   bulkUpdateTasks,
   getAdminOverview,
   getOrCreateUser,
@@ -37,6 +38,7 @@ import {
   grantAccess,
   moveTask,
   queryTaskSummaries,
+  reorderTask,
   setTaskParent,
   updateRelease,
   updateSavedView,
@@ -1018,6 +1020,207 @@ test("released Release delete is previewed and confirmed with CAS while membersh
     query: {},
   });
   assert.equal(predicateRemoved.query.releaseId, undefined);
+});
+
+test("hidden released membership stays confirmation-protected and reorder preserves its stored ref", async () => {
+  const { project, release, task } = await fixture("hidden-released-membership");
+  const alternateRelease = await createRelease(owner, {
+    name: `Alternate Release ${unique}`,
+    projectId: project.id,
+  });
+  const members = new Map<string, Awaited<ReturnType<typeof getTask>>>();
+  for (const title of [
+    "Hidden update clear",
+    "Hidden bulk clear",
+    "Hidden move",
+    "Hidden bulk move",
+    "Hidden reorder preserve",
+    "Hidden reorder change",
+  ]) {
+    const identity = await createTask(owner, {
+      title: `${title} ${unique}`,
+      projectId: project.id,
+      releaseId: release.id,
+    });
+    members.set(title, await getTask(owner, identity.id));
+  }
+  const unassignedNeighborIdentity = await createTask(owner, {
+    title: `Visible no-release neighbor ${unique}`,
+    projectId: project.id,
+  });
+  const alternateNeighborIdentity = await createTask(owner, {
+    title: `Alternate Release neighbor ${unique}`,
+    projectId: project.id,
+    releaseId: alternateRelease.id,
+  });
+  const unassignedNeighbor = await getTask(owner, unassignedNeighborIdentity.id);
+  const alternateNeighbor = await getTask(owner, alternateNeighborIdentity.id);
+  await createProject(owner, {
+    name: `Hidden membership move target ${unique}`,
+    taskCode: `HM${unique}`,
+  });
+  const targetProject = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === `Hidden membership move target ${unique}`,
+  )!;
+
+  const released = await updateRelease(owner, release.id, {
+    version: release.version,
+    status: "released",
+    confirmOpenTasks: true,
+  });
+  const deleted = await deleteEntity(
+    owner,
+    "release",
+    release.id,
+    released.version,
+    new Date(),
+    { confirmReleasedComposition: true },
+  );
+  for (const member of [task, ...members.values()]) {
+    assert.equal((await getTask(owner, member.id)).releaseId, null);
+  }
+
+  const updateMember = await getTask(owner, task.id);
+  await assert.rejects(
+    updateTask(owner, updateMember.id, {
+      version: updateMember.version,
+      releaseId: alternateRelease.id,
+    }),
+    /Confirm changing the composition of a released Release/,
+  );
+  const reassigned = await updateTask(owner, updateMember.id, {
+    version: updateMember.version,
+    releaseId: alternateRelease.id,
+    confirmReleasedComposition: true,
+  });
+  assert.equal(reassigned.releaseId, alternateRelease.id);
+
+  const updateClear = await getTask(owner, members.get("Hidden update clear")!.id);
+  await assert.rejects(
+    updateTask(owner, updateClear.id, {
+      version: updateClear.version,
+      releaseId: null,
+    }),
+    /Confirm changing the composition of a released Release/,
+  );
+  const updateCleared = await updateTask(owner, updateClear.id, {
+    version: updateClear.version,
+    releaseId: null,
+    confirmReleasedComposition: true,
+  });
+  assert.equal(updateCleared.releaseId, null);
+  assert.equal(
+    (await database.prepare("SELECT release_id FROM tasks WHERE id = ?")
+      .bind(updateCleared.id).first<{ release_id: string | null }>())!.release_id,
+    null,
+  );
+
+  const bulkClear = await getTask(owner, members.get("Hidden bulk clear")!.id);
+  const bulkClearInput = {
+    ids: [bulkClear.id],
+    versions: { [bulkClear.id]: bulkClear.version },
+    field: "releaseId",
+    value: null,
+  };
+  await assert.rejects(
+    bulkUpdateTasks(owner, bulkClearInput),
+    /Confirm changing the composition of a released Release/,
+  );
+  const [cleared] = await bulkUpdateTasks(owner, {
+    ...bulkClearInput,
+    confirmReleasedComposition: true,
+  });
+  assert.equal(cleared!.releaseId, null);
+  assert.equal(
+    (await database.prepare("SELECT release_id FROM tasks WHERE id = ?")
+      .bind(cleared!.id).first<{ release_id: string | null }>())!.release_id,
+    null,
+  );
+
+  const moveMember = await getTask(owner, members.get("Hidden move")!.id);
+  const moveInput = {
+    version: moveMember.version,
+    targetProjectId: targetProject.id,
+    releaseId: null,
+  };
+  await assert.rejects(
+    moveTask(owner, moveMember.id, moveInput),
+    /Confirm changing the composition of a released Release/,
+  );
+  const moved = await moveTask(owner, moveMember.id, {
+    ...moveInput,
+    confirmReleasedComposition: true,
+  });
+  assert.equal(moved.projectId, targetProject.id);
+  assert.equal(moved.releaseId, null);
+
+  const bulkMoveMember = await getTask(owner, members.get("Hidden bulk move")!.id);
+  const bulkMoveInput = {
+    ids: [bulkMoveMember.id],
+    versions: { [bulkMoveMember.id]: bulkMoveMember.version },
+    targetProjectId: targetProject.id,
+    clearRelease: true,
+  };
+  await assert.rejects(
+    bulkMoveTasks(owner, bulkMoveInput),
+    /Confirm changing the composition of a released Release/,
+  );
+  const [bulkMoved] = await bulkMoveTasks(owner, {
+    ...bulkMoveInput,
+    confirmReleasedComposition: true,
+  });
+  assert.equal(bulkMoved!.projectId, targetProject.id);
+  assert.equal(bulkMoved!.releaseId, null);
+
+  const reorderChange = await getTask(owner, members.get("Hidden reorder change")!.id);
+  const reorderChangeInput = {
+    version: reorderChange.version,
+    groupBy: "release",
+    expectedGroupValue: null,
+    targetGroupValue: alternateRelease.id,
+    previousTaskId: alternateNeighbor.id,
+    nextTaskId: null,
+  };
+  await assert.rejects(
+    reorderTask(owner, reorderChange.id, reorderChangeInput),
+    /Confirm changing the composition of a released Release/,
+  );
+  const reorderedToAlternate = await reorderTask(owner, reorderChange.id, {
+    ...reorderChangeInput,
+    confirmReleasedComposition: true,
+  });
+  assert.equal(reorderedToAlternate.releaseId, alternateRelease.id);
+
+  const reorderPreserve = await getTask(
+    owner,
+    members.get("Hidden reorder preserve")!.id,
+  );
+  const reorderedWithinVisibleGroup = await reorderTask(owner, reorderPreserve.id, {
+    version: reorderPreserve.version,
+    groupBy: "release",
+    expectedGroupValue: null,
+    targetGroupValue: null,
+    previousTaskId: unassignedNeighbor.id,
+    nextTaskId: null,
+  });
+  assert.equal(reorderedWithinVisibleGroup.releaseId, null);
+  assert.equal(reorderedWithinVisibleGroup.version, reorderPreserve.version + 1);
+  assert.equal(
+    (await database.prepare("SELECT release_id FROM tasks WHERE id = ?")
+      .bind(reorderPreserve.id).first<{ release_id: string | null }>())!.release_id,
+    release.id,
+  );
+
+  const updateActivity = (await listTaskActivity(owner, reassigned.id, { limit: 5 }))
+    .events.find((event) => event.eventType === "task_updated");
+  const reorderActivity = (
+    await listTaskActivity(owner, reorderedToAlternate.id, { limit: 5 })
+  ).events.find((event) => event.eventType === "task_updated");
+  assert.equal(JSON.stringify(updateActivity?.payload).includes(release.id), false);
+  assert.equal(JSON.stringify(reorderActivity?.payload).includes(release.id), false);
+
+  await restoreEntity(owner, "release", release.id, deleted.version);
+  assert.equal((await getTask(owner, reorderPreserve.id)).releaseId, release.id);
 });
 
 test("Project shadow restore preserves its whole subtree and purge removes R2 plus legacy grants", async () => {

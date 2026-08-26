@@ -2694,8 +2694,8 @@ export async function updateTask(
       : null;
     if (selectedRelease) requireContentEdit(selectedRelease.accessRole);
     assertReleaseProject(projectId, selectedRelease?.projectId ?? null);
-    const currentRelease = task.releaseId
-      ? await loadAccessibleRelease(currentUser.id, task.releaseId)
+    const currentRelease = storedReleaseId
+      ? await loadAccessibleStoredRelease(currentUser.id, storedReleaseId)
       : null;
     assertReleasedCompositionChange(currentRelease, selectedRelease, input);
     releaseId = selectedRelease?.id ?? null;
@@ -2761,6 +2761,13 @@ export async function updateTask(
     ["rank", task.rank, rank],
     ["archivedAt", task.archivedAt, archivedAt],
   ]);
+  if (
+    storedReleaseId !== task.releaseId &&
+    Object.hasOwn(changes, "releaseId")
+  ) {
+    // The recoverably deleted Release stays opaque in ordinary Task Activity.
+    changes.releaseId = { before: task.releaseId, after: releaseId };
+  }
   if (Object.keys(changes).length === 0) return task;
   if (Object.hasOwn(changes, "description")) {
     changes.description = {
@@ -2875,6 +2882,7 @@ export async function reorderTask(
   let assigneeUserId = task.assigneeUserId;
   const storedReleaseId = internalTaskReleaseId(task);
   let releaseId = storedReleaseId;
+  let selectedRelease: ReleaseRecord | null = null;
   if (groupBy === "status") {
     statusId = targetGroupValue!;
     await loadStatus(task.ownerUserId, statusId);
@@ -2884,16 +2892,18 @@ export async function reorderTask(
     assigneeUserId = targetGroupValue;
     await assertTaskAssigneeAccess(assigneeUserId, task.ownerUserId, task.projectId, task.id);
   } else if (groupBy === "release") {
-    const currentRelease = task.releaseId
-      ? await loadAccessibleRelease(currentUser.id, task.releaseId)
-      : null;
-    const targetRelease = targetGroupValue
-      ? await loadAccessibleRelease(currentUser.id, targetGroupValue)
-      : null;
-    if (targetRelease) requireContentEdit(targetRelease.accessRole);
-    assertReleaseProject(task.projectId, targetRelease?.projectId ?? null);
-    assertReleasedCompositionChange(currentRelease, targetRelease, input);
-    releaseId = targetRelease?.id ?? null;
+    if (targetGroupValue !== task.releaseId) {
+      const currentRelease = storedReleaseId
+        ? await loadAccessibleStoredRelease(currentUser.id, storedReleaseId)
+        : null;
+      selectedRelease = targetGroupValue
+        ? await loadAccessibleRelease(currentUser.id, targetGroupValue)
+        : null;
+      if (selectedRelease) requireContentEdit(selectedRelease.accessRole);
+      assertReleaseProject(task.projectId, selectedRelease?.projectId ?? null);
+      assertReleasedCompositionChange(currentRelease, selectedRelease, input);
+      releaseId = selectedRelease?.id ?? null;
+    }
   }
 
   const previousTaskId = optionalTaskNeighbor(input.previousTaskId);
@@ -2974,6 +2984,13 @@ export async function reorderTask(
     ["releaseId", storedReleaseId, releaseId],
     ["rank", task.rank, rank],
   ]);
+  if (
+    storedReleaseId !== task.releaseId &&
+    Object.hasOwn(changes, "releaseId")
+  ) {
+    // A hidden Release may protect composition without becoming visible again.
+    changes.releaseId = { before: task.releaseId, after: releaseId };
+  }
   if (!Object.keys(changes).length) return task;
   const activity = activityEventStatement(db, currentUser, {
     taskId: task.id,
@@ -3049,8 +3066,8 @@ export async function reorderTask(
         currentUser.id,
         assigneeUserId,
         assigneeUserId,
-        releaseId,
-        releaseId,
+        selectedRelease?.id ?? null,
+        selectedRelease?.id ?? null,
         input.confirmReleasedComposition === true ? 1 : 0,
         releaseId,
         releaseId,
@@ -3104,12 +3121,31 @@ function taskGroupSql(
   value: string | null,
 ): { sql: string; bindings: unknown[] } {
   if (groupBy === "none") return { sql: "1 = 1", bindings: [] };
+  if (groupBy === "release") {
+    const activeRelease = `${alias}_active_release`;
+    return value === null
+      ? {
+          sql: `(${alias}.release_id IS NULL OR NOT EXISTS (
+            SELECT 1 FROM releases ${activeRelease}
+            WHERE ${activeRelease}.id = ${alias}.release_id
+              AND ${activeRelease}.deleted_at IS NULL
+          ))`,
+          bindings: [],
+        }
+      : {
+          sql: `(${alias}.release_id = ? AND EXISTS (
+            SELECT 1 FROM releases ${activeRelease}
+            WHERE ${activeRelease}.id = ${alias}.release_id
+              AND ${activeRelease}.deleted_at IS NULL
+          ))`,
+          bindings: [value],
+        };
+  }
   const column = {
     status: "status_id",
     priority: "priority",
     assignee: "assignee_user_id",
     project: "project_id",
-    release: "release_id",
   }[groupBy];
   return value === null
     ? { sql: `${alias}.${column} IS NULL`, bindings: [] }
@@ -3147,8 +3183,8 @@ export async function moveTask(
   }
 
   const storedReleaseId = internalTaskReleaseId(task);
-  const currentRelease = task.releaseId
-    ? await loadAccessibleRelease(currentUser.id, task.releaseId)
+  const currentRelease = storedReleaseId
+    ? await loadAccessibleStoredRelease(currentUser.id, storedReleaseId)
     : null;
   let releaseId: string | null;
   let selectedRelease: ReleaseRecord | null = null;
@@ -3507,8 +3543,8 @@ export async function bulkMoveTasks(
     throw new ValidationError("Confirm clearing incompatible Releases before moving Tasks");
   }
   const currentReleases = await Promise.all(
-    [...new Set(movingTasks.map((task) => task.releaseId).filter((id): id is string => Boolean(id)))]
-      .map((releaseId) => loadAccessibleRelease(currentUser.id, releaseId)),
+    [...new Set(movingTasks.map(internalTaskReleaseId).filter((id): id is string => Boolean(id)))]
+      .map((releaseId) => loadAccessibleStoredRelease(currentUser.id, releaseId)),
   );
   if (
     currentReleases.some((release) => release.status === "released") &&
@@ -3746,9 +3782,16 @@ export async function bulkUpdateTasks(
     throw new ValidationError("Selected Release is not compatible with every Task Project");
   }
   if (field === "releaseId") {
+    const currentReleases = new Map(
+      (await Promise.all(
+        [...new Set(tasks.map(internalTaskReleaseId).filter((id): id is string => Boolean(id)))]
+          .map((releaseId) => loadAccessibleStoredRelease(currentUser.id, releaseId)),
+      )).map((release) => [release.id, release] as const),
+    );
     for (const task of tasks) {
-      const currentRelease = task.releaseId
-        ? await loadAccessibleRelease(currentUser.id, task.releaseId)
+      const storedReleaseId = internalTaskReleaseId(task);
+      const currentRelease = storedReleaseId
+        ? currentReleases.get(storedReleaseId) ?? null
         : null;
       assertReleasedCompositionChange(currentRelease, nextRelease, input);
     }
@@ -3899,7 +3942,7 @@ export async function bulkUpdateTasks(
         },
       };
     } else {
-      if (task.releaseId === nextRelease?.id) continue;
+      if (internalTaskReleaseId(task) === nextRelease?.id) continue;
       update = db
         .prepare(
           `UPDATE tasks SET release_id = ?, version = version + 1, updated_at = ?
@@ -5999,6 +6042,26 @@ export async function loadAccessibleRelease(userId: string, releaseId: string) {
     .bind(userId, userId, releaseId, releaseId)
     .first<DbRow>();
   if (!row) throw new NotFoundError("Release not found");
+  return mapRelease(row);
+}
+
+async function loadAccessibleStoredRelease(userId: string, releaseId: string) {
+  const row = await getD1()
+    .prepare(
+      `WITH scoped AS (
+         SELECT r.*,
+           ${projectAccessRoleSql("p")} AS access_role
+         FROM releases r JOIN projects p ON p.id = r.project_id
+         WHERE p.deleted_at IS NULL AND r.id = ?
+       ) SELECT * FROM scoped WHERE access_role IS NOT NULL`,
+    )
+    .bind(userId, userId, releaseId)
+    .first<DbRow>();
+  if (!row) {
+    throw new ConflictError(
+      "Task Release or Project access changed before the mutation",
+    );
+  }
   return mapRelease(row);
 }
 
