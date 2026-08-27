@@ -566,6 +566,106 @@ test("Project lifecycle surfaces remain bounded and touchable on mobile", () => 
   assert.match(taskTracker, /Leaving Released clears the server release timestamp/);
 });
 
+test("filter count badges have stable centered geometry for one or multiple digits", () => {
+  const badge = declarations(".filter-count");
+  assert.match(badge, /min-width:\s*16px\s*;/);
+  assert.match(badge, /height:\s*16px\s*;/);
+  assert.match(badge, /padding:\s*0\s+4px\s*;/);
+  assert.match(badge, /line-height:\s*16px\s*;/);
+  assert.match(badge, /place-items:\s*center\s*;/);
+  assert.match(badge, /font-variant-numeric:\s*tabular-nums\s*;/);
+  assert.doesNotMatch(badge, /transform|translate/);
+});
+
+test("filter property search owns one focus ring instead of inheriting a nested text field", () => {
+  const search = declarations(".filter-property-search");
+  assert.match(search, /min-height:\s*34px\s*;/);
+  assert.match(search, /cursor:\s*text\s*;/);
+  assert.match(
+    css,
+    /\.filter-property-search:focus-within\s*\{[^}]*border-color:[^}]*box-shadow:/,
+  );
+  const input = declarations(".filter-property-search input");
+  assert.match(input, /height:\s*auto\s*;/);
+  assert.match(input, /padding:\s*0\s*;/);
+  assert.match(input, /border:\s*0\s*;/);
+  assert.match(input, /box-shadow:\s*none\s*;/);
+  assert.match(
+    css,
+    /\.form-stack \.filter-property-search input:focus\s*\{[^}]*border:\s*0\s*;[^}]*box-shadow:\s*none\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.filter-property-search\s*\{[^}]*min-height:\s*40px\s*;/,
+  );
+});
+
+test("form stacks leave checkboxes to compact display-control geometry", () => {
+  assert.match(
+    css,
+    /\.form-stack input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\)/,
+  );
+  assert.doesNotMatch(
+    css,
+    /\.form-stack input,\s*\.form-stack select,\s*\.form-stack textarea/,
+  );
+  const checkbox = declarations('.display-properties input[type="checkbox"], .display-checkbox input[type="checkbox"]');
+  assert.match(checkbox, /width:\s*16px\s*;/);
+  assert.match(checkbox, /height:\s*16px\s*;/);
+  assert.match(checkbox, /padding:\s*0\s*;/);
+  assert.match(checkbox, /box-shadow:\s*none\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.display-properties label,\s*\.display-checkbox\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+});
+
+test("Edit view keeps a fixed shell while only its body scrolls", () => {
+  const dialog = declarations(".view-dialog");
+  assert.match(dialog, /display:\s*grid\s*;/);
+  assert.match(dialog, /grid-template-rows:\s*minmax\(0,\s*1fr\)\s*;/);
+  assert.match(dialog, /overflow:\s*hidden\s*;/);
+  const form = declarations(".view-dialog > form");
+  assert.match(form, /grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*;/);
+  assert.match(form, /min-height:\s*0\s*;/);
+  assert.match(form, /overflow:\s*hidden\s*;/);
+  const body = declarations(".view-dialog-body, .view-dialog > form > .form-stack");
+  assert.match(body, /min-height:\s*0\s*;/);
+  assert.match(body, /overflow-y:\s*auto\s*;/);
+  assert.match(body, /overscroll-behavior:\s*contain\s*;/);
+  assert.doesNotMatch(
+    css,
+    /\.view-dialog \.project-dialog-footer\s*\{[^}]*position:\s*sticky/,
+  );
+});
+
+test("Edit view uses a safe-area-aware fullscreen shell on phone and landscape", () => {
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.modal-backdrop:has\(\.view-dialog\)\s*\{[^}]*padding:\s*0\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.view-dialog\s*\{[^}]*width:\s*100vw\s*;[^}]*height:\s*100dvh\s*;[^}]*border-radius:\s*0\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.view-dialog-header[^}]*safe-area-inset-top/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.view-dialog-footer[^}]*safe-area-inset-bottom/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.view-dialog-footer \.button[^}]*min-height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-height:\s*480px\)\s*and\s*\(orientation:\s*landscape\)[\s\S]*?\.view-dialog\s*\{[^}]*height:\s*100dvh\s*;/,
+  );
+});
+
 test("Settings navigation and forms collapse without mobile horizontal overflow", () => {
   assert.match(css, /\.settings-surface\s*\{[^}]*grid-template-columns:\s*220px\s+minmax\(0,\s*1fr\)/);
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.settings-surface\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/);
