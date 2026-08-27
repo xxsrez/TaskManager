@@ -598,6 +598,10 @@ test("filter property search owns one focus ring instead of inheriting a nested 
     css,
     /@media\s*\(max-width:\s*900px\)[\s\S]*?\.filter-property-search\s*\{[^}]*min-height:\s*40px\s*;/,
   );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.filter-property-grid button\s*\{[^}]*min-height:\s*40px\s*;/,
+  );
 });
 
 test("form stacks leave checkboxes to compact display-control geometry", () => {

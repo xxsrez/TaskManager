@@ -1310,6 +1310,7 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .mobile-control-section .display-properties { grid-template-columns: 1fr; margin-inline: 0; }
   .mobile-control-section .display-checkbox { grid-template-columns: none; display: flex; }
   .filter-property-search { min-height: 40px; }
+  .filter-property-grid button { min-height: 40px; }
   .display-properties label, .display-checkbox { min-height: 44px; }
   .mobile-control-section > .display-checkbox { min-height: 44px; }
   .mobile-controls-footer { min-height: 52px; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 8px 4px 0; }
