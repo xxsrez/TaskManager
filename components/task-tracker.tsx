@@ -6950,6 +6950,12 @@ export function FilterConditionEditor({ data, query, onQuery, scopeProjectId = n
     conditions,
     ...(canonical.search?.trim() ? { search: canonical.search } : {}),
   });
+  const replaceSearch = (search: string) => onQuery({
+    version: 1,
+    op: "all",
+    conditions: canonical.conditions,
+    ...(search.trim() ? { search } : {}),
+  });
   const add = (field: ViewFilterField) => {
     const nextIndex = canonical.conditions.length;
     replaceConditions([...canonical.conditions, defaultFilterCondition(field, data, scopeProjectId)]);
@@ -6971,16 +6977,28 @@ export function FilterConditionEditor({ data, query, onQuery, scopeProjectId = n
   };
   useEffect(() => {
     if (focusConditionIndex === null) return;
-    const row = builderRef.current?.querySelectorAll<HTMLElement>(".filter-condition-row")[focusConditionIndex];
+    const row = builderRef.current?.querySelectorAll<HTMLElement>("[data-filter-condition]")[focusConditionIndex];
     const nextControl = row?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
     if (!nextControl) return;
     nextControl.focus();
     setFocusConditionIndex(null);
   }, [canonical.conditions.length, focusConditionIndex]);
   return <div ref={builderRef} className={`filter-builder ${compact ? "compact" : ""}`}>
-    {canonical.conditions.length > 0 && <div className="filter-formula" aria-label="Active filter formula">
+    {queryFilterCount(canonical) > 0 && <div className="filter-formula" aria-label="Active filter formula">
       <span className="filter-formula-operator">AND</span>
-      {canonical.conditions.map((condition, index) => <div className="filter-condition-row" key={`${condition.field}:${index}`}>
+      {canonical.search?.trim() && <div className="filter-condition-row filter-search-row">
+        <b>Search</b>
+        <span className="filter-search-operator" aria-label="Search operator">contains</span>
+        <input
+          type="search"
+          aria-label="Search text"
+          maxLength={500}
+          value={canonical.search}
+          onChange={(event) => replaceSearch(event.target.value)}
+        />
+        <button type="button" className="icon-button quiet" aria-label="Remove search filter" onClick={() => replaceSearch("")}><X size={13} /></button>
+      </div>}
+      {canonical.conditions.map((condition, index) => <div className="filter-condition-row" data-filter-condition key={`${condition.field}:${index}`}>
         <b>{filterFieldOptions.find((field) => field.value === condition.field)?.label ?? condition.field}</b>
         <select aria-label={`${condition.field} operator`} value={condition.operator} onChange={(event) => {
           const operator = event.target.value as ViewFilterOperator;
@@ -7001,7 +7019,7 @@ export function FilterConditionEditor({ data, query, onQuery, scopeProjectId = n
         }} />
         <button type="button" className="icon-button quiet" aria-label={`Remove ${condition.field} filter`} onClick={() => replaceConditions(canonical.conditions.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button>
       </div>)}
-      <button className="button ghost popover-clear" type="button" onClick={() => replaceConditions([])}>{clearLabel}</button>
+      <button className="button ghost popover-clear" type="button" onClick={() => onQuery({ version: 1, op: "all", conditions: [] })}>{clearLabel}</button>
     </div>}
     <button ref={addFilterRef} className="button ghost filter-add" type="button" aria-expanded={pickerOpen} aria-controls={pickerOpen ? menuId : undefined} onClick={() => { setPickerOpen((current) => !current); setActiveFieldIndex(0); }}><Plus size={13} />Add filter</button>
     {pickerOpen && <div className="filter-property-picker">

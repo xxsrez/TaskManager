@@ -3034,6 +3034,7 @@ test("Edit view drafts only the saved query and warns about temporary filters", 
   const savedQuery = {
     version: 1 as const,
     op: "all" as const,
+    search: "SV03 1528",
     conditions: [{ field: "release" as const, operator: "is" as const, value: "release-01" }],
   };
   const effectiveQuery = {
@@ -3098,6 +3099,9 @@ test("Edit view drafts only the saved query and warns about temporary filters", 
   assert.match(markup, /1 temporary filter is not part of this Saved View/);
   assert.match(markup, /Task Manager · 0\.1/);
   assert.equal(markup.match(/Task Manager · 0\.1/g)?.length, 1);
+  assert.match(markup, /aria-label="Search text"[^>]*value="SV03 1528"/);
+  assert.equal(markup.match(/value="SV03 1528"/g)?.length, 1);
+  assert.match(markup, /aria-label="Remove search filter"/);
   assert.doesNotMatch(markup, /Priority is High/);
   assert.match(markup, /Saved filters/);
   assert.match(markup, />Add filter</);
