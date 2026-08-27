@@ -643,6 +643,11 @@ input скачивается bounded fetch с `credentials=omit`, manual redirec
 R2 identity, Activity или logs. После fetch общий repository снова проверяет
 magic, claim, pixels, checksum и upload idempotency; bind отдельно проверяет
 effective Editor role, expiry, quotas и single-binding guard.
+Codex host может показывать special `file` argument как user-authorized absolute
+path и materialize native OpenAI file до MCP call. Это connector-first client
+bridge, а не server filesystem contract: Worker видит только file metadata и
+temporary OpenAI URL. Local companion остаётся отдельным ingress для exact path,
+который текущий host не может передать через native file parameter.
 
 Session-authenticated web authoring использует `/api/files` для create/get/
 recoverable delete StoredFile и JSON-вариант

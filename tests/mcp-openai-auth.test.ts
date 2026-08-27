@@ -350,6 +350,7 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
   const uploadTool = listBody.result.tools.find(
     (tool) => tool.name === "upload_task_attachment",
   ) as {
+    description?: string;
     _meta?: Record<string, unknown>;
     inputSchema?: {
       type?: string;
@@ -361,6 +362,14 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
       };
     };
   } | undefined;
+  assert.match(
+    uploadTool?.description ?? "",
+    /compatible Codex client.*authorized local path.*native OpenAI file input/i,
+  );
+  assert.match(
+    uploadTool?.description ?? "",
+    /remote MCP never receives or reads that path/i,
+  );
   assert.deepEqual(uploadTool?._meta?.["openai/fileParams"], ["file"]);
   assert.equal(uploadTool?.inputSchema?.type, "object");
   assert.deepEqual(uploadTool?.inputSchema?.properties?.file?.required, [
@@ -374,6 +383,14 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
   const stagedUploadTool = listBody.result.tools.find(
     (tool) => tool.name === "upload_file",
   ) as typeof uploadTool;
+  assert.match(
+    stagedUploadTool?.description ?? "",
+    /compatible Codex client.*authorized local path.*native OpenAI file input/i,
+  );
+  assert.match(
+    stagedUploadTool?.description ?? "",
+    /remote MCP never receives or reads that path/i,
+  );
   assert.deepEqual(stagedUploadTool?._meta?.["openai/fileParams"], ["file"]);
   assert.deepEqual(
     Object.keys(stagedUploadTool?.inputSchema?.properties?.file?.properties ?? {}),

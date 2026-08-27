@@ -595,7 +595,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Upload staged file",
       description:
-        "Uploads one native OpenAI file into uploader-only staged storage and returns verified fileRef metadata. Use attach_file_to_task later; fileRef is not valid in Task descriptions or comments. Reuse idempotencyKey only for the identical file. Local paths, base64, and arbitrary URLs are not accepted.",
+        "Uploads one native OpenAI file into uploader-only staged storage and returns verified fileRef metadata. When a compatible Codex client exposes this special file parameter as an authorized local path, pass that path to the tool; the client converts it to native OpenAI file input before the call, and the remote MCP never receives or reads that path. Use attach_file_to_task later; fileRef is not valid in Task descriptions or comments. Reuse idempotencyKey only for the identical file. Do not place a raw path, base64, or arbitrary URL inside the MCP file object.",
       inputSchema: z.object({
         file: mcpFileInputSchema,
         idempotencyKey: z.string().min(1).max(200),
@@ -805,7 +805,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Upload native task attachment",
       description:
-        "Uploads one OpenAI-provided file into the selected Task's private storage. Reuse idempotencyKey only when retrying the identical file. After upload, update the Task description with ![alt](attachment:v1:<ref>){width=480} for an optional bounded raster width (160-960 in 8px steps; omit the suffix for Auto) or [label](attachment:v1:<ref>) for an ACL-scoped download; never use a local path or base64.",
+        "Uploads one OpenAI-provided file into the selected Task's private storage. When a compatible Codex client exposes this special file parameter as an authorized local path, pass that path to the tool; the client converts it to native OpenAI file input before the call, and the remote MCP never receives or reads that path. Reuse idempotencyKey only when retrying the identical file. After upload, update the Task description or native Comment body with ![alt](attachment:v1:<ref>){width=480} for an optional bounded raster width (160-960 in 8px steps; omit the suffix for Auto) or [label](attachment:v1:<ref>) for an ACL-scoped download. Do not place a raw path or base64 payload inside the MCP file object.",
       inputSchema: z.object({
         taskRef: reference("Canonical task ref."),
         file: mcpFileInputSchema,

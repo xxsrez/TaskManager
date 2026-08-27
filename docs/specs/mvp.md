@@ -491,7 +491,13 @@ immutable ID и может группировать Tasks по значения�
   `/tasks/{ref}/attachments`; MCP публикует
   `upload_file/get_file/delete_file/attach_file_to_task`. Existing raw-body REST
   upload и `upload_task_attachment` остаются compatibility wrappers upload+bind.
-  Hosted surfaces не принимают local path, base64 или arbitrary URL.
+  Hosted MCP payload не принимает raw local path, base64 или arbitrary URL.
+  Совместимый Codex client может показывать special `file` parameter как
+  user-authorized absolute path: client сначала преобразует его в native OpenAI
+  file input по `_meta["openai/fileParams"]`, поэтому Worker получает только
+  `file_id`/temporary `download_url`, а не path. При доступном bridge это
+  connector-first route; local companion остаётся для runtime/source, которые
+  не могут войти через native file parameter.
 - Session-authenticated web UI использует эквивалентные `/api/files` и
   `/api/tasks/{id}/attachments` JSON bind routes. Quick composer хранит для
   recovery только `fileRef`, verified metadata, optimistic version и устойчивые

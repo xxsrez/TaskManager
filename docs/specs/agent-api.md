@@ -598,6 +598,13 @@ MCP `upload_file` и compatibility `upload_task_attachment` следуют ак�
 OpenAI file-input contract:
 верхнеуровневое поле `file` объявлено в `_meta["openai/fileParams"]`, содержит
 обязательные `download_url`/`file_id` и optional `mime_type`/`file_name`.
+Совместимый Codex host может представить этот special parameter агенту как
+user-authorized absolute path. Такой host-facing argument является ingress
+client runtime: до MCP call client превращает файл в указанный native object,
+а Worker не получает и не читает path. Поэтому доступный hosted connector
+является preferred route для chat attachment или явно разрешённого файла,
+который текущий client способен передать через `file`; local companion нужен
+только когда native bridge недоступен для exact source.
 Временный URL не сохраняется и не логируется. Worker принимает только HTTPS URL
 на OpenAI/OpenAIusercontent host, не передаёт credentials, вручную проверяет
 каждый redirect и ограничивает как declared, так и фактически прочитанный body.
@@ -606,9 +613,10 @@ Task ACL появляется и повторно проверяется тол�
 compatibility wrapper. `get_file`/`delete_file` работают только с ready unbound
 file текущего uploader. Contract основан на официальном
 [OpenAI plugin reference](https://developers.openai.com/plugins/reference).
-После ready upload agent вставляет opaque ref в `add_task_comment`,
+После ready upload agent вставляет opaque ref через `update_task` description,
+`add_task_comment`,
 `reply_to_task_comment` или `edit_task_comment`; remote Worker никогда не
-принимает local path либо base64 вместо file input. `download_task_attachment`
+принимает raw local path либо base64 вместо file input. `download_task_attachment`
 повторяет Task ACL и возвращает только explicit `resource_link` на Agent content
 route. Original/thumbnail bytes загружаются отдельным bearer request, поэтому
 ни tool result, ни compact Task/comment collection не несут unbounded binary.

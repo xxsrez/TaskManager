@@ -62,8 +62,13 @@ metadata не редактируется вручную. Любое provision/mi
    `download_task_attachment`, `upload_task_attachment` и `delete_task_attachment`,
    `api:read`/`api:write` security schemes и
    `_meta["openai/fileParams"]=["file"]` для обоих upload tools. Полный MCP upload smoke
-   выполнять только клиентом, который передаёт нативный OpenAI file object;
-   base64, local path и произвольный URL не являются fallback transport.
+   выполнять только клиентом, который передаёт нативный OpenAI file object.
+   Codex wrapper может принять user-authorized absolute path в host-facing
+   special `file` parameter и преобразовать его в этот object до MCP call; в
+   таком runtime это preferred connector route, а не raw path transport.
+   Проверка должна подтвердить, что Worker получил `file_id`/temporary
+   `download_url`. Base64, path внутри MCP object и произвольный URL не являются
+   fallback transport.
 11. Через Agent REST и fresh MCP client загрузить небольшой PNG и PDF, получить
     opaque refs и создать root Comment с image token и reply с file link.
     Read-back обязан вернуть только body + `attachmentRefs`; edit заменяет ref,
