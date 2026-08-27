@@ -1043,6 +1043,141 @@ export const adminImportRows = sqliteTable(
   ],
 );
 
+// Durable orchestration for full-system backup/export and exact-replace
+// restore. These rows are operational state: a backup captures product state,
+// never another in-flight backup or restore.
+export const systemBackupJobs = sqliteTable(
+  "system_backup_jobs",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(),
+    parentJobId: text("parent_job_id"),
+    rollbackJobId: text("rollback_job_id"),
+    createdByUserId: text("created_by_user_id").notNull(),
+    status: text("status").notNull(),
+    phase: text("phase").notNull(),
+    siteOrigin: text("site_origin").notNull(),
+    environmentScope: text("environment_scope").notNull(),
+    schemaVersion: integer("schema_version").notNull(),
+    schemaFingerprint: text("schema_fingerprint").notNull(),
+    exportedAt: text("exported_at"),
+    rootSha256: text("root_sha256"),
+    stateSha256: text("state_sha256"),
+    manifestJson: text("manifest_json"),
+    countsJson: text("counts_json").notNull().default("{}"),
+    totalRows: integer("total_rows").notNull().default(0),
+    totalBytes: integer("total_bytes").notNull().default(0),
+    partCount: integer("part_count").notNull().default(0),
+    nextPartIndex: integer("next_part_index").notNull().default(0),
+    phaseCursor: text("phase_cursor"),
+    hashStateJson: text("hash_state_json"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    errorCode: text("error_code"),
+    leaseToken: text("lease_token"),
+    leaseExpiresAt: text("lease_expires_at"),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    completedAt: text("completed_at"),
+    d1CommittedAt: text("d1_committed_at"),
+    appliedAt: text("applied_at"),
+  },
+  (table) => [
+    index("idx_system_backup_jobs_actor_status").on(
+      table.createdByUserId,
+      table.status,
+      table.updatedAt,
+    ),
+    index("idx_system_backup_jobs_expiry").on(table.expiresAt),
+    index("idx_system_backup_jobs_parent").on(table.parentJobId),
+  ],
+);
+
+export const systemBackupRows = sqliteTable(
+  "system_backup_rows",
+  {
+    jobId: text("job_id").notNull(),
+    tableName: text("table_name").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    rowJson: text("row_json").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.jobId, table.tableName, table.ordinal] }),
+    index("idx_system_backup_rows_job_table").on(
+      table.jobId,
+      table.tableName,
+      table.ordinal,
+    ),
+  ],
+);
+
+export const systemBackupParts = sqliteTable(
+  "system_backup_parts",
+  {
+    jobId: text("job_id").notNull(),
+    partIndex: integer("part_index").notNull(),
+    partType: text("part_type").notNull(),
+    tableName: text("table_name"),
+    ordinalStart: integer("ordinal_start"),
+    rowCount: integer("row_count").notNull().default(0),
+    logicalRef: text("logical_ref"),
+    byteLength: integer("byte_length").notNull(),
+    sha256: text("sha256").notNull(),
+    objectKey: text("object_key").notNull(),
+    status: text("status").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.jobId, table.partIndex] }),
+    index("idx_system_backup_parts_job_type").on(
+      table.jobId,
+      table.partType,
+      table.partIndex,
+    ),
+    uniqueIndex("idx_system_backup_parts_object_key").on(table.objectKey),
+  ],
+);
+
+export const systemBackupObjects = sqliteTable(
+  "system_backup_objects",
+  {
+    jobId: text("job_id").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    logicalRef: text("logical_ref").notNull(),
+    namespace: text("namespace").notNull(),
+    sourceObjectKey: text("source_object_key"),
+    stagedObjectKey: text("staged_object_key"),
+    materializedObjectKey: text("materialized_object_key"),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    etag: text("etag"),
+    boundKind: text("bound_kind"),
+    isOrphan: integer("is_orphan", { mode: "boolean" }).notNull().default(false),
+    processedBytes: integer("processed_bytes").notNull().default(0),
+    nextChunkIndex: integer("next_chunk_index").notNull().default(0),
+    hashStateJson: text("hash_state_json"),
+    firstPartIndex: integer("first_part_index"),
+    partCount: integer("part_count").notNull().default(0),
+    multipartUploadId: text("multipart_upload_id"),
+    multipartPartsJson: text("multipart_parts_json").notNull().default("[]"),
+    state: text("state").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.jobId, table.ordinal] }),
+    uniqueIndex("idx_system_backup_objects_job_ref").on(
+      table.jobId,
+      table.logicalRef,
+    ),
+    index("idx_system_backup_objects_job_state").on(
+      table.jobId,
+      table.state,
+      table.ordinal,
+    ),
+  ],
+);
+
 export const userImportSessions = sqliteTable(
   "user_import_sessions",
   {

@@ -142,7 +142,7 @@ Projection не включает content полей этих records. Exported b
 содержит cross-user content, identities и ACL; это отдельная явная operation,
 а не implicit доступ к чужим resources через обычные product surfaces.
 
-## SystemBackup и AdminImportSession
+## SystemBackup и SystemBackupJob
 
 `SystemBackup` schema `15` — единственный принимаемый текущий формат полного
 снимка всех пользователей. Его registry исчерпывающе классифицирует все D1
@@ -159,20 +159,28 @@ byte-for-byte, но environment-scoped keys создаются заново. `ba
 Sites configuration, schema/migrations, deployment/audience/analytics и
 browser-local state не входят в формат.
 
-`AdminImportSession` — operational metadata preflight/import:
+`SystemBackupJob` — durable operational entity export/import/rollback. Она не
+входит в product snapshot и не является capability. Основные поля:
 
 | Поле | Семантика |
 |---|---|
-| `id` | Непрозрачный import ID |
-| `created_by_user_id` | Администратор, загрузивший snapshot |
-| `source_exported_at`, `payload_sha256` | Provenance и identity payload |
-| `counts_json` | Проверенные counts по каждой application table |
-| `status` | `staged`, `applied` или `expired` |
-| `created_at`, `applied_at` | Operational timestamps |
+| `id`, `kind`, `created_by_user_id` | Непрозрачная job identity, `export`/`import`/`rollback` и admin owner |
+| `status`, `phase`, `phase_cursor`, `attempt_count` | Возобновляемый lifecycle bounded phase runner |
+| `site_origin`, `environment_scope`, `schema_version`, `schema_fingerprint` | Fail-closed boundary текущего package |
+| `root_sha256`, `state_sha256`, `counts_json` | Transport identity, нормализованный state identity и полный registry count set |
+| `parent_job_id`, `rollback_job_id`, `d1_committed_at` | Saga linkage и необратимая граница exact replace |
+| `lease_token`, `lease_expires_at` | Эксклюзивное право на materialization/cutover |
+| `error_code`, `expires_at`, `completed_at`, `applied_at` | Явный failure/expiry/completion lifecycle |
 
-Staged rows хранятся отдельно по `(import_id, table_name, ordinal)` и не
-участвуют в product queries. После atomic apply payload rows удаляются, а
-session metadata остаётся как минимальный audit record.
+`SystemBackupRow` хранит immutable frozen/staged row по
+`(job_id, table_name, ordinal)`. `SystemBackupPart` — receipt одной package
+части и её immutable R2 key. `SystemBackupObject` хранит stable logical ref,
+bound/unbound/orphan class, expected size/SHA, source/staged/materialized keys,
+multipart receipts, incremental hash state и cleanup status. Эти ledgers не
+участвуют в product queries; janitor удаляет expired rows/parts/objects
+bounded-шагами. Старые `AdminImportSession` и `UserImportSession` относятся к
+operational staging других контрактов и при system cutover инвалидируются,
+чтобы pre-restore capability нельзя было применить к восстановленному state.
 
 ## ProjectBackup и UserImportSession
 

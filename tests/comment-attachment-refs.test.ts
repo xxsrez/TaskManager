@@ -22,7 +22,7 @@ import {
 } from "../lib/attachments";
 import { exportProjectBackup } from "../lib/project-backup";
 import { exportSystemBackup } from "../lib/system-backup";
-import { systemBackupSchemaVersion } from "../lib/system-backup-format";
+import { systemBackupCurrentSchemaVersion } from "../lib/system-backup-contract";
 import {
   createComment,
   deleteComment,
@@ -142,7 +142,7 @@ test("native comments atomically index ready image/file refs across create, edit
     true,
   );
   const systemBackup = await exportSystemBackup(owner);
-  assert.equal(systemBackup.schemaVersion, systemBackupSchemaVersion);
+  assert.equal(systemBackup.schemaVersion, systemBackupCurrentSchemaVersion);
   assert.match(
     String(systemBackup.tables.comments.find((comment) => comment.id === root.id)?.body ?? ""),
     /\{width=480\}/,

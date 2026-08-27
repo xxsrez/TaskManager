@@ -816,31 +816,46 @@ project backup schema `12`. Исторические версии Project bundle
 
 ### Системный backup и restore
 
-1. `POST /api/admin/export` проверяет allowlist и одной read-only D1 batch
-   transaction получает все live application tables в стабильном порядке.
-2. Versioned JSON envelope получает timestamp, per-table counts и SHA-256;
-   response не кэшируется и скачивается как attachment.
-3. `POST /api/admin/import/validate` ограничивает payload, полностью проверяет
-   schema/domain/identity references и atomically сохраняет verified rows в
-   staging namespace.
-4. UI показывает preview и требует отдельный текущий backup плюс literal
-   `RESTORE` confirmation.
-5. `POST /api/admin/import` разрешает только создателя staged session и одной
-   D1 batch transaction удаляет live rows, вставляет verified staged rows,
-   отмечает session applied и очищает payload. Batch failure откатывает весь
-   cutover.
-6. System schema `15` — единственный current format. Registry является общим
+1. `POST /api/admin/export` проверяет server allowlist до cross-user reads и
+   создаёт durable job. Одна D1 batch замораживает 24 exact tables в
+   `system_backup_rows`; последующие bounded advances копируют полный managed
+   R2 inventory в immutable staging и повторно сверяют live D1/R2 с freeze.
+2. `.tmbak` состоит из header, канонически упорядоченных row/object-chunk frames
+   и terminal manifest. Per-part SHA-256 связывает frame identity, ordinal,
+   length/count и digest; `rootSha256` связывает package. Отдельный
+   `stateSha256` нормализует physical object keys/time/etag и сравнивает exact
+   state после restore.
+3. Import создаётся по header, принимает части отдельными bounded requests и
+   финализируется manifest отдельно. Общий reader отвергает duplicate,
+   out-of-order, missing, extra, truncated, foreign и legacy package до
+   preflight. Rows, parts, objects, cursor и incremental SHA state сохраняются
+   в `system_backup_*` ledger и переживают restart.
+4. Preview возвращает origin/environment, format/schema/fingerprint,
+   `rootSha256`/`stateSha256`, все registry counts, R2 summary, policy summary,
+   warnings и validation errors. UI требует literal `RESTORE`.
+5. Apply повторно валидирует staged D1/R2, создаёт связанный rollback export,
+   ждёт его ready, затем под exclusive lease идемпотентно materializes R2.
+   Одна D1 batch выполняет exact replace, post-trigger rebuild/reset/revoke,
+   инвалидирует старые import sessions/jobs и фиксирует commit marker вместе с
+   полным cleanup ledger прежних managed objects.
+6. После commit runner канонически сверяет D1 и range-хеширует R2 bounded
+   chunks. Cleanup старых/staged objects выполняется отдельно; ошибка остаётся
+   видимой как `cleanup_pending` и безопасно retry. Expired job janitor очищает
+   parts и незавершённое storage state bounded-шагами.
+7. System schema `15` — единственный current format. Registry является общим
    источником table/column inventory, stable read order, restore order, delete
    order, counts и digest input; schema drift без новой классификации ломает
    contract test. Schemas `2`–`14` отклоняются без upgrade.
-7. Exact D1 state включает 24 tables: прежние product/identity/ACL/provenance
+8. Exact D1 state включает 24 tables: прежние product/identity/ACL/provenance
    tables плюс `stored_files`, `attachments.stored_file_id` и
    `task_sequences`. `task_label_group_values` rebuild; workspace sync и purge
    coordination reset; API/OAuth capability tables revoke; четыре import
    staging tables excluded.
-8. R2 originals из `stored-files` и `attachments` сохраняются byte-for-byte,
-   но получают новые environment keys. `backup-staging` reset; неизвестный
-   namespace fail-closed. D1 и R2 сверяются одним manifest/digest до cutover.
+9. R2 originals из `stored-files` и `attachments` сохраняются byte-for-byte,
+   но получают новые environment keys. Stable logical slots сохраняют identity
+   bound/unbound/legacy rows и orphan multiset независимо от physical key;
+   lifecycle rows без bytes остаются явными slots без object frame.
+   `backup-staging` reset; неизвестный namespace fail-closed.
 
 ### Project backup и restore
 

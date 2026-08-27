@@ -128,6 +128,10 @@ test("the current full snapshot has one explicit D1 policy for every table", () 
     [
       "admin_import_sessions",
       "admin_import_rows",
+      "system_backup_jobs",
+      "system_backup_rows",
+      "system_backup_parts",
+      "system_backup_objects",
       "user_import_sessions",
       "user_import_rows",
     ],

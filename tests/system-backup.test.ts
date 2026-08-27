@@ -15,13 +15,16 @@ import {
   type BackupTables,
 } from "../lib/system-backup-format";
 import { restoreStoredFileSql } from "../lib/attachments";
-import { systemRestoreOperationalResetSql } from "../lib/system-backup-contract";
+import {
+  systemBackupCurrentSchemaVersion,
+  systemRestoreOperationalResetSql,
+} from "../lib/system-backup-contract";
 
 const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 15);
+  assert.equal(backup.schemaVersion, systemBackupCurrentSchemaVersion);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -180,16 +183,16 @@ test("the comment-aware system schema rejects an older backup explicitly", async
   const backup = await createSystemBackup(validTables(), now);
   await assert.rejects(
     validateSystemBackup({ ...backup, schemaVersion: 1 }),
-    /only schema 15 is accepted/i,
+    new RegExp(`only schema ${systemBackupCurrentSchemaVersion} is accepted`, "i"),
   );
 });
 
 test("the current system format rejects every former schema without an upgrade path", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  for (let schemaVersion = 2; schemaVersion <= 14; schemaVersion += 1) {
+  for (let schemaVersion = 2; schemaVersion < systemBackupCurrentSchemaVersion; schemaVersion += 1) {
     await assert.rejects(
       validateSystemBackup({ ...backup, schemaVersion }),
-      /only schema 15 is accepted/i,
+      new RegExp(`only schema ${systemBackupCurrentSchemaVersion} is accepted`, "i"),
     );
   }
 });
@@ -231,7 +234,7 @@ test("current system backups preserve recoverable deletion state and project sha
     await createSystemBackup(tables, now),
   );
 
-  assert.equal(validated.schemaVersion, 15);
+  assert.equal(validated.schemaVersion, systemBackupCurrentSchemaVersion);
   assert.equal(validated.tables.projects[0]?.purge_after, purgeAfter);
   assert.equal(validated.tables.releases[0]?.deleted_by_user_id, "user-admin");
   assert.equal(validated.tables.tasks[0]?.deleted_at, now);

@@ -58,10 +58,10 @@ import {
   exportSystemBackup,
   stageSystemBackup,
 } from "../lib/system-backup";
+import { systemBackupCurrentSchemaVersion } from "../lib/system-backup-contract";
 import { reconcileAttachmentStorage } from "../lib/attachment-operations";
 import {
   createSystemBackup,
-  systemBackupSchemaVersion,
 } from "../lib/system-backup-format";
 import { createComment, getCommentThread } from "../lib/comments";
 import { getRuntimeEnvironment } from "../lib/runtime-environment";
@@ -1530,7 +1530,7 @@ test("attachment-aware logical backups include scoped metadata and verified orig
   );
 
   const systemBackup = await exportSystemBackup(owner);
-  assert.equal(systemBackup.schemaVersion, systemBackupSchemaVersion);
+  assert.equal(systemBackup.schemaVersion, systemBackupCurrentSchemaVersion);
   assert.ok(systemBackup.tables.attachments.length >= 1);
   assert.ok(systemBackup.objects.length >= 1);
 });

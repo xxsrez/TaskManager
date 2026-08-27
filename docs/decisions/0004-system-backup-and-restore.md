@@ -52,7 +52,7 @@ cutoff позже delete. Schemas `2`–`13` сначала проверяютс
 Дополнение 2026-08-27 заменяет прежнюю цепочку совместимости единым текущим
 контрактом `schemaVersion = 15`. System import принимает только schema `15`;
 schemas `2`–`14` отклоняются до чтения таблиц и не проходят через upgrade.
-Машиночитаемый registry классифицирует все 41 application-owned D1 tables и
+Машиночитаемый registry классифицирует все 45 application-owned D1 tables и
 каждую их колонку. Точно переносятся 24 таблицы, включая `stored_files`,
 `attachments.stored_file_id` и `task_sequences`; `task_label_group_values`
 перестраивается; workspace sync и purge coordination сбрасываются; API/OAuth
@@ -60,6 +60,13 @@ capabilities отзываются; import staging исключается. Для
 оригиналы из live namespaces `stored-files` и `attachments`, ключи создаются
 заново в целевой среде, `backup-staging` сбрасывается, а неизвестный namespace
 делает export/restore неполным и должен быть отклонён.
+
+Текущий transport — потоковый `.tmbak` package с header, канонически
+упорядоченными row/object frames и terminal manifest. Durable jobs сохраняют
+phase/cursor, hash state, receipts частей, R2 inventory, lease, attempts,
+ошибки, expiry, rollback linkage и cleanup state. `rootSha256` связывает
+конкретный package, а нормализованный `stateSha256` не зависит от времени
+export, физических object keys и R2 etag и потому сравним после exact restore.
 
 ## Контекст
 
@@ -91,25 +98,33 @@ admin boundary.
    operational import/purge staging и API/OAuth capabilities. Включая
    `oauth_registered_clients`: регистрация содержит capability metadata и
    после restore выполняется заново, а не переносится как user state.
-3. Export выполняет server-side admin check до чтения cross-user данных,
-   считывает все включённые таблицы в одной D1 batch transaction и отдаёт файл
-   с `Cache-Control: no-store`.
-4. Import первой версии поддерживает только `replace`: merge, selective restore
-   и remapping identities не выполняются. Файл полностью валидируется и
-   помещается в изолированный staging namespace до изменения live tables.
-5. Preview показывает format/schema version, время export и counts. До
-   destructive confirmation администратор должен скачать текущий backup и
-   ввести `RESTORE`.
+3. Export выполняет server-side admin check до чтения cross-user данных. Одна
+   D1 batch замораживает exact rows в dedicated ledger; затем bounded phase
+   runner копирует полный managed R2 inventory в immutable staging и повторно
+   сверяет live D1/R2 с замороженным состоянием. Race прерывает export.
+4. Import поддерживает только `replace`: merge, selective restore и remapping
+   identities не выполняются. Header, каждая bounded часть и terminal manifest
+   загружаются отдельно; receipts и staged bytes переживают restart. Preflight
+   проверяет registry/fingerprint, порядок, counts, digests, domain topology и
+   R2 bytes до изменения live tables.
+5. Preview показывает origin/environment, format/schema/fingerprint, время,
+   `rootSha256`, `stateSha256`, полные D1 counts, R2 counts/bytes/classes,
+   policy summary, warnings и validation errors. До destructive confirmation
+   администратор должен скачать текущий backup и ввести `RESTORE`.
 6. Backup обязан содержать хотя бы одну provider identity текущего
    администратора. Это предотвращает случайный restore снимка, после которого
    оператор не сможет снова разрешить свою session.
-7. Финальный cutover удаляет и восстанавливает live rows одной D1
-   `batch()`-транзакцией. Любой SQL failure откатывает весь replace. Успешный
-   restore сохраняет operational import session как audit metadata, удаляет
-   staged payload и требует полного reload UI.
+7. До cutover создаётся и валидируется server-side rollback job. Import
+   получает exclusive lease; materialization R2 детерминирована и идемпотентна.
+   Финальный cutover одной D1 batch заменяет exact rows, выполняет
+   rebuild/reset/revoke policies, инвалидирует старые import capabilities,
+   фиксирует commit marker и complete old-R2 cleanup ledger. Повторный apply не
+   выполняет committed replace снова.
 8. Полный state не имеет пользовательского лимита 5 000 rows или 10 MB.
    Transport обязан использовать chunked staging с bounded memory; лимиты
-   отдельного chunk/row защищают Worker, но не обрезают snapshot.
+   отдельного chunk/row защищают Worker, но не обрезают snapshot. Download
+   доступен только после проверки тем же package validator, использует
+   `no-store` streaming navigation и допускает resume с номера части.
 9. API принимает только same-origin application requests с явным custom action
    header. Client flags и наличие кнопки не участвуют в authorization.
 10. System backup capability выдаётся тому же hosted allowlist, что и текущий
@@ -117,12 +132,13 @@ admin boundary.
     обычным repository methods возможность просматривать чужие records.
 11. Успешный replace удаляет все API credentials в той же D1 batch transaction.
     После restore каждый User обязан выдать новый token.
-12. Schema `3` переносит originals byte-for-byte внутри общего 10 MB bounded
-    JSON container; live R2 keys, signed URLs и derived thumbnails не входят.
-    Uploading/pending state, missing object, size/checksum mismatch или broken
-    description ref блокируют export/validation до mutation. Container больше
-    лимита отклоняется; unbounded base64 и неатомарный partial restore не
-    являются fallback.
+12. Current schema переносит фактически существующие originals byte-for-byte
+    bounded object-chunk frames; live R2 keys, signed URLs и derived thumbnails
+    не входят. Logical slot сохраняется и для lifecycle rows без bytes:
+    ready/available state требует object, а допустимые failed/expired/
+    transitional/deleted states могут его не иметь. Любой существующий managed
+    object включается, в том числе orphan; size/checksum mismatch, broken ref
+    или unknown namespace блокируют import до mutation.
 13. Permanent Task/Project purge удаляет R2 originals до финального удаления
     D1 metadata. Ошибка оставляет durable retryable operational job; logical
     backup не переносит этот job и не может объявить незавершённый cleanup
@@ -139,8 +155,10 @@ admin boundary.
   изменении application schema.
 - Import обязан валидировать foreign references и domain invariants полностью,
   поскольку текущая D1 schema не полагается на database foreign keys.
-- Operational staging временно дублирует payload в D1 и очищается после restore
-  либо по expiry.
+- Operational staging временно дублирует rows в D1 и package/object chunks в
+  R2. Janitor bounded-шагами очищает expired jobs, parts, multipart/staged и
+  materialized-orphan state. Ошибка post-commit cleanup видна как
+  `cleanup_pending` и безопасно повторяется.
 - Control-plane D1 export/Time Travel остаются дополнительной операторской
   страховкой, но не являются доступным пользователю in-app contract Sites.
 
