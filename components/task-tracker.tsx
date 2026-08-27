@@ -6922,6 +6922,17 @@ export function FilterPopover({ data, savedView, temporaryQuery, onTemporaryQuer
   </Popover>;
 }
 
+export function handleFilterPickerEscape(
+  event: Pick<KeyboardEvent, "key" | "preventDefault" | "stopPropagation">,
+  closePicker: () => void,
+) {
+  if (event.key !== "Escape") return false;
+  event.preventDefault();
+  event.stopPropagation();
+  closePicker();
+  return true;
+}
+
 export function FilterConditionEditor({ data, query, onQuery, scopeProjectId = null, compact = false, clearLabel = "Clear all" }: {
   data: AppSnapshot;
   query: ViewQuery;
@@ -7024,14 +7035,14 @@ export function FilterConditionEditor({ data, query, onQuery, scopeProjectId = n
     <button ref={addFilterRef} className="button ghost filter-add" type="button" aria-expanded={pickerOpen} aria-controls={pickerOpen ? menuId : undefined} onClick={() => { setPickerOpen((current) => !current); setActiveFieldIndex(0); }}><Plus size={13} />Add filter</button>
     {pickerOpen && <div className="filter-property-picker">
       <label className="filter-property-search"><Search size={13} /><input autoFocus type="search" value={propertySearch} onChange={(event) => { setPropertySearch(event.target.value); setActiveFieldIndex(0); }} onKeyDown={(event) => {
-        if (event.key === "Escape") { event.preventDefault(); closePicker(); }
+        if (handleFilterPickerEscape(event, closePicker)) return;
         if (event.key === "ArrowDown") { event.preventDefault(); focusField(activeFieldIndex); }
         if (event.key === "ArrowUp") { event.preventDefault(); focusField(activeFieldIndex - 1); }
         if (event.key === "Enter" && fields[activeFieldIndex]) { event.preventDefault(); add(fields[activeFieldIndex].value); }
       }} placeholder="Search properties…" aria-label="Search filter properties" aria-controls={menuId} /></label>
       <div id={menuId} className="filter-property-grid" role="menu" aria-label="Filter properties">
         {fields.map((field, index) => <button ref={(element) => { fieldButtonRefs.current[index] = element; }} type="button" role="menuitem" key={field.value} onClick={() => add(field.value)} onFocus={() => setActiveFieldIndex(index)} onKeyDown={(event) => {
-          if (event.key === "Escape") { event.preventDefault(); closePicker(); }
+          if (handleFilterPickerEscape(event, closePicker)) return;
           if (event.key === "ArrowDown") { event.preventDefault(); focusField(index + 1); }
           if (event.key === "ArrowUp") { event.preventDefault(); focusField(index - 1); }
         }}>{field.label}</button>)}

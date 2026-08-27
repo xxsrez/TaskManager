@@ -10,6 +10,7 @@ import {
   fetchTaskSnapshot,
   GlobalSearchContinuationWarning,
   GlobalSearchOverlay,
+  handleFilterPickerEscape,
   fetchCompleteWorkspaceCatalog,
   FilterConditionEditor,
   SavedViewFilterLayers,
@@ -2893,6 +2894,28 @@ test("mobile filter controls expose every hydrated Project and Release beyond th
   assert.equal(markup.match(/value="mobile-release-\d/g)?.length, 5);
   assert.match(markup, /Mobile Project 5/);
   assert.match(markup, /Mobile Project 1 · Mobile Release 5/);
+});
+
+test("filter picker Escape closes only the picker and stops Modal propagation", () => {
+  let prevented = false;
+  let stopped = false;
+  let closed = 0;
+
+  assert.equal(handleFilterPickerEscape({
+    key: "Escape",
+    preventDefault: () => { prevented = true; },
+    stopPropagation: () => { stopped = true; },
+  }, () => { closed += 1; }), true);
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+  assert.equal(closed, 1);
+
+  assert.equal(handleFilterPickerEscape({
+    key: "Enter",
+    preventDefault: () => undefined,
+    stopPropagation: () => undefined,
+  }, () => { closed += 1; }), false);
+  assert.equal(closed, 1);
 });
 
 test("Saved View filter controls render saved and temporary layers separately", () => {
