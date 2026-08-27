@@ -54,7 +54,9 @@ import {
   TaskTracker,
   SettingsSurface,
   ViewDialog,
+  viewDialogDraftIsDirty,
   viewDialogDraftQuery,
+  viewDisplayDependencies,
 } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
 import type { AppSnapshot } from "../lib/types";
@@ -2826,11 +2828,9 @@ test("mobile shell exposes complete navigation and view controls", () => {
   assert.match(markup, /aria-label="List view" aria-pressed="true"/);
   assert.match(markup, /aria-label="Kanban view" aria-pressed="false"/);
   assert.match(markup, />Filter</);
-  assert.match(markup, /aria-label="Search filter properties"/);
-  assert.match(markup, />Status category</);
-  assert.match(markup, />Relation</);
-  assert.match(markup, />Canceled date</);
-  assert.match(markup, />Archived</);
+  assert.match(markup, />Add filter</);
+  assert.doesNotMatch(markup, /aria-label="Search filter properties"/);
+  assert.doesNotMatch(markup, />Status category</);
   assert.match(markup, />Display</);
   assert.match(markup, />List</);
   assert.match(markup, />Board</);
@@ -2889,10 +2889,10 @@ test("mobile filter controls expose every hydrated Project and Release beyond th
   }));
 
   assert.match(markup, /filter-builder compact/);
-  assert.equal(markup.match(/Mobile Project \d/g)?.length, 5);
-  assert.equal(markup.match(/Mobile Release \d/g)?.length, 5);
+  assert.equal(markup.match(/value="mobile-project-\d/g)?.length, 5);
+  assert.equal(markup.match(/value="mobile-release-\d/g)?.length, 5);
   assert.match(markup, /Mobile Project 5/);
-  assert.match(markup, /Mobile Release 5/);
+  assert.match(markup, /Mobile Project 1 · Mobile Release 5/);
 });
 
 test("Saved View filter controls render saved and temporary layers separately", () => {
@@ -2948,7 +2948,7 @@ test("Saved View filter controls render saved and temporary layers separately", 
   }));
 
   assert.match(markup, /Saved in My Diary/);
-  assert.match(markup, /Release is 0\.1/);
+  assert.match(markup, /Release is Task Manager · 0\.1/);
   assert.match(markup, /Temporary filters/);
   assert.match(markup, /Priority is High/);
   assert.match(markup, />Edit</);
@@ -3025,7 +3025,7 @@ test("Saved View toolbar exposes the persisted formula without an unsafe direct 
   }));
 
   assert.match(markup, /Saved in My Diary/);
-  assert.match(markup, /Release is 0\.1/);
+  assert.match(markup, /Release is Task Manager · 0\.1/);
   assert.match(markup, />Save as</);
   assert.doesNotMatch(markup, />Save<\/button>/);
 });
@@ -3096,12 +3096,41 @@ test("Edit view drafts only the saved query and warns about temporary filters", 
   }));
 
   assert.match(markup, /1 temporary filter is not part of this Saved View/);
-  assert.match(markup, /Release is 0\.1/);
+  assert.match(markup, /Task Manager · 0\.1/);
+  assert.equal(markup.match(/Task Manager · 0\.1/g)?.length, 1);
   assert.doesNotMatch(markup, /Priority is High/);
   assert.match(markup, /Saved filters/);
+  assert.match(markup, />Add filter</);
+  assert.doesNotMatch(markup, /filter-layer-summary/);
   assert.match(markup, /Display/);
   assert.match(markup, /Save changes/);
+  assert.match(markup, /<button class="button primary" disabled="">Save changes<\/button>/);
   assert.doesNotMatch(markup, /Archive view/);
+});
+
+test("view editor dirty and display dependency models are canonical", () => {
+  const initial = {
+    name: "My view",
+    scopeProjectId: null,
+    query: { version: 1 as const, op: "all" as const, conditions: [] },
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "manual" as const,
+      direction: "asc" as const,
+      showEmptyGroups: false,
+      visibleFields: ["priority" as const],
+    },
+  };
+  assert.equal(viewDialogDraftIsDirty(initial, { ...initial, name: " My view " }), false);
+  assert.equal(viewDialogDraftIsDirty(initial, { ...initial, display: { ...initial.display, layout: "board" } }), true);
+  assert.deepEqual(viewDisplayDependencies(initial.display), {
+    directionDisabled: true,
+    directionReason: "Direction is unavailable while tasks use manual order.",
+    emptyGroupsDisabled: true,
+    emptyGroupsReason: "Empty status groups are always hidden.",
+  });
+  assert.equal(viewDisplayDependencies({ ...initial.display, groupBy: "none" }).emptyGroupsReason, "Choose a grouping to show empty groups.");
 });
 
 test("a missing Release filter reference stays inert without leaking its UUID", () => {

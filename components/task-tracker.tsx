@@ -58,6 +58,7 @@ import {
   TouchEvent as ReactTouchEvent,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -107,6 +108,12 @@ import {
   type GlobalSearchResult,
 } from "@/lib/global-search";
 import { formatReleaseName } from "@/lib/release-presentation";
+import {
+  filterCatalogOptions,
+  filterConditionValues,
+  unavailableFilterLabel,
+  unavailableFilterReferences,
+} from "@/lib/filter-catalog";
 import { selectRecentNavigation } from "@/lib/recent-navigation";
 import { defaultViewDisplay, emptyViewQuery } from "@/lib/view-contract";
 import {
@@ -472,6 +479,23 @@ function toggleViewField(
   return fields.includes(field)
     ? fields.filter((item) => item !== field)
     : [...fields, field];
+}
+
+export function viewDisplayDependencies(display: Pick<ViewDisplay, "groupBy" | "orderBy">) {
+  const directionReason = display.orderBy === "manual"
+    ? "Direction is unavailable while tasks use manual order."
+    : null;
+  const emptyGroupsReason = display.groupBy === "status"
+    ? "Empty status groups are always hidden."
+    : display.groupBy === "none"
+      ? "Choose a grouping to show empty groups."
+      : null;
+  return {
+    directionDisabled: directionReason !== null,
+    directionReason,
+    emptyGroupsDisabled: emptyGroupsReason !== null,
+    emptyGroupsReason,
+  };
 }
 
 export function resolveArchiveBulkAction(
@@ -1813,6 +1837,7 @@ export function TaskTracker({
     layout,
   }), [displayOverrides, layout, savedDisplay, surface]);
   const currentGroupBy = currentDisplay.groupBy;
+  const currentDisplayDependencies = viewDisplayDependencies(currentDisplay);
   const canonicalTemporaryQuery = useMemo(
     () => canonicalViewQuery(temporaryQuery),
     [temporaryQuery],
@@ -4173,7 +4198,7 @@ export function TaskTracker({
                   </div>
                   <div className="popover-anchor">
                     <button ref={filterTriggerRef} className={`button ghost ${filterOpen ? "active" : ""}`} aria-keyshortcuts="F" title="Filter (F)" onClick={() => { setDisplayOpen(false); void toggleFilters(); }}><ListFilter size={14} />Filter{queryFilterCount(currentViewQuery) > 0 && <span className="filter-count">{queryFilterCount(currentViewQuery)}</span>}</button>
-                    {filterOpen && <FilterPopover data={data} savedView={activeSavedView} temporaryQuery={canonicalTemporaryQuery} onTemporaryQuery={setTemporaryQuery} onEditSaved={activeSavedView && canEditContent(activeSavedView.accessRole) ? () => { setFilterOpen(false); void openDialogWithCatalog("viewEdit", ["projects", "releases"]); } : undefined} onClose={() => { setFilterOpen(false); filterTriggerRef.current?.focus(); }} />}
+                    {filterOpen && <FilterPopover data={data} savedView={activeSavedView} temporaryQuery={canonicalTemporaryQuery} scopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} onTemporaryQuery={setTemporaryQuery} onEditSaved={activeSavedView && canEditContent(activeSavedView.accessRole) ? () => { setFilterOpen(false); void openDialogWithCatalog("viewEdit", ["projects", "releases"]); } : undefined} onClose={() => { setFilterOpen(false); filterTriggerRef.current?.focus(); }} />}
                   </div>
                   <div className="segmented" aria-label="Layout">
                     <button className={layout === "list" ? "active" : ""} aria-keyshortcuts="Meta+B Control+B" onClick={() => changeLayout("list")} title="List (⌘/Ctrl+B)"><LayoutList size={14} /></button>
@@ -4188,7 +4213,7 @@ export function TaskTracker({
                   {canSaveView && (activeSavedView || hasRuntimeViewChanges) && <button className="button ghost" onClick={() => void openDialogWithCatalog("view", ["projects", "releases"])}><Copy size={13} />Save as</button>}
                 </div>
                 {activeSavedView && <SavedFilterChips data={data} view={activeSavedView} onEdit={canEditContent(activeSavedView.accessRole) ? () => void openDialogWithCatalog("viewEdit", ["projects", "releases"]) : undefined} />}
-                {canonicalTemporaryQuery.conditions.length > 0 && <FilterChips data={data} query={canonicalTemporaryQuery} onQuery={setTemporaryQuery} onEdit={() => void toggleFilters()} />}
+                {canonicalTemporaryQuery.conditions.length > 0 && <FilterChips data={data} query={canonicalTemporaryQuery} scopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} onQuery={setTemporaryQuery} onEdit={() => void toggleFilters()} />}
                 <div className="segmented mobile-layout-switcher" role="group" aria-label="Layout">
                   <button type="button" className={layout === "list" ? "active" : ""} aria-label="List view" aria-pressed={layout === "list"} onClick={() => changeLayout("list")}><LayoutList size={16} /></button>
                   <button type="button" className={layout === "board" ? "active" : ""} aria-label="Kanban view" aria-pressed={layout === "board"} onClick={() => changeLayout("board")}><Columns3 size={16} /></button>
@@ -4226,7 +4251,7 @@ export function TaskTracker({
                     </label>
                     <section className="mobile-control-section">
                       <h3>Filter</h3>
-                      <SavedViewFilterLayers data={data} savedView={activeSavedView} temporaryQuery={canonicalTemporaryQuery} onTemporaryQuery={setTemporaryQuery} onEditSaved={activeSavedView && canEditContent(activeSavedView.accessRole) ? () => { setMobileActionsOpen(false); void openDialogWithCatalog("viewEdit", ["projects", "releases"]); } : undefined} compact />
+                      <SavedViewFilterLayers data={data} savedView={activeSavedView} temporaryQuery={canonicalTemporaryQuery} scopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} onTemporaryQuery={setTemporaryQuery} onEditSaved={activeSavedView && canEditContent(activeSavedView.accessRole) ? () => { setMobileActionsOpen(false); void openDialogWithCatalog("viewEdit", ["projects", "releases"]); } : undefined} compact />
                     </section>
                     <section className="mobile-control-section">
                       <h3>Display</h3>
@@ -4237,9 +4262,11 @@ export function TaskTracker({
                       <label className="mobile-display-summary"><span>Group by</span><select value={currentGroupBy} onChange={(event) => changeGroupBy(event.target.value as ViewDisplay["groupBy"])}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
                       {currentGroupBy === "label_group" && <label className="mobile-display-summary"><span>Label group</span><select value={currentDisplay.labelGroupId ?? ""} onChange={(event) => changeDisplay({ labelGroupId: event.target.value || null })}>{(data.labelGroups ?? []).filter((group) => !group.archivedAt || group.id === currentDisplay.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}
                       <label className="mobile-display-summary"><span>Order</span><select value={currentDisplay.orderBy} onChange={(event) => changeDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-                      <label className="mobile-display-summary"><span>Direction</span><select value={currentDisplay.direction} disabled={currentDisplay.orderBy === "manual"} onChange={(event) => changeDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>
+                      <label className="mobile-display-summary"><span>Direction</span><select value={currentDisplay.direction} disabled={currentDisplayDependencies.directionDisabled} aria-describedby={currentDisplayDependencies.directionReason ? "mobile-direction-help" : undefined} onChange={(event) => changeDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>
+                      {currentDisplayDependencies.directionReason && <small id="mobile-direction-help" className="display-dependency-hint">{currentDisplayDependencies.directionReason}</small>}
                       <fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={currentDisplay.visibleFields.includes(option.value)} onChange={() => changeDisplay({ visibleFields: toggleViewField(currentDisplay.visibleFields, option.value) })} />{option.label}</label>)}</fieldset>
-                      <label className="display-checkbox"><input type="checkbox" checked={currentDisplay.showEmptyGroups} disabled={currentGroupBy === "status" || currentGroupBy === "none"} onChange={(event) => changeDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>
+                      <label className="display-checkbox"><input type="checkbox" checked={currentDisplay.showEmptyGroups} disabled={currentDisplayDependencies.emptyGroupsDisabled} aria-describedby={currentDisplayDependencies.emptyGroupsReason ? "mobile-empty-groups-help" : undefined} onChange={(event) => changeDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>
+                      {currentDisplayDependencies.emptyGroupsReason && <small id="mobile-empty-groups-help" className="display-dependency-hint">{currentDisplayDependencies.emptyGroupsReason}</small>}
                     </section>
                     <div className="mobile-controls-footer">
                       {hasTemporaryFilters && <button className="button ghost" type="button" onClick={clearTemporaryFilters}>Clear temporary</button>}
@@ -4428,8 +4455,8 @@ export function TaskTracker({
       {dialog === "projectEdit" && contextProjectRecord && <ProjectDialog project={contextProjectRecord} currentUser={data.user} leadOptions={projectMemberOptions(data, contextProjectRecord)} openTaskCount={openProjectTaskCount(contextProjectRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, ...input }); if (ok) setDialog(null); }} onArchive={async () => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, archived: !contextProjectRecord.archivedAt }); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialProjectId={contextProject} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} onDelete={() => void openRecoverableDelete(releaseContextualEntity(contextReleaseRecord))} busy={busy} />}
-      {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} data={data} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} temporaryFilterCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
-      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={`${activeSavedView.id}:${activeSavedView.version}`} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } }} busy={busy} />}
+      {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} data={data} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} temporaryFilterCount={0} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); return ok; }} busy={busy} />}
+      {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={activeSavedView.id} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } return ok; }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
@@ -6816,10 +6843,11 @@ function queryFilterCount(query: ViewQuery | undefined) {
   return canonical.conditions.length + (canonical.search?.trim() ? 1 : 0);
 }
 
-function FilterLayerSummary({ data, query, emptyCopy }: {
+function FilterLayerSummary({ data, query, emptyCopy, scopeProjectId = null }: {
   data: AppSnapshot;
   query: ViewQuery;
   emptyCopy: string;
+  scopeProjectId?: string | null;
 }) {
   const canonical = canonicalViewQuery(query);
   if (!queryFilterCount(canonical)) {
@@ -6828,7 +6856,7 @@ function FilterLayerSummary({ data, query, emptyCopy }: {
   return <div className="filter-layer-summary" aria-label="Filter formula summary">
     {canonical.search?.trim() && <span>Search contains “{canonical.search.trim()}”</span>}
     {canonical.conditions.map((condition, index) => (
-      <span key={`${condition.field}:${index}`}>{filterConditionSummary(condition, data)}</span>
+      <span key={`${condition.field}:${index}`}>{filterConditionSummary(condition, data, scopeProjectId)}</span>
     ))}
   </div>;
 }
@@ -6839,6 +6867,7 @@ export function SavedViewFilterLayers({
   temporaryQuery,
   onTemporaryQuery,
   onEditSaved,
+  scopeProjectId = null,
   compact = false,
 }: {
   data: AppSnapshot;
@@ -6846,6 +6875,7 @@ export function SavedViewFilterLayers({
   temporaryQuery: ViewQuery;
   onTemporaryQuery: (query: ViewQuery) => void;
   onEditSaved?: () => void;
+  scopeProjectId?: string | null;
   compact?: boolean;
 }) {
   return <div className={`filter-layers ${compact ? "compact" : ""}`}>
@@ -6854,28 +6884,30 @@ export function SavedViewFilterLayers({
         <span><Save size={13} />Saved in {savedView.name}</span>
         {onEditSaved && <button type="button" className="button ghost compact" onClick={onEditSaved}>Edit</button>}
       </header>
-      <FilterLayerSummary data={data} query={savedView.query} emptyCopy="No saved filters" />
+      <FilterLayerSummary data={data} query={savedView.query} emptyCopy="No saved filters" scopeProjectId={savedView.scopeProjectId} />
     </section>}
     <section className="filter-layer temporary-filter-layer" aria-label="Temporary filters">
       <header><span><ListFilter size={13} />Temporary filters</span></header>
-      <FilterLayerSummary data={data} query={temporaryQuery} emptyCopy="No temporary filters" />
+      <FilterLayerSummary data={data} query={temporaryQuery} emptyCopy="No temporary filters" scopeProjectId={scopeProjectId} />
       <FilterConditionEditor
         data={data}
         query={temporaryQuery}
         onQuery={onTemporaryQuery}
         compact={compact}
+        scopeProjectId={scopeProjectId}
         clearLabel="Clear temporary"
       />
     </section>
   </div>;
 }
 
-export function FilterPopover({ data, savedView, temporaryQuery, onTemporaryQuery, onEditSaved, onClose }: {
+export function FilterPopover({ data, savedView, temporaryQuery, onTemporaryQuery, onEditSaved, scopeProjectId = null, onClose }: {
   data: AppSnapshot;
   savedView?: SavedViewRecord;
   temporaryQuery: ViewQuery;
   onTemporaryQuery: (query: ViewQuery) => void;
   onEditSaved?: () => void;
+  scopeProjectId?: string | null;
   onClose: () => void;
 }) {
   return <Popover title="Filter" className="filter-popover" onClose={onClose}>
@@ -6885,18 +6917,27 @@ export function FilterPopover({ data, savedView, temporaryQuery, onTemporaryQuer
       temporaryQuery={temporaryQuery}
       onTemporaryQuery={onTemporaryQuery}
       onEditSaved={onEditSaved}
+      scopeProjectId={scopeProjectId}
     />
   </Popover>;
 }
 
-export function FilterConditionEditor({ data, query, onQuery, compact = false, clearLabel = "Clear all" }: {
+export function FilterConditionEditor({ data, query, onQuery, scopeProjectId = null, compact = false, clearLabel = "Clear all" }: {
   data: AppSnapshot;
   query: ViewQuery;
   onQuery: (query: ViewQuery) => void;
+  scopeProjectId?: string | null;
   compact?: boolean;
   clearLabel?: string;
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [propertySearch, setPropertySearch] = useState("");
+  const [activeFieldIndex, setActiveFieldIndex] = useState(0);
+  const [focusConditionIndex, setFocusConditionIndex] = useState<number | null>(null);
+  const addFilterRef = useRef<HTMLButtonElement>(null);
+  const fieldButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const builderRef = useRef<HTMLDivElement>(null);
+  const menuId = useId();
   const canonical = canonicalViewQuery(query);
   const needle = propertySearch.trim().toLocaleLowerCase();
   const availableFields = filterFieldOptions.filter((field) => field.value !== "label_group" || (data.labelGroups ?? []).length > 0);
@@ -6907,17 +6948,36 @@ export function FilterConditionEditor({ data, query, onQuery, compact = false, c
     version: 1,
     op: "all",
     conditions,
+    ...(canonical.search?.trim() ? { search: canonical.search } : {}),
   });
   const add = (field: ViewFilterField) => {
-    replaceConditions([...canonical.conditions, defaultFilterCondition(field, data)]);
+    const nextIndex = canonical.conditions.length;
+    replaceConditions([...canonical.conditions, defaultFilterCondition(field, data, scopeProjectId)]);
     setPropertySearch("");
+    setPickerOpen(false);
+    setFocusConditionIndex(nextIndex);
   };
-  return <div className={`filter-builder ${compact ? "compact" : ""}`}>
-    <label className="filter-property-search"><Search size={13} /><input type="search" value={propertySearch} onChange={(event) => setPropertySearch(event.target.value)} placeholder="Search properties…" aria-label="Search filter properties" /></label>
-    <div className="filter-property-grid" role="list" aria-label="Filter properties">
-      {fields.map((field) => <button type="button" key={field.value} onClick={() => add(field.value)}>{field.label}</button>)}
-      {!fields.length && <p>No matching properties.</p>}
-    </div>
+  const closePicker = () => {
+    setPickerOpen(false);
+    setPropertySearch("");
+    setActiveFieldIndex(0);
+    window.requestAnimationFrame(() => addFilterRef.current?.focus());
+  };
+  const focusField = (index: number) => {
+    if (!fields.length) return;
+    const next = (index + fields.length) % fields.length;
+    setActiveFieldIndex(next);
+    window.requestAnimationFrame(() => fieldButtonRefs.current[next]?.focus());
+  };
+  useEffect(() => {
+    if (focusConditionIndex === null) return;
+    const row = builderRef.current?.querySelectorAll<HTMLElement>(".filter-condition-row")[focusConditionIndex];
+    const nextControl = row?.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+    if (!nextControl) return;
+    nextControl.focus();
+    setFocusConditionIndex(null);
+  }, [canonical.conditions.length, focusConditionIndex]);
+  return <div ref={builderRef} className={`filter-builder ${compact ? "compact" : ""}`}>
     {canonical.conditions.length > 0 && <div className="filter-formula" aria-label="Active filter formula">
       <span className="filter-formula-operator">AND</span>
       {canonical.conditions.map((condition, index) => <div className="filter-condition-row" key={`${condition.field}:${index}`}>
@@ -6928,11 +6988,11 @@ export function FilterConditionEditor({ data, query, onQuery, compact = false, c
           next[index] = {
             field: condition.field,
             operator,
-            ...filterConditionValue(condition.field, operator, data, condition.value),
+            ...filterConditionValue(condition.field, operator, data, condition.value, scopeProjectId),
           };
           replaceConditions(next);
         }}>{filterOperators(condition.field).map((operator) => <option key={operator} value={operator}>{filterOperatorLabels[operator]}</option>)}</select>
-        <FilterValueEditor condition={condition} data={data} onChange={(value) => {
+        <FilterValueEditor condition={condition} data={data} scopeProjectId={scopeProjectId} onChange={(value) => {
           const next = [...canonical.conditions];
           next[index] = value === undefined
             ? { field: condition.field, operator: condition.operator }
@@ -6943,12 +7003,30 @@ export function FilterConditionEditor({ data, query, onQuery, compact = false, c
       </div>)}
       <button className="button ghost popover-clear" type="button" onClick={() => replaceConditions([])}>{clearLabel}</button>
     </div>}
+    <button ref={addFilterRef} className="button ghost filter-add" type="button" aria-expanded={pickerOpen} aria-controls={pickerOpen ? menuId : undefined} onClick={() => { setPickerOpen((current) => !current); setActiveFieldIndex(0); }}><Plus size={13} />Add filter</button>
+    {pickerOpen && <div className="filter-property-picker">
+      <label className="filter-property-search"><Search size={13} /><input autoFocus type="search" value={propertySearch} onChange={(event) => { setPropertySearch(event.target.value); setActiveFieldIndex(0); }} onKeyDown={(event) => {
+        if (event.key === "Escape") { event.preventDefault(); closePicker(); }
+        if (event.key === "ArrowDown") { event.preventDefault(); focusField(activeFieldIndex); }
+        if (event.key === "ArrowUp") { event.preventDefault(); focusField(activeFieldIndex - 1); }
+        if (event.key === "Enter" && fields[activeFieldIndex]) { event.preventDefault(); add(fields[activeFieldIndex].value); }
+      }} placeholder="Search properties…" aria-label="Search filter properties" aria-controls={menuId} /></label>
+      <div id={menuId} className="filter-property-grid" role="menu" aria-label="Filter properties">
+        {fields.map((field, index) => <button ref={(element) => { fieldButtonRefs.current[index] = element; }} type="button" role="menuitem" key={field.value} onClick={() => add(field.value)} onFocus={() => setActiveFieldIndex(index)} onKeyDown={(event) => {
+          if (event.key === "Escape") { event.preventDefault(); closePicker(); }
+          if (event.key === "ArrowDown") { event.preventDefault(); focusField(index + 1); }
+          if (event.key === "ArrowUp") { event.preventDefault(); focusField(index - 1); }
+        }}>{field.label}</button>)}
+        {!fields.length && <p role="status">No matching properties.</p>}
+      </div>
+    </div>}
   </div>;
 }
 
-function FilterValueEditor({ condition, data, onChange }: {
+function FilterValueEditor({ condition, data, scopeProjectId, onChange }: {
   condition: ViewFilterCondition;
   data: AppSnapshot;
+  scopeProjectId: string | null;
   onChange: (value: ViewFilterCondition["value"] | undefined) => void;
 }) {
   if (["is_empty", "overdue", "next_7_days"].includes(condition.operator)) return null;
@@ -6960,7 +7038,9 @@ function FilterValueEditor({ condition, data, onChange }: {
     const value = condition.value as ViewFilterLabelGroupValue;
     const groups = data.labelGroups ?? [];
     const availableLabels = data.labels.filter((label) => label.groupId === value.groupId);
-    return <span className="filter-relation-value"><select aria-label="Label Group" value={value.groupId} onChange={(event) => onChange({ groupId: event.target.value, mode: "any" })}>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><select aria-label="Label Group match" value={value.mode} onChange={(event) => { const mode = event.target.value as ViewFilterLabelGroupValue["mode"]; onChange({ groupId: value.groupId, mode, ...(mode === "values" ? { labelIds: availableLabels[0] ? [availableLabels[0].id] : [] } : {}) }); }}><option value="any">Any value</option><option value="values">Selected values</option><option value="none">No value</option></select>{value.mode === "values" && <select multiple aria-label="Label Group values" value={value.labelIds ?? []} onChange={(event) => onChange({ ...value, labelIds: [...event.currentTarget.selectedOptions].map((option) => option.value) })}>{availableLabels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select>}</span>;
+    const groupAvailable = groups.some((group) => group.id === value.groupId);
+    const displayedGroupId = groupAvailable ? value.groupId : "__unavailable_label_group";
+    return <span className="filter-relation-value"><select aria-label="Label Group" value={displayedGroupId} onChange={(event) => onChange({ groupId: event.target.value, mode: "any" })}>{!groupAvailable && <option value="__unavailable_label_group" disabled>Unavailable label group</option>}{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select><select aria-label="Label Group match" value={value.mode} onChange={(event) => { const mode = event.target.value as ViewFilterLabelGroupValue["mode"]; onChange({ groupId: value.groupId, mode, ...(mode === "values" ? { labelIds: availableLabels[0] ? [availableLabels[0].id] : [] } : {}) }); }}><option value="any">Any value</option><option value="values">Selected values</option><option value="none">No value</option></select>{value.mode === "values" && <select multiple aria-label="Label Group values" value={value.labelIds ?? []} onChange={(event) => onChange({ ...value, labelIds: [...event.currentTarget.selectedOptions].map((option) => option.value) })}>{availableLabels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select>}</span>;
   }
   if (condition.field === "subtasks" || condition.field === "archived") {
     return <select aria-label={`${condition.field} value`} value={String(condition.value)} onChange={(event) => onChange(event.target.value === "true")}><option value="true">Yes</option><option value="false">No</option></select>;
@@ -6971,46 +7051,43 @@ function FilterValueEditor({ condition, data, onChange }: {
   if (["due_date", "created_at", "updated_at", "started_at", "completed_at", "canceled_at"].includes(condition.field)) {
     return <input aria-label={`${condition.field} date`} type="date" value={String(condition.value ?? "")} onChange={(event) => onChange(event.target.value)} />;
   }
-  const options = filterCatalogOptions(condition.field, data);
-  const selectedValues = Array.isArray(condition.value)
-    ? condition.value.map(String)
-    : [String(condition.value ?? "")];
-  const missingReleaseValues = condition.field === "release"
-    ? selectedValues.filter((value) => value && !options.some((option) => option.value === value))
-    : [];
-  const unavailableReleaseOptions = missingReleaseValues.map((persistedValue, index) => ({
-    value: `__unavailable_release_${index}`,
+  const options = filterCatalogOptions(condition.field, data, scopeProjectId);
+  const selectedValues = filterConditionValues(condition);
+  const missingValues = selectedValues.filter((value) => value && !options.some((option) => option.value === value));
+  const unavailableOptions = missingValues.map((persistedValue, index) => ({
+    value: `__unavailable_${condition.field}_${index}`,
     persistedValue,
-    label: "Unavailable release",
+    label: unavailableFilterLabel(condition.field),
     unavailable: true,
   }));
-  const unavailableReleaseValues = new Map(
-    unavailableReleaseOptions.map((option) => [option.value, option.persistedValue]),
+  const unavailableValues = new Map(
+    unavailableOptions.map((option) => [option.value, option.persistedValue]),
   );
   const valueOptions = [
-    ...unavailableReleaseOptions,
+    ...unavailableOptions,
     ...options.map((option) => ({ ...option, persistedValue: option.value, unavailable: false })),
   ];
   if (condition.operator === "in" || condition.operator === "not_in") {
     const selected = new Set(Array.isArray(condition.value) ? condition.value : []);
     const displayed = [...selected].map((value) =>
-      unavailableReleaseOptions.find((option) => option.persistedValue === value)?.value ?? String(value)
+      unavailableOptions.find((option) => option.persistedValue === value)?.value ?? String(value)
     );
-    return <select multiple aria-label={`${condition.field} values`} value={displayed} onChange={(event) => onChange([...event.currentTarget.selectedOptions].map((option) => unavailableReleaseValues.get(option.value) ?? option.value))}>{valueOptions.map((option) => <option key={option.value} value={option.value} disabled={option.unavailable}>{option.label}</option>)}</select>;
+    return <select multiple aria-label={`${condition.field} values`} value={displayed} onChange={(event) => onChange([...event.currentTarget.selectedOptions].map((option) => unavailableValues.get(option.value) ?? option.value))}>{valueOptions.map((option) => <option key={option.value} value={option.value} disabled={option.unavailable}>{option.label}</option>)}</select>;
   }
-  const displayed = unavailableReleaseOptions[0]?.value ?? String(condition.value ?? "");
-  return <select aria-label={`${condition.field} value`} value={displayed} onChange={(event) => onChange(unavailableReleaseValues.get(event.target.value) ?? event.target.value)}>{valueOptions.map((option) => <option key={option.value} value={option.value} disabled={option.unavailable}>{option.label}</option>)}</select>;
+  const displayed = unavailableOptions[0]?.value ?? String(condition.value ?? "");
+  return <select aria-label={`${condition.field} value`} value={displayed} onChange={(event) => onChange(unavailableValues.get(event.target.value) ?? event.target.value)}>{valueOptions.map((option) => <option key={option.value} value={option.value} disabled={option.unavailable}>{option.label}</option>)}</select>;
 }
 
-function FilterChips({ data, query, onQuery, onEdit }: {
+function FilterChips({ data, query, scopeProjectId, onQuery, onEdit }: {
   data: AppSnapshot;
   query: ViewQuery;
+  scopeProjectId?: string | null;
   onQuery: (query: ViewQuery) => void;
   onEdit: () => void;
 }) {
   const canonical = canonicalViewQuery(query);
-  const remove = (index: number) => onQuery({ version: 1, op: "all", conditions: canonical.conditions.filter((_, itemIndex) => itemIndex !== index) });
-  return <div className="filter-chip-list temporary" aria-label="Temporary filters"><span className="filter-chip-layer-label">Temporary</span>{canonical.conditions.map((condition, index) => <span className="filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data)}</button><button type="button" aria-label={`Remove ${condition.field} filter`} onClick={() => remove(index)}><X size={11} /></button></span>)}<button className="filter-clear-all" type="button" onClick={() => onQuery(emptyViewQuery())}>Clear temporary</button></div>;
+  const remove = (index: number) => onQuery({ version: 1, op: "all", conditions: canonical.conditions.filter((_, itemIndex) => itemIndex !== index), ...(canonical.search?.trim() ? { search: canonical.search } : {}) });
+  return <div className="filter-chip-list temporary" aria-label="Temporary filters"><span className="filter-chip-layer-label">Temporary</span>{canonical.conditions.map((condition, index) => <span className="filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data, scopeProjectId)}</button><button type="button" aria-label={`Remove ${condition.field} filter`} onClick={() => remove(index)}><X size={11} /></button></span>)}<button className="filter-clear-all" type="button" onClick={() => onQuery(emptyViewQuery())}>Clear temporary</button></div>;
 }
 
 function SavedFilterChips({ data, view, onEdit }: {
@@ -7023,7 +7100,7 @@ function SavedFilterChips({ data, view, onEdit }: {
   return <div className="filter-chip-list saved" aria-label={`Saved in ${view.name}`}>
     <span className="filter-chip-layer-label"><Save size={11} />Saved in {view.name}</span>
     {canonical.search?.trim() && <span className="filter-chip saved-filter-chip"><button type="button" onClick={onEdit}>Search contains “{canonical.search.trim()}”</button></span>}
-    {canonical.conditions.map((condition, index) => <span className="filter-chip saved-filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data)}</button></span>)}
+    {canonical.conditions.map((condition, index) => <span className="filter-chip saved-filter-chip" key={`${condition.field}:${index}`}><button type="button" onClick={onEdit}>{filterConditionSummary(condition, data, view.scopeProjectId)}</button></span>)}
   </div>;
 }
 
@@ -7038,18 +7115,18 @@ function filterOperators(field: ViewFilterField): ViewFilterOperator[] {
   return ["is", "is_not", "in", "not_in", "is_empty"];
 }
 
-function defaultFilterCondition(field: ViewFilterField, data: AppSnapshot): ViewFilterCondition {
+function defaultFilterCondition(field: ViewFilterField, data: AppSnapshot, scopeProjectId: string | null): ViewFilterCondition {
   if (field === "label_group") {
     return { field, operator: "is", value: { groupId: (data.labelGroups ?? [])[0]?.id ?? "", mode: "any" } };
   }
-  if (["status", "assignee", "project", "release", "label", "parent"].includes(field) && !filterCatalogOptions(field, data).length) {
+  if (["status", "assignee", "project", "release", "label", "parent"].includes(field) && !filterCatalogOptions(field, data, scopeProjectId).length) {
     return { field, operator: "is_empty" };
   }
   const operator: ViewFilterOperator = field === "estimate" ? "eq" : ["due_date", "created_at", "updated_at", "started_at", "completed_at", "canceled_at"].includes(field) ? "on" : "is";
-  return { field, operator, ...filterConditionValue(field, operator, data) };
+  return { field, operator, ...filterConditionValue(field, operator, data, undefined, scopeProjectId) };
 }
 
-function filterConditionValue(field: ViewFilterField, operator: ViewFilterOperator, data: AppSnapshot, previous?: ViewFilterCondition["value"]): Pick<ViewFilterCondition, "value"> | Record<string, never> {
+function filterConditionValue(field: ViewFilterField, operator: ViewFilterOperator, data: AppSnapshot, previous?: ViewFilterCondition["value"], scopeProjectId: string | null = null): Pick<ViewFilterCondition, "value"> | Record<string, never> {
   if (["is_empty", "overdue", "next_7_days"].includes(operator)) return {};
   if (field === "relation") return { value: typeof previous === "object" && previous && !Array.isArray(previous) ? previous : { type: "any", direction: "either" } };
   if (field === "label_group") {
@@ -7061,7 +7138,7 @@ function filterConditionValue(field: ViewFilterField, operator: ViewFilterOperat
   if (field === "estimate") return { value: typeof previous === "number" ? previous : 0 };
   if (operator === "recent") return { value: typeof previous === "number" ? previous : 24 };
   if (["due_date", "created_at", "updated_at", "started_at", "completed_at", "canceled_at"].includes(field)) return { value: typeof previous === "string" ? previous : new Date().toISOString().slice(0, 10) };
-  const options = filterCatalogOptions(field, data);
+  const options = filterCatalogOptions(field, data, scopeProjectId);
   if (operator === "in" || operator === "not_in") {
     const previousValues = Array.isArray(previous) ? previous : typeof previous === "string" ? [previous] : [];
     return { value: previousValues.length ? previousValues : options[0] ? [options[0].value] : [] };
@@ -7069,20 +7146,7 @@ function filterConditionValue(field: ViewFilterField, operator: ViewFilterOperat
   return { value: typeof previous === "string" ? previous : options[0]?.value ?? "" };
 }
 
-function filterCatalogOptions(field: ViewFilterField, data: AppSnapshot) {
-  if (field === "status") return data.statuses.map((item) => ({ value: item.id, label: item.name }));
-  if (field === "status_category") return ["backlog", "unstarted", "started", "completed", "canceled"].map((value) => ({ value, label: value[0]!.toUpperCase() + value.slice(1) }));
-  if (field === "priority") return Object.entries(priorityMeta).map(([value, meta]) => ({ value, label: meta.label }));
-  if (field === "assignee") return data.users.map((item) => ({ value: item.id, label: item.displayName }));
-  if (field === "project") return data.projects.map((item) => ({ value: item.id, label: item.name }));
-  if (field === "release") return data.releases.map((item) => ({ value: item.id, label: item.name }));
-  if (field === "label") return data.labels.map((item) => ({ value: item.id, label: item.name }));
-  if (field === "label_group") return (data.labelGroups ?? []).map((item) => ({ value: item.id, label: item.name }));
-  if (field === "parent") return data.tasks.map((item) => ({ value: item.id, label: `${item.identifier} · ${item.title}` }));
-  return [];
-}
-
-function filterConditionSummary(condition: ViewFilterCondition, data: AppSnapshot) {
+function filterConditionSummary(condition: ViewFilterCondition, data: AppSnapshot, scopeProjectId: string | null = null) {
   const field = filterFieldOptions.find((item) => item.value === condition.field)?.label ?? condition.field;
   if (["is_empty", "overdue", "next_7_days"].includes(condition.operator)) return `${field} ${filterOperatorLabels[condition.operator]}`;
   if (condition.field === "relation") {
@@ -7091,21 +7155,21 @@ function filterConditionSummary(condition: ViewFilterCondition, data: AppSnapsho
   }
   if (condition.field === "label_group") {
     const value = condition.value as ViewFilterLabelGroupValue;
-    const group = (data.labelGroups ?? []).find((item) => item.id === value.groupId)?.name ?? value.groupId;
-    const labels = (value.labelIds ?? []).map((id) => data.labels.find((label) => label.id === id)?.name ?? id);
+    const group = (data.labelGroups ?? []).find((item) => item.id === value.groupId)?.name ?? "Unavailable label group";
+    const labels = (value.labelIds ?? []).map((id) => data.labels.find((label) => label.id === id)?.name ?? "Unavailable label");
     return `${field} ${filterOperatorLabels[condition.operator]} ${group}: ${value.mode === "values" ? labels.join(", ") : value.mode}`;
   }
-  const options = new Map(filterCatalogOptions(condition.field, data).map((item) => [item.value, item.label]));
+  const options = new Map(filterCatalogOptions(condition.field, data, scopeProjectId).map((item) => [item.value, item.label]));
   const values = Array.isArray(condition.value) ? condition.value : [String(condition.value)];
   return `${field} ${filterOperatorLabels[condition.operator]} ${values.map((value) => {
     const resolved = options.get(String(value));
     if (resolved) return resolved;
-    return condition.field === "release" ? "Unavailable release" : String(value);
+    return unavailableFilterLabel(condition.field);
   }).join(", ")}`;
 }
 function DisplayPopover({ display, labelGroups, onLayout, onDisplay, onClose }: { display: ViewDisplay; labelGroups: LabelGroupRecord[]; onLayout: (value: Layout) => void; onDisplay: (changes: Partial<ViewDisplay>) => void; onClose: () => void }) {
-  const emptyGroupsDisabled = display.groupBy === "status" || display.groupBy === "none";
-  return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={display.layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={display.layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={display.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; onDisplay({ groupBy, labelGroupId: groupBy === "label_group" ? display.labelGroupId ?? labelGroups.find((group) => !group.archivedAt)?.id ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{display.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={display.labelGroupId ?? ""} onChange={(event) => onDisplay({ labelGroupId: event.target.value || null })}>{labelGroups.filter((group) => !group.archivedAt || group.id === display.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}<label className="popover-field"><span>Order by</span><select value={display.orderBy} onChange={(event) => onDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={display.direction} disabled={display.orderBy === "manual"} onChange={(event) => onDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={display.visibleFields.includes(option.value)} onChange={() => onDisplay({ visibleFields: toggleViewField(display.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox" title={display.groupBy === "status" ? "Empty status groups are always hidden." : undefined}><input type="checkbox" checked={display.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => onDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>{display.groupBy === "status" && <small className="display-help">Empty status groups are always hidden.</small>}</Popover>;
+  const dependencies = viewDisplayDependencies(display);
+  return <Popover title="Display" onClose={onClose}><div className="display-option"><span>Layout</span><div className="segmented wide"><button className={display.layout === "list" ? "active" : ""} onClick={() => onLayout("list")}><LayoutList size={13} />List</button><button className={display.layout === "board" ? "active" : ""} onClick={() => onLayout("board")}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={display.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; onDisplay({ groupBy, labelGroupId: groupBy === "label_group" ? display.labelGroupId ?? labelGroups.find((group) => !group.archivedAt)?.id ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{display.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={display.labelGroupId ?? ""} onChange={(event) => onDisplay({ labelGroupId: event.target.value || null })}>{labelGroups.filter((group) => !group.archivedAt || group.id === display.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}<label className="popover-field"><span>Order by</span><select value={display.orderBy} onChange={(event) => onDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={display.direction} disabled={dependencies.directionDisabled} aria-describedby={dependencies.directionReason ? "display-direction-help" : undefined} onChange={(event) => onDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>{dependencies.directionReason && <small id="display-direction-help" className="display-dependency-hint">{dependencies.directionReason}</small>}<fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={display.visibleFields.includes(option.value)} onChange={() => onDisplay({ visibleFields: toggleViewField(display.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox"><input type="checkbox" checked={display.showEmptyGroups} disabled={dependencies.emptyGroupsDisabled} aria-describedby={dependencies.emptyGroupsReason ? "display-empty-groups-help" : undefined} onChange={(event) => onDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>{dependencies.emptyGroupsReason && <small id="display-empty-groups-help" className="display-dependency-hint">{dependencies.emptyGroupsReason}</small>}</Popover>;
 }
 function Popover({ title, onClose, children, className = "" }: { title: string; onClose: () => void; children: React.ReactNode; className?: string }) { return <div className={`popover ${className}`}><header><b>{title}</b><button onClick={onClose}><X size={13} /></button></header>{children}</div>; }
 
@@ -7698,16 +7762,117 @@ export function viewDialogDraftQuery(
   return canonicalViewQuery(editing ? view?.query : query);
 }
 
-export function ViewDialog({ view, editing, query, display, data, initialScopeProjectId, temporaryFilterCount = 0, onClose, onSubmit, busy }: { view?: SavedViewRecord; editing: boolean; query: ViewQuery; display: ViewDisplay; data: AppSnapshot; initialScopeProjectId: string | null; temporaryFilterCount?: number; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<void>; busy: boolean }) {
-  const [name, setName] = useState(editing ? view?.name ?? "" : view ? `${view.name} copy` : "");
-  const [scopeProjectId, setScopeProjectId] = useState(initialScopeProjectId ?? "");
-  const [savedQueryDraft, setSavedQueryDraft] = useState<ViewQuery>(() => viewDialogDraftQuery(editing, view, query));
-  const [displayDraft, setDisplayDraft] = useState<ViewDisplay>(() => ({ ...display, visibleFields: [...display.visibleFields] }));
+type ViewDialogDraft = {
+  name: string;
+  scopeProjectId: string | null;
+  query: ViewQuery;
+  display: ViewDisplay;
+};
+
+function comparableViewDialogDraft(draft: ViewDialogDraft) {
+  return JSON.stringify({
+    name: draft.name.trim(),
+    scopeProjectId: draft.scopeProjectId || null,
+    query: canonicalViewQuery(draft.query),
+    display: {
+      ...draft.display,
+      labelGroupId: draft.display.labelGroupId ?? null,
+      visibleFields: [...draft.display.visibleFields],
+    },
+  });
+}
+
+export function viewDialogDraftIsDirty(initial: ViewDialogDraft, current: ViewDialogDraft) {
+  return comparableViewDialogDraft(initial) !== comparableViewDialogDraft(current);
+}
+
+function ViewDisplayEditor({ display, data, scopeProjectId, onDisplay }: {
+  display: ViewDisplay;
+  data: AppSnapshot;
+  scopeProjectId: string | null;
+  onDisplay: (changes: Partial<ViewDisplay>) => void;
+}) {
+  const dependencies = viewDisplayDependencies(display);
+  const labelGroups = filterCatalogOptions("label_group", data, scopeProjectId);
+  return <div className="view-display-editor">
+    <div className="display-option"><span>Layout</span><div className="segmented wide"><button type="button" className={display.layout === "list" ? "active" : ""} onClick={() => onDisplay({ layout: "list" })}><LayoutList size={13} />List</button><button type="button" className={display.layout === "board" ? "active" : ""} onClick={() => onDisplay({ layout: "board" })}><Columns3 size={13} />Board</button></div></div>
+    <label className="popover-field"><span>Group by</span><select value={display.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; onDisplay({ groupBy, labelGroupId: groupBy === "label_group" ? display.labelGroupId ?? labelGroups[0]?.value ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+    {display.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={display.labelGroupId ?? ""} onChange={(event) => onDisplay({ labelGroupId: event.target.value || null })}>{labelGroups.map((group) => <option key={group.value} value={group.value}>{group.label}</option>)}</select></label>}
+    <label className="popover-field"><span>Order by</span><select value={display.orderBy} onChange={(event) => onDisplay({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+    <label className="popover-field"><span>Direction</span><select value={display.direction} disabled={dependencies.directionDisabled} aria-describedby={dependencies.directionReason ? "view-direction-help" : undefined} onChange={(event) => onDisplay({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label>
+    {dependencies.directionReason && <small id="view-direction-help" className="display-dependency-hint">{dependencies.directionReason}</small>}
+    <fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={display.visibleFields.includes(option.value)} onChange={() => onDisplay({ visibleFields: toggleViewField(display.visibleFields, option.value) })} />{option.label}</label>)}</fieldset>
+    <label className="display-checkbox"><input type="checkbox" checked={display.showEmptyGroups} disabled={dependencies.emptyGroupsDisabled} aria-describedby={dependencies.emptyGroupsReason ? "view-empty-groups-help" : undefined} onChange={(event) => onDisplay({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label>
+    {dependencies.emptyGroupsReason && <small id="view-empty-groups-help" className="display-dependency-hint">{dependencies.emptyGroupsReason}</small>}
+  </div>;
+}
+
+export function ViewDialog({ view, editing, query, display, data, initialScopeProjectId, temporaryFilterCount = 0, submissionError = "", onClose, onSubmit, busy }: { view?: SavedViewRecord; editing: boolean; query: ViewQuery; display: ViewDisplay; data: AppSnapshot; initialScopeProjectId: string | null; temporaryFilterCount?: number; submissionError?: string; onClose: () => void; onSubmit: (input: Record<string, unknown>) => Promise<boolean | void>; busy: boolean }) {
+  const [initialDraft] = useState<ViewDialogDraft>(() => ({
+    name: editing ? view?.name ?? "" : view ? `${view.name} copy` : "",
+    scopeProjectId: initialScopeProjectId || null,
+    query: viewDialogDraftQuery(editing, view, query),
+    display: { ...display, visibleFields: [...display.visibleFields] },
+  }));
+  const [name, setName] = useState(initialDraft.name);
+  const [scopeProjectId, setScopeProjectId] = useState(initialDraft.scopeProjectId ?? "");
+  const [savedQueryDraft, setSavedQueryDraft] = useState<ViewQuery>(initialDraft.query);
+  const [displayDraft, setDisplayDraft] = useState<ViewDisplay>(initialDraft.display);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+  const [localError, setLocalError] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const canMoveScope = !editing || view?.accessRole === "owner";
   const projects = data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole));
-  const emptyGroupsDisabled = displayDraft.groupBy === "status" || displayDraft.groupBy === "none";
+  const currentDraft = { name, scopeProjectId: scopeProjectId || null, query: savedQueryDraft, display: displayDraft };
+  const dirty = viewDialogDraftIsDirty(initialDraft, currentDraft);
+  const unavailableReferences = unavailableFilterReferences(savedQueryDraft, data, scopeProjectId || null);
+  const invalid = !name.trim() || unavailableReferences.length > 0;
+  const canSubmit = !invalid && (!editing || dirty) && !busy && !submitting;
+  const dependencies = viewDisplayDependencies(displayDraft);
   const changeDisplayDraft = (changes: Partial<ViewDisplay>) => setDisplayDraft((current) => ({ ...current, ...changes }));
-  return <Modal onClose={onClose} className="project-dialog view-dialog" ariaLabel={editing ? `Edit ${view?.name ?? "Saved View"}` : "Save as view"}><form onSubmit={(event) => { event.preventDefault(); void onSubmit({ name, query: canonicalViewQuery(savedQueryDraft), display: displayDraft, scopeProjectId: scopeProjectId || null }); }}><DialogHeader title={editing ? "Edit view" : "Save as view"} icon={<Zap size={17} />} onClose={onClose} /><div className="form-stack project-form-stack"><label><span>View name</span><input name="name" required autoFocus placeholder="e.g. Upcoming launch" value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>Scope</span><select name="scopeProjectId" value={scopeProjectId} disabled={!canMoveScope} onChange={(event) => setScopeProjectId(event.target.value)}><option value="">Workspace (global)</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></label>{editing && temporaryFilterCount > 0 && <p className="view-temporary-warning" role="note"><ListFilter size={14} /><span><b>{temporaryFilterCount} temporary filter{temporaryFilterCount === 1 ? " is" : "s are"} not part of this Saved View.</b> Saving keeps {temporaryFilterCount === 1 ? "it" : "them"} active only in the current URL until you choose Clear temporary.</span></p>}<section className="view-dialog-section" aria-labelledby="saved-view-filter-heading"><header><h3 id="saved-view-filter-heading">Saved filters</h3><span>{queryFilterCount(savedQueryDraft)} active</span></header><FilterLayerSummary data={data} query={savedQueryDraft} emptyCopy="No saved filters" /><FilterConditionEditor data={data} query={savedQueryDraft} onQuery={setSavedQueryDraft} clearLabel="Clear saved filters" /></section><section className="view-dialog-section" aria-labelledby="saved-view-display-heading"><header><h3 id="saved-view-display-heading">Display</h3></header><div className="view-display-editor"><div className="display-option"><span>Layout</span><div className="segmented wide"><button type="button" className={displayDraft.layout === "list" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "list" })}><LayoutList size={13} />List</button><button type="button" className={displayDraft.layout === "board" ? "active" : ""} onClick={() => changeDisplayDraft({ layout: "board" })}><Columns3 size={13} />Board</button></div></div><label className="popover-field"><span>Group by</span><select value={displayDraft.groupBy} onChange={(event) => { const groupBy = event.target.value as ViewDisplay["groupBy"]; changeDisplayDraft({ groupBy, labelGroupId: groupBy === "label_group" ? displayDraft.labelGroupId ?? (data.labelGroups ?? []).find((group) => !group.archivedAt)?.id ?? null : null }); }}>{groupByOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>{displayDraft.groupBy === "label_group" && <label className="popover-field"><span>Label group</span><select value={displayDraft.labelGroupId ?? ""} onChange={(event) => changeDisplayDraft({ labelGroupId: event.target.value || null })}>{(data.labelGroups ?? []).filter((group) => !group.archivedAt || group.id === displayDraft.labelGroupId).map((group) => <option key={group.id} value={group.id}>{group.name}{group.archivedAt ? " (archived)" : ""}</option>)}</select></label>}<label className="popover-field"><span>Order by</span><select value={displayDraft.orderBy} onChange={(event) => changeDisplayDraft({ orderBy: event.target.value as ViewDisplay["orderBy"] })}>{viewOrderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label className="popover-field"><span>Direction</span><select value={displayDraft.direction} disabled={displayDraft.orderBy === "manual"} onChange={(event) => changeDisplayDraft({ direction: event.target.value as ViewDisplay["direction"] })}><option value="asc">Ascending</option><option value="desc">Descending</option></select></label><fieldset className="display-properties"><legend>Properties</legend>{viewFieldOptions.map((option) => <label key={option.value}><input type="checkbox" checked={displayDraft.visibleFields.includes(option.value)} onChange={() => changeDisplayDraft({ visibleFields: toggleViewField(displayDraft.visibleFields, option.value) })} />{option.label}</label>)}</fieldset><label className="display-checkbox"><input type="checkbox" checked={displayDraft.showEmptyGroups} disabled={emptyGroupsDisabled} onChange={(event) => changeDisplayDraft({ showEmptyGroups: event.target.checked })} /><span>Show empty groups</span></label></div></section>{scopeProjectId ? <p className="dialog-copy">This view is limited to the selected Project and inherits its access.</p> : <p className="dialog-copy">A global view only returns Tasks the reader can already access.</p>}</div><div className="project-dialog-footer"><span /><div><button className="button ghost" type="button" onClick={onClose}>Cancel</button><button className="button primary" disabled={busy || !name.trim()}>{busy ? "Saving…" : editing ? "Save changes" : "Save view"}</button></div></div></form></Modal>;
+  const requestClose = () => {
+    if (submitting || busy) return;
+    if (confirmDiscard) {
+      setConfirmDiscard(false);
+      return;
+    }
+    if (dirty) setConfirmDiscard(true);
+    else onClose();
+  };
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSubmit || submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    setLocalError("");
+    try {
+      const result = await onSubmit({ name: name.trim(), query: canonicalViewQuery(savedQueryDraft), display: displayDraft, scopeProjectId: scopeProjectId || null });
+      if (result === false) setLocalError("The view could not be saved. Your draft is still here.");
+    } catch (requestError) {
+      setLocalError(requestError instanceof Error ? requestError.message : "The view could not be saved. Your draft is still here.");
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+  return <Modal onClose={requestClose} className="project-dialog view-dialog" ariaLabel={editing ? `Edit ${view?.name ?? "Saved View"}` : "Save as view"}>
+    <form onSubmit={submit}>
+      <DialogHeader className="view-dialog-header" title={editing ? "Edit view" : "Save as view"} icon={<Zap size={17} />} onClose={requestClose} />
+      <div className="view-dialog-body form-stack project-form-stack">
+        <div className="view-dialog-general"><label><span>View name</span><input ref={nameInputRef} name="name" required autoFocus placeholder="e.g. Upcoming launch" value={name} onChange={(event) => setName(event.target.value)} /></label><label><span>Scope</span><select name="scopeProjectId" value={scopeProjectId} disabled={!canMoveScope} onChange={(event) => setScopeProjectId(event.target.value)}><option value="">Workspace (global)</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.taskCode} · {project.name}</option>)}</select></label></div>
+        {editing && temporaryFilterCount > 0 && <p className="view-temporary-warning" role="note"><ListFilter size={14} /><span><b>{temporaryFilterCount} temporary filter{temporaryFilterCount === 1 ? " is" : "s are"} not part of this Saved View.</b> Saving keeps {temporaryFilterCount === 1 ? "it" : "them"} active only in the current URL until you choose Clear temporary.</span></p>}
+        <section className="view-dialog-section" aria-labelledby="saved-view-filter-heading"><header><h3 id="saved-view-filter-heading">Saved filters</h3><span>{queryFilterCount(savedQueryDraft)} active</span></header><FilterConditionEditor data={data} query={savedQueryDraft} scopeProjectId={scopeProjectId || null} onQuery={setSavedQueryDraft} clearLabel="Clear saved filters" /></section>
+        <section className="view-dialog-section" aria-labelledby="saved-view-display-heading"><header><h3 id="saved-view-display-heading">Display</h3></header><ViewDisplayEditor display={displayDraft} data={data} scopeProjectId={scopeProjectId || null} onDisplay={changeDisplayDraft} /></section>
+        {scopeProjectId ? <p className="dialog-copy">This view is limited to the selected Project and inherits its access.</p> : <p className="dialog-copy">A global view only returns Tasks the reader can already access.</p>}
+        {unavailableReferences.length > 0 && <p className="dialog-warning" role="alert">Choose an available value for {unavailableReferences.length} filter reference{unavailableReferences.length === 1 ? "" : "s"} before saving. Stored references were not replaced.</p>}
+        {(localError || submissionError) && <p className="error-banner" role="alert">{localError || submissionError}</p>}
+      </div>
+      <div className="view-dialog-footer project-dialog-footer"><span>{editing && !dirty ? "No changes" : dependencies.directionReason ?? ""}</span><div><button className="button ghost" type="button" disabled={busy || submitting} onClick={requestClose}>Cancel</button><button className="button primary" disabled={!canSubmit}>{busy || submitting ? "Saving…" : editing ? "Save changes" : "Save view"}</button></div></div>
+      {confirmDiscard && <div className="view-discard-confirmation" role="alertdialog" aria-modal="true" aria-labelledby="discard-view-title"><h3 id="discard-view-title">Discard changes?</h3><p>Your unsaved view changes will be lost.</p><div><button autoFocus className="button ghost" type="button" onClick={() => { setConfirmDiscard(false); window.requestAnimationFrame(() => nameInputRef.current?.focus()); }}>Keep editing</button><button className="button danger" type="button" onClick={onClose}>Discard</button></div></div>}
+    </form>
+  </Modal>;
 }
 
 function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
@@ -8116,7 +8281,7 @@ function SetupCopyBlock({ value, label, copied, multiline = false, onCopy }: { v
   );
 }
 
-function DialogHeader({ title, icon, onClose }: { title: string; icon: React.ReactNode; onClose: () => void }) { return <div className="dialog-header"><div>{icon}<h2>{title}</h2></div><button type="button" className="icon-button" aria-label={`Close ${title}`} onClick={onClose}><X size={15} /></button></div>; }
+function DialogHeader({ title, icon, onClose, className = "" }: { title: string; icon: React.ReactNode; onClose: () => void; className?: string }) { return <div className={`dialog-header ${className}`}><div>{icon}<h2>{title}</h2></div><button type="button" className="icon-button" aria-label={`Close ${title}`} onClick={onClose}><X size={15} /></button></div>; }
 function DialogFooter({ busy, label, disabled }: { busy: boolean; label: string; disabled?: boolean }) { return <div className="dialog-footer"><span>Press Esc to close</span><button className="button primary" disabled={busy || disabled}>{busy ? "Saving…" : label}</button></div>; }
 const FOCUSABLE_SELECTOR = "button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1'])";
 function trapFocus(event: Pick<KeyboardEvent, "key" | "shiftKey" | "preventDefault">, container: HTMLElement | null) {
@@ -8136,10 +8301,22 @@ function trapFocus(event: Pick<KeyboardEvent, "key" | "shiftKey" | "preventDefau
 }
 function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () => void; children: React.ReactNode; className?: string; ariaLabel?: string }) {
   const modalRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
     const modal = modalRef.current;
-    const handleKey = (event: KeyboardEvent) => trapFocus(event, modal);
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      trapFocus(event, modal);
+    };
     modal?.addEventListener("keydown", handleKey);
     const frame = window.requestAnimationFrame(() => {
       if (!modal || modal.contains(document.activeElement)) return;
