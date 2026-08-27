@@ -566,12 +566,18 @@ async function advanceExportInventory(job: BackupJobRow) {
     ...(job.phase_cursor ? { cursor: job.phase_cursor } : {}),
   });
   const db = getD1();
+  const internalMaterializedKeys = await readUncommittedMaterializedKeys(
+    page.objects
+      .map((object) => object.key)
+      .filter((key) => !key.startsWith(`${attachmentStorageScope()}/backup-staging/`)),
+  );
   const current = await db.prepare(`SELECT COALESCE(MAX(ordinal), -1) AS ordinal
     FROM system_backup_objects WHERE job_id = ?`).bind(job.id)
     .first<{ ordinal: number }>();
   let ordinal = Number(current?.ordinal ?? -1) + 1;
   const statements: D1PreparedStatement[] = [];
   for (const object of page.objects) {
+    if (internalMaterializedKeys.has(object.key)) continue;
     const classified = classifyManagedObjectKey(object.key);
     if (!classified) continue;
     statements.push(db.prepare(`INSERT INTO system_backup_objects
@@ -938,12 +944,19 @@ async function advancePackagePreflight(job: BackupJobRow, currentUser: UserRecor
 
 async function advanceExportR2Revalidation(job: BackupJobRow) {
   const cursor = parseCursor(job.phase_cursor, { cursor: null as string | null, seen: 0 });
+  const stagingPrefix = `${attachmentStorageScope()}/backup-staging/`;
   const page = await getAttachmentBucket().list({
     limit: 250,
     ...(cursor.cursor ? { cursor: cursor.cursor } : {}),
   });
+  const internalMaterializedKeys = await readUncommittedMaterializedKeys(
+    page.objects
+      .map((object) => object.key)
+      .filter((key) => !key.startsWith(stagingPrefix)),
+  );
   let seen = cursor.seen;
   for (const object of page.objects) {
+    if (object.key.startsWith(stagingPrefix) || internalMaterializedKeys.has(object.key)) continue;
     const classified = classifyManagedObjectKey(object.key);
     if (!classified) continue;
     const match = await getD1().prepare(`SELECT 1 FROM system_backup_objects
@@ -1553,6 +1566,12 @@ async function commitExactReplace(importJobId: string, rollbackJobId: string, le
       ? statement.bind(importJobId, attachmentStorageScope(), safeJobPath(importJobId), importJobId, table.name)
       : statement.bind(importJobId, table.name));
   }
+  for (const tableName of deletionRestoreOrder) {
+    statements.push(
+      db.prepare(restoreDeletionStateFromJobSql(tableName))
+        .bind(importJobId, tableName),
+    );
+  }
   for (const table of resetOrRevoke) statements.push(db.prepare(`DELETE FROM ${table.name}`));
   statements.push(
     db.prepare("DELETE FROM task_label_group_values"),
@@ -1754,6 +1773,9 @@ async function readFrozenCounts(jobId: string): Promise<Record<string, number>> 
 
 function restoreFromJobSql(tableName: string, columns: readonly string[]) {
   const values = columns.map((column) => {
+    if (deletionDeferredTables.has(tableName) && deletionStateColumns.has(column)) {
+      return "NULL";
+    }
     if ((tableName === "stored_files" || tableName === "attachments") && column === "object_key") {
       return `COALESCE((SELECT materialized_object_key FROM system_backup_objects o
         WHERE o.job_id = ? AND o.logical_ref = json_extract(r.row_json, '$.object_key')
@@ -1766,6 +1788,51 @@ function restoreFromJobSql(tableName: string, columns: readonly string[]) {
   return `INSERT INTO ${tableName} (${columns.join(", ")})
     SELECT ${values.join(", ")} FROM system_backup_rows r
     WHERE r.job_id = ? AND r.table_name = ? ORDER BY r.ordinal`;
+}
+
+const deletionStateColumns = new Set(["deleted_at", "deleted_by_user_id", "purge_after"]);
+const deletionRestoreOrder = ["tasks", "releases", "saved_views", "projects"] as const;
+const deletionDeferredTables = new Set<string>(deletionRestoreOrder);
+
+function restoreDeletionStateFromJobSql(tableName: typeof deletionRestoreOrder[number]) {
+  return `WITH restored AS (
+    SELECT json_extract(row_json, '$.id') AS id,
+      json_extract(row_json, '$.deleted_at') AS deleted_at,
+      json_extract(row_json, '$.deleted_by_user_id') AS deleted_by_user_id,
+      json_extract(row_json, '$.purge_after') AS purge_after
+    FROM system_backup_rows WHERE job_id = ? AND table_name = ?
+  )
+  UPDATE ${tableName} SET
+    deleted_at = (SELECT deleted_at FROM restored WHERE restored.id = ${tableName}.id),
+    deleted_by_user_id = (SELECT deleted_by_user_id FROM restored WHERE restored.id = ${tableName}.id),
+    purge_after = (SELECT purge_after FROM restored WHERE restored.id = ${tableName}.id)
+  WHERE id IN (SELECT id FROM restored)`;
+}
+
+async function readUncommittedMaterializedKeys(keys: string[]) {
+  if (!keys.length) return new Set<string>();
+  const db = getD1();
+  const statements: D1PreparedStatement[] = [];
+  for (let offset = 0; offset < keys.length; offset += 40) {
+    const chunk = keys.slice(offset, offset + 40);
+    const placeholders = chunk.map(() => "?").join(", ");
+    statements.push(db.prepare(`SELECT o.staged_object_key, o.materialized_object_key
+      FROM system_backup_objects o
+      JOIN system_backup_jobs j ON j.id = o.job_id
+      WHERE j.d1_committed_at IS NULL AND (
+        o.staged_object_key IN (${placeholders})
+        OR o.materialized_object_key IN (${placeholders})
+      )`).bind(...chunk, ...chunk));
+  }
+  const results = await db.batch(statements);
+  const rows = results.flatMap((result) => result.results as Array<{
+    staged_object_key: string | null;
+    materialized_object_key: string | null;
+  }>);
+  return new Set(rows.flatMap((row) => [
+    row.staged_object_key,
+    row.materialized_object_key,
+  ]).filter((key): key is string => key !== null));
 }
 
 function jsonObjectExpression(columns: readonly string[], objectKeyOverride?: string) {
