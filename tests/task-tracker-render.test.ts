@@ -2540,8 +2540,8 @@ test("an administrator sees registration and activity statistics", () => {
   );
 
   assert.match(markup, /Administration/);
-  assert.match(markup, />Export</);
-  assert.match(markup, />Import</);
+  assert.match(markup, />Экспорт</);
+  assert.match(markup, />Импорт</);
   assert.match(markup, /Registered users/);
   assert.match(markup, /Attachment objects/);
   assert.match(markup, /1 orphan/);

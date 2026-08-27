@@ -603,6 +603,56 @@ export type SystemBackupCounts = Record<
   number
 >;
 
+export type SystemBackupJobStatus = {
+  jobId: string;
+  kind: "export" | "import" | "rollback";
+  status: string;
+  phase: string;
+  schemaVersion: number;
+  schemaFingerprint: string;
+  exportedAt: string | null;
+  rootSha256: string | null;
+  stateSha256: string | null;
+  counts: Record<string, number>;
+  progress: {
+    rows: number;
+    bytes: number;
+    parts: number;
+    nextPartIndex: number;
+  };
+  rollbackJobId: string | null;
+  cleanupPending: boolean;
+  error: string | null;
+  format: {
+    name: string;
+    version: number;
+    schemaVersion: number;
+    schemaFingerprint: string;
+  };
+  siteOrigin: string;
+  environmentScope: string;
+  r2: {
+    objects: number;
+    bytes: number;
+    bound: number;
+    unbound: number;
+    orphan: number;
+    namespaces: Record<string, { objects: number; bytes: number }>;
+  };
+  policies: {
+    exact: string[];
+    rebuild: string[];
+    reset: string[];
+    revoke: string[];
+    excluded: string[];
+  };
+  warnings: string[];
+  validationErrors: string[];
+  expiresAt: string;
+  downloadUrl: string | null;
+};
+
+/** Legacy monolithic API types kept until the chunked backend replaces it. */
 export type StagedSystemBackup = {
   importId: string;
   exportedAt: string;

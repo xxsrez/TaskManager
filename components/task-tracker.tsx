@@ -36,6 +36,7 @@ import {
   Palette,
   Plus,
   Rocket,
+  RotateCw,
   Save,
   Search,
   Share2,
@@ -178,6 +179,25 @@ import {
   startStoredFileUpload,
   type PublicStoredFileRecord,
 } from "@/lib/staged-file-upload";
+import {
+  applySystemBackupImport,
+  backupImportIsFullyValidated,
+  canApplySystemBackupImport,
+  createSystemBackupExport,
+  getBackupJobStatus,
+  readBackupCheckpoint,
+  retainBackupCheckpoint,
+  runSystemBackupJob,
+  safeBackupMessage,
+  safeSystemBackupDownloadUrl,
+  systemBackupExportCheckpointKey,
+  systemBackupImportCheckpointKey,
+  systemBackupMediaType,
+  systemBackupSafetyExportCheckpointKey,
+  uploadSystemBackupPackage,
+  writeBackupCheckpoint,
+  type SystemBackupCheckpoint,
+} from "@/lib/system-backup-client";
 import { TaskDescriptionEditor } from "@/components/task-description-editor";
 import { CommentAttachmentAuthoring } from "@/components/comment-attachment-authoring";
 import {
@@ -243,7 +263,6 @@ import type {
   AccessRole,
   ActivityEventRecord,
   ActivityPage,
-  AppliedSystemBackup,
   AppSnapshot,
   CommentPage,
   CommentRecord,
@@ -257,7 +276,7 @@ import type {
   ReleaseStatus,
   SavedViewRecord,
   StatusCategory,
-  StagedSystemBackup,
+  SystemBackupJobStatus,
   TaskRecord,
   TaskLabelAssignment,
   TaskDetailRecord,
@@ -300,7 +319,7 @@ type ShareTarget = {
   inherited: boolean;
 };
 
-type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | null;
+type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | null;
 export type CodexSetupMode = "desktop" | "cli";
 export type CodexSetupModeAction =
   | { type: "select"; mode: CodexSetupMode }
@@ -3067,39 +3086,6 @@ export function TaskTracker({
     }
   }, []);
 
-  async function downloadSystemBackup() {
-    setSystemBackupBusy(true);
-    setError("");
-    try {
-      const response = await fetch("/api/admin/export", {
-        method: "POST",
-        headers: { "x-task-manager-action": "system-backup" },
-      });
-      if (!response.ok) {
-        const value = await response.json().catch(() => null) as { error?: string } | null;
-        throw new Error(value?.error ?? "Could not export the system backup");
-      }
-      const blob = await response.blob();
-      const disposition = response.headers.get("content-disposition") ?? "";
-      const filename = disposition.match(/filename="([^"]+)"/)?.[1]
-        ?? `task-manager-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      return true;
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Could not export the system backup");
-      return false;
-    } finally {
-      setSystemBackupBusy(false);
-    }
-  }
-
   async function downloadProjectBackup(project: ProjectRecord) {
     setSystemBackupBusy(true);
     setError("");
@@ -4175,8 +4161,8 @@ export function TaskTracker({
               </span>
             )}
             <div className="title-actions">
-              {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadSystemBackup()}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Export"}</button>}
-              {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Import</button>}
+              {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => setDialog("systemExport")}><Download size={14} />Экспорт</button>}
+              {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Импорт</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
@@ -4458,7 +4444,8 @@ export function TaskTracker({
       {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} data={data} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} temporaryFilterCount={0} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); return ok; }} busy={busy} />}
       {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={activeSavedView.id} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } return ok; }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
-      {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onDownloadCurrent={downloadSystemBackup} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
+      {dialog === "systemExport" && <SystemBackupExportDialog onClose={() => setDialog(null)} onBusyChange={setSystemBackupBusy} />}
+      {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
       {dialog === "workflowSettings" && <WorkflowSettingsDialog initialStatuses={data.statuses.filter((status) => status.ownerUserId === data.user.id)} onClose={() => setDialog(null)} onStatuses={(statuses) => setData((current) => ({ ...current, statuses: [...current.statuses.filter((status) => status.ownerUserId !== current.user.id), ...statuses] }))} />}
       {dialog === "labelSettings" && <LabelSettingsDialog onClose={() => setDialog(null)} onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))} onGroups={(labelGroups) => setData((current) => ({ ...current, labelGroups: [...(current.labelGroups ?? []).filter((group) => group.ownerUserId !== current.user.id), ...labelGroups] }))} />}
@@ -7939,159 +7926,483 @@ function roleLabel(role: "owner" | "manager" | "editor" | "viewer") {
   return role === "owner" ? "Owner" : role === "manager" ? "Manager" : role === "editor" ? "Editor" : "Viewer";
 }
 
-function SystemImportDialog({
+function browserSessionStorage() {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function backupPhaseLabel(phase: string) {
+  const labels: Record<string, string> = {
+    freezing_d1: "Фиксация D1",
+    inventory_r2: "Инвентаризация файлов",
+    hash_objects: "Проверка файлов",
+    build_rows: "Упаковка таблиц",
+    build_object_parts: "Упаковка файлов",
+    state_digest_rows: "Контрольная сумма D1",
+    state_digest_objects: "Контрольная сумма R2",
+    finalize_export: "Завершение экспорта",
+    uploading: "Загрузка частей",
+    validating_parts: "Проверка частей",
+    validating_objects: "Проверка файлов",
+    preflight: "Полная проверка состояния",
+    revalidate_r2: "Повторная проверка R2",
+    apply_revalidate_rows: "Проверка D1 перед заменой",
+    apply_revalidate_objects: "Проверка R2 перед заменой",
+    prepare_rollback: "Подготовка страховочного снимка",
+    waiting_rollback: "Ожидание страховочного снимка",
+    materializing: "Подготовка новых объектов",
+    d1_cutover: "Атомарная замена D1",
+    verifying_d1: "Проверка восстановленной D1",
+    verifying_objects: "Проверка восстановленного R2",
+    cleanup: "Очистка прежних объектов",
+    ready: "Готово",
+    applied: "Восстановлено",
+    failed: "Остановлено",
+    expired: "Срок задания истёк",
+  };
+  return labels[phase] ?? "Обработка";
+}
+
+function backupByteSize(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return "0 Б";
+  const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+  const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+  const amount = value / (1024 ** index);
+  return `${amount.toLocaleString("ru-RU", { maximumFractionDigits: index === 0 ? 0 : 1 })} ${units[index]}`;
+}
+
+function backupOriginLabel(origin: string) {
+  try {
+    return new URL(origin).host;
+  } catch {
+    return "текущий Site";
+  }
+}
+
+function rememberBackupStatus(
+  key: string,
+  status: SystemBackupJobStatus,
+  extra: Pick<SystemBackupCheckpoint, "file" | "relatedJobId"> = {},
+) {
+  const storage = browserSessionStorage();
+  if (!storage) return;
+  writeBackupCheckpoint(
+    storage,
+    key,
+    retainBackupCheckpoint(status)
+      ? { jobId: status.jobId, kind: status.kind, ...extra }
+      : null,
+  );
+}
+
+function clearBackupStatus(key: string) {
+  const storage = browserSessionStorage();
+  if (storage) writeBackupCheckpoint(storage, key, null);
+}
+
+export function SystemBackupProgress({ status }: { status: SystemBackupJobStatus }) {
+  return <div className="system-backup-progress" role="status" aria-live="polite">
+    <span className={`system-backup-state ${status.status}`}>{backupPhaseLabel(status.phase)}</span>
+    <dl>
+      <div><dt>Строки</dt><dd>{status.progress.rows.toLocaleString("ru-RU")}</dd></div>
+      <div><dt>Данные</dt><dd>{backupByteSize(status.progress.bytes)}</dd></div>
+      <div><dt>Части</dt><dd>{status.progress.parts.toLocaleString("ru-RU")}</dd></div>
+      <div><dt>Следующая</dt><dd>{status.progress.nextPartIndex.toLocaleString("ru-RU")}</dd></div>
+    </dl>
+  </div>;
+}
+
+export function SystemBackupPreview({ status }: { status: SystemBackupJobStatus }) {
+  const counts = Object.entries(status.counts).sort(([left], [right]) => left.localeCompare(right));
+  const namespaces = Object.entries(status.r2.namespaces).sort(([left], [right]) => left.localeCompare(right));
+  const policies = [
+    ["Точно сохраняются", status.policies.exact],
+    ["Перестраиваются", status.policies.rebuild],
+    ["Сбрасываются", status.policies.reset],
+    ["Отзываются", status.policies.revoke],
+    ["Не входят", status.policies.excluded],
+  ] as const;
+  return <div className="system-backup-preview">
+    <div className="system-import-valid"><Check size={15} /><span><b>Полная проверка пройдена</b><small>{status.exportedAt ? `Снимок от ${longDateTime(status.exportedAt)}` : "Дата снимка уточняется"}</small></span></div>
+    <dl className="system-backup-metadata">
+      <div><dt>Формат</dt><dd>{status.format.name} v{status.format.version}</dd></div>
+      <div><dt>Схема</dt><dd>{status.schemaVersion}</dd></div>
+      <div><dt>Site</dt><dd>{backupOriginLabel(status.siteOrigin)}</dd></div>
+      <div><dt>Среда</dt><dd>{status.environmentScope}</dd></div>
+      <div className="wide"><dt>Fingerprint схемы</dt><dd><code>{status.schemaFingerprint}</code></dd></div>
+      <div className="wide"><dt>Root SHA-256</dt><dd><code>{status.rootSha256 ?? "—"}</code></dd></div>
+      <div className="wide"><dt>State SHA-256</dt><dd><code>{status.stateSha256 ?? "—"}</code></dd></div>
+    </dl>
+    <details className="system-backup-details" open>
+      <summary>Все таблицы · {counts.length}</summary>
+      <dl className="system-import-counts">
+        {counts.map(([name, count]) => <div key={name}><dt>{name}</dt><dd>{count.toLocaleString("ru-RU")}</dd></div>)}
+      </dl>
+    </details>
+    <details className="system-backup-details" open>
+      <summary>Файлы R2</summary>
+      <dl className="system-backup-r2">
+        <div><dt>Объекты</dt><dd>{status.r2.objects.toLocaleString("ru-RU")}</dd></div>
+        <div><dt>Объём</dt><dd>{backupByteSize(status.r2.bytes)}</dd></div>
+        <div><dt>Связанные</dt><dd>{status.r2.bound.toLocaleString("ru-RU")}</dd></div>
+        <div><dt>Несвязанные</dt><dd>{status.r2.unbound.toLocaleString("ru-RU")}</dd></div>
+        <div><dt>Сироты</dt><dd>{status.r2.orphan.toLocaleString("ru-RU")}</dd></div>
+      </dl>
+      {namespaces.length > 0 && <dl className="system-backup-namespaces">{namespaces.map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value.objects.toLocaleString("ru-RU")} · {backupByteSize(value.bytes)}</dd></div>)}</dl>}
+    </details>
+    <details className="system-backup-details">
+      <summary>Политики восстановления</summary>
+      <dl className="system-backup-policies">{policies.map(([label, values]) => <div key={label}><dt>{label}</dt><dd>{values.length > 0 ? values.join(", ") : "—"}</dd></div>)}</dl>
+    </details>
+    {(status.rollbackJobId || status.cleanupPending || status.error) && <dl className="system-backup-operational">
+      {status.rollbackJobId && <div><dt>Страховочный job</dt><dd>{status.rollbackJobId}</dd></div>}
+      {status.cleanupPending && <div><dt>Очистка</dt><dd>Замена завершена; очистка прежних объектов ещё идёт.</dd></div>}
+      {status.error && <div><dt>Состояние ошибки</dt><dd>{safeBackupMessage(status.error)}</dd></div>}
+    </dl>}
+    {status.warnings.length > 0 && <div className="system-backup-messages warning" role="status"><b>Предупреждения</b><ul>{status.warnings.map((warning, index) => <li key={`${warning}:${index}`}>{safeBackupMessage(warning)}</li>)}</ul></div>}
+    {status.validationErrors.length > 0 && <div className="system-backup-messages error" role="alert"><b>Ошибки проверки</b><ul>{status.validationErrors.map((error, index) => <li key={`${error}:${index}`}>{safeBackupMessage(error)}</li>)}</ul></div>}
+  </div>;
+}
+
+export function SystemBackupExportDialog({
   onClose,
-  onDownloadCurrent,
+  onBusyChange,
+}: {
+  onClose: () => void;
+  onBusyChange: (busy: boolean) => void;
+}) {
+  const [status, setStatus] = useState<SystemBackupJobStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [downloadStarted, setDownloadStarted] = useState(false);
+  const booted = useRef(false);
+
+  const setOperationBusy = useCallback((value: boolean) => {
+    setBusy(value);
+    onBusyChange(value);
+  }, [onBusyChange]);
+
+  const drive = useCallback(async (initial: SystemBackupJobStatus) => {
+    setOperationBusy(true);
+    setError("");
+    rememberBackupStatus(systemBackupExportCheckpointKey, initial);
+    try {
+      const result = await runSystemBackupJob(initial, {
+        onProgress: (next) => {
+          setStatus(next);
+          rememberBackupStatus(systemBackupExportCheckpointKey, next);
+        },
+      });
+      setStatus(result);
+      rememberBackupStatus(systemBackupExportCheckpointKey, result);
+      if (result.status === "failed" || result.status === "expired") {
+        setError("Экспорт остановлен до готового файла. Начните новый экспорт.");
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось продолжить экспорт.");
+    } finally {
+      setOperationBusy(false);
+    }
+  }, [setOperationBusy]);
+
+  const start = useCallback(async () => {
+    setDownloadStarted(false);
+    setOperationBusy(true);
+    setError("");
+    try {
+      const created = await createSystemBackupExport();
+      setStatus(created);
+      await drive(created);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось начать экспорт.");
+      setOperationBusy(false);
+    }
+  }, [drive, setOperationBusy]);
+
+  useEffect(() => {
+    if (booted.current) return;
+    booted.current = true;
+    const storage = browserSessionStorage();
+    const checkpoint = storage ? readBackupCheckpoint(storage, systemBackupExportCheckpointKey) : null;
+    if (!checkpoint) {
+      window.queueMicrotask(() => void start());
+      return;
+    }
+    void getBackupJobStatus(checkpoint.jobId).then((current) => {
+      setStatus(current);
+      rememberBackupStatus(systemBackupExportCheckpointKey, current);
+      if (current.status !== "ready" && current.status !== "failed" && current.status !== "expired") {
+        void drive(current);
+      }
+    }).catch((requestError: unknown) => {
+      clearBackupStatus(systemBackupExportCheckpointKey);
+      setError(requestError instanceof Error ? requestError.message : "Сохранённый экспорт недоступен.");
+    });
+  }, [drive, start]);
+
+  const downloadUrl = safeSystemBackupDownloadUrl(status?.downloadUrl ?? null);
+  return <Modal onClose={() => !busy && onClose()} className="system-import-modal system-export-modal">
+    <DialogHeader title="Экспорт полного состояния" icon={<Download size={17} />} onClose={() => !busy && onClose()} />
+    <div className="system-import-body">
+      <p>Снимок включает состояние всех пользователей, проектов, задач, представлений и оригиналы файлов. Он содержит чувствительные данные — храните его как секрет.</p>
+      {status && <SystemBackupProgress status={status} />}
+      {status?.status === "ready" && <SystemBackupPreview status={status} />}
+      {error && <p className="system-import-error" role="alert">{error}</p>}
+    </div>
+    <div className="dialog-footer system-backup-footer">
+      <span>{downloadStarted ? "Загрузка передана браузеру" : status?.status === "ready" ? "Файл готов и не кэшируется" : "Задание можно продолжить после перезагрузки страницы"}</span>
+      <div>
+        {(status?.status === "failed" || status?.status === "expired" || error) && <button className="button ghost" type="button" disabled={busy} onClick={() => void start()}><RotateCw size={14} />Начать заново</button>}
+        {downloadUrl && <a className="button primary" href={downloadUrl} download onClick={() => setDownloadStarted(true)}><Download size={14} />Скачать .tmbak</a>}
+      </div>
+    </div>
+  </Modal>;
+}
+
+export function SystemImportDialog({
+  onClose,
   onBusyChange,
   onApplied,
 }: {
   onClose: () => void;
-  onDownloadCurrent: () => Promise<boolean>;
   onBusyChange: (busy: boolean) => void;
-  onApplied: (result: AppliedSystemBackup) => void;
+  onApplied: (result: SystemBackupJobStatus) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
-  const [staged, setStaged] = useState<StagedSystemBackup | null>(null);
-  const [rollbackDownloaded, setRollbackDownloaded] = useState(false);
+  const [status, setStatus] = useState<SystemBackupJobStatus | null>(null);
+  const [safetyStatus, setSafetyStatus] = useState<SystemBackupJobStatus | null>(null);
+  const [safetyDownloaded, setSafetyDownloaded] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
-  const [downloadingCurrent, setDownloadingCurrent] = useState(false);
   const [error, setError] = useState("");
+  const booted = useRef(false);
+  const safetyBootedFor = useRef<string | null>(null);
 
-  function setImportBusy(value: boolean) {
+  const setImportBusy = useCallback((value: boolean) => {
     setBusy(value);
     onBusyChange(value);
-  }
+  }, [onBusyChange]);
+
+  const updateImportStatus = useCallback((next: SystemBackupJobStatus, selectedFile?: File | null) => {
+    setStatus(next);
+    const source = selectedFile ?? file;
+    rememberBackupStatus(systemBackupImportCheckpointKey, next, source ? {
+      file: { name: source.name, size: source.size, lastModified: source.lastModified },
+    } : {});
+  }, [file]);
+
+  const finishResumedImport = useCallback(async (initial: SystemBackupJobStatus) => {
+    setImportBusy(true);
+    setError("");
+    try {
+      const result = await runSystemBackupJob(initial, { onProgress: updateImportStatus });
+      updateImportStatus(result);
+      if (result.status === "applied") {
+        clearBackupStatus(systemBackupImportCheckpointKey);
+        clearBackupStatus(systemBackupSafetyExportCheckpointKey);
+        onApplied(result);
+      } else if (result.status === "failed" || result.status === "expired") {
+        setError("Сервер остановил операцию. Рабочее состояние не считается восстановленным.");
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось продолжить операцию.");
+    } finally {
+      setImportBusy(false);
+    }
+  }, [onApplied, setImportBusy, updateImportStatus]);
+
+  useEffect(() => {
+    if (booted.current) return;
+    booted.current = true;
+    const storage = browserSessionStorage();
+    const checkpoint = storage ? readBackupCheckpoint(storage, systemBackupImportCheckpointKey) : null;
+    if (!checkpoint) return;
+    void getBackupJobStatus(checkpoint.jobId).then((current) => {
+      setStatus(current);
+      if (current.status === "uploading") return;
+      if (current.status !== "ready" && current.status !== "failed" && current.status !== "expired" && current.status !== "applied") {
+        void finishResumedImport(current);
+      } else if (current.status === "applied") {
+        clearBackupStatus(systemBackupImportCheckpointKey);
+        onApplied(current);
+      }
+    }).catch((requestError: unknown) => {
+      clearBackupStatus(systemBackupImportCheckpointKey);
+      setError(requestError instanceof Error ? requestError.message : "Сохранённый импорт недоступен.");
+    });
+  }, [finishResumedImport, onApplied]);
+
+  useEffect(() => {
+    if (!status || !backupImportIsFullyValidated(status) || safetyBootedFor.current === status.jobId) return;
+    const importJobId = status.jobId;
+    safetyBootedFor.current = importJobId;
+    const storage = browserSessionStorage();
+    const checkpoint = storage ? readBackupCheckpoint(storage, systemBackupSafetyExportCheckpointKey) : null;
+    if (!checkpoint || checkpoint.relatedJobId !== importJobId) {
+      if (checkpoint) clearBackupStatus(systemBackupSafetyExportCheckpointKey);
+      return;
+    }
+    void getBackupJobStatus(checkpoint.jobId).then((current) => {
+      setSafetyStatus(current);
+      if (current.status !== "ready" && current.status !== "failed" && current.status !== "expired") {
+        setImportBusy(true);
+        void runSystemBackupJob(current, {
+          onProgress: (next) => {
+            setSafetyStatus(next);
+            rememberBackupStatus(systemBackupSafetyExportCheckpointKey, next, { relatedJobId: importJobId });
+          },
+        }).finally(() => setImportBusy(false));
+      }
+    }).catch(() => clearBackupStatus(systemBackupSafetyExportCheckpointKey));
+  }, [setImportBusy, status]);
 
   async function validateFile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!file) return;
     setImportBusy(true);
     setError("");
+    setSafetyDownloaded(false);
+    setSafetyStatus(null);
+    setConfirmation("");
+    clearBackupStatus(systemBackupSafetyExportCheckpointKey);
+    const storage = browserSessionStorage();
+    const checkpoint = storage ? readBackupCheckpoint(storage, systemBackupImportCheckpointKey) : null;
     try {
-      if (file.size > 10_000_000) throw new Error("Backup file is larger than 10 MB");
-      const response = await fetch("/api/admin/import/validate", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-task-manager-action": "system-backup",
+      const result = await uploadSystemBackupPackage(file, {
+        checkpoint,
+        onCheckpoint: (next) => {
+          if (storage) writeBackupCheckpoint(storage, systemBackupImportCheckpointKey, next);
         },
-        body: await file.text(),
+        onProgress: (next) => updateImportStatus(next, file),
       });
-      const value = await response.json().catch(() => null) as StagedSystemBackup | { error?: string } | null;
-      if (!response.ok || !value || "error" in value || !("importId" in value)) {
-        throw new Error(value && "error" in value ? value.error ?? "Backup validation failed" : "Backup validation failed");
+      updateImportStatus(result, file);
+      if (result.status === "failed" || result.status === "expired") {
+        setError("Backup не прошёл проверку. Рабочие данные не менялись.");
       }
-      setStaged(value);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Backup validation failed");
+      setError(requestError instanceof Error ? requestError.message : "Не удалось проверить backup-файл.");
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  async function createSafetyBackup() {
+    if (!status || !backupImportIsFullyValidated(status)) return;
+    setImportBusy(true);
+    setError("");
+    setSafetyDownloaded(false);
+    try {
+      const created = await createSystemBackupExport();
+      setSafetyStatus(created);
+      rememberBackupStatus(systemBackupSafetyExportCheckpointKey, created, { relatedJobId: status.jobId });
+      const result = await runSystemBackupJob(created, {
+        onProgress: (next) => {
+          setSafetyStatus(next);
+          rememberBackupStatus(systemBackupSafetyExportCheckpointKey, next, { relatedJobId: status.jobId });
+        },
+      });
+      setSafetyStatus(result);
+      rememberBackupStatus(systemBackupSafetyExportCheckpointKey, result, { relatedJobId: status.jobId });
+      if (result.status !== "ready") setError("Не удалось подготовить текущий страховочный снимок.");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Не удалось подготовить текущий backup.");
     } finally {
       setImportBusy(false);
     }
   }
 
   async function applyImport() {
-    if (!staged || confirmation !== "RESTORE" || !rollbackDownloaded) return;
+    if (!status || !canApplySystemBackupImport(status, safetyDownloaded, confirmation)) return;
     setImportBusy(true);
     setError("");
     try {
-      const response = await fetch("/api/admin/import", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-task-manager-action": "system-backup",
-        },
-        body: JSON.stringify({
-          importId: staged.importId,
-          sha256: staged.sha256,
-          confirmation,
-        }),
-      });
-      const value = await response.json().catch(() => null) as AppliedSystemBackup | { error?: string } | null;
-      if (!response.ok || !value || "error" in value || !("applied" in value)) {
-        throw new Error(value && "error" in value ? value.error ?? "System restore failed" : "System restore failed");
+      const applying = await applySystemBackupImport(status);
+      updateImportStatus(applying);
+      const result = await runSystemBackupJob(applying, { onProgress: updateImportStatus });
+      updateImportStatus(result);
+      if (result.status !== "applied") {
+        setError("Восстановление не подтверждено сервером как завершённое.");
+        return;
       }
-      onApplied(value);
+      clearBackupStatus(systemBackupImportCheckpointKey);
+      clearBackupStatus(systemBackupSafetyExportCheckpointKey);
+      onApplied(result);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "System restore failed");
+      setError(requestError instanceof Error ? requestError.message : "Не удалось завершить восстановление.");
+    } finally {
       setImportBusy(false);
     }
   }
 
-  return (
-    <Modal onClose={() => !busy && !downloadingCurrent && onClose()} className="system-import-modal">
-      <DialogHeader title="Import system backup" icon={<Upload size={17} />} onClose={() => !busy && !downloadingCurrent && onClose()} />
-      {!staged ? (
-        <form onSubmit={validateFile}>
-          <div className="system-import-body">
-            <p>This replaces every user, identity, task, project, release, saved view, label, relation and access grant in this Site.</p>
-            <label className="system-import-file">
-              <span>Backup file</span>
-              <input
-                type="file"
-                accept="application/json,.json"
-                required
-                onChange={(event) => {
-                  setFile(event.target.files?.[0] ?? null);
-                  setError("");
-                }}
-              />
-              <small>Task Manager system backup, up to 10 MB.</small>
-            </label>
-            {error && <p className="system-import-error" role="alert">{error}</p>}
-          </div>
-          <div className="dialog-footer">
-            <span>The live database is unchanged during validation</span>
-            <button className="button primary" disabled={!file || busy}>{busy ? "Validating…" : "Validate backup"}</button>
-          </div>
-        </form>
-      ) : (
+  function chooseAnotherFile() {
+    clearBackupStatus(systemBackupImportCheckpointKey);
+    clearBackupStatus(systemBackupSafetyExportCheckpointKey);
+    setStatus(null);
+    setSafetyStatus(null);
+    setSafetyDownloaded(false);
+    setConfirmation("");
+    setFile(null);
+    setError("");
+  }
+
+  const validated = backupImportIsFullyValidated(status);
+  const safetyUrl = safeSystemBackupDownloadUrl(safetyStatus?.downloadUrl ?? null);
+  return <Modal onClose={() => !busy && onClose()} className="system-import-modal">
+    <DialogHeader title="Импорт полного состояния" icon={<Upload size={17} />} onClose={() => !busy && onClose()} />
+    {!validated ? <form onSubmit={validateFile}>
+      <div className="system-import-body">
+        <p>Импорт полностью заменит состояние всех пользователей. До завершения проверки сервер не меняет рабочие таблицы и файлы.</p>
+        {status && <SystemBackupProgress status={status} />}
+        {status?.status === "uploading" && !file && <div className="system-backup-resume"><RotateCw size={14} /><span>Незавершённая загрузка найдена. Выберите тот же файл — уже принятые части повторно не отправятся.</span></div>}
+        <label className="system-import-file">
+          <span>Файл полного backup</span>
+          <input
+            type="file"
+            accept={`.tmbak,${systemBackupMediaType}`}
+            required
+            disabled={busy}
+            onChange={(event) => {
+              setFile(event.target.files?.[0] ?? null);
+              setError("");
+            }}
+          />
+          <small>Файл читается построчно; общий размер не ограничен 10 МБ.</small>
+        </label>
+        {status && (status.validationErrors.length > 0 || status.warnings.length > 0 || status.error) && <SystemBackupPreview status={status} />}
+        {error && <p className="system-import-error" role="alert">{error}</p>}
+      </div>
+      <div className="dialog-footer system-backup-footer">
+        <span>Повреждённый или неполный файл не меняет live state</span>
         <div>
-          <div className="system-import-body">
-            <div className="system-import-valid"><Check size={15} /><span><b>Backup validated</b><small>Exported {longDateTime(staged.exportedAt)} · schema {staged.schemaVersion}</small></span></div>
-            <dl className="system-import-counts">
-              <div><dt>Users</dt><dd>{staged.counts.users}</dd></div>
-              <div><dt>Tasks</dt><dd>{staged.counts.tasks}</dd></div>
-              <div><dt>Projects</dt><dd>{staged.counts.projects}</dd></div>
-              <div><dt>Releases</dt><dd>{staged.counts.releases}</dd></div>
-              <div><dt>Saved views</dt><dd>{staged.counts.saved_views}</dd></div>
-              <div><dt>Access grants</dt><dd>{staged.counts.access_grants}</dd></div>
-            </dl>
-            <div className="system-import-warning">
-              <b>This operation cannot be undone in the app.</b>
-              <span>Download the current state first. The replacement is atomic: either every table changes, or none do.</span>
-            </div>
-            <button
-              className="button secondary system-import-download"
-              type="button"
-              disabled={busy || downloadingCurrent || rollbackDownloaded}
-              onClick={() => {
-                setDownloadingCurrent(true);
-                setError("");
-                void onDownloadCurrent().then((ok) => {
-                  if (ok) setRollbackDownloaded(true);
-                  else setError("Current backup download failed");
-                  setDownloadingCurrent(false);
-                });
-              }}
-            >
-              {rollbackDownloaded ? <Check size={14} /> : <Download size={14} />}
-              {rollbackDownloaded ? "Current backup downloaded" : downloadingCurrent ? "Downloading…" : "Download current backup"}
-            </button>
-            <label className="system-import-confirmation">
-              <span>Type <b>RESTORE</b> to replace the live state</span>
-              <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck={false} />
-            </label>
-            {error && <p className="system-import-error" role="alert">{error}</p>}
-          </div>
-          <div className="dialog-footer">
-            <button className="button ghost" type="button" disabled={busy} onClick={() => setStaged(null)}>Choose another file</button>
-            <button className="button primary system-import-apply" type="button" disabled={busy || !rollbackDownloaded || confirmation !== "RESTORE"} onClick={() => void applyImport()}>{busy ? "Replacing…" : "Replace system state"}</button>
-          </div>
+          {status && (status.status === "uploading" || status.status === "failed" || status.status === "expired") && <button className="button ghost" type="button" disabled={busy} onClick={chooseAnotherFile}>Сбросить загрузку</button>}
+          <button className="button primary" disabled={!file || busy}>{busy ? "Проверяем…" : status?.status === "uploading" ? "Продолжить проверку" : "Загрузить и проверить"}</button>
         </div>
-      )}
-    </Modal>
-  );
+      </div>
+    </form> : <div>
+      <div className="system-import-body">
+        {status && <SystemBackupPreview status={status} />}
+        <div className="system-import-warning">
+          <b>Следующий шаг заменит всё рабочее состояние.</b>
+          <span>Сначала создайте и скачайте новый снимок текущего Site. Замена выполняется целиком; частичного восстановления нет.</span>
+        </div>
+        {!safetyStatus && <button className="button secondary system-import-download" type="button" disabled={busy} onClick={() => void createSafetyBackup()}><Database size={14} />Создать текущий backup</button>}
+        {safetyStatus && <SystemBackupProgress status={safetyStatus} />}
+        {safetyUrl && <a className={`button secondary system-import-download ${safetyDownloaded ? "confirmed" : ""}`} href={safetyUrl} download onClick={() => setSafetyDownloaded(true)}>{safetyDownloaded ? <Check size={14} /> : <Download size={14} />}{safetyDownloaded ? "Скачивание текущего backup запущено" : "Скачать текущий backup"}</a>}
+        <label className="system-import-confirmation">
+          <span>Введите <b>RESTORE</b>, чтобы заменить состояние</span>
+          <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" spellCheck={false} disabled={busy} />
+        </label>
+        {error && <p className="system-import-error" role="alert">{error}</p>}
+      </div>
+      <div className="dialog-footer system-backup-footer">
+        <button className="button ghost" type="button" disabled={busy} onClick={chooseAnotherFile}>Другой файл</button>
+        <button className="button primary system-import-apply" type="button" disabled={busy || !canApplySystemBackupImport(status, safetyDownloaded, confirmation)} onClick={() => void applyImport()}>{busy ? "Восстанавливаем…" : "Заменить всё состояние"}</button>
+      </div>
+    </div>}
+  </Modal>;
 }
 
 export function CodexSetupDialog({ onClose, initialMode = "desktop", embedded = false }: { onClose: () => void; initialMode?: CodexSetupMode; embedded?: boolean }) {
