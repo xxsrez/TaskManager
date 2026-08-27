@@ -88,8 +88,8 @@ relations. Runtime Linear import/provenance surfaces удалены; offline pla
 admin-only reconciliation сохраняют historical comments/activity/attachments
 как native records с explicit outcomes.
 Task Activity добавляет append-only native mutations и lossless Linear status
-history через отдельные lazy UI/REST/MCP pages; system/Project backup schema
-`11` сохраняет events и attachment/comment/activity reconciliation outcomes.
+history через отдельные lazy UI/REST/MCP pages; backup сохраняет events и
+attachment/comment/activity reconciliation outcomes.
 Administration
 поддерживает полный системный export и атомарный replace-import через
 версионированный logical snapshot. Google sign-in и исчерпывающая acceptance
@@ -125,11 +125,13 @@ inspection, retry safety, recoverable cleanup, details/composer UI,
 server-generated thumbnails, description images и lazy multi-session
 invalidation. Agent REST/MCP добавляют paginated metadata, private binary
 delivery, OpenAI native file input, versioned attachment delete и native
-relation commands. Current system/Project backup schema `14` переносит
-recoverable deletion tuple поверх введённых schema `13` normalized live
-Comment attachment refs; Task Activity, browser authoring для
+relation commands. System backup schema `15` имеет исчерпывающий D1/R2 registry,
+включает `stored_files`, `attachments.stored_file_id` и `task_sequences`, не
+поддерживает schemas `2`–`14` и отдельно классифицирует rebuild/reset/revoke/
+excluded state. Project bundle сохраняет свой отдельный schema `14` contract.
+Task Activity, browser authoring для
 root/reply/edit и lazy Comment renderer реализованы с LabelGroup topology,
-versioned User preferences, legacy compatibility и resumable legacy attachment
+versioned User preferences и resumable legacy attachment
 reconciliation. Authoring и renderer переиспользуют private Task Attachment
 upload/preview/download без публичных content URL.
 ADR-0012 заменяет optional/standalone Task semantics: каждая Task требует

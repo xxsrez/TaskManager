@@ -37,6 +37,21 @@ UAT test data создаются только внутри UAT identity scope. �
 разные статусы, Projects, Releases, Views и comments, но не копируются из
 production.
 
+### Проверка полного backup в UAT
+
+Для изменения system backup создайте в UAT минимум двух Users и данные во всех
+exact-классах registry, включая unbound/bound `StoredFile`, Attachment original,
+ACL, SavedView, provenance и sequence state. Export обязан зафиксировать counts,
+per-chunk и общий digest; import принимается только для schema `15` и того же
+Site/environment. Перед destructive apply сохраните отдельный rollback backup.
+
+После replace сравните registry-driven D1 counts/digests и R2 manifest/bytes,
+перестроенный `task_label_group_values`, сброшенный sync/purge state и отсутствие
+старых API/OAuth capabilities. Отдельно проверьте отказ schema `2`–`14`,
+повреждённого chunk/object и неизвестного R2 namespace без изменения live state.
+Эта процедура разрешена только для UAT synthetic data; production restore
+требует отдельной прямой команды пользователя.
+
 ## Production workflow
 
 Production workflow начинается только с прямой текущей команды пользователя,

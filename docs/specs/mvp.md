@@ -115,11 +115,10 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   version, типы, уникальность, ссылки, owner/domain invariants и наличие
   текущей admin identity; затем staging atomically заменяет live state одной
   D1 transaction. Merge и partial restore отсутствуют.
-- Current logical backup schema `14` сохраняет `deleted_at`,
-  `deleted_by_user_id` и `purge_after` у Projects, Releases, Tasks и SavedViews.
-  Schemas `2`–`13` сначала проверяются по исходному checksum и только затем
-  получают пустой deletion tuple, поэтому upgrade не может легализовать
-  изменённый legacy payload.
+- Current system backup schema `15` — единственный принимаемый формат. Он
+  следует исчерпывающему D1/R2 registry, включает `stored_files`,
+  `attachments.stored_file_id` и `task_sequences`; schemas `2`–`14`
+  отклоняются без upgrade. Project bundle сохраняет отдельный schema `14`.
 - Отдельный login-event или audit-event log пока не моделируется. Поэтому
   «last active» означает последний подтверждённый запрос, а не доказанный новый
   sign-in внутри уже действующей Sites session.
@@ -470,16 +469,14 @@ immutable ID и может группировать Tasks по значения�
   Каждая source row получает `migrated`/`exception`; offline повторный прогон не
   дублирует events. Raw evidence остаётся только в reconciliation/backup до
   отдельно разрешённого durable-data cleanup.
-- Project/system backup schema `14` сохраняет events, attachment migration
-  outcomes, LabelGroup topology, normalized comment attachment refs и
-  reconciliation evidence вместе с recoverable deletion tuple. System backup
-  дополнительно сохраняет versioned profile preferences; schema `2`–`11`
-  получает deterministic defaults для новых User fields и пустой LabelGroup
-  catalog, schema `2`–`12` — пустой comment attachment index, а schema
-  `2`–`13` — пустой deletion tuple.
+- Project backup schema `14` и system backup schema `15` сохраняют events,
+  attachment migration outcomes, LabelGroup topology, normalized comment
+  attachment refs и reconciliation evidence вместе с recoverable deletion
+  tuple. System schema `15` дополнительно сохраняет versioned profile,
+  StoredFile ownership и sequence state и не принимает старые system schemas.
   Activity хранится до удаления Task; отдельного retention deletion нет.
-  Logical export ограничен 5 000 rows на таблицу и общим размером package,
-  поэтому превышение останавливает export явно, а не обрезает историю.
+  Полный system export использует chunked staging без пользовательского лимита
+  общего числа rows или размера state.
 
 ### 5.7 Native attachments
 
@@ -1053,8 +1050,8 @@ created/updated/started/completed/canceled dates и archived state.
     private redirect; raster ref вставляется только отдельным `update_task`.
 33. Project и system backup с PDF, attached image и embedded image проходит
     полную validation/staging и exact restore byte-for-byte. Corrupted/missing
-    object или D1 cutover failure не меняет live originals; schema `2` без
-    Attachments по-прежнему импортируется.
+    object или D1 cutover failure не меняет live originals; system schemas
+    `2`–`14` отклоняются без изменения live state.
 34. Read-only reconciliation находит missing/orphan live или backup-staging
     object, size/checksum mismatch, stale lifecycle, broken description ref и
     расхождение live native Comment body/index без публикации body/filename.

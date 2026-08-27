@@ -21,7 +21,7 @@ const now = "2026-08-14T12:00:00.000Z";
 
 test("a complete system snapshot validates and preserves application data", async () => {
   const backup = await createSystemBackup(validTables(), now);
-  assert.equal(backup.schemaVersion, 14);
+  assert.equal(backup.schemaVersion, 15);
   const validated = await validateSystemBackup(backup);
 
   assert.equal(validated.sha256, backup.sha256);
@@ -180,187 +180,21 @@ test("the comment-aware system schema rejects an older backup explicitly", async
   const backup = await createSystemBackup(validTables(), now);
   await assert.rejects(
     validateSystemBackup({ ...backup, schemaVersion: 1 }),
-    /unsupported task manager backup format or version/i,
+    /only schema 15 is accepted/i,
   );
 });
 
-test("schema 2 system backups without attachments remain importable", async () => {
-  const current = await createSystemBackup(validTables(), now);
-  const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
-  );
-  tables.comments = current.tables.comments.map(legacyCommentRow);
-  tables.projects = current.tables.projects.map(legacyProjectRow);
-  tables.workflow_statuses = current.tables.workflow_statuses.map(legacyWorkflowRow);
-  tables.task_relations = current.tables.task_relations.map(legacyRelationRow);
-  tables.labels = current.tables.labels.map(legacyLabelRow);
-  stripDeletionState(tables);
-  const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => !["attachments", "attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name)),
-  );
-  const body = {
-    format: current.format,
-    version: current.version,
-    schemaVersion: 2,
-    exportedAt: current.exportedAt,
-    counts,
-    tables,
-  };
-  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
-
-  const validated = await validateSystemBackup(legacy);
-  assert.equal(validated.schemaVersion, 2);
-  assert.deepEqual(validated.tables.attachments, []);
-  assert.equal(validated.tables.projects[0]?.task_code, "TM");
-  assert.deepEqual(
-    validated.tables.tasks.map((task) => task.identifier),
-    ["TM-1", "TM-2"],
-  );
+test("the current system format rejects every former schema without an upgrade path", async () => {
+  const backup = await createSystemBackup(validTables(), now);
+  for (let schemaVersion = 2; schemaVersion <= 14; schemaVersion += 1) {
+    await assert.rejects(
+      validateSystemBackup({ ...backup, schemaVersion }),
+      /only schema 15 is accepted/i,
+    );
+  }
 });
 
-test("schema 3 system backups synthesize reserved workflow metadata before restore", async () => {
-  const current = await createSystemBackup(validTables(), now);
-  const legacyStatuses = current.tables.workflow_statuses
-    .filter((status) => status.system_role !== "duplicate")
-    .map(legacyWorkflowRow);
-  const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
-    projects: current.tables.projects.map(legacyProjectRow),
-    workflow_statuses: legacyStatuses,
-    task_relations: current.tables.task_relations.map(legacyRelationRow),
-    labels: current.tables.labels.map(legacyLabelRow),
-    comments: current.tables.comments.map(legacyCommentRow),
-  };
-  stripDeletionState(tables);
-  const counts = {
-    ...Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
-    workflow_statuses: legacyStatuses.length,
-  };
-  const body = {
-    format: current.format,
-    version: current.version,
-    schemaVersion: 3,
-    siteOrigin: current.siteOrigin,
-    environmentScope: current.environmentScope,
-    exportedAt: current.exportedAt,
-    counts,
-    tables,
-    objects: current.objects,
-  };
-  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
-
-  const validated = await validateSystemBackup(legacy);
-  assert.equal(validated.schemaVersion, 3);
-  assert.equal(validated.tables.workflow_statuses.filter((status) => status.system_role === "duplicate").length, 2);
-  assert.equal(validated.counts.workflow_statuses, legacyStatuses.length + 2);
-});
-
-test("schema 4 system backups upgrade legacy relation identity and concurrency metadata", async () => {
-  const current = await createSystemBackup(validTables(), now);
-  const tables = {
-    ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
-    projects: current.tables.projects.map(legacyProjectRow),
-    task_relations: current.tables.task_relations.map(legacyRelationRow),
-    labels: current.tables.labels.map(legacyLabelRow),
-    comments: current.tables.comments.map(legacyCommentRow),
-  };
-  stripDeletionState(tables);
-  const unsigned = {
-    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
-    schemaVersion: 4,
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
-    tables,
-  };
-  stripDeletionState(unsigned.tables);
-  const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
-
-  const validated = await validateSystemBackup(legacy);
-  assert.equal(validated.schemaVersion, 4);
-  assert.equal(validated.tables.task_relations[0]?.id, "relation_legacy:task-1:task-2:blocks");
-  assert.equal(validated.tables.task_relations[0]?.version, 1);
-  assert.equal(validated.tables.task_relations[0]?.updated_at, now);
-});
-
-test("schema 6 system backups upgrade Label catalog metadata and keep assignments", async () => {
-  const current = await createSystemBackup(validTables(), now);
-  const unsigned = {
-    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
-    schemaVersion: 6,
-    tables: {
-      ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
-      labels: current.tables.labels.map(legacyLabelRow),
-      comments: current.tables.comments.map(legacyCommentRow),
-    },
-    counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
-  };
-  stripDeletionState(unsigned.tables);
-  const legacy = { ...unsigned, sha256: await checksum(JSON.stringify(unsigned)) };
-
-  const validated = await validateSystemBackup(legacy);
-  assert.equal(validated.schemaVersion, 6);
-  assert.equal(validated.tables.labels[0]?.description, "");
-  assert.equal(validated.tables.labels[0]?.archived_at, null);
-  assert.equal(validated.tables.labels[0]?.version, 1);
-  assert.equal(validated.tables.labels[0]?.updated_at, now);
-  assert.deepEqual(validated.tables.task_labels, current.tables.task_labels);
-});
-
-test("schema 10 system backups remain importable with empty attachment migration outcomes", async () => {
-  const current = await createSystemBackup(validTables(), now);
-  const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
-  );
-  stripDeletionState(tables);
-  const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs"].includes(name)),
-  );
-  const body = {
-    format: current.format,
-    version: current.version,
-    schemaVersion: 10,
-    siteOrigin: current.siteOrigin,
-    environmentScope: current.environmentScope,
-    exportedAt: current.exportedAt,
-    counts,
-    tables,
-    objects: current.objects,
-  };
-  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
-  const validated = await validateSystemBackup(legacy);
-  assert.equal(validated.schemaVersion, 10);
-  assert.deepEqual(validated.tables.attachment_migration_outcomes, []);
-  assert.deepEqual(validated.tables.activity_events, current.tables.activity_events);
-});
-
-test("schema 12 system backups remain importable with an empty comment attachment index", async () => {
-  const current = await createSystemBackup(validTables(), now);
-  const tables = Object.fromEntries(
-    Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
-  );
-  stripDeletionState(tables);
-  const counts = Object.fromEntries(
-    Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
-  );
-  const body = {
-    format: current.format,
-    version: current.version,
-    schemaVersion: 12,
-    siteOrigin: current.siteOrigin,
-    environmentScope: current.environmentScope,
-    exportedAt: current.exportedAt,
-    counts,
-    tables,
-    objects: current.objects,
-  };
-  const validated = await validateSystemBackup({
-    ...body,
-    sha256: await checksum(JSON.stringify(body)),
-  });
-  assert.equal(validated.schemaVersion, 12);
-  assert.deepEqual(validated.tables.comment_attachment_refs, []);
-});
-
-test("schema 13 system backups require the comment attachment index", async () => {
+test("current system backups require the comment attachment index", async () => {
   const current = await createSystemBackup(validTables(), now);
   const tables = Object.fromEntries(
     Object.entries(current.tables).filter(([name]) => name !== "comment_attachment_refs"),
@@ -369,7 +203,6 @@ test("schema 13 system backups require the comment attachment index", async () =
     Object.entries(current.counts).filter(([name]) => name !== "comment_attachment_refs"),
   );
   const body = { ...current, tables, counts };
-  stripDeletionState(body.tables);
   delete (body as Partial<typeof current>).sha256;
   await assert.rejects(
     validateSystemBackup({
@@ -380,7 +213,7 @@ test("schema 13 system backups require the comment attachment index", async () =
   );
 });
 
-test("schema 14 system backups preserve recoverable deletion state and project shadowing", async () => {
+test("current system backups preserve recoverable deletion state and project shadowing", async () => {
   const tables = validTables();
   const purgeAfter = "2026-09-13T12:00:00.000Z";
   for (const row of [
@@ -398,7 +231,7 @@ test("schema 14 system backups preserve recoverable deletion state and project s
     await createSystemBackup(tables, now),
   );
 
-  assert.equal(validated.schemaVersion, 14);
+  assert.equal(validated.schemaVersion, 15);
   assert.equal(validated.tables.projects[0]?.purge_after, purgeAfter);
   assert.equal(validated.tables.releases[0]?.deleted_by_user_id, "user-admin");
   assert.equal(validated.tables.tasks[0]?.deleted_at, now);
@@ -406,7 +239,7 @@ test("schema 14 system backups preserve recoverable deletion state and project s
   assert.equal(validated.tables.saved_views[0]?.purge_after, purgeAfter);
 });
 
-test("schema 14 system backups reject incomplete or invalid deletion tuples", async () => {
+test("current system backups reject incomplete or invalid deletion tuples", async () => {
   const incomplete = validTables();
   incomplete.tasks[0]!.deleted_at = now;
   await assert.rejects(
@@ -431,31 +264,6 @@ test("schema 14 system backups reject incomplete or invalid deletion tuples", as
     validateSystemBackup(await createSystemBackup(unknownActor, now)),
     /deleted_by_user_id references a missing User/i,
   );
-});
-
-test("schema 13 system backups gain empty deletion tuples only after checksum validation", async () => {
-  const current = await createSystemBackup(validTables(), now);
-  const tables = structuredClone(current.tables) as unknown as Record<string, unknown>;
-  stripDeletionState(tables);
-  const body = {
-    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
-    schemaVersion: 13,
-    tables,
-  };
-  const legacy = { ...body, sha256: await checksum(JSON.stringify(body)) };
-  const validated = await validateSystemBackup(legacy);
-
-  assert.equal(validated.schemaVersion, 13);
-  for (const tableName of ["projects", "releases", "tasks", "saved_views"] as const) {
-    for (const row of validated.tables[tableName]) {
-      assert.equal(row.deleted_at, null);
-      assert.equal(row.deleted_by_user_id, null);
-      assert.equal(row.purge_after, null);
-    }
-  }
-
-  (legacy.tables as Record<string, Array<Record<string, unknown>>>).tasks[0]!.title = "Tampered";
-  await assert.rejects(validateSystemBackup(legacy), /checksum does not match/i);
 });
 
 test("snapshot validation rejects content changed after export", async () => {
@@ -851,6 +659,7 @@ function validTables(): BackupTables {
       },
     ],
     task_identifier_aliases: [],
+    stored_files: [],
     attachments: [],
     attachment_migration_outcomes: [],
     comments: [
@@ -958,6 +767,10 @@ function validTables(): BackupTables {
         created_at: now,
       },
     ],
+    task_sequences: [
+      { owner_user_id: "user-admin", last_value: 2 },
+      { owner_user_id: "user-collaborator", last_value: 0 },
+    ],
   };
 }
 
@@ -992,60 +805,6 @@ async function checksum(value: string) {
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
-}
-
-function legacyWorkflowRow(row: Record<string, string | number | null>) {
-  return Object.fromEntries(
-    Object.entries(row).filter(([key]) =>
-      !["system_role", "archived_at", "version"].includes(key),
-    ),
-  );
-}
-
-function legacyProjectRow(row: Record<string, string | number | null>) {
-  return Object.fromEntries(
-    Object.entries(row).filter(([key]) =>
-      !["task_code", "task_sequence", "code_locked_at"].includes(key),
-    ),
-  );
-}
-
-function legacyRelationRow(row: Record<string, string | number | null>) {
-  return Object.fromEntries(
-    Object.entries(row).filter(([key]) =>
-      !["id", "idempotency_key", "version", "updated_at"].includes(key),
-    ),
-  );
-}
-
-function legacyLabelRow(row: Record<string, string | number | null>) {
-  return Object.fromEntries(
-    Object.entries(row).filter(([key]) =>
-      !["group_id", "description", "archived_at", "version", "updated_at"].includes(key),
-    ),
-  );
-}
-
-function legacyCommentRow(row: Record<string, string | number | null>) {
-  return Object.fromEntries(
-    Object.entries(row).filter(([key]) => ![
-      "source_record_id", "source_comment_id", "source_parent_comment_id",
-      "historical_author_name", "historical_created_at",
-      "historical_updated_at", "historical_quoted_text",
-    ].includes(key)),
-  );
-}
-
-function stripDeletionState(tables: Record<string, unknown>) {
-  for (const tableName of ["projects", "releases", "tasks", "saved_views"]) {
-    const rows = tables[tableName];
-    if (!Array.isArray(rows)) continue;
-    tables[tableName] = rows.map((row) => Object.fromEntries(
-      Object.entries(row as Record<string, unknown>).filter(
-        ([key]) => !["deleted_at", "deleted_by_user_id", "purge_after"].includes(key),
-      ),
-    ));
-  }
 }
 
 function migratedDatabase() {

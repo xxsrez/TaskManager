@@ -76,12 +76,27 @@ export type ProjectBackup = {
 export const projectBackupTableDefinitions = tableDefinitions.filter(
   (table): table is TableDefinition & { name: ProjectBackupTableName } =>
     projectBackupTableNames.includes(table.name as ProjectBackupTableName),
-);
+).map(projectScopedTableDefinition);
 
 export const projectBackupRestoreTableDefinitions = restoreTableDefinitions.filter(
   (table): table is TableDefinition & { name: ProjectBackupTableName } =>
     projectBackupTableNames.includes(table.name as ProjectBackupTableName),
-);
+).map(projectScopedTableDefinition);
+
+function projectScopedTableDefinition(
+  table: TableDefinition & { name: ProjectBackupTableName },
+): TableDefinition & { name: ProjectBackupTableName } {
+  if (table.name !== "attachments") return table;
+  return {
+    ...table,
+    // Project bundles reconstruct their StoredFile ownership separately and
+    // intentionally do not inherit the system-only stored_file_id contract.
+    columns: table.columns.filter((column) => column !== "stored_file_id"),
+    shapes: Object.fromEntries(
+      Object.entries(table.shapes ?? {}).filter(([column]) => column !== "stored_file_id"),
+    ),
+  };
+}
 
 const legacyWorkflowStatusDefinition: TableDefinition = {
   name: "workflow_statuses",

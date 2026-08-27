@@ -8,41 +8,33 @@ import {
   hasMalformedTaskAttachmentReference,
   parseTaskAttachmentReferences,
 } from "./task-description-format";
-import type { BackupRow, BackupScalar } from "./system-backup-contract";
+import type {
+  BackupColumnShape,
+  BackupRow,
+  BackupScalar,
+} from "./system-backup-contract";
 import {
-  upgradeLegacySystemComments,
-  upgradeLegacySystemDeletionState,
-  upgradeLegacySystemIdentifiers,
-  upgradeLegacySystemLabelGroups,
-  upgradeLegacySystemLabels,
-  upgradeLegacySystemRelations,
-  upgradeLegacySystemSavedViews,
-  upgradeLegacySystemUsers,
-  upgradeLegacySystemWorkflow,
-} from "./system-backup-upgrades";
+  systemBackupCurrentSchemaVersion,
+  systemBackupD1TableContracts,
+  systemBackupExactTableContracts,
+} from "./system-backup-contract";
 import { isProjectTaskCode, PROJECT_TASK_CODE_ERROR } from "./project-task-code";
 
 export type { BackupRow, BackupScalar } from "./system-backup-contract";
-export type BackupTableName = (typeof backupTableNames)[number];
+export type BackupTableName = (typeof systemBackupExactTableContracts)[number]["name"];
 export type BackupTables = Record<BackupTableName, BackupRow[]>;
-
-type ColumnShape = {
-  nullable?: boolean;
-  number?: boolean;
-  integer?: boolean;
-};
 
 export type TableDefinition = {
   name: BackupTableName;
   columns: readonly string[];
   orderBy: string;
-  shapes?: Record<string, ColumnShape>;
+  shapes?: Record<string, BackupColumnShape>;
 };
 
 export type SystemBackup = {
   format: "task-manager-system-backup";
   version: 1;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14;
+  schemaVersion: typeof systemBackupCurrentSchemaVersion;
   siteOrigin: string | null;
   environmentScope: string | null;
   exportedAt: string;
@@ -54,7 +46,7 @@ export type SystemBackup = {
 
 export const systemBackupFormat = "task-manager-system-backup" as const;
 export const systemBackupVersion = 1 as const;
-export const systemBackupSchemaVersion = 14 as const;
+export const systemBackupSchemaVersion = systemBackupCurrentSchemaVersion;
 export const maxSystemBackupBytes = 10_000_000;
 const maxSystemBackupRows = 5000;
 const maxStagedRowBytes = 1_500_000;
@@ -80,282 +72,32 @@ const timestampColumns = new Set([
   "reconciled_at",
 ]);
 
-export const backupTableNames = [
-  "users",
-  "user_identities",
-  "workflow_statuses",
-  "projects",
-  "releases",
-  "tasks",
-  "task_identifier_aliases",
-  "attachments",
-  "attachment_migration_outcomes",
-  "comments",
-  "comment_attachment_refs",
-  "comment_migration_outcomes",
-  "activity_events",
-  "activity_migration_outcomes",
-  "comment_reactions",
-  "label_groups",
-  "labels",
-  "task_labels",
-  "task_relations",
-  "saved_views",
-  "external_records",
-  "access_grants",
-] as const;
-
-export const tableDefinitions = [
-  definition("users", ["id", "display_name", "email", "timezone", "theme", "sidebar_preference", "version", "created_at", "updated_at"], "id", {
-    version: { number: true, integer: true },
-  }),
-  definition("user_identities", ["user_id", "provider", "provider_account_key", "verified_email", "created_at"], "provider, provider_account_key"),
-  definition("workflow_statuses", ["id", "owner_user_id", "name", "category", "color", "position", "is_default", "system_role", "archived_at", "version", "created_at", "updated_at"], "id", {
-    position: { number: true, integer: true },
-    is_default: { number: true, integer: true },
-    system_role: { nullable: true },
-    archived_at: { nullable: true },
-    version: { number: true, integer: true },
-  }),
-  definition("projects", ["id", "public_id", "owner_user_id", "creator_user_id", "name", "task_code", "task_sequence", "code_locked_at", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "deleted_at", "deleted_by_user_id", "purge_after", "version", "created_at", "updated_at"], "id", {
-    task_sequence: { number: true, integer: true }, code_locked_at: { nullable: true }, lead_user_id: { nullable: true }, start_date: { nullable: true }, target_date: { nullable: true }, archived_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, version: { number: true, integer: true },
-  }),
-  definition("releases", ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "deleted_at", "deleted_by_user_id", "purge_after", "version", "created_at", "updated_at"], "id", {
-    target_date: { nullable: true }, released_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, version: { number: true, integer: true },
-  }),
-  definition("tasks", ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "deleted_at", "deleted_by_user_id", "purge_after", "comment_count", "version", "created_at", "updated_at"], "id", {
-    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true }, release_id: { nullable: true }, estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true }, parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true }, completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, comment_count: { number: true, integer: true }, version: { number: true, integer: true },
-  }),
-  definition("task_identifier_aliases", ["id", "task_id", "identifier", "created_at"], "task_id, identifier"),
-  definition("attachments", ["id", "public_id", "task_id", "uploader_user_id", "original_filename", "display_name", "media_type", "byte_size", "checksum_sha256", "object_key", "kind", "state", "image_width", "image_height", "variant_metadata_json", "idempotency_key", "upload_expires_at", "failure_code", "version", "created_at", "updated_at", "deleted_at"], "task_id, created_at, id", {
-    byte_size: { number: true, integer: true }, image_width: { nullable: true, number: true, integer: true }, image_height: { nullable: true, number: true, integer: true }, upload_expires_at: { nullable: true }, failure_code: { nullable: true }, version: { number: true, integer: true }, deleted_at: { nullable: true },
-  }),
-  definition("attachment_migration_outcomes", ["id", "task_id", "source", "source_record_id", "source_attachment_id", "source_index", "outcome", "reason", "attachment_id", "mapped_title", "mapped_url", "raw_json", "reconciled_at"], "task_id, source_record_id, source_index", {
-    source_attachment_id: { nullable: true }, source_index: { number: true, integer: true },
-    reason: { nullable: true }, attachment_id: { nullable: true },
-    mapped_title: { nullable: true }, mapped_url: { nullable: true },
-  }),
-  definition("comments", ["id", "task_id", "author_user_id", "body", "source", "source_record_id", "source_comment_id", "source_parent_comment_id", "historical_author_name", "historical_created_at", "historical_updated_at", "historical_quoted_text", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"], "task_id, created_at, id", {
-    author_user_id: { nullable: true }, source_record_id: { nullable: true }, source_comment_id: { nullable: true }, source_parent_comment_id: { nullable: true }, historical_author_name: { nullable: true }, historical_created_at: { nullable: true }, historical_updated_at: { nullable: true }, historical_quoted_text: { nullable: true }, parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true },
-  }),
-  definition("comment_attachment_refs", ["comment_id", "task_id", "attachment_id", "created_at"], "comment_id, attachment_id"),
-  definition("comment_migration_outcomes", ["id", "task_id", "source", "source_record_id", "source_comment_id", "source_index", "outcome", "reason", "comment_id", "raw_json", "reconciled_at"], "task_id, source_record_id, source_index", {
-    source_comment_id: { nullable: true }, source_index: { number: true, integer: true }, reason: { nullable: true }, comment_id: { nullable: true },
-  }),
-  definition("activity_events", ["id", "task_id", "schema_version", "event_type", "actor_kind", "actor_user_id", "actor_name", "payload_json", "source", "source_record_id", "source_event_id", "source_index", "created_at"], "task_id, created_at, id", {
-    schema_version: { number: true, integer: true }, actor_user_id: { nullable: true }, source_record_id: { nullable: true }, source_event_id: { nullable: true }, source_index: { nullable: true, number: true, integer: true },
-  }),
-  definition("activity_migration_outcomes", ["id", "task_id", "source", "source_record_id", "source_event_id", "source_index", "outcome", "reason", "activity_event_id", "raw_json", "reconciled_at"], "task_id, source_record_id, source_index", {
-    source_event_id: { nullable: true }, source_index: { number: true, integer: true }, reason: { nullable: true }, activity_event_id: { nullable: true },
-  }),
-  definition("comment_reactions", ["comment_id", "user_id", "emoji", "created_at"], "comment_id, emoji, user_id"),
-  definition("label_groups", ["id", "owner_user_id", "name", "description", "position", "archived_at", "version", "created_at", "updated_at"], "id", {
-    position: { number: true, integer: true }, archived_at: { nullable: true }, version: { number: true, integer: true },
-  }),
-  definition("labels", ["id", "owner_user_id", "group_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"], "id", {
-    group_id: { nullable: true },
-    archived_at: { nullable: true }, version: { number: true, integer: true },
-  }),
-  definition("task_labels", ["task_id", "label_id"], "task_id, label_id"),
-  definition("task_relations", ["id", "source_task_id", "target_task_id", "type", "creator_user_id", "idempotency_key", "version", "created_at", "updated_at"], "id", {
-    version: { number: true, integer: true },
-  }),
-  definition("saved_views", ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "archived_at", "deleted_at", "deleted_by_user_id", "purge_after", "version", "created_at", "updated_at"], "id", {
-    scope_project_id: { nullable: true }, archived_at: { nullable: true }, deleted_at: { nullable: true }, deleted_by_user_id: { nullable: true }, purge_after: { nullable: true }, version: { number: true, integer: true },
-  }),
-  definition("external_records", ["id", "owner_user_id", "target_type", "target_id", "source", "source_id", "source_url", "metadata_json", "imported_at"], "id", {
-    source_url: { nullable: true },
-  }),
-  definition("access_grants", ["id", "resource_type", "resource_id", "owner_user_id", "grantee_user_id", "granted_by_user_id", "permission", "revoked_at", "created_at"], "id", {
-    revoked_at: { nullable: true },
-  }),
-] as const satisfies readonly TableDefinition[];
-
-const restoreTableOrder = [
-  "users",
-  "user_identities",
-  "workflow_statuses",
-  "projects",
-  "releases",
-  "tasks",
-  "task_identifier_aliases",
-  "attachments",
-  "label_groups",
-  "labels",
-  "saved_views",
-  "external_records",
-  "attachment_migration_outcomes",
-  "comments",
-  "comment_attachment_refs",
-  "comment_migration_outcomes",
-  "activity_events",
-  "activity_migration_outcomes",
-  "comment_reactions",
-  "task_labels",
-  "task_relations",
-  "access_grants",
-] as const satisfies readonly BackupTableName[];
-
-export const restoreTableDefinitions = restoreTableOrder.map((name) =>
-  tableDefinitions.find((table) => table.name === name)!,
+export const backupTableNames = systemBackupExactTableContracts.map(
+  (table) => table.name,
 );
 
-const legacyWorkflowStatusDefinition = definition(
-  "workflow_statuses",
-  ["id", "owner_user_id", "name", "category", "color", "position", "is_default", "created_at", "updated_at"],
-  "id",
-  {
-    position: { number: true, integer: true },
-    is_default: { number: true, integer: true },
-  },
+export const tableDefinitions: readonly TableDefinition[] =
+  systemBackupExactTableContracts;
+
+export const restoreTableDefinitions = [...tableDefinitions].sort(
+  (left, right) =>
+    systemBackupExactTableContracts.find((table) => table.name === left.name)!
+      .restoreOrder -
+    systemBackupExactTableContracts.find((table) => table.name === right.name)!
+      .restoreOrder,
 );
 
-const legacyUserDefinition = definition(
-  "users",
-  ["id", "display_name", "email", "timezone", "created_at", "updated_at"],
-  "id",
-);
-
-const legacyTaskRelationDefinition = definition(
-  "task_relations",
-  ["source_task_id", "target_task_id", "type", "creator_user_id", "created_at"],
-  "source_task_id, target_task_id, type",
-);
-
-const legacySavedViewDefinition = definition(
-  "saved_views",
-  ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "version", "created_at", "updated_at"],
-  "id",
-  { scope_project_id: { nullable: true }, version: { number: true, integer: true } },
-);
-
-const legacyProjectDefinition = definition(
-  "projects",
-  ["id", "public_id", "owner_user_id", "creator_user_id", "name", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"],
-  "id",
-  {
-    lead_user_id: { nullable: true }, start_date: { nullable: true },
-    target_date: { nullable: true }, archived_at: { nullable: true },
-    version: { number: true, integer: true },
-  },
-);
-
-const legacyTaskDefinition = definition(
-  "tasks",
-  ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"],
-  "id",
-  {
-    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true },
-    project_id: { nullable: true }, release_id: { nullable: true },
-    estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true },
-    parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
-    completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
-    comment_count: { number: true, integer: true }, version: { number: true, integer: true },
-  },
-);
-
-const legacyDeletionProjectDefinition = definition(
-  "projects",
-  ["id", "public_id", "owner_user_id", "creator_user_id", "name", "task_code", "task_sequence", "code_locked_at", "summary", "description", "status", "lead_user_id", "start_date", "target_date", "icon", "color", "archived_at", "version", "created_at", "updated_at"],
-  "id",
-  {
-    task_sequence: { number: true, integer: true }, code_locked_at: { nullable: true },
-    lead_user_id: { nullable: true }, start_date: { nullable: true },
-    target_date: { nullable: true }, archived_at: { nullable: true },
-    version: { number: true, integer: true },
-  },
-);
-
-const legacyDeletionReleaseDefinition = definition(
-  "releases",
-  ["id", "public_id", "project_id", "owner_user_id", "creator_user_id", "name", "description", "status", "target_date", "released_at", "release_notes", "version", "created_at", "updated_at"],
-  "id",
-  {
-    target_date: { nullable: true }, released_at: { nullable: true },
-    version: { number: true, integer: true },
-  },
-);
-
-const legacyDeletionTaskDefinition = definition(
-  "tasks",
-  ["id", "public_id", "owner_user_id", "creator_user_id", "identifier", "sequence_number", "title", "description", "status_id", "priority", "assignee_user_id", "project_id", "release_id", "estimate", "due_date", "parent_task_id", "rank", "started_at", "completed_at", "canceled_at", "archived_at", "comment_count", "version", "created_at", "updated_at"],
-  "id",
-  {
-    sequence_number: { number: true, integer: true }, assignee_user_id: { nullable: true },
-    project_id: { nullable: true }, release_id: { nullable: true },
-    estimate: { nullable: true, number: true, integer: true }, due_date: { nullable: true },
-    parent_task_id: { nullable: true }, rank: { number: true }, started_at: { nullable: true },
-    completed_at: { nullable: true }, canceled_at: { nullable: true }, archived_at: { nullable: true },
-    comment_count: { number: true, integer: true }, version: { number: true, integer: true },
-  },
-);
-
-const legacyDeletionSavedViewDefinition = definition(
-  "saved_views",
-  ["id", "public_id", "owner_user_id", "name", "scope_project_id", "query_json", "display_json", "archived_at", "version", "created_at", "updated_at"],
-  "id",
-  {
-    scope_project_id: { nullable: true }, archived_at: { nullable: true },
-    version: { number: true, integer: true },
-  },
-);
-
-const legacyLabelDefinition = definition(
-  "labels",
-  ["id", "owner_user_id", "name", "color", "created_at"],
-  "id",
-);
-
-const flatLabelDefinition = definition(
-  "labels",
-  ["id", "owner_user_id", "name", "color", "description", "archived_at", "version", "created_at", "updated_at"],
-  "id",
-  { archived_at: { nullable: true }, version: { number: true, integer: true } },
-);
-
-const legacyCommentDefinition = definition(
-  "comments",
-  ["id", "task_id", "author_user_id", "body", "source", "parent_comment_id", "idempotency_key", "created_at", "updated_at", "deleted_at", "resolved_at", "resolved_by_user_id", "resolution_comment_id", "version"],
-  "task_id, created_at, id",
-  { parent_comment_id: { nullable: true }, deleted_at: { nullable: true }, resolved_at: { nullable: true }, resolved_by_user_id: { nullable: true }, resolution_comment_id: { nullable: true }, version: { number: true, integer: true } },
-);
-
-export const liveTableDeleteOrder: Array<BackupTableName | "stored_files"> = [
-  "comment_attachment_refs",
-  "attachment_migration_outcomes",
-  "activity_migration_outcomes",
-  "activity_events",
-  "comment_migration_outcomes",
-  "comment_reactions",
-  "comments",
-  "task_labels",
-  "task_relations",
-  "access_grants",
-  "external_records",
-  "attachments",
-  "stored_files",
-  "task_identifier_aliases",
-  "tasks",
-  "releases",
-  "saved_views",
-  "projects",
-  "labels",
-  "label_groups",
-  "workflow_statuses",
-  "user_identities",
-  "users",
-];
+export const liveTableDeleteOrder: BackupTableName[] = [
+  ...systemBackupExactTableContracts,
+]
+  .sort((left, right) => left.deleteOrder - right.deleteOrder)
+  .map((table) => table.name);
 
 // Authentication capabilities are intentionally outside logical backups.
 // A full restore revokes them before replacing application data.
-export const authenticationCapabilityDeleteOrder = [
-  "oauth_authorization_requests",
-  "oauth_authorization_codes",
-  "oauth_access_tokens",
-  "oauth_refresh_tokens",
-  "oauth_grants",
-  "api_credentials",
-] as const;
+export const authenticationCapabilityDeleteOrder = systemBackupD1TableContracts
+  .filter((table) => table.policy === "revoke")
+  .map((table) => table.name);
 
 export function restoreInsertSql(table: TableDefinition): string {
   const extracts = table.columns
@@ -396,157 +138,64 @@ export async function createSystemBackup(
 
 export async function validateSystemBackup(value: unknown): Promise<SystemBackup> {
   const payload = object(value, "Backup payload");
-  const schemaVersion = payload.schemaVersion;
-  const withoutAttachments = schemaVersion === 2;
-  const legacyWorkflow = schemaVersion === 2 || schemaVersion === 3;
-  const legacyRelations = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4;
-  const legacyIdentifiers = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5;
-  const legacyLabels = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6;
-  const legacySavedViews = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7;
-  const legacyHistoricalComments = schemaVersion === 2 || schemaVersion === 3 || schemaVersion === 4 || schemaVersion === 5 || schemaVersion === 6 || schemaVersion === 7 || schemaVersion === 8;
-  const legacyActivity = typeof schemaVersion === "number" && schemaVersion <= 9;
-  const legacyAttachmentMigration = typeof schemaVersion === "number" && schemaVersion <= 10;
-  const legacyLabelGroups = typeof schemaVersion === "number" && schemaVersion <= 11;
-  const legacyUserSettings = typeof schemaVersion === "number" && schemaVersion <= 11;
-  const legacyCommentAttachmentRefs = typeof schemaVersion === "number" && schemaVersion <= 12;
-  const legacyDeletionState = typeof schemaVersion === "number" && schemaVersion <= 13;
-  const supported = typeof schemaVersion === "number" && schemaVersion >= 2 && schemaVersion <= systemBackupSchemaVersion;
-  assertOnlyKeys(
-    payload,
-    withoutAttachments
-      ? ["format", "version", "schemaVersion", "exportedAt", "counts", "tables", "sha256"]
-      : ["format", "version", "schemaVersion", "siteOrigin", "environmentScope", "exportedAt", "counts", "tables", "objects", "sha256"],
-    "Backup payload",
-  );
-  if (payload.format !== systemBackupFormat || payload.version !== systemBackupVersion || !supported) {
-    throw new ValidationError("Unsupported Task Manager backup format or version");
-  }
-  const exportedAt = timestamp(payload.exportedAt, "exportedAt");
-  const sourceTables = object(payload.tables, "tables");
-  const legacyLabelGroupsMissing = legacyLabelGroups && !Object.hasOwn(sourceTables, "label_groups");
-  const sourceTableNames = backupTableNames.filter((name) =>
-    !(withoutAttachments && name === "attachments") &&
-    !(legacyIdentifiers && name === "task_identifier_aliases") &&
-    !(legacyHistoricalComments && name === "comment_migration_outcomes") &&
-    !(legacyActivity && (name === "activity_events" || name === "activity_migration_outcomes")) &&
-    !(legacyAttachmentMigration && name === "attachment_migration_outcomes") &&
-    !(legacyLabelGroupsMissing && name === "label_groups") &&
-    !(legacyCommentAttachmentRefs && name === "comment_attachment_refs"),
-  );
-  assertOnlyKeys(sourceTables, sourceTableNames, "tables");
-  const sourceNormalizedTables = {} as BackupTables;
-  let totalRows = 0;
-  for (const table of tableDefinitions) {
-    const sourceRows =
-      (withoutAttachments && table.name === "attachments") ||
-      (legacyIdentifiers && table.name === "task_identifier_aliases") ||
-      (legacyHistoricalComments && table.name === "comment_migration_outcomes") ||
-      (legacyActivity && (table.name === "activity_events" || table.name === "activity_migration_outcomes")) ||
-      (legacyAttachmentMigration && table.name === "attachment_migration_outcomes") ||
-      (legacyLabelGroupsMissing && table.name === "label_groups") ||
-      (legacyCommentAttachmentRefs && table.name === "comment_attachment_refs")
-        ? []
-        : array(sourceTables[table.name], `tables.${table.name}`);
-    totalRows += sourceRows.length;
-    if (totalRows > maxSystemBackupRows) throw new ValidationError(`Backup contains more than ${maxSystemBackupRows} rows`);
-    const sourceDefinition = legacyUserSettings && table.name === "users" &&
-        !sourceRows.some((row) => Object.hasOwn(object(row, "user"), "theme"))
-      ? legacyUserDefinition
-      : legacyIdentifiers && table.name === "projects"
-      ? legacyProjectDefinition
-      : legacyDeletionState && table.name === "projects"
-        ? legacyDeletionProjectDefinition
-      : legacyIdentifiers && table.name === "tasks"
-        ? legacyTaskDefinition
-      : legacyDeletionState && table.name === "tasks"
-        ? legacyDeletionTaskDefinition
-      : legacyDeletionState && table.name === "releases"
-        ? legacyDeletionReleaseDefinition
-      : legacyWorkflow && table.name === "workflow_statuses"
-      ? legacyWorkflowStatusDefinition
-      : legacyRelations && table.name === "task_relations"
-        ? legacyTaskRelationDefinition
-      : legacyLabels && table.name === "labels"
-        ? legacyLabelDefinition
-      : legacyLabelGroups && table.name === "labels" &&
-          !sourceRows.some((row) => Object.hasOwn(object(row, "label"), "group_id"))
-        ? flatLabelDefinition
-      : legacyHistoricalComments && table.name === "comments"
-        ? legacyCommentDefinition
-      : legacySavedViews && table.name === "saved_views" &&
-          !sourceRows.some((row) => Object.hasOwn(object(row, "saved view"), "archived_at"))
-        ? legacySavedViewDefinition
-      : legacyDeletionState && table.name === "saved_views"
-        ? legacyDeletionSavedViewDefinition
-        : table;
-    sourceNormalizedTables[table.name] = sourceRows.map((row, index) =>
-      normalizeBackupRow(sourceDefinition, row, index),
+  if (
+    payload.format !== systemBackupFormat ||
+    payload.version !== systemBackupVersion ||
+    payload.schemaVersion !== systemBackupSchemaVersion
+  ) {
+    throw new ValidationError(
+      `Unsupported Task Manager system backup; only schema ${systemBackupSchemaVersion} is accepted`,
     );
   }
-  const sourceCounts = countTables(sourceNormalizedTables);
-  const claimedCounts = object(payload.counts, "counts");
-  assertOnlyKeys(claimedCounts, sourceTableNames, "counts");
-  for (const name of sourceTableNames) {
-    if (claimedCounts[name] !== sourceCounts[name]) throw new ValidationError(`Count mismatch for ${name}`);
+  assertOnlyKeys(
+    payload,
+    ["format", "version", "schemaVersion", "siteOrigin", "environmentScope", "exportedAt", "counts", "tables", "objects", "sha256"],
+    "Backup payload",
+  );
+  const exportedAt = timestamp(payload.exportedAt, "exportedAt");
+  const sourceTables = object(payload.tables, "tables");
+  assertOnlyKeys(sourceTables, backupTableNames, "tables");
+  const tables = {} as BackupTables;
+  let totalRows = 0;
+  for (const table of tableDefinitions) {
+    const sourceRows = array(sourceTables[table.name], `tables.${table.name}`);
+    totalRows += sourceRows.length;
+    if (totalRows > maxSystemBackupRows) throw new ValidationError(`Backup contains more than ${maxSystemBackupRows} rows`);
+    tables[table.name] = sourceRows.map((row, index) =>
+      normalizeBackupRow(table, row, index),
+    );
   }
-  let tables = legacyWorkflow
-    ? upgradeLegacySystemWorkflow(sourceNormalizedTables)
-    : sourceNormalizedTables;
-  if (legacyRelations) tables = upgradeLegacySystemRelations(tables);
-  if (legacyIdentifiers) tables = upgradeLegacySystemIdentifiers(tables);
-  if (legacyLabels) tables = upgradeLegacySystemLabels(tables);
-  if (legacyLabelGroups) tables = upgradeLegacySystemLabelGroups(tables);
-  if (legacySavedViews) tables = upgradeLegacySystemSavedViews(tables);
-  if (legacyHistoricalComments) tables = upgradeLegacySystemComments(tables);
-  if (legacyUserSettings) tables = upgradeLegacySystemUsers(tables);
   const counts = countTables(tables);
-  validateRelationships(tables, !legacyCommentAttachmentRefs, !legacyDeletionState);
-  const objects = withoutAttachments
-    ? []
-    : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
+  const claimedCounts = object(payload.counts, "counts");
+  assertOnlyKeys(claimedCounts, backupTableNames, "counts");
+  for (const name of backupTableNames) {
+    if (claimedCounts[name] !== counts[name]) throw new ValidationError(`Count mismatch for ${name}`);
+  }
+  validateRelationships(tables);
+  const objects = await validateAttachmentBackupObjects(tables.attachments, payload.objects);
+  const siteOrigin = normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin"));
+  const environmentScope = normalizeEnvironmentScope(
+    requiredString(payload.environmentScope, "environmentScope"),
+  );
   const body = {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
-    ...(!withoutAttachments
-      ? { siteOrigin: normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")) }
-      : {}),
-    ...(!withoutAttachments
-      ? {
-          environmentScope: normalizeEnvironmentScope(
-            requiredString(payload.environmentScope, "environmentScope"),
-          ),
-        }
-      : {}),
+    schemaVersion: systemBackupSchemaVersion,
+    siteOrigin,
+    environmentScope,
     exportedAt,
-    counts: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings || legacyCommentAttachmentRefs
-      ? Object.fromEntries(sourceTableNames.map((name) => [name, sourceCounts[name]]))
-      : sourceCounts,
-    tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyUserSettings || legacyCommentAttachmentRefs
-      ? Object.fromEntries(
-          sourceTableNames.map((name) => [name, sourceNormalizedTables[name]]),
-        )
-      : sourceNormalizedTables,
-    ...(!withoutAttachments ? { objects } : {}),
+    counts,
+    tables,
+    objects,
   };
   const checksum = await sha256(JSON.stringify(body));
   if (payload.sha256 !== checksum) throw new ValidationError("Backup checksum does not match its content");
-  if (legacyDeletionState) {
-    tables = upgradeLegacySystemDeletionState(tables);
-    validateDeletionStates(tables);
-  }
   return {
     format: systemBackupFormat,
     version: systemBackupVersion,
-    schemaVersion: schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
-    siteOrigin: withoutAttachments
-      ? null
-      : normalizeOrigin(requiredString(payload.siteOrigin, "siteOrigin")),
-    environmentScope: withoutAttachments
-      ? null
-      : normalizeEnvironmentScope(
-          requiredString(payload.environmentScope, "environmentScope"),
-        ),
+    schemaVersion: systemBackupSchemaVersion,
+    siteOrigin,
+    environmentScope,
     exportedAt,
     counts,
     tables,
@@ -1331,10 +980,6 @@ function normalizeBackupRow(table: TableDefinition, value: unknown, index: numbe
     throw new ValidationError(`${table.name}[${index}] is too large`);
   }
   return row;
-}
-
-function definition(name: BackupTableName, columns: readonly string[], orderBy: string, shapes?: Record<string, ColumnShape>): TableDefinition {
-  return { name, columns, orderBy, shapes };
 }
 
 function countTables(tables: BackupTables): SystemBackupCounts {

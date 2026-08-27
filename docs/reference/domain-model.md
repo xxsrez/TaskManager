@@ -144,11 +144,20 @@ Projection не включает content полей этих records. Exported b
 
 ## SystemBackup и AdminImportSession
 
-`SystemBackup` — переносимый versioned JSON envelope со всеми product tables.
-Он сохраняет внутренние/public IDs, ownership, versions, timestamps, archived
-state, recoverable deletion tuple, joins, relations, revoked grants и external
-provenance. Hosted secrets, Sites configuration, schema/migrations,
-operational staging и purge jobs в него не входят.
+`SystemBackup` schema `15` — единственный принимаемый текущий формат полного
+снимка всех пользователей. Его registry исчерпывающе классифицирует все D1
+tables/columns: 24 exact tables сохраняют внутренние/public IDs, ownership,
+versions, timestamps, `stored_files`, `attachments.stored_file_id`,
+`task_sequences`, deletion state, joins, relations, grants и provenance;
+`task_label_group_values` перестраивается; sync/purge state сбрасывается;
+API/OAuth capabilities отзываются; import staging исключается. Старые schemas
+`2`–`14` не обновляются и отклоняются до staging.
+
+R2 originals live namespaces `stored-files` и `attachments` сохраняются
+byte-for-byte, но environment-scoped keys создаются заново. `backup-staging`
+не переносится, а неизвестный namespace отклоняет snapshot. Hosted secrets,
+Sites configuration, schema/migrations, deployment/audience/analytics и
+browser-local state не входят в формат.
 
 `AdminImportSession` — operational metadata preflight/import:
 
@@ -438,7 +447,8 @@ width ограничена контейнером, aspect ratio сохраняе
 встречаться несколько раз с разными widths и по-прежнему имеет один lifecycle
 record.
 
-Logical backup schema `3` переносит Attachment row и original одним bounded
+История schemas `2`–`14` ниже относится к Project bundle; system restore эти
+версии больше не принимает. Project backup schema `3` переносит Attachment row и original одним bounded
 container: row ссылается на `sha256:<digest>`, object set содержит size,
 SHA-256 и base64 bytes. Live `object_key`, signed URL и thumbnail не переносятся.
 Restore всегда выдаёт новый key текущей среды. Schema `2` допустима только как
@@ -458,13 +468,10 @@ validators schema `2`–`9` нормализуют их как пустые, н�
 Schema `11` добавляет `attachment_migration_outcomes`; schema `2`–`10` после
 проверки исходного checksum получает пустой набор, не объявляя legacy links
 перенесёнными.
-System backup schema `12` добавляет versioned `theme`, `sidebar_preference` и
-User `version`; schema `2`–`11` получает `system`, `expanded` и version `1`
-после проверки исходного checksum. Это User-only изменение не повышало Project
-backup, который на этом этапе оставался schema `11`.
-Logical backup schema `14` добавляет deletion tuple Projects, Releases, Tasks и
-SavedViews в system и Project formats. Legacy schema `2`–`13` сначала
-проверяется в исходной форме и затем получает три `NULL` поля на каждый record.
+System-only versioned `theme`, `sidebar_preference` и User `version` теперь
+входят в exact schema `15`. Project schema `14` добавляет deletion tuple
+Projects, Releases, Tasks и SavedViews; его legacy upgrade policy остаётся
+отдельной от current-only system format.
 
 ### CommentAttachmentRef
 
@@ -925,9 +932,9 @@ grants; Tasks, base query semantics и temporary URL layer не материал
     уже присутствовал в stored query и scope не меняется: View можно rename или
     удалить predicate, но нельзя добавить новый missing ref или перенести его в
     другой scope. Purge Release никогда не переписывает SavedView AST.
-30. Logical backup schema `14` сохраняет deletion tuple четырёх entity types;
-    legacy schemas `2`–`13` получают all-null tuple только после проверки
-    исходного checksum. Operational purge jobs не входят в backup/restore.
+30. System backup schema `15` сохраняет deletion tuple четырёх entity types и
+    отклоняет schemas `2`–`14`; Project schema `14` сохраняет собственную
+    compatibility policy. Operational purge jobs не входят в backup/restore.
 
 ## Намеренно не моделируется
 

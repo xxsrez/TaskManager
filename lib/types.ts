@@ -583,6 +583,7 @@ export type SystemBackupCounts = Record<
   | "releases"
   | "tasks"
   | "task_identifier_aliases"
+  | "stored_files"
   | "attachments"
   | "attachment_migration_outcomes"
   | "comments"
@@ -597,7 +598,8 @@ export type SystemBackupCounts = Record<
   | "task_relations"
   | "saved_views"
   | "external_records"
-  | "access_grants",
+  | "access_grants"
+  | "task_sequences",
   number
 >;
 

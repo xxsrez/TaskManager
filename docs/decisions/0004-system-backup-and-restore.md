@@ -49,6 +49,18 @@ cutoff позже delete. Schemas `2`–`13` сначала проверяютс
 переносится: restore восстанавливает product deletion state, а новый runtime
 создаёт retry coordination при фактическом purge.
 
+Дополнение 2026-08-27 заменяет прежнюю цепочку совместимости единым текущим
+контрактом `schemaVersion = 15`. System import принимает только schema `15`;
+schemas `2`–`14` отклоняются до чтения таблиц и не проходят через upgrade.
+Машиночитаемый registry классифицирует все 41 application-owned D1 tables и
+каждую их колонку. Точно переносятся 24 таблицы, включая `stored_files`,
+`attachments.stored_file_id` и `task_sequences`; `task_label_group_values`
+перестраивается; workspace sync и purge coordination сбрасываются; API/OAuth
+capabilities отзываются; import staging исключается. Для R2 точно переносятся
+оригиналы из live namespaces `stored-files` и `attachments`, ключи создаются
+заново в целевой среде, `backup-staging` сбрасывается, а неизвестный namespace
+делает export/restore неполным и должен быть отклонён.
+
 ## Контекст
 
 Task Manager хранит структурированное product state в Sites D1: Users,
@@ -69,15 +81,16 @@ admin boundary.
 1. Administration предоставляет `Export backup` и `Import backup`. Вход в
    Administration остаётся в account menu; отдельный пункт в основной левой
    навигации не показывается.
-2. В первой версии backup — версионированный logical JSON snapshot, а не raw
+2. Backup — версионированный logical snapshot, а не raw
    SQLite/SQL dump. Он включает все product, identity, ownership, ACL,
    provenance, native/historical comments, append-only Task Activity,
    reconciliation outcomes, reactions
    archived records и recoverable deletion tuple, но не
    schema/migrations, hosted secrets,
    Sites audience/deployments/analytics, browser-local preferences,
-   operational import/purge staging и API credentials. Token hash является
-   authentication capability, а не переносимым product data.
+   operational import/purge staging и API/OAuth capabilities. Включая
+   `oauth_registered_clients`: регистрация содержит capability metadata и
+   после restore выполняется заново, а не переносится как user state.
 3. Export выполняет server-side admin check до чтения cross-user данных,
    считывает все включённые таблицы в одной D1 batch transaction и отдаёт файл
    с `Cache-Control: no-store`.
@@ -94,9 +107,9 @@ admin boundary.
    `batch()`-транзакцией. Любой SQL failure откатывает весь replace. Успешный
    restore сохраняет operational import session как audit metadata, удаляет
    staged payload и требует полного reload UI.
-8. Payload ограничен 10 MB, 5000 application rows и 1.5 MB на одну JSON row.
-   Более крупный state требует следующей версии с chunked upload/object storage,
-   а не ослабления атомарности.
+8. Полный state не имеет пользовательского лимита 5 000 rows или 10 MB.
+   Transport обязан использовать chunked staging с bounded memory; лимиты
+   отдельного chunk/row защищают Worker, но не обрезают snapshot.
 9. API принимает только same-origin application requests с явным custom action
    header. Client flags и наличие кнопки не участвуют в authorization.
 10. System backup capability выдаётся тому же hosted allowlist, что и текущий

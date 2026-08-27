@@ -811,9 +811,8 @@ provider context: `inventory` строит bounded source-position plan, а `app
 boundary и фиксирует outcome лишь после D1/R2 read-back. HTML остаётся явной
 non-binary mapping, а blocked row запрещает cutover. Source URL никогда не
 попадает в operational result/error; raw row сохраняется только в outcome и
-system/project backup schema `12`. Schema `11` остаётся legacy-compatible:
-получает пустой LabelGroup catalog, а system backup также получает default
-User preferences.
+project backup schema `12`. Исторические версии Project bundle остаются
+отдельным контрактом и не определяют совместимость полного system backup.
 
 ### Системный backup и restore
 
@@ -830,43 +829,18 @@ User preferences.
    D1 batch transaction удаляет live rows, вставляет verified staged rows,
    отмечает session applied и очищает payload. Batch failure откатывает весь
    cutover.
-6. Schema `3` добавляет Attachment metadata и bounded content-addressed object
-   set. Export заменяет environment object key на `sha256:<digest>` и проверяет
-   original byte-for-byte. Restore кладёт validated bytes в R2 staging,
-   материализует новые keys, выполняет D1 replace и после commit удаляет старые
-   и staged objects; failure до commit удаляет только новые objects.
-7. Schema `4` переносит `WorkflowStatus.system_role`, `archived_at` и `version`.
-   Legacy schema `2`/`3` проверяется по исходному checksum body, затем
-   нормализуется для current restore; system restore также синтезирует ровно
-   один reserved `Duplicate` на User. Schema `2` без Attachments остаётся
-   импортируемой.
-8. Schema `5` переносит immutable TaskRelation ID, creator-scoped idempotency
-   key, optimistic version и updated timestamp. Legacy schema `2`–`4`
-   проверяется по исходному checksum body, затем получает deterministic relation
-   metadata до current restore.
-9. Schema `9` переносит historical comment facts и
-   `comment_migration_outcomes`. Validators schema `2`–`8` после проверки
-   исходного checksum нормализуют прежние comments как native и добавляют
-   пустой outcome set.
-10. Schema `10` переносит append-only `activity_events` и
-    `activity_migration_outcomes`. Validators schema `2`–`9` после исходного
-    checksum добавляют пустые activity tables без synthetic backfill.
-11. Schema `11` переносит `attachment_migration_outcomes`. Validators schema
-    `2`–`10` после исходного checksum добавляют пустую таблицу, поэтому legacy
-    backup не может ошибочно подтвердить attachment cutover.
-12. Schema `12` переносит LabelGroup topology, а в system backup также
-    versioned User `theme`, `sidebar_preference` и `version`; schema `2`–`11`
-    получает пустой LabelGroup catalog, deterministic `system`/`expanded`
-    preferences и User version `1` после проверки исходного checksum.
-13. Schema `13` переносит `comment_attachment_refs` и валидирует exact body/
-    index equality для live native comments. Validators schema `2`–`12` после
-    проверки исходного checksum добавляют пустой index для backward
-    compatibility, не сканируя legacy bodies в restore edge set.
-14. Schema `14` переносит all-null/all-set deletion tuple Projects, Releases,
-    Tasks и SavedViews. `deleted_by_user_id` обязан ссылаться на User snapshot,
-    timestamps валидны и cutoff позже delete. Schemas `2`–`13` проверяются по
-    исходному checksum body и только затем получают три `NULL` поля.
-    `entity_purge_jobs` и maintenance checkpoints operational и не переносятся.
+6. System schema `15` — единственный current format. Registry является общим
+   источником table/column inventory, stable read order, restore order, delete
+   order, counts и digest input; schema drift без новой классификации ломает
+   contract test. Schemas `2`–`14` отклоняются без upgrade.
+7. Exact D1 state включает 24 tables: прежние product/identity/ACL/provenance
+   tables плюс `stored_files`, `attachments.stored_file_id` и
+   `task_sequences`. `task_label_group_values` rebuild; workspace sync и purge
+   coordination reset; API/OAuth capability tables revoke; четыре import
+   staging tables excluded.
+8. R2 originals из `stored-files` и `attachments` сохраняются byte-for-byte,
+   но получают новые environment keys. `backup-staging` reset; неизвестный
+   namespace fail-closed. D1 и R2 сверяются одним manifest/digest до cutover.
 
 ### Project backup и restore
 
