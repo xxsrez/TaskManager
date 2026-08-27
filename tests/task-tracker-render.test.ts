@@ -2918,6 +2918,17 @@ test("filter picker Escape closes only the picker and stops Modal propagation", 
   assert.equal(closed, 1);
 });
 
+test("Modal lets nested Escape handlers stop propagation before dialog close", () => {
+  const source = readFileSync(
+    new URL("../components/task-tracker.tsx", import.meta.url),
+    "utf8",
+  );
+  const modalSource = source.slice(source.indexOf("function Modal("), source.indexOf("const globalSearchSections"));
+
+  assert.doesNotMatch(modalSource, /addEventListener\("keydown"/);
+  assert.match(modalSource, /role="dialog"[\s\S]*?onKeyDown=\{handleKey\}/);
+});
+
 test("Saved View filter controls render saved and temporary layers separately", () => {
   const release01 = {
     id: "release-01",

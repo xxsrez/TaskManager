@@ -8334,30 +8334,30 @@ function Modal({ onClose, children, className = "", ariaLabel }: { onClose: () =
   useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
+  const handleKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseRef.current();
+      return;
+    }
+    trapFocus(event, modalRef.current);
+  };
   useEffect(() => {
     const previousFocus = document.activeElement as HTMLElement | null;
     const modal = modalRef.current;
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        onCloseRef.current();
-        return;
-      }
-      trapFocus(event, modal);
-    };
-    modal?.addEventListener("keydown", handleKey);
     const frame = window.requestAnimationFrame(() => {
       if (!modal || modal.contains(document.activeElement)) return;
       modal.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)?.focus();
     });
     return () => {
-      modal?.removeEventListener("keydown", handleKey);
       window.cancelAnimationFrame(frame);
       if (previousFocus?.isConnected) previousFocus.focus();
     };
   }, []);
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div ref={modalRef} className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={ariaLabel} tabIndex={-1}>{children}</div></div>;
+  // The focus-trapped dialog intentionally owns Escape after nested controls have handled it.
+  // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><div ref={modalRef} className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={ariaLabel} tabIndex={-1} onKeyDown={handleKey}>{children}</div></div>;
 }
 
 const globalSearchSections: Array<{
