@@ -124,7 +124,11 @@ export type SystemBackupJobStatus = {
 
 export async function createSystemBackupExportJob(
   currentUser: UserRecord,
-  options: { kind?: "export" | "rollback"; parentJobId?: string | null } = {},
+  options: {
+    kind?: "export" | "rollback";
+    parentJobId?: string | null;
+    siteOrigin?: string;
+  } = {},
 ): Promise<SystemBackupJobStatus> {
   assertConfiguredAdmin(currentUser);
   await cleanupExpiredSystemBackupJobs();
@@ -132,7 +136,7 @@ export async function createSystemBackupExportJob(
   const jobId = `${kind === "rollback" ? "system-rollback" : "system-export"}:${crypto.randomUUID()}`;
   const exportedAt = new Date().toISOString();
   const fingerprint = await systemBackupSchemaFingerprint();
-  const siteOrigin = currentSiteOrigin();
+  const siteOrigin = currentSiteOrigin(options.siteOrigin);
   const environmentScope = attachmentStorageScope();
   const expiresAt = new Date(Date.now() + jobLifetimeSeconds * 1000).toISOString();
   const db = getD1();
@@ -183,10 +187,11 @@ export async function createSystemBackupExportJob(
 export async function createSystemBackupImportJob(
   currentUser: UserRecord,
   headerValue: unknown,
+  siteOrigin?: string,
 ): Promise<SystemBackupJobStatus> {
   assertConfiguredAdmin(currentUser);
   const header = await validatePackageHeader(headerValue);
-  assertLocalPackageBoundary(header);
+  assertLocalPackageBoundary(header, siteOrigin);
   const jobId = `system-import:${crypto.randomUUID()}`;
   const expiresAt = new Date(Date.now() + jobLifetimeSeconds * 1000).toISOString();
   await getD1().prepare(`INSERT INTO system_backup_jobs
@@ -558,6 +563,10 @@ export function assertSystemBackupAction(request: Request) {
   if (request.headers.get("x-task-manager-action") !== systemBackupAction) {
     throw Object.assign(new Error("Invalid system backup request"), { status: 403 });
   }
+}
+
+export function systemBackupRequestOrigin(request: Request) {
+  return new URL(request.url).origin;
 }
 
 async function advanceExportInventory(job: BackupJobRow) {
@@ -935,7 +944,6 @@ async function advancePackagePreflight(job: BackupJobRow, currentUser: UserRecor
     }
     await markJobReady(job.id);
   } else {
-    await revalidateFrozenD1(job.id);
     await getD1().prepare(`UPDATE system_backup_jobs
       SET phase = 'revalidate_r2', phase_cursor = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`).bind(JSON.stringify({ cursor: null, seen: 0 }), job.id).run();
@@ -1050,6 +1058,7 @@ async function prepareRollbackDependency(job: BackupJobRow, currentUser: UserRec
   const rollback = await createSystemBackupExportJob(currentUser, {
     kind: "rollback",
     parentJobId: job.id,
+    siteOrigin: job.site_origin,
   });
   const transition = await getD1().prepare(`UPDATE system_backup_jobs
     SET rollback_job_id = ?, phase = 'waiting_rollback', updated_at = CURRENT_TIMESTAMP
@@ -1705,31 +1714,6 @@ async function readJobManifest(job: BackupJobRow): Promise<SystemBackupPackageMa
   });
 }
 
-async function revalidateFrozenD1(jobId: string) {
-  const db = getD1();
-  const statements = tableDefinitions.map((table) => {
-    const expression = jsonObjectExpression(table.columns);
-    return db.prepare(`SELECT
-      (SELECT COUNT(*) FROM (
-        SELECT ${expression} AS row_json FROM ${table.name}
-        EXCEPT
-        SELECT row_json FROM system_backup_rows WHERE job_id = ? AND table_name = ?
-      )) +
-      (SELECT COUNT(*) FROM (
-        SELECT row_json FROM system_backup_rows WHERE job_id = ? AND table_name = ?
-        EXCEPT
-        SELECT ${expression} AS row_json FROM ${table.name}
-      )) AS mismatch`)
-      .bind(jobId, table.name, jobId, table.name);
-  });
-  const results = await db.batch(statements);
-  results.forEach((result, index) => {
-    if (Number((result.results[0] as DbRow | undefined)?.mismatch ?? -1) !== 0) {
-      throw new ValidationError(`D1 changed while freezing ${tableDefinitions[index]!.name}`);
-    }
-  });
-}
-
 async function revalidateLiveAgainstJob(jobId: string) {
   const db = getD1();
   const statements = tableDefinitions.map((table) => {
@@ -1960,8 +1944,11 @@ function assertManifestMatchesJob(manifest: SystemBackupPackageManifest, job: Ba
   }
 }
 
-function assertLocalPackageBoundary(header: SystemBackupPackageHeader) {
-  if (header.siteOrigin !== currentSiteOrigin()) {
+function assertLocalPackageBoundary(
+  header: SystemBackupPackageHeader,
+  siteOrigin?: string,
+) {
+  if (header.siteOrigin !== currentSiteOrigin(siteOrigin)) {
     throw new ValidationError("System backup belongs to another Task Manager Site");
   }
   if (header.environmentScope !== attachmentStorageScope()) {
@@ -1969,9 +1956,10 @@ function assertLocalPackageBoundary(header: SystemBackupPackageHeader) {
   }
 }
 
-function currentSiteOrigin() {
+function currentSiteOrigin(requestOrigin?: string) {
   return new URL(
-    getRuntimeEnvironment().TASK_MANAGER_PUBLIC_ORIGIN ??
+    requestOrigin ??
+      getRuntimeEnvironment().TASK_MANAGER_PUBLIC_ORIGIN ??
       "https://local.task-manager.invalid",
   ).origin;
 }

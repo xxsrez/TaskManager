@@ -3,6 +3,7 @@ import { readBoundedJsonRequest } from "@/lib/bounded-json-request";
 import {
   assertSystemBackupAction,
   createSystemBackupImportJob,
+  systemBackupRequestOrigin,
 } from "@/lib/system-backup-jobs";
 
 export const dynamic = "force-dynamic";
@@ -11,7 +12,11 @@ export async function POST(request: Request) {
   return withUserResponse(async (user) => {
     assertSystemBackupAction(request);
     const header = await readBoundedJsonRequest(request, 64_000);
-    return Response.json(await createSystemBackupImportJob(user, header), {
+    return Response.json(await createSystemBackupImportJob(
+      user,
+      header,
+      systemBackupRequestOrigin(request),
+    ), {
       headers: { "cache-control": "no-store" },
     });
   });

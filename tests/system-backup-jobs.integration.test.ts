@@ -238,6 +238,31 @@ test("all-user export/import preserves bound, unbound, missing and orphan object
   assert.equal(reexportReady.stateSha256, ready.stateSha256);
 });
 
+test("export keeps its point-in-time D1 snapshot when ordinary live rows change after freeze", async () => {
+  await database.prepare("UPDATE users SET display_name = 'Before export freeze', updated_at = ? WHERE id = ?")
+    .bind("2026-08-28T00:00:00.000Z", admin.id).run();
+  const created = await createSystemBackupExportJob(admin);
+
+  await database.prepare("UPDATE users SET display_name = 'After export freeze', updated_at = ? WHERE id = ?")
+    .bind("2026-08-28T00:00:01.000Z", admin.id).run();
+
+  const ready = await drive(created.jobId, ["ready", "failed"]);
+  assert.equal(ready.status, "ready", ready.error ?? ready.phase);
+  const response = await streamSystemBackupPackage(admin, created.jobId);
+  const lines = (await response.text()).trim().split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const frozenUser = lines
+    .filter((line) => line.frame === "rows" && line.table === "users")
+    .flatMap((line) => line.records as Record<string, unknown>[])
+    .find((row) => row.id === admin.id);
+  assert.equal(frozenUser?.display_name, "Before export freeze");
+  assert.equal(
+    (await database.prepare("SELECT display_name FROM users WHERE id = ?").bind(admin.id)
+      .first<{ display_name: string }>())?.display_name,
+    "After export freeze",
+  );
+});
+
 test("non-admin cannot create a cross-user backup job", async () => {
   const outsider = await getOrCreateUser({
     provider: "chatgpt",

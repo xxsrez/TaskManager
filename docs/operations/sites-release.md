@@ -45,6 +45,12 @@ ACL, SavedView, provenance и sequence state. Export обязан зафикси
 per-chunk и общий digest; import принимается только для schema `15` и того же
 Site/environment. Перед destructive apply сохраните отдельный rollback backup.
 
+D1-состояние фиксируется одним D1 batch в начале export job. Обычные записи после
+завершения этого batch не входят в уже начатый snapshot и не должны прерывать
+его; целостность проверяется по immutable frozen rows. R2 inventory и bytes дополнительно
+перепроверяются перед готовностью package, поэтому изменение или исчезновение
+файла во время упаковки по-прежнему отклоняет export.
+
 После replace сравните registry-driven D1 counts/digests и R2 manifest/bytes,
 перестроенный `task_label_group_values`, сброшенный sync/purge state и отсутствие
 старых API/OAuth capabilities. Отдельно проверьте отказ schema `2`–`14`,

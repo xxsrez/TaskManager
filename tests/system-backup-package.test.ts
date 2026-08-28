@@ -16,12 +16,20 @@ import {
   validatePackageManifest,
   type SystemBackupPartDescriptor,
 } from "../lib/system-backup-package";
+import { systemBackupRequestOrigin } from "../lib/system-backup-jobs";
 import {
   systemBackupCurrentSchemaVersion,
   systemBackupExactTableContracts,
 } from "../lib/system-backup-contract";
 
 const encoder = new TextEncoder();
+
+test("system backup Site boundary uses the current request origin", () => {
+  assert.equal(
+    systemBackupRequestOrigin(new Request("https://task-manager-uat.example/api/admin/export")),
+    "https://task-manager-uat.example",
+  );
+});
 const exportedAt = "2026-08-27T20:00:00.000Z";
 const digest = "0".repeat(64);
 
