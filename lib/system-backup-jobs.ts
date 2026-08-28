@@ -437,7 +437,7 @@ export async function advanceSystemBackupJob(
         await commitExactReplace(job.id, job.rollback_job_id!, leaseToken);
         break;
       case "verifying_d1":
-        await advanceAppliedD1Verification(job);
+        await advanceAppliedD1Verification(job, currentUser.id);
         break;
       case "verifying_objects":
         await advanceAppliedObjectVerification(job);
@@ -1179,10 +1179,10 @@ async function advanceImportMaterialization(job: BackupJobRow) {
     updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(String(ordinal + 1), job.id).run();
 }
 
-async function advanceAppliedD1Verification(job: BackupJobRow) {
+async function advanceAppliedD1Verification(job: BackupJobRow, currentUserId: string) {
   const manifest = await readJobManifest(job);
   await verifyStagedRowsMatchParts(job.id, manifest);
-  await revalidateLiveAgainstJob(job.id);
+  await revalidateLiveAgainstJob(job.id, currentUserId);
   await getD1().prepare(`UPDATE system_backup_jobs
     SET phase = 'verifying_objects', phase_cursor = '0', updated_at = CURRENT_TIMESTAMP
     WHERE id = ?`).bind(job.id).run();
@@ -1714,10 +1714,32 @@ async function readJobManifest(job: BackupJobRow): Promise<SystemBackupPackageMa
   });
 }
 
-async function revalidateLiveAgainstJob(jobId: string) {
+async function revalidateLiveAgainstJob(jobId: string, currentUserId: string) {
   const db = getD1();
-  const statements = tableDefinitions.map((table) => {
-    const liveColumns = table.columns.map((column) => {
+  const comparisons: Array<{
+    table: (typeof tableDefinitions)[number];
+    columns: readonly string[];
+    liveFilter?: string;
+    stagedFilter?: string;
+  }> = [];
+  for (const table of tableDefinitions) {
+    if (table.name !== "users") {
+      comparisons.push({ table, columns: table.columns });
+      continue;
+    }
+    comparisons.push({
+      table,
+      columns: table.columns.filter((column) => column !== "email" && column !== "updated_at"),
+    });
+    comparisons.push({
+      table,
+      columns: table.columns,
+      liveFilter: " WHERE users.id <> ?",
+      stagedFilter: " AND json_extract(row_json, '$.id') <> ?",
+    });
+  }
+  const statements = comparisons.map(({ table, columns, liveFilter = "", stagedFilter = "" }) => {
+    const liveColumns = columns.map((column) => {
       if (column !== "object_key") return `${table.name}.${column}`;
       if (table.name === "stored_files") return `'stored-files/file/' || stored_files.id`;
       if (table.name === "attachments") {
@@ -1727,22 +1749,35 @@ async function revalidateLiveAgainstJob(jobId: string) {
       }
       return `${table.name}.${column}`;
     }).join(", ");
-    const stagedColumns = table.columns.map((column) =>
+    const stagedColumns = columns.map((column) =>
       `json_extract(row_json, '$.${column}')`).join(", ");
+    const filterValues = liveFilter ? [currentUserId] : [];
+    const stagedFilterValues = stagedFilter ? [currentUserId] : [];
     return db.prepare(`SELECT
       (SELECT COUNT(*) FROM (
-        SELECT ${liveColumns} FROM ${table.name}
-        EXCEPT SELECT ${stagedColumns} FROM system_backup_rows WHERE job_id = ? AND table_name = ?
+        SELECT ${liveColumns} FROM ${table.name}${liveFilter}
+        EXCEPT SELECT ${stagedColumns} FROM system_backup_rows
+          WHERE job_id = ? AND table_name = ?${stagedFilter}
       )) +
       (SELECT COUNT(*) FROM (
-        SELECT ${stagedColumns} FROM system_backup_rows WHERE job_id = ? AND table_name = ?
-        EXCEPT SELECT ${liveColumns} FROM ${table.name}
-      )) AS mismatch`).bind(jobId, table.name, jobId, table.name);
+        SELECT ${stagedColumns} FROM system_backup_rows
+          WHERE job_id = ? AND table_name = ?${stagedFilter}
+        EXCEPT SELECT ${liveColumns} FROM ${table.name}${liveFilter}
+      )) AS mismatch`).bind(
+      ...filterValues,
+      jobId,
+      table.name,
+      ...stagedFilterValues,
+      jobId,
+      table.name,
+      ...stagedFilterValues,
+      ...filterValues,
+    );
   });
   const results = await db.batch(statements);
   results.forEach((result, index) => {
     if (Number((result.results[0] as DbRow | undefined)?.mismatch ?? -1) !== 0) {
-      throw new Error(`Applied D1 state differs from backup table ${tableDefinitions[index]!.name}`);
+      throw new Error(`Applied D1 state differs from backup table ${comparisons[index]!.table.name}`);
     }
   });
 }

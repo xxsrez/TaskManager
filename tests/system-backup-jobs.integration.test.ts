@@ -47,10 +47,16 @@ before(async () => {
 
 after(async () => dispose?.());
 
-async function drive(jobId: string, terminal: string[], max = 500) {
+async function drive(
+  jobId: string,
+  terminal: string[],
+  max = 500,
+  onStatus?: (status: SystemBackupJobStatus) => Promise<void>,
+) {
   let status: SystemBackupJobStatus | undefined;
   for (let attempt = 0; attempt < max; attempt += 1) {
     status = await advanceSystemBackupJob(admin, jobId);
+    await onStatus?.(status);
     if (terminal.includes(status.status)) return status;
     if (status.error?.startsWith("applied_state_mismatch:")) {
       throw new Error(status.error);
@@ -152,6 +158,11 @@ test("all-user export/import preserves bound, unbound, missing and orphan object
   const header = lines[0]!;
   const manifest = lines.at(-1)!;
   const frames = lines.slice(1, -1);
+  const exportedAdmin = frames
+    .filter((item) => item.frame === "rows" && item.table === "users")
+    .flatMap((item) => item.records as Record<string, unknown>[])
+    .find((row) => row.id === admin.id);
+  assert.equal(typeof exportedAdmin?.updated_at, "string");
   const packageState = new IncrementalSha256();
   packageState.update(new TextEncoder().encode(`schema:${String(header.schemaFingerprint)}\n`));
   for (const frame of frames.filter((item) => item.frame === "rows")) {
@@ -199,8 +210,16 @@ test("all-user export/import preserves bound, unbound, missing and orphan object
     confirmation: "RESTORE",
   });
   let applied: SystemBackupJobStatus;
+  const authenticatedTouch = "2026-08-28T07:26:13.000Z";
+  let touchedAfterCutover = false;
   try {
-    applied = await drive(upload.jobId, ["applied", "failed"], 1_000);
+    applied = await drive(upload.jobId, ["applied", "failed"], 1_000, async (status) => {
+      if (status.phase !== "verifying_d1" || touchedAfterCutover) return;
+      touchedAfterCutover = true;
+      await database.prepare(`UPDATE users
+        SET email = ?, updated_at = ? WHERE id = ?`)
+        .bind(admin.email, authenticatedTouch, admin.id).run();
+    });
   } catch (error) {
     const live = await database.prepare("SELECT * FROM tasks WHERE id = ?").bind(task.id).first<Record<string, unknown>>();
     const stagedRow = await database.prepare(`SELECT row_json FROM system_backup_rows
@@ -212,10 +231,16 @@ test("all-user export/import preserves bound, unbound, missing and orphan object
     throw new Error(`${String(error)} differences=${JSON.stringify(differences)}`);
   }
   assert.equal(applied.status, "applied", applied.error ?? applied.phase);
+  assert.equal(touchedAfterCutover, true);
   assert.equal(
     (await database.prepare("SELECT display_name FROM users WHERE id = ?").bind(admin.id)
       .first<{ display_name: string }>())?.display_name,
     "Backup Admin",
+  );
+  assert.equal(
+    (await database.prepare("SELECT updated_at FROM users WHERE id = ?").bind(admin.id)
+      .first<{ updated_at: string }>())?.updated_at,
+    authenticatedTouch,
   );
   const restoredMissing = await database.prepare("SELECT object_key FROM stored_files WHERE id = 'sf-missing'")
     .first<{ object_key: string }>();
@@ -232,6 +257,8 @@ test("all-user export/import preserves bound, unbound, missing and orphan object
   assert.equal((await database.prepare("SELECT status FROM system_backup_jobs WHERE id = ?")
     .bind(staleSystemImport.jobId).first<{ status: string }>())?.status, "expired");
 
+  await database.prepare("UPDATE users SET updated_at = ? WHERE id = ?")
+    .bind(exportedAdmin!.updated_at, admin.id).run();
   const reexport = await createSystemBackupExportJob(admin);
   const reexportReady = await drive(reexport.jobId, ["ready", "failed"]);
   assert.equal(reexportReady.status, "ready", reexportReady.error ?? reexportReady.phase);
