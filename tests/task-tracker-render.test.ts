@@ -2568,6 +2568,20 @@ test("system backup actions exist only inside the server-authorized Administrati
   assert.doesNotMatch(commonMarkup, />Экспорт<\/button>|>Импорт<\/button>/);
 });
 
+test("system export coordination belongs to TaskTracker rather than the closable dialog", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const trackerState = source.indexOf("const [systemExportStatus");
+  const exportDialog = source.indexOf("export function SystemBackupExportDialog");
+  assert.ok(trackerState > 0 && trackerState < exportDialog);
+  assert.match(source, /getCurrentSystemBackupExport\(\)/);
+  assert.match(source, /systemExportAbortRef\.current\?\.abort\(\)/);
+  assert.match(source, /<Modal onClose=\{onClose\} className="system-import-modal system-export-modal">/);
+  assert.match(source, /dialog !== "systemImport" \|\| !systemBackupBusy/);
+  assert.match(source, /При полностью закрытой вкладке он безопасно приостановится/);
+  assert.match(source, /onClick=\{\(\) => onStart\(true\)\}/);
+  assert.doesNotMatch(source, /readBackupCheckpoint\(storage, systemBackupExportCheckpointKey\)/);
+});
+
 test("the account identity is not the sign-out target", () => {
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {

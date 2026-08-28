@@ -181,19 +181,21 @@ import {
 } from "@/lib/staged-file-upload";
 import {
   applySystemBackupImport,
+  backupJobIsTerminal,
   backupImportIsFullyValidated,
   canApplySystemBackupImport,
   createSystemBackupExport,
   getBackupJobStatus,
+  getCurrentSystemBackupExport,
   readBackupCheckpoint,
   retainBackupCheckpoint,
   runSystemBackupJob,
   safeBackupMessage,
   safeSystemBackupDownloadUrl,
-  systemBackupExportCheckpointKey,
   systemBackupImportCheckpointKey,
   systemBackupMediaType,
   systemBackupSafetyExportCheckpointKey,
+  SystemBackupClientError,
   uploadSystemBackupPackage,
   writeBackupCheckpoint,
   type SystemBackupCheckpoint,
@@ -1270,6 +1272,21 @@ export function TaskTracker({
   }
   const pullRefreshFlight = useRef<Promise<AppSnapshot> | null>(null);
   const [systemBackupBusy, setSystemBackupBusy] = useState(false);
+  const [systemExportStatus, setSystemExportStatus] = useState<SystemBackupJobStatus | null>(null);
+  const systemExportStatusRef = useRef<SystemBackupJobStatus | null>(null);
+  const [systemExportRunning, setSystemExportRunning] = useState(false);
+  const [systemExportWaitingForNetwork, setSystemExportWaitingForNetwork] = useState(false);
+  const [systemExportError, setSystemExportError] = useState("");
+  const systemExportFlightRef = useRef<Promise<void> | null>(null);
+  const systemExportStartFlightRef = useRef<Promise<void> | null>(null);
+  const systemExportDiscoveryFlightRef = useRef<Promise<SystemBackupJobStatus | null | undefined> | null>(null);
+  const systemExportDriveRef = useRef<(status: SystemBackupJobStatus) => Promise<void>>(
+    async () => undefined,
+  );
+  const systemExportAbortRef = useRef<AbortController | null>(null);
+  const systemExportRetryTimerRef = useRef<number | null>(null);
+  const systemExportDiscoveryStartedRef = useRef(false);
+  const systemExportMountedRef = useRef(true);
   const [error, setError] = useState("");
   const [catalogPages, setCatalogPages] = useState<Partial<Record<
     WorkspaceCatalogKind,
@@ -1288,6 +1305,155 @@ export function TaskTracker({
     initialData.user.theme ?? "system",
   );
   const preferenceSaveQueueRef = useRef<ReturnType<typeof createUserPreferenceSaveQueue> | null>(null);
+
+  const updateSystemExportStatus = useCallback((next: SystemBackupJobStatus | null) => {
+    systemExportStatusRef.current = next;
+    setSystemExportStatus(next);
+  }, []);
+
+  const driveSystemExport = useCallback((initial: SystemBackupJobStatus) => {
+    if (backupJobIsTerminal(initial)) {
+      updateSystemExportStatus(initial);
+      return Promise.resolve();
+    }
+    if (systemExportFlightRef.current) return systemExportFlightRef.current;
+    if (systemExportRetryTimerRef.current !== null) {
+      window.clearTimeout(systemExportRetryTimerRef.current);
+      systemExportRetryTimerRef.current = null;
+    }
+    const controller = new AbortController();
+    systemExportAbortRef.current = controller;
+    setSystemExportRunning(true);
+    setSystemExportWaitingForNetwork(false);
+    setSystemExportError("");
+    setSystemBackupBusy(true);
+    const operation = runSystemBackupJob(initial, {
+      signal: controller.signal,
+      requestTimeoutMs: 25_000,
+      stepDelayMs: 250,
+      maximumNetworkRetries: 3,
+      retryBaseDelayMs: 500,
+      retryMaximumDelayMs: 4_000,
+      onConnectionState: setSystemExportWaitingForNetwork,
+      onProgress: updateSystemExportStatus,
+    }).then((result) => {
+      updateSystemExportStatus(result);
+      if (result.status === "failed" || result.status === "expired") {
+        setSystemExportError("Экспорт остановлен до готового файла. Начните новый экспорт.");
+      }
+    }).catch((requestError: unknown) => {
+      if (!systemExportMountedRef.current || controller.signal.aborted) return;
+      const resumable = requestError instanceof SystemBackupClientError
+        && (requestError.code === "network" || requestError.code === "stopped");
+      setSystemExportWaitingForNetwork(resumable);
+      setSystemExportError(resumable
+        ? "Сейчас нет устойчивой связи. Серверное задание сохранено и будет продолжено в этой вкладке."
+        : requestError instanceof Error
+          ? requestError.message
+          : "Не удалось продолжить экспорт.");
+      const current = systemExportStatusRef.current;
+      if (resumable && current && !backupJobIsTerminal(current)) {
+        systemExportRetryTimerRef.current = window.setTimeout(() => {
+          systemExportRetryTimerRef.current = null;
+          const saved = systemExportStatusRef.current;
+          if (saved && !backupJobIsTerminal(saved)) void systemExportDriveRef.current(saved);
+        }, 5_000);
+      }
+    }).finally(() => {
+      if (systemExportFlightRef.current === operation) systemExportFlightRef.current = null;
+      if (systemExportAbortRef.current === controller) systemExportAbortRef.current = null;
+      if (systemExportMountedRef.current) {
+        setSystemExportRunning(false);
+        setSystemBackupBusy(false);
+      }
+    });
+    systemExportFlightRef.current = operation;
+    return operation;
+  }, [updateSystemExportStatus]);
+  systemExportDriveRef.current = driveSystemExport;
+
+  const startSystemExport = useCallback((fresh = false) => {
+    if (systemExportStartFlightRef.current) return systemExportStartFlightRef.current;
+    setSystemBackupBusy(true);
+    setSystemExportWaitingForNetwork(false);
+    setSystemExportError("");
+    const operation = createSystemBackupExport(fetch, { fresh }).then(async (created) => {
+      updateSystemExportStatus(created);
+      await driveSystemExport(created);
+    }).catch((requestError: unknown) => {
+      if (!systemExportMountedRef.current) return;
+      setSystemExportWaitingForNetwork(
+        requestError instanceof SystemBackupClientError && requestError.code === "network",
+      );
+      setSystemExportError(requestError instanceof Error ? requestError.message : "Не удалось начать экспорт.");
+    }).finally(() => {
+      if (systemExportStartFlightRef.current === operation) systemExportStartFlightRef.current = null;
+      if (systemExportMountedRef.current && !systemExportFlightRef.current) setSystemBackupBusy(false);
+    });
+    systemExportStartFlightRef.current = operation;
+    return operation;
+  }, [driveSystemExport, updateSystemExportStatus]);
+
+  const discoverCurrentSystemExport = useCallback(() => {
+    if (systemExportDiscoveryFlightRef.current) return systemExportDiscoveryFlightRef.current;
+    const operation = getCurrentSystemBackupExport().then((current) => {
+      if (!systemExportMountedRef.current) return current;
+      updateSystemExportStatus(current);
+      setSystemExportWaitingForNetwork(false);
+      setSystemExportError("");
+      if (current && !backupJobIsTerminal(current)) void driveSystemExport(current);
+      return current;
+    }).catch((requestError: unknown) => {
+      if (systemExportMountedRef.current) {
+        setSystemExportWaitingForNetwork(
+          requestError instanceof SystemBackupClientError && requestError.code === "network",
+        );
+        setSystemExportError(requestError instanceof Error
+          ? requestError.message
+          : "Не удалось проверить незавершённый экспорт.");
+      }
+      return undefined;
+    }).finally(() => {
+      if (systemExportDiscoveryFlightRef.current === operation) {
+        systemExportDiscoveryFlightRef.current = null;
+      }
+    });
+    systemExportDiscoveryFlightRef.current = operation;
+    return operation;
+  }, [driveSystemExport, updateSystemExportStatus]);
+
+  const openSystemExport = useCallback(() => {
+    setDialog("systemExport");
+    const current = systemExportStatusRef.current;
+    if (current?.status === "failed" || current?.status === "expired") {
+      void startSystemExport();
+      return;
+    }
+    if (current) {
+      if (!backupJobIsTerminal(current)) void driveSystemExport(current);
+      return;
+    }
+    void discoverCurrentSystemExport().then((discovered) => {
+      if (discovered === null && systemExportMountedRef.current) void startSystemExport();
+    });
+  }, [discoverCurrentSystemExport, driveSystemExport, startSystemExport]);
+
+  useEffect(() => {
+    systemExportMountedRef.current = true;
+    return () => {
+      systemExportMountedRef.current = false;
+      systemExportAbortRef.current?.abort();
+      if (systemExportRetryTimerRef.current !== null) {
+        window.clearTimeout(systemExportRetryTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (surface !== "admin" || !data.admin || systemExportDiscoveryStartedRef.current) return;
+    systemExportDiscoveryStartedRef.current = true;
+    void discoverCurrentSystemExport();
+  }, [data.admin, discoverCurrentSystemExport, surface]);
   const [viewReferenceTime] = useState(() => Date.now());
   const searchRef = useRef<HTMLInputElement>(null);
   const mobileSearchRef = useRef<HTMLInputElement>(null);
@@ -3748,7 +3914,7 @@ export function TaskTracker({
           else handled = false;
         }
         else if (dialog) {
-          if (!systemBackupBusy) setDialog(null);
+          if (dialog !== "systemImport" || !systemBackupBusy) setDialog(null);
           else handled = false;
         }
         else if (activeTaskId) {
@@ -4363,7 +4529,11 @@ export function TaskTracker({
             overview={data.admin}
             timeZone={data.user.timezone}
             backupBusy={systemBackupBusy}
-            onExport={() => setDialog("systemExport")}
+            exportActive={Boolean(
+              systemExportStartFlightRef.current ||
+              (systemExportStatus && !backupJobIsTerminal(systemExportStatus)),
+            )}
+            onExport={openSystemExport}
             onImport={() => setDialog("systemImport")}
           />
         ) : surface === "views" ? (
@@ -4448,7 +4618,18 @@ export function TaskTracker({
       {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} data={data} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} temporaryFilterCount={0} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); return ok; }} busy={busy} />}
       {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={activeSavedView.id} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } return ok; }} busy={busy} />}
       {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
-      {dialog === "systemExport" && <SystemBackupExportDialog onClose={() => setDialog(null)} onBusyChange={setSystemBackupBusy} />}
+      {dialog === "systemExport" && <SystemBackupExportDialog
+        status={systemExportStatus}
+        busy={systemExportRunning || Boolean(systemExportStartFlightRef.current)}
+        waitingForNetwork={systemExportWaitingForNetwork}
+        error={systemExportError}
+        onClose={() => setDialog(null)}
+        onStart={(fresh) => void startSystemExport(fresh)}
+        onResume={() => {
+          const current = systemExportStatusRef.current;
+          if (current && !backupJobIsTerminal(current)) void driveSystemExport(current);
+        }}
+      />}
       {dialog === "systemImport" && <SystemImportDialog onClose={() => setDialog(null)} onBusyChange={setSystemBackupBusy} onApplied={() => window.location.assign("/admin")} />}
       {dialog === "codexSetup" && <CodexSetupDialog onClose={() => setDialog(null)} />}
       {dialog === "workflowSettings" && <WorkflowSettingsDialog initialStatuses={data.statuses.filter((status) => status.ownerUserId === data.user.id)} onClose={() => setDialog(null)} onStatuses={(statuses) => setData((current) => ({ ...current, statuses: [...current.statuses.filter((status) => status.ownerUserId !== current.user.id), ...statuses] }))} />}
@@ -8014,7 +8195,7 @@ export function SystemBackupProgress({ status }: { status: SystemBackupJobStatus
       <div><dt>Строки</dt><dd>{status.progress.rows.toLocaleString("ru-RU")}</dd></div>
       <div><dt>Данные</dt><dd>{backupByteSize(status.progress.bytes)}</dd></div>
       <div><dt>Части</dt><dd>{status.progress.parts.toLocaleString("ru-RU")}</dd></div>
-      <div><dt>Следующая</dt><dd>{status.progress.nextPartIndex.toLocaleString("ru-RU")}</dd></div>
+      <div><dt>Контрольная точка</dt><dd>{longDateTime(status.updatedAt)}</dd></div>
     </dl>
   </div>;
 }
@@ -8072,94 +8253,57 @@ export function SystemBackupPreview({ status }: { status: SystemBackupJobStatus 
 }
 
 export function SystemBackupExportDialog({
+  status,
+  busy,
+  waitingForNetwork,
+  error,
   onClose,
-  onBusyChange,
+  onStart,
+  onResume,
 }: {
+  status: SystemBackupJobStatus | null;
+  busy: boolean;
+  waitingForNetwork: boolean;
+  error: string;
   onClose: () => void;
-  onBusyChange: (busy: boolean) => void;
+  onStart: (fresh?: boolean) => void;
+  onResume: () => void;
 }) {
-  const [status, setStatus] = useState<SystemBackupJobStatus | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   const [downloadStarted, setDownloadStarted] = useState(false);
-  const booted = useRef(false);
-
-  const setOperationBusy = useCallback((value: boolean) => {
-    setBusy(value);
-    onBusyChange(value);
-  }, [onBusyChange]);
-
-  const drive = useCallback(async (initial: SystemBackupJobStatus) => {
-    setOperationBusy(true);
-    setError("");
-    rememberBackupStatus(systemBackupExportCheckpointKey, initial);
-    try {
-      const result = await runSystemBackupJob(initial, {
-        onProgress: (next) => {
-          setStatus(next);
-          rememberBackupStatus(systemBackupExportCheckpointKey, next);
-        },
-      });
-      setStatus(result);
-      rememberBackupStatus(systemBackupExportCheckpointKey, result);
-      if (result.status === "failed" || result.status === "expired") {
-        setError("Экспорт остановлен до готового файла. Начните новый экспорт.");
-      }
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Не удалось продолжить экспорт.");
-    } finally {
-      setOperationBusy(false);
-    }
-  }, [setOperationBusy]);
-
-  const start = useCallback(async () => {
-    setDownloadStarted(false);
-    setOperationBusy(true);
-    setError("");
-    try {
-      const created = await createSystemBackupExport();
-      setStatus(created);
-      await drive(created);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Не удалось начать экспорт.");
-      setOperationBusy(false);
-    }
-  }, [drive, setOperationBusy]);
-
-  useEffect(() => {
-    if (booted.current) return;
-    booted.current = true;
-    const storage = browserSessionStorage();
-    const checkpoint = storage ? readBackupCheckpoint(storage, systemBackupExportCheckpointKey) : null;
-    if (!checkpoint) {
-      window.queueMicrotask(() => void start());
-      return;
-    }
-    void getBackupJobStatus(checkpoint.jobId).then((current) => {
-      setStatus(current);
-      rememberBackupStatus(systemBackupExportCheckpointKey, current);
-      if (current.status !== "ready" && current.status !== "failed" && current.status !== "expired") {
-        void drive(current);
-      }
-    }).catch((requestError: unknown) => {
-      clearBackupStatus(systemBackupExportCheckpointKey);
-      setError(requestError instanceof Error ? requestError.message : "Сохранённый экспорт недоступен.");
-    });
-  }, [drive, start]);
-
   const downloadUrl = safeSystemBackupDownloadUrl(status?.downloadUrl ?? null);
-  return <Modal onClose={() => !busy && onClose()} className="system-import-modal system-export-modal">
-    <DialogHeader title="Экспорт полного состояния" icon={<Download size={17} />} onClose={() => !busy && onClose()} />
+  const terminalFailure = status?.status === "failed" || status?.status === "expired";
+  const resumable = Boolean(status && !backupJobIsTerminal(status) && !busy);
+  const stateLabel = status?.status === "ready"
+    ? "Экспорт готов"
+    : terminalFailure
+      ? "Экспорт остановлен"
+      : waitingForNetwork
+        ? "Ожидается сеть — можно возобновить"
+        : busy
+          ? "Экспорт выполняется"
+          : resumable
+            ? "Экспорт можно возобновить"
+            : "Подготовка экспорта";
+  return <Modal onClose={onClose} className="system-import-modal system-export-modal">
+    <DialogHeader title="Экспорт полного состояния" icon={<Download size={17} />} onClose={onClose} />
     <div className="system-import-body">
       <p>Снимок включает состояние всех пользователей, проектов, задач, представлений и оригиналы файлов. Он содержит чувствительные данные — храните его как секрет.</p>
+      <div className={`system-export-runtime ${waitingForNetwork ? "waiting" : status?.status ?? "idle"}`} role="status" aria-live="polite">
+        <b>{stateLabel}</b>
+        <span>Пока Task Manager открыт, экспорт продолжает работу независимо от этого окна. При полностью закрытой вкладке он безопасно приостановится и продолжится после следующего открытия Administration.</span>
+      </div>
       {status && <SystemBackupProgress status={status} />}
       {status?.status === "ready" && <SystemBackupPreview status={status} />}
       {error && <p className="system-import-error" role="alert">{error}</p>}
     </div>
     <div className="dialog-footer system-backup-footer">
-      <span>{downloadStarted ? "Загрузка передана браузеру" : status?.status === "ready" ? "Файл готов и не кэшируется" : "Задание можно продолжить после перезагрузки страницы"}</span>
+      <span>{downloadStarted ? "Загрузка передана браузеру" : status?.status === "ready" ? "Файл готов и не кэшируется" : "Состояние задания хранится на сервере"}</span>
       <div>
-        {(status?.status === "failed" || status?.status === "expired" || error) && <button className="button ghost" type="button" disabled={busy} onClick={() => void start()}><RotateCw size={14} />Начать заново</button>}
+        <button className="button ghost" type="button" onClick={onClose}>Закрыть окно</button>
+        {!status && !busy && <button className="button primary" type="button" onClick={() => onStart()}><Download size={14} />Начать экспорт</button>}
+        {terminalFailure && <button className="button ghost" type="button" disabled={busy} onClick={() => onStart()}><RotateCw size={14} />Начать заново</button>}
+        {resumable && <button className="button primary" type="button" onClick={onResume}><RotateCw size={14} />Продолжить</button>}
+        {status?.status === "ready" && <button className="button ghost" type="button" onClick={() => onStart(true)}><RotateCw size={14} />Новый экспорт</button>}
         {downloadUrl && <a className="button primary" href={downloadUrl} download onClick={() => setDownloadStarted(true)}><Download size={14} />Скачать .tmbak</a>}
       </div>
     </div>
@@ -8202,7 +8346,7 @@ export function SystemImportDialog({
     setImportBusy(true);
     setError("");
     try {
-      const result = await runSystemBackupJob(initial, { onProgress: updateImportStatus });
+      const result = await runSystemBackupJob(initial, { onProgress: updateImportStatus, stepDelayMs: 0 });
       updateImportStatus(result);
       if (result.status === "applied") {
         clearBackupStatus(systemBackupImportCheckpointKey);
@@ -8258,6 +8402,7 @@ export function SystemImportDialog({
             setSafetyStatus(next);
             rememberBackupStatus(systemBackupSafetyExportCheckpointKey, next, { relatedJobId: importJobId });
           },
+          stepDelayMs: 0,
         }).finally(() => setImportBusy(false));
       }
     }).catch(() => clearBackupStatus(systemBackupSafetyExportCheckpointKey));
@@ -8299,7 +8444,7 @@ export function SystemImportDialog({
     setError("");
     setSafetyDownloaded(false);
     try {
-      const created = await createSystemBackupExport();
+      const created = await createSystemBackupExport(fetch, { fresh: true });
       setSafetyStatus(created);
       rememberBackupStatus(systemBackupSafetyExportCheckpointKey, created, { relatedJobId: status.jobId });
       const result = await runSystemBackupJob(created, {
@@ -8307,6 +8452,7 @@ export function SystemImportDialog({
           setSafetyStatus(next);
           rememberBackupStatus(systemBackupSafetyExportCheckpointKey, next, { relatedJobId: status.jobId });
         },
+        stepDelayMs: 0,
       });
       setSafetyStatus(result);
       rememberBackupStatus(systemBackupSafetyExportCheckpointKey, result, { relatedJobId: status.jobId });
@@ -8325,7 +8471,7 @@ export function SystemImportDialog({
     try {
       const applying = await applySystemBackupImport(status);
       updateImportStatus(applying);
-      const result = await runSystemBackupJob(applying, { onProgress: updateImportStatus });
+      const result = await runSystemBackupJob(applying, { onProgress: updateImportStatus, stepDelayMs: 0 });
       updateImportStatus(result);
       if (result.status !== "applied") {
         setError("Восстановление не подтверждено сервером как завершённое.");
@@ -9342,10 +9488,11 @@ function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onContex
     </div>;
   })}</div>;
 }
-function AdminSurface({ overview, timeZone, backupBusy, onExport, onImport }: {
+function AdminSurface({ overview, timeZone, backupBusy, exportActive, onExport, onImport }: {
   overview: AdminOverview;
   timeZone: string;
   backupBusy: boolean;
+  exportActive: boolean;
   onExport: () => void;
   onImport: () => void;
 }) {
@@ -9373,7 +9520,7 @@ function AdminSurface({ overview, timeZone, backupBusy, onExport, onImport }: {
               <h3>Экспорт</h3>
               <p>Создать переносимый снимок D1 и R2 в возобновляемом формате <code>.tmbak</code>.</p>
             </div>
-            <button className="button ghost" type="button" disabled={backupBusy} onClick={onExport}><Download size={14} />Экспорт</button>
+            <button className="button ghost" type="button" disabled={backupBusy && !exportActive} onClick={onExport}><Download size={14} />{exportActive ? "Открыть экспорт" : "Экспорт"}</button>
           </article>
           <article className="destructive">
             <span className="admin-backup-icon"><Upload size={17} /></span>

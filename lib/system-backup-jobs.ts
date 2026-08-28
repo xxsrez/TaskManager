@@ -118,6 +118,9 @@ export type SystemBackupJobStatus = {
   policies: Record<string, string[]>;
   warnings: string[];
   validationErrors: string[];
+  advanceDeferred?: boolean;
+  updatedAt: string;
+  attemptCount: number;
   expiresAt: string;
   downloadUrl: string | null;
 };
@@ -128,11 +131,16 @@ export async function createSystemBackupExportJob(
     kind?: "export" | "rollback";
     parentJobId?: string | null;
     siteOrigin?: string;
+    reuseCurrent?: boolean;
   } = {},
 ): Promise<SystemBackupJobStatus> {
   assertConfiguredAdmin(currentUser);
   await cleanupExpiredSystemBackupJobs();
   const kind = options.kind ?? "export";
+  if (kind === "export" && options.reuseCurrent) {
+    const current = await getCurrentSystemBackupExportJob(currentUser);
+    if (current?.status === "running") return current;
+  }
   const jobId = `${kind === "rollback" ? "system-rollback" : "system-export"}:${crypto.randomUUID()}`;
   const exportedAt = new Date().toISOString();
   const fingerprint = await systemBackupSchemaFingerprint();
@@ -182,6 +190,23 @@ export async function createSystemBackupExportJob(
     throw error;
   }
   return getSystemBackupJobStatus(currentUser, jobId);
+}
+
+export async function getCurrentSystemBackupExportJob(
+  currentUser: UserRecord,
+): Promise<SystemBackupJobStatus | null> {
+  assertConfiguredAdmin(currentUser);
+  await cleanupExpiredSystemBackupJobs();
+  const job = await getD1().prepare(`SELECT * FROM system_backup_jobs
+    WHERE created_by_user_id = ? AND kind = 'export'
+      AND status IN ('running', 'ready')
+      AND datetime(expires_at) > datetime('now')
+    ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
+      exported_at DESC, id DESC
+    LIMIT 1`)
+    .bind(currentUser.id)
+    .first<BackupJobRow>();
+  return job ? statusFromRow(job) : null;
 }
 
 export async function createSystemBackupImportJob(
@@ -384,70 +409,7 @@ export async function advanceSystemBackupJob(
     job = (await getD1().prepare(`SELECT * FROM system_backup_jobs
       WHERE id = ? AND lease_token = ?`).bind(jobId, leaseToken)
       .first<BackupJobRow>())!;
-    switch (job.phase) {
-      case "inventory_r2":
-        await advanceExportInventory(job);
-        break;
-      case "hash_objects":
-        await advanceExportObjectHash(job);
-        break;
-      case "build_rows":
-        await advanceExportRows(job);
-        break;
-      case "build_object_parts":
-        await advanceExportObjectParts(job);
-        break;
-      case "state_digest_rows":
-        await advanceStateDigestRows(job);
-        break;
-      case "state_digest_objects":
-        await advanceStateDigestObjects(job);
-        break;
-      case "finalize_export":
-        await finalizeExportManifest(job);
-        break;
-      case "validating_parts":
-        await advancePackagePartValidation(job);
-        break;
-      case "validating_objects":
-        await advancePackageObjectValidation(job);
-        break;
-      case "preflight":
-        await advancePackagePreflight(job, currentUser);
-        break;
-      case "revalidate_r2":
-        await advanceExportR2Revalidation(job);
-        break;
-      case "apply_revalidate_rows":
-        await advanceApplyRowRevalidation(job);
-        break;
-      case "apply_revalidate_objects":
-        await advanceApplyObjectRevalidation(job);
-        break;
-      case "prepare_rollback":
-        dependency = await prepareRollbackDependency(job, currentUser);
-        break;
-      case "waiting_rollback":
-        dependency = await advanceRollbackDependency(job);
-        break;
-      case "materializing":
-        await advanceImportMaterialization(job);
-        break;
-      case "d1_cutover":
-        await commitExactReplace(job.id, job.rollback_job_id!, leaseToken);
-        break;
-      case "verifying_d1":
-        await advanceAppliedD1Verification(job, currentUser.id);
-        break;
-      case "verifying_objects":
-        await advanceAppliedObjectVerification(job);
-        break;
-      case "cleanup":
-        await advanceCommittedCleanup(job);
-        break;
-      default:
-        throw new ValidationError(`Unknown system backup phase ${job.phase}`);
-    }
+    dependency = await advanceSystemBackupJobPhase(job, currentUser, leaseToken);
   } catch (error) {
     const fresh = await getD1().prepare(`SELECT d1_committed_at, phase FROM system_backup_jobs WHERE id = ?`)
       .bind(job.id).first<{ d1_committed_at: string | null; phase: string }>();
@@ -484,6 +446,134 @@ export async function advanceSystemBackupJob(
     }
   }
   return getSystemBackupJobStatus(currentUser, jobId);
+}
+
+export async function advanceSystemBackupExportSlice(
+  currentUser: UserRecord,
+  jobId: string,
+  options: { maximumSteps?: number; maximumDurationMs?: number } = {},
+): Promise<SystemBackupJobStatus> {
+  assertConfiguredAdmin(currentUser);
+  await cleanupExpiredSystemBackupJobs();
+  let job = await requireOwnedJob(currentUser, jobId);
+  if (job.kind !== "export" && job.kind !== "rollback") {
+    throw new ValidationError("System backup export slice requires an export job");
+  }
+  if (["ready", "failed", "expired"].includes(job.status)) {
+    return getSystemBackupJobStatus(currentUser, jobId);
+  }
+  const maximumSteps = Math.max(1, Math.min(128, options.maximumSteps ?? 24));
+  const maximumDurationMs = Math.max(100, Math.min(10_000, options.maximumDurationMs ?? 1_500));
+  const deadline = Date.now() + maximumDurationMs;
+  const leaseToken = crypto.randomUUID();
+  const leaseExpiresAt = new Date(Date.now() + jobLeaseSeconds * 1000).toISOString();
+  const claim = await getD1().prepare(`UPDATE system_backup_jobs
+    SET lease_token = ?, lease_expires_at = ?
+    WHERE id = ? AND created_by_user_id = ?
+      AND (lease_token IS NULL OR datetime(lease_expires_at) <= datetime('now'))`)
+    .bind(leaseToken, leaseExpiresAt, jobId, currentUser.id).run();
+  if (claim.meta.changes !== 1) {
+    return {
+      ...await getSystemBackupJobStatus(currentUser, jobId),
+      advanceDeferred: true,
+    };
+  }
+  try {
+    for (let step = 0; step < maximumSteps && Date.now() < deadline; step += 1) {
+      const leasedJob = await getD1().prepare(`SELECT * FROM system_backup_jobs
+        WHERE id = ? AND lease_token = ?`).bind(jobId, leaseToken)
+        .first<BackupJobRow>();
+      if (!leasedJob) throw new Error("System backup export lease was lost");
+      job = leasedJob;
+      if (["ready", "failed", "expired"].includes(job.status)) break;
+      await advanceSystemBackupJobPhase(job, currentUser, leaseToken);
+    }
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      await failJob(job.id, error);
+    } else {
+      await getD1().prepare(`UPDATE system_backup_jobs
+        SET status = 'running', error_code = ?, attempt_count = attempt_count + 1,
+            updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(safeErrorCode(error), job.id).run();
+    }
+    throw error;
+  } finally {
+    await getD1().prepare(`UPDATE system_backup_jobs
+      SET lease_token = NULL, lease_expires_at = NULL
+      WHERE id = ? AND lease_token = ?`).bind(jobId, leaseToken).run();
+  }
+  return getSystemBackupJobStatus(currentUser, jobId);
+}
+
+async function advanceSystemBackupJobPhase(
+  job: BackupJobRow,
+  currentUser: UserRecord,
+  leaseToken: string,
+): Promise<string | null> {
+  switch (job.phase) {
+    case "inventory_r2":
+      await advanceExportInventory(job);
+      break;
+    case "hash_objects":
+      await advanceExportObjectHash(job);
+      break;
+    case "build_rows":
+      await advanceExportRows(job);
+      break;
+    case "build_object_parts":
+      await advanceExportObjectParts(job);
+      break;
+    case "state_digest_rows":
+      await advanceStateDigestRows(job);
+      break;
+    case "state_digest_objects":
+      await advanceStateDigestObjects(job);
+      break;
+    case "finalize_export":
+      await finalizeExportManifest(job);
+      break;
+    case "validating_parts":
+      await advancePackagePartValidation(job);
+      break;
+    case "validating_objects":
+      await advancePackageObjectValidation(job);
+      break;
+    case "preflight":
+      await advancePackagePreflight(job, currentUser);
+      break;
+    case "revalidate_r2":
+      await advanceExportR2Revalidation(job);
+      break;
+    case "apply_revalidate_rows":
+      await advanceApplyRowRevalidation(job);
+      break;
+    case "apply_revalidate_objects":
+      await advanceApplyObjectRevalidation(job);
+      break;
+    case "prepare_rollback":
+      return prepareRollbackDependency(job, currentUser);
+    case "waiting_rollback":
+      return advanceRollbackDependency(job);
+    case "materializing":
+      await advanceImportMaterialization(job);
+      break;
+    case "d1_cutover":
+      await commitExactReplace(job.id, job.rollback_job_id!, leaseToken);
+      break;
+    case "verifying_d1":
+      await advanceAppliedD1Verification(job, currentUser.id);
+      break;
+    case "verifying_objects":
+      await advanceAppliedObjectVerification(job);
+      break;
+    case "cleanup":
+      await advanceCommittedCleanup(job);
+      break;
+    default:
+      throw new ValidationError(`Unknown system backup phase ${job.phase}`);
+  }
+  return null;
 }
 
 export async function getSystemBackupJobStatus(
@@ -1960,6 +2050,8 @@ async function statusFromRow(job: BackupJobRow): Promise<SystemBackupJobStatus> 
     policies,
     warnings: job.status === "cleanup_pending" ? ["Restore committed; old object cleanup is pending"] : [],
     validationErrors: job.error_code === "validation_failed" ? [job.error_code] : [],
+    updatedAt: job.updated_at,
+    attemptCount: job.attempt_count,
     expiresAt: job.expires_at,
     downloadUrl:
       (job.kind === "export" || job.kind === "rollback") && job.status === "ready"

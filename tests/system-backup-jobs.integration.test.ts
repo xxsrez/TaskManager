@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import {
+  advanceSystemBackupExportSlice,
   advanceSystemBackupJob,
   applySystemBackupImport,
   createSystemBackupExportJob,
   createSystemBackupImportJob,
   finalizeSystemBackupImport,
+  getCurrentSystemBackupExportJob,
   streamSystemBackupPackage,
   uploadSystemBackupImportPart,
   type SystemBackupJobStatus,
@@ -64,6 +66,46 @@ async function drive(
   }
   throw new Error(`Job ${jobId} did not reach ${terminal.join("/")}; last=${status?.status}/${status?.phase}`);
 }
+
+test("export slice advances several durable checkpoints and current export is discoverable", async () => {
+  const singleStepJob = await createSystemBackupExportJob(admin);
+  const singleStep = await advanceSystemBackupJob(admin, singleStepJob.jobId);
+
+  const slicedJob = await createSystemBackupExportJob(admin);
+  assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, slicedJob.jobId);
+  await database.prepare(`UPDATE system_backup_jobs
+    SET lease_token = 'other-runner', lease_expires_at = '2099-01-01T00:00:00.000Z'
+    WHERE id = ?`).bind(slicedJob.jobId).run();
+  assert.equal(
+    (await advanceSystemBackupExportSlice(admin, slicedJob.jobId)).phase,
+    slicedJob.phase,
+  );
+  await database.prepare(`UPDATE system_backup_jobs
+    SET lease_token = NULL, lease_expires_at = NULL WHERE id = ?`)
+    .bind(slicedJob.jobId).run();
+  const sliced = await advanceSystemBackupExportSlice(admin, slicedJob.jobId, {
+    maximumSteps: 2,
+    maximumDurationMs: 10_000,
+  });
+
+  assert.equal(singleStep.phase, "hash_objects");
+  assert.equal(sliced.phase, "build_rows");
+  assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, slicedJob.jobId);
+  assert.equal(
+    (await createSystemBackupExportJob(admin, { reuseCurrent: true })).jobId,
+    slicedJob.jobId,
+  );
+  await database.batch([
+    database.prepare(`DELETE FROM system_backup_rows WHERE job_id IN (?, ?)`)
+      .bind(singleStepJob.jobId, slicedJob.jobId),
+    database.prepare(`DELETE FROM system_backup_objects WHERE job_id IN (?, ?)`)
+      .bind(singleStepJob.jobId, slicedJob.jobId),
+    database.prepare(`DELETE FROM system_backup_parts WHERE job_id IN (?, ?)`)
+      .bind(singleStepJob.jobId, slicedJob.jobId),
+    database.prepare(`DELETE FROM system_backup_jobs WHERE id IN (?, ?)`)
+      .bind(singleStepJob.jobId, slicedJob.jobId),
+  ]);
+});
 
 test("all-user export/import preserves bound, unbound, missing and orphan object state exactly", async () => {
   await createProject(admin, { name: "Backup project", taskCode: "BKP" });

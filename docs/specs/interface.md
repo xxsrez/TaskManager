@@ -905,6 +905,16 @@ Linear, но они обязаны использовать тот же visual l
 - `Export` создаёт resumable durable job и после его готовности скачивает
   потоковый `.tmbak`; `Import` открывает многошаговый dialog для chunked upload,
   preview и отдельного destructive confirmation.
+- Export dialog можно закрыть через X, `Escape` или backdrop во время работы.
+  Пока `/admin` остаётся открытым, coordinator уровня приложения продолжает
+  тот же server job. При reload или следующем открытии `/admin` UI получает
+  текущий job с сервера и возобновляет его с сохранённого курсора; browser
+  storage не определяет identity операции.
+- Progress показывает фактическую серверную фазу, обработанные данные и время
+  последнего checkpoint. В UI различаются выполнение, ожидание сети с
+  возможностью продолжить, ошибка и готовность файла. Он прямо сообщает, что
+  полностью закрытая вкладка приостанавливает новые шаги до следующего открытия,
+  а не изображает автономную очередь.
 - Верхний ряд содержит compact metric cards: registered users, active users за
   7 дней, Tasks, SavedViews и Attachments; secondary notes показывают
   Projects/Releases и content-free bytes/pending/failed/deleted counts.

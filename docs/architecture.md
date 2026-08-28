@@ -824,6 +824,14 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
    создаёт durable job. Одна D1 batch замораживает 24 exact tables в
    `system_backup_rows`; последующие bounded advances копируют полный managed
    R2 inventory в immutable staging и повторно сверяют live D1/R2 с freeze.
+   Export advance удерживает одну lease на короткий slice из нескольких
+   внутренних шагов, но сохраняет durable cursor после каждого шага. Это
+   уменьшает число HTTP round trips без Queue, Cron или отдельного Worker.
+   `GET /api/admin/export/current` возвращает последний незавершённый либо
+   готовый export текущего администратора. Пока `/admin` открыт,
+   application-level coordinator вызывает следующие slices; закрытие dialog
+   его не останавливает. После закрытия вкладки job остаётся целым и
+   возобновляется при следующем открытии, но сам по себе не исполняется.
 2. `.tmbak` состоит из header, канонически упорядоченных row/object-chunk frames
    и terminal manifest. Per-part SHA-256 связывает frame identity, ordinal,
    length/count и digest; `rootSha256` связывает package. Отдельный

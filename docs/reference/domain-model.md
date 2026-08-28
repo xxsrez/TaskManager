@@ -904,6 +904,10 @@ grants; Tasks, base query semantics и temporary URL layer не материал
 18. Admin aggregate query выполняется только после server-side allowlist check
     и не возвращает содержимое user-owned records. System backup/restore
     проверяет ту же boundary отдельно и не переиспользует unscoped product query.
+    Identity и checkpoint текущего system export принадлежат durable server job;
+    browser storage не создаёт и не восстанавливает право на операцию. Несколько
+    внутренних шагов могут выполняться под одной bounded lease, а повторное
+    продолжение начинает с сохранённого server cursor.
 19. Restore применяет только полностью валидный snapshot, содержащий identity
     текущего администратора. Replace всех live tables атомарен; ошибка оставляет
     предыдущее состояние без частичного удаления или импорта.

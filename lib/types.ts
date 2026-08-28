@@ -608,6 +608,8 @@ export type SystemBackupJobStatus = {
   kind: "export" | "import" | "rollback";
   status: string;
   phase: string;
+  updatedAt: string;
+  attemptCount: number;
   schemaVersion: number;
   schemaFingerprint: string;
   exportedAt: string | null;
@@ -648,6 +650,7 @@ export type SystemBackupJobStatus = {
   };
   warnings: string[];
   validationErrors: string[];
+  advanceDeferred?: boolean;
   expiresAt: string;
   downloadUrl: string | null;
 };

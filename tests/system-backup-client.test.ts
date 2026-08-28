@@ -7,6 +7,7 @@ import {
   SystemBackupClientError,
   canApplySystemBackupImport,
   createSystemBackupExport,
+  getCurrentSystemBackupExport,
   readBackupCheckpoint,
   readSystemBackupFrames,
   retainBackupCheckpoint,
@@ -20,7 +21,11 @@ import {
   type SystemBackupCheckpoint,
 } from "../lib/system-backup-client";
 import type { SystemBackupJobStatus } from "../lib/types";
-import { SystemBackupPreview } from "../components/task-tracker";
+import {
+  SystemBackupExportDialog,
+  SystemBackupPreview,
+  SystemBackupProgress,
+} from "../components/task-tracker";
 
 function job(
   overrides: Partial<SystemBackupJobStatus> = {},
@@ -30,6 +35,8 @@ function job(
     kind: "import",
     status: "uploading",
     phase: "uploading",
+    updatedAt: "2026-08-27T20:00:00.000Z",
+    attemptCount: 0,
     schemaVersion: 15,
     schemaFingerprint: "a".repeat(64),
     exportedAt: "2026-08-27T20:00:00.000Z",
@@ -212,6 +219,8 @@ test("job runner reads status after a network interruption and reaches terminal 
   let statusReads = 0;
   const initial = job({ status: "running", phase: "preflight" });
   const result = await runSystemBackupJob(initial, {
+    stepDelayMs: 0,
+    retryBaseDelayMs: 0,
     request: async (url) => {
       if (url.endsWith("/advance")) {
         advances += 1;
@@ -228,6 +237,81 @@ test("job runner reads status after a network interruption and reaches terminal 
   assert.equal(result.status, "ready");
   assert.equal(advances, 2);
   assert.equal(statusReads, 1);
+});
+
+test("job runner bounds network recovery and reports the waiting state", async () => {
+  const connectionStates: boolean[] = [];
+  let statusReads = 0;
+  await assert.rejects(
+    runSystemBackupJob(job({ status: "running", phase: "build_rows" }), {
+      stepDelayMs: 0,
+      retryBaseDelayMs: 0,
+      maximumNetworkRetries: 1,
+      onConnectionState: (waiting) => connectionStates.push(waiting),
+      request: async (url) => {
+        if (url.endsWith("/status")) statusReads += 1;
+        throw new Error("offline");
+      },
+    }),
+    (error: unknown) => error instanceof SystemBackupClientError && error.code === "network",
+  );
+  assert.equal(statusReads, 2);
+  assert.deepEqual(connectionStates, [true]);
+});
+
+test("job runner applies a request timeout and keeps the server job resumable", async () => {
+  await assert.rejects(
+    runSystemBackupJob(job({ status: "running", phase: "build_rows" }), {
+      requestTimeoutMs: 5,
+      stepDelayMs: 0,
+      retryBaseDelayMs: 0,
+      maximumNetworkRetries: 0,
+      request: async (_url, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("timed out")), { once: true });
+      }),
+    }),
+    (error: unknown) => error instanceof SystemBackupClientError && error.code === "network",
+  );
+});
+
+test("job runner backs off when another tab owns the export lease", async () => {
+  let advances = 0;
+  const initial = job({
+    jobId: "system-export:44444444-4444-4444-8444-444444444444",
+    kind: "export",
+    status: "running",
+    phase: "build_rows",
+  });
+  const result = await runSystemBackupJob(initial, {
+    stepDelayMs: 0,
+    leaseHeldDelayMs: 0,
+    request: async () => {
+      advances += 1;
+      return Response.json(advances === 1
+        ? { ...initial, advanceDeferred: true }
+        : { ...initial, status: "ready", phase: "ready", advanceDeferred: false });
+    },
+  });
+  assert.equal(result.status, "ready");
+  assert.equal(advances, 2);
+});
+
+test("current export discovery returns the server-owned job without creating one", async () => {
+  const current = job({
+    jobId: "system-export:22222222-2222-4222-8222-222222222222",
+    kind: "export",
+    status: "running",
+    phase: "build_rows",
+  });
+  const calls: string[] = [];
+  const result = await getCurrentSystemBackupExport(async (url) => {
+    calls.push(url);
+    return Response.json(current);
+  });
+  assert.equal(result?.jobId, current.jobId);
+  assert.deepEqual(calls, ["/api/admin/export/current"]);
+
+  assert.equal(await getCurrentSystemBackupExport(async () => Response.json(null)), null);
 });
 
 test("checkpoint state is validated and terminal cleanup is explicit", () => {
@@ -273,6 +357,20 @@ test("server error bodies are not surfaced and download URLs stay same-origin", 
   assert.equal(safeBackupMessage("See https://evil.test token=abc"), "See [адрес скрыт] [секрет скрыт]");
 });
 
+test("restore safety export explicitly requests a fresh snapshot", async () => {
+  const calls: string[] = [];
+  await createSystemBackupExport(async (url) => {
+    calls.push(url);
+    return Response.json(job({
+      jobId: "system-export:33333333-3333-4333-8333-333333333333",
+      kind: "export",
+      status: "running",
+      phase: "inventory_r2",
+    }));
+  }, { fresh: true });
+  assert.deepEqual(calls, ["/api/admin/export?fresh=1"]);
+});
+
 test("preview renders dynamic D1/R2/policy evidence without record content", () => {
   const status = job({
     status: "ready",
@@ -308,6 +406,45 @@ test("preview renders dynamic D1/R2/policy evidence without record content", () 
   assert.doesNotMatch(markup, /title|description|object_key/);
 });
 
+test("export progress and dialog describe the resumable app-level coordinator honestly", () => {
+  const status = job({
+    jobId: "system-export:22222222-2222-4222-8222-222222222222",
+    kind: "export",
+    status: "running",
+    phase: "build_rows",
+  });
+  const progress = renderToStaticMarkup(createElement(SystemBackupProgress, { status }));
+  assert.match(progress, /Упаковка таблиц/);
+  assert.match(progress, /Контрольная точка/);
+  assert.doesNotMatch(progress, /Следующая/);
+
+  const dialog = renderToStaticMarkup(createElement(SystemBackupExportDialog, {
+    status,
+    busy: true,
+    waitingForNetwork: false,
+    error: "",
+    onClose: () => undefined,
+    onStart: () => undefined,
+    onResume: () => undefined,
+  }));
+  assert.match(dialog, /Экспорт выполняется/);
+  assert.match(dialog, /независимо от этого окна/);
+  assert.match(dialog, /полностью закрытой вкладке/);
+  assert.match(dialog, /Закрыть окно/);
+
+  const readyDialog = renderToStaticMarkup(createElement(SystemBackupExportDialog, {
+    status: { ...status, status: "ready", phase: "ready", downloadUrl: "/api/admin/export/current" },
+    busy: false,
+    waitingForNetwork: false,
+    error: "",
+    onClose: () => undefined,
+    onStart: () => undefined,
+    onResume: () => undefined,
+  }));
+  assert.match(readyDialog, /Новый экспорт/);
+  assert.match(readyDialog, /Скачать \.tmbak/);
+});
+
 test("Administration source has no monolithic system backup blob/text path", async () => {
   const source = await readFile(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /function downloadSystemBackup/);
@@ -316,4 +453,11 @@ test("Administration source has no monolithic system backup blob/text path", asy
   assert.match(source, /href=\{downloadUrl\} download/);
   assert.match(source, /uploadSystemBackupPackage/);
   assert.match(source, /sessionStorage/);
+  assert.match(source, /getCurrentSystemBackupExport/);
+  assert.doesNotMatch(source, /systemBackupExportCheckpointKey/);
+  const exportDialogSource = source.slice(
+    source.indexOf("export function SystemBackupExportDialog"),
+    source.indexOf("export function SystemImportDialog"),
+  );
+  assert.doesNotMatch(exportDialogSource, /!busy && onClose/);
 });

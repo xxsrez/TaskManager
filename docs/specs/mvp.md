@@ -113,6 +113,13 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   tuple основных сущностей; hosted secrets, deployment/audience state,
   analytics, schema, browser-local preferences и operational purge jobs не
   входят.
+- Одна команда продолжения export выполняет несколько bounded внутренних
+  шагов под одной lease и сохраняет курсор после каждого шага. Пока
+  административная страница открыта, application-level coordinator продолжает
+  тот же job независимо от состояния dialog. Закрытие вкладки безопасно
+  приостанавливает новые команды: повторное открытие находит текущий job на
+  сервере и продолжает его без дублирования. Первая версия не использует Queue,
+  Cron или обещание автономного выполнения при полностью закрытом браузере.
 - Import поддерживает только полную замену. До mutation сервер проверяет format
   version, типы, уникальность, ссылки, owner/domain invariants и наличие
   текущей admin identity; затем staging atomically заменяет live state одной

@@ -7,7 +7,6 @@ export const systemBackupActionHeaders = {
 export const systemBackupMediaType =
   "application/vnd.task-manager.system-backup+ndjson";
 export const maxSystemBackupFrameBytes = 3_000_000;
-export const systemBackupExportCheckpointKey = "task-manager:system-backup:export";
 export const systemBackupImportCheckpointKey = "task-manager:system-backup:import";
 export const systemBackupSafetyExportCheckpointKey = "task-manager:system-backup:safety-export";
 
@@ -34,6 +33,7 @@ export type BackupRequest = (
 ) => Promise<Response>;
 
 export type BackupJobProgress = (status: SystemBackupJobStatus) => void;
+export type BackupConnectionState = (waiting: boolean) => void;
 
 export class SystemBackupClientError extends Error {
   readonly code:
@@ -276,10 +276,11 @@ export async function getBackupJobStatus(
 
 export async function createSystemBackupExport(
   request: BackupRequest = fetch,
+  options: { fresh?: boolean } = {},
 ): Promise<SystemBackupJobStatus> {
   let response: Response;
   try {
-    response = await request("/api/admin/export", {
+    response = await request(options.fresh ? "/api/admin/export?fresh=1" : "/api/admin/export", {
       method: "POST",
       headers: systemBackupActionHeaders,
     });
@@ -291,6 +292,29 @@ export async function createSystemBackupExport(
     );
   }
   return responseStatus(response, "Сервер не смог начать экспорт.");
+}
+
+export async function getCurrentSystemBackupExport(
+  request: BackupRequest = fetch,
+): Promise<SystemBackupJobStatus | null> {
+  let response: Response;
+  try {
+    response = await request("/api/admin/export/current", {
+      headers: systemBackupActionHeaders,
+      cache: "no-store",
+    });
+  } catch (error) {
+    throw new SystemBackupClientError(
+      "network",
+      "Не удалось проверить незавершённый экспорт.",
+      { cause: error },
+    );
+  }
+  const value = await response.json().catch(() => null) as unknown;
+  if (!response.ok || (value !== null && !isJobStatus(value))) {
+    throw new SystemBackupClientError("server", "Сервер не вернул текущий экспорт.");
+  }
+  return value;
 }
 
 export async function advanceSystemBackupJob(
@@ -319,25 +343,78 @@ export async function runSystemBackupJob(
   options: {
     request?: BackupRequest;
     onProgress?: BackupJobProgress;
+    onConnectionState?: BackupConnectionState;
     signal?: AbortSignal;
     maximumSteps?: number;
+    requestTimeoutMs?: number;
+    stepDelayMs?: number;
+    maximumNetworkRetries?: number;
+    retryBaseDelayMs?: number;
+    retryMaximumDelayMs?: number;
+    leaseHeldDelayMs?: number;
   } = {},
 ): Promise<SystemBackupJobStatus> {
   const request = options.request ?? fetch;
   const maximumSteps = options.maximumSteps ?? 20_000;
+  const requestTimeoutMs = Math.max(1, options.requestTimeoutMs ?? 25_000);
+  const stepDelayMs = Math.max(0, options.stepDelayMs ?? 200);
+  const maximumNetworkRetries = Math.max(0, options.maximumNetworkRetries ?? 3);
+  const retryBaseDelayMs = Math.max(0, options.retryBaseDelayMs ?? 250);
+  const retryMaximumDelayMs = Math.max(retryBaseDelayMs, options.retryMaximumDelayMs ?? 4_000);
+  const leaseHeldDelayMs = Math.max(0, options.leaseHeldDelayMs ?? 1_500);
+  const boundedRequest: BackupRequest = async (input, init = {}) => {
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+    try {
+      return await request(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", abortFromCaller);
+    }
+  };
   let current = initial;
   options.onProgress?.(current);
   for (let step = 0; !backupJobIsTerminal(current) && step < maximumSteps; step += 1) {
     if (options.signal?.aborted) {
       throw new SystemBackupClientError("stopped", "Операция приостановлена в этом окне.");
     }
+    if (step > 0 && stepDelayMs > 0) await backupDelay(stepDelayMs, options.signal);
     try {
-      current = await advanceSystemBackupJob(current, request);
+      current = await advanceSystemBackupJob(current, boundedRequest);
+      options.onConnectionState?.(false);
     } catch (error) {
       if (!(error instanceof SystemBackupClientError) || error.code !== "network") throw error;
-      current = await getBackupJobStatus(current.jobId, request);
+      if (options.signal?.aborted) {
+        throw new SystemBackupClientError("stopped", "Операция приостановлена в этом окне.");
+      }
+      options.onConnectionState?.(true);
+      let recovered: SystemBackupJobStatus | null = null;
+      let lastError: unknown = error;
+      for (let retry = 0; retry <= maximumNetworkRetries; retry += 1) {
+        if (retry > 0 || retryBaseDelayMs > 0) {
+          const delayMs = Math.min(retryMaximumDelayMs, retryBaseDelayMs * (2 ** retry));
+          await backupDelay(delayMs, options.signal);
+        }
+        try {
+          recovered = await getBackupJobStatus(current.jobId, boundedRequest);
+          break;
+        } catch (statusError) {
+          lastError = statusError;
+          if (!(statusError instanceof SystemBackupClientError) || statusError.code !== "network") {
+            throw statusError;
+          }
+        }
+      }
+      if (!recovered) throw lastError;
+      current = recovered;
+      options.onConnectionState?.(false);
     }
     options.onProgress?.(current);
+    if (current.advanceDeferred && !backupJobIsTerminal(current) && leaseHeldDelayMs > 0) {
+      await backupDelay(leaseHeldDelayMs, options.signal);
+    }
   }
   if (!backupJobIsTerminal(current)) {
     throw new SystemBackupClientError(
@@ -346,6 +423,22 @@ export async function runSystemBackupJob(
     );
   }
   return current;
+}
+
+function backupDelay(durationMs: number, signal?: AbortSignal) {
+  if (durationMs <= 0) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(new SystemBackupClientError("stopped", "Операция приостановлена в этом окне."));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, durationMs);
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+  });
 }
 
 function fileIdentity(file: File) {
@@ -471,6 +564,7 @@ export async function uploadSystemBackupPackage(
       request,
       onProgress: options.onProgress,
       signal: options.signal,
+      stepDelayMs: 0,
     });
   }
 
@@ -543,6 +637,7 @@ export async function uploadSystemBackupPackage(
     request,
     onProgress: options.onProgress,
     signal: options.signal,
+    stepDelayMs: 0,
   });
 }
 

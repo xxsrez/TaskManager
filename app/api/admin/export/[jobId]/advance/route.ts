@@ -1,6 +1,6 @@
 import { withUserResponse } from "@/lib/http";
 import {
-  advanceSystemBackupJob,
+  advanceSystemBackupExportSlice,
   assertSystemBackupAction,
 } from "@/lib/system-backup-jobs";
 
@@ -14,7 +14,7 @@ export async function POST(
     assertSystemBackupAction(request);
     const { jobId } = await context.params;
     return Response.json(
-      await advanceSystemBackupJob(user, decodeURIComponent(jobId)),
+      await advanceSystemBackupExportSlice(user, decodeURIComponent(jobId)),
       { headers: { "cache-control": "no-store" } },
     );
   });

@@ -1,19 +1,15 @@
 import { withUserResponse } from "@/lib/http";
 import {
   assertSystemBackupAction,
-  createSystemBackupExportJob,
-  systemBackupRequestOrigin,
+  getCurrentSystemBackupExportJob,
 } from "@/lib/system-backup-jobs";
 
 export const dynamic = "force-dynamic";
 
-export async function POST(request: Request) {
+export async function GET(request: Request) {
   return withUserResponse(async (user) => {
     assertSystemBackupAction(request);
-    return Response.json(await createSystemBackupExportJob(user, {
-      siteOrigin: systemBackupRequestOrigin(request),
-      reuseCurrent: new URL(request.url).searchParams.get("fresh") !== "1",
-    }), {
+    return Response.json(await getCurrentSystemBackupExportJob(user), {
       headers: { "cache-control": "no-store, max-age=0" },
     });
   });
