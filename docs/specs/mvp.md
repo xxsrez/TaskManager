@@ -106,7 +106,9 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   object key, file body, filter query или другому содержимому чужих records.
   Shared resources считаются по owner и не дублируются у collaborator.
 - Отдельные system operations `Export backup` и `Import backup` доступны той же
-  server-side admin boundary. Export включает всё D1 application state, включая
+  server-side admin boundary и находятся только в отдельном блоке резервного
+  копирования на `/admin`, а не в общих действиях shell. Export создаёт
+  resumable durable job и потоковый `.tmbak`, включающий всё D1 application state, включая
   content, identities, ACL, provenance, archived records и recoverable deletion
   tuple основных сущностей; hosted secrets, deployment/audience state,
   analytics, schema, browser-local preferences и operational purge jobs не
@@ -979,8 +981,9 @@ created/updated/started/completed/canceled dates и archived state.
 20. Войти администратором, открыть `/admin` и увидеть актуальные user/activity
     aggregates; повторить прямой запрос обычным User и получить fail-closed
     результат без email, counts или подтверждения существования admin surface.
-21. Экспортировать полный system backup, импортировать его через preview и
-    explicit `RESTORE`, затем подтвердить точное восстановление Users,
+21. В отдельном блоке `/admin` экспортировать полный потоковый `.tmbak`,
+    убедиться в отсутствии Export/Import в общей полосе действий, импортировать
+    его через preview и explicit `RESTORE`, затем подтвердить точное восстановление Users,
     identities, owner/ACL, catalogs, content, archived records и provenance.
     Повреждённый, несовместимый или invariant-invalid файл не меняет ни одной
     live row; обычный User не может вызвать export/import API.

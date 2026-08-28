@@ -897,9 +897,14 @@ Linear, но они обязаны использовать тот же visual l
 
 - Surface открывается только из server-authorized snapshot; отсутствие пункта
   в sidebar не является единственной защитой.
-- В title actions находятся `Export backup` и визуально destructive
-  `Import backup`. Export сразу скачивает versioned JSON; Import открывает
-  многошаговый dialog.
+- Под метриками находится отдельный блок «Резервное копирование и
+  восстановление». Он объясняет, что полный `.tmbak` содержит данные всех
+  пользователей и должен храниться как секрет; `Import` визуально отделён как
+  полная destructive replacement. Эти действия отсутствуют в общей полосе
+  title actions и на остальных surfaces.
+- `Export` создаёт resumable durable job и после его готовности скачивает
+  потоковый `.tmbak`; `Import` открывает многошаговый dialog для chunked upload,
+  preview и отдельного destructive confirmation.
 - Верхний ряд содержит compact metric cards: registered users, active users за
   7 дней, Tasks, SavedViews и Attachments; secondary notes показывают
   Projects/Releases и content-free bytes/pending/failed/deleted counts.

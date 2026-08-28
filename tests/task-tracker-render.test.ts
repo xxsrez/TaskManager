@@ -2540,8 +2540,11 @@ test("an administrator sees registration and activity statistics", () => {
   );
 
   assert.match(markup, /Administration/);
-  assert.match(markup, />Экспорт</);
-  assert.match(markup, />Импорт</);
+  assert.match(markup, /Резервное копирование и восстановление/);
+  assert.match(markup, /Храните файл <code>\.tmbak<\/code> как секрет/);
+  assert.match(markup, />Экспорт<\/button>/);
+  assert.match(markup, />Импорт<\/button>/);
+  assert.match(markup, /полностью заменяет текущее состояние/);
   assert.match(markup, /Registered users/);
   assert.match(markup, /Attachment objects/);
   assert.match(markup, /1 orphan/);
@@ -2549,6 +2552,20 @@ test("an administrator sees registration and activity statistics", () => {
   assert.match(markup, /1 changed in 7d/);
   const primaryNavigation = markup.match(/<nav class="nav-scroll"[\s\S]*?<\/nav>/)?.[0] ?? "";
   assert.doesNotMatch(primaryNavigation, /Administration/);
+  const titleActions = markup.match(/<div class="title-actions">[\s\S]*?<\/div>/)?.[0] ?? "";
+  assert.doesNotMatch(titleActions, /Экспорт|Импорт/);
+});
+
+test("system backup actions exist only inside the server-authorized Administration block", () => {
+  const commonMarkup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: { ...snapshot, isAdmin: true, admin: null },
+      initialNavigation: { surface: "all", layout: "list", taskId: null },
+      signOutPath: "/sign-out",
+    }),
+  );
+  assert.doesNotMatch(commonMarkup, /Резервное копирование и восстановление/);
+  assert.doesNotMatch(commonMarkup, />Экспорт<\/button>|>Импорт<\/button>/);
 });
 
 test("the account identity is not the sign-out target", () => {

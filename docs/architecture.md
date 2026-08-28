@@ -816,6 +816,10 @@ project backup schema `12`. Исторические версии Project bundle
 
 ### Системный backup и restore
 
+UI вызывает эти операции только из отдельного блока резервного копирования на
+server-gated `/admin`; общая полоса действий shell их не содержит. Transport —
+resumable `.tmbak` поверх durable jobs, а не немедленный JSON download.
+
 1. `POST /api/admin/export` проверяет server allowlist до cross-user reads и
    создаёт durable job. Одна D1 batch замораживает 24 exact tables в
    `system_backup_rows`; последующие bounded advances копируют полный managed

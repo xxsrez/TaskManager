@@ -4161,8 +4161,6 @@ export function TaskTracker({
               </span>
             )}
             <div className="title-actions">
-              {surface === "admin" && data.admin && <button className="button ghost" disabled={systemBackupBusy} onClick={() => setDialog("systemExport")}><Download size={14} />Экспорт</button>}
-              {surface === "admin" && data.admin && <button className="button ghost danger" disabled={systemBackupBusy} onClick={() => setDialog("systemImport")}><Upload size={14} />Импорт</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
@@ -4361,7 +4359,13 @@ export function TaskTracker({
             )}
           />
         ) : surface === "admin" && data.admin ? (
-          <AdminSurface overview={data.admin} timeZone={data.user.timezone} />
+          <AdminSurface
+            overview={data.admin}
+            timeZone={data.user.timezone}
+            backupBusy={systemBackupBusy}
+            onExport={() => setDialog("systemExport")}
+            onImport={() => setDialog("systemImport")}
+          />
         ) : surface === "views" ? (
           <><ViewsSurface data={{ ...data, views: catalogPages.views?.views ?? data.views }} statusMap={statusMap} onOpen={(nextSurface, nextLayout) => navigateSurface(nextSurface, nextLayout)} onContextActions={(view, x, y, focus) => openContextualActions({ entities: [viewContextualEntity(view)] }, x, y, focus)} onRestore={(view) => mutate(`/api/views/${view.id}`, "PATCH", { version: view.version, archived: false })} busy={busy} />{catalogPages.views?.page.hasMore && <CatalogPagination busy={catalogLoading} onMore={() => void loadMoreCatalog("views")} />}</>
         ) : surface === "projects" ? (
@@ -9338,7 +9342,13 @@ function ReleasesSurface({ releases, projects, tasks, statuses, onOpen, onContex
     </div>;
   })}</div>;
 }
-function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZone: string }) {
+function AdminSurface({ overview, timeZone, backupBusy, onExport, onImport }: {
+  overview: AdminOverview;
+  timeZone: string;
+  backupBusy: boolean;
+  onExport: () => void;
+  onImport: () => void;
+}) {
   return (
     <div className="admin-surface">
       <section className="admin-metrics" aria-label="System overview">
@@ -9347,6 +9357,33 @@ function AdminSurface({ overview, timeZone }: { overview: AdminOverview; timeZon
         <AdminMetric label="Tasks" value={overview.taskCount} note={`${overview.projectCount} projects`} icon={<Inbox size={16} />} />
         <AdminMetric label="Saved views" value={overview.viewCount} note={`${overview.releaseCount} releases`} icon={<Boxes size={16} />} />
         <AdminMetric label="Attachment objects" value={overview.attachmentObjectCount} note={`${formatAttachmentBytes(overview.attachmentObjectBytes)} · ${overview.orphanAttachmentObjectCount === null ? "orphan scan bounded" : `${overview.orphanAttachmentObjectCount} orphan`} · ${overview.stagingAttachmentObjectCount} staged · ${overview.pendingAttachmentCount} pending · ${overview.failedAttachmentCount} failed`} icon={<Paperclip size={16} />} />
+      </section>
+      <section className="admin-panel admin-backup-panel" aria-labelledby="admin-backup-heading">
+        <header>
+          <div>
+            <h2 id="admin-backup-heading">Резервное копирование и восстановление</h2>
+            <p>Полная резервная копия содержит данные всех пользователей, идентификаторы и права доступа. Храните файл <code>.tmbak</code> как секрет; восстановление полностью заменяет текущее состояние.</p>
+          </div>
+          <span className="status-badge admin-badge">Только администратор</span>
+        </header>
+        <div className="admin-backup-actions">
+          <article>
+            <span className="admin-backup-icon"><Download size={17} /></span>
+            <div>
+              <h3>Экспорт</h3>
+              <p>Создать переносимый снимок D1 и R2 в возобновляемом формате <code>.tmbak</code>.</p>
+            </div>
+            <button className="button ghost" type="button" disabled={backupBusy} onClick={onExport}><Download size={14} />Экспорт</button>
+          </article>
+          <article className="destructive">
+            <span className="admin-backup-icon"><Upload size={17} /></span>
+            <div>
+              <h3>Полное восстановление</h3>
+              <p>Проверить резервную копию и заменить все данные после отдельного подтверждения.</p>
+            </div>
+            <button className="button danger" type="button" disabled={backupBusy} onClick={onImport}><Upload size={14} />Импорт</button>
+          </article>
+        </div>
       </section>
       <section className="admin-panel">
         <header>

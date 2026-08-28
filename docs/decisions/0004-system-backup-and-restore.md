@@ -85,9 +85,11 @@ admin boundary.
 
 ## Решение
 
-1. Administration предоставляет `Export backup` и `Import backup`. Вход в
-   Administration остаётся в account menu; отдельный пункт в основной левой
-   навигации не показывается.
+1. Administration предоставляет `Export backup` и `Import backup` в отдельном
+   блоке «Резервное копирование и восстановление», где чувствительность полного
+   `.tmbak` и destructive replacement объяснены до открытия dialog. Общая
+   полоса действий shell их не содержит. Вход в Administration остаётся в
+   account menu; отдельный пункт в основной левой навигации не показывается.
 2. Backup — версионированный logical snapshot, а не raw
    SQLite/SQL dump. Он включает все product, identity, ownership, ACL,
    provenance, native/historical comments, append-only Task Activity,

@@ -1230,6 +1230,15 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .admin-panel > header { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 15px; border-bottom: 1px solid var(--border); }
 .admin-panel h2 { margin: 0; font-size: 14px; font-weight: 570; }
 .admin-panel header p { max-width: 700px; margin: 2px 0 0; color: var(--muted); font-size: 10px; line-height: 15px; }
+.admin-panel header code, .admin-backup-actions code { color: var(--text-secondary); font: inherit; }
+.admin-backup-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 12px; }
+.admin-backup-actions article { min-width: 0; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-subtle); }
+.admin-backup-actions article.destructive { border-color: color-mix(in srgb, var(--danger) 24%, var(--border)); background: color-mix(in srgb, var(--danger) 4%, var(--surface-subtle)); }
+.admin-backup-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 7px; background: var(--active); color: var(--accent); }
+.admin-backup-actions .destructive .admin-backup-icon { background: color-mix(in srgb, var(--danger) 9%, transparent); color: var(--danger); }
+.admin-backup-actions h3 { margin: 0; color: var(--text); font-size: 12px; font-weight: 570; }
+.admin-backup-actions p { margin: 3px 0 0; color: var(--muted); font-size: 10px; line-height: 15px; }
+.admin-backup-actions .button { justify-self: end; }
 .admin-table-wrap { overflow: auto; }
 .admin-panel table { width: 100%; min-width: 1040px; border-collapse: collapse; }
 .admin-panel th { height: 34px; padding: 0 10px; border-bottom: 1px solid var(--border); background: var(--surface-subtle); color: var(--muted); font-size: 10px; font-weight: 550; text-align: left; }
@@ -1579,6 +1588,10 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
   .admin-surface { padding: 10px; }
   .admin-metrics { grid-template-columns: 1fr 1fr; }
   .admin-metric { min-height: 96px; padding: 12px; }
+  .admin-backup-panel > header { align-items: flex-start; flex-direction: column; }
+  .admin-backup-actions { grid-template-columns: 1fr; }
+  .admin-backup-actions article { grid-template-columns: 34px minmax(0, 1fr); }
+  .admin-backup-actions .button { grid-column: 1 / -1; width: 100%; min-height: 44px; justify-self: stretch; }
   .share-input { display: grid; grid-template-columns: 1fr 106px; }
   .share-input input { grid-column: 1 / -1; }
   .share-input select { width: 100%; }
