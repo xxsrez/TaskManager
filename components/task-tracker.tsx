@@ -8269,7 +8269,8 @@ export function SystemBackupExportDialog({
   onStart: (fresh?: boolean) => void;
   onResume: () => void;
 }) {
-  const [downloadStarted, setDownloadStarted] = useState(false);
+  const [downloadStartedForJobId, setDownloadStartedForJobId] = useState<string | null>(null);
+  const downloadStarted = downloadStartedForJobId === status?.jobId;
   const downloadUrl = safeSystemBackupDownloadUrl(status?.downloadUrl ?? null);
   const terminalFailure = status?.status === "failed" || status?.status === "expired";
   const resumable = Boolean(status && !backupJobIsTerminal(status) && !busy);
@@ -8304,7 +8305,7 @@ export function SystemBackupExportDialog({
         {terminalFailure && <button className="button ghost" type="button" disabled={busy} onClick={() => onStart()}><RotateCw size={14} />Начать заново</button>}
         {resumable && <button className="button primary" type="button" onClick={onResume}><RotateCw size={14} />Продолжить</button>}
         {status?.status === "ready" && <button className="button ghost" type="button" onClick={() => onStart(true)}><RotateCw size={14} />Новый экспорт</button>}
-        {downloadUrl && <a className="button primary" href={downloadUrl} download onClick={() => setDownloadStarted(true)}><Download size={14} />Скачать .tmbak</a>}
+        {downloadUrl && <a className="button primary" href={downloadUrl} download onClick={() => setDownloadStartedForJobId(status?.jobId ?? null)}><Download size={14} />Скачать .tmbak</a>}
       </div>
     </div>
   </Modal>;

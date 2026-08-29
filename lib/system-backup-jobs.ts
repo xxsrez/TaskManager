@@ -1972,6 +1972,13 @@ async function requireOwnedJob(
   return row;
 }
 
+function normalizeDatabaseTimestamp(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) {
+    return `${value.replace(" ", "T")}Z`;
+  }
+  return value;
+}
+
 async function statusFromRow(job: BackupJobRow): Promise<SystemBackupJobStatus> {
   const db = getD1();
   const [objectSummary, namespaceSummary] = await db.batch([
@@ -2050,7 +2057,7 @@ async function statusFromRow(job: BackupJobRow): Promise<SystemBackupJobStatus> 
     policies,
     warnings: job.status === "cleanup_pending" ? ["Restore committed; old object cleanup is pending"] : [],
     validationErrors: job.error_code === "validation_failed" ? [job.error_code] : [],
-    updatedAt: job.updated_at,
+    updatedAt: normalizeDatabaseTimestamp(job.updated_at),
     attemptCount: job.attempt_count,
     expiresAt: job.expires_at,
     downloadUrl:

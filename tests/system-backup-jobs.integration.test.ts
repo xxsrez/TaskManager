@@ -90,6 +90,7 @@ test("export slice advances several durable checkpoints and current export is di
 
   assert.equal(singleStep.phase, "hash_objects");
   assert.equal(sliced.phase, "build_rows");
+  assert.match(sliced.updatedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, slicedJob.jobId);
   assert.equal(
     (await createSystemBackupExportJob(admin, { reuseCurrent: true })).jobId,
