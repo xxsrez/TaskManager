@@ -1,7 +1,8 @@
 import { getAttachmentBucket, getD1 } from "@/db";
 import { assertAdmin } from "./admin";
+import type { Actor } from "./auth";
 import { attachmentStorageScope } from "./attachment-storage";
-import { ValidationError } from "./domain";
+import { ConflictError, ValidationError } from "./domain";
 import { getRuntimeEnvironment } from "./runtime-environment";
 import {
   liveTableDeleteOrder,
@@ -137,19 +138,77 @@ export async function createSystemBackupExportJob(
   assertConfiguredAdmin(currentUser);
   await cleanupExpiredSystemBackupJobs();
   const kind = options.kind ?? "export";
-  if (kind === "export" && options.reuseCurrent) {
-    const current = await getCurrentSystemBackupExportJob(currentUser);
-    if (current?.status === "running") return current;
+  const siteOrigin = currentSiteOrigin(options.siteOrigin);
+  const environmentScope = attachmentStorageScope();
+  const reuseCurrent = kind === "export" && options.reuseCurrent === true;
+  const current = kind === "export"
+    ? await getCurrentSystemBackupExportJob(currentUser, { siteOrigin })
+    : null;
+  if (reuseCurrent && current) return current;
+  if (kind === "export" && current?.status === "running") {
+    throw new ConflictError("A system backup export is already running in this environment");
   }
   const jobId = `${kind === "rollback" ? "system-rollback" : "system-export"}:${crypto.randomUUID()}`;
   const exportedAt = new Date().toISOString();
   const fingerprint = await systemBackupSchemaFingerprint();
-  const siteOrigin = currentSiteOrigin(options.siteOrigin);
-  const environmentScope = attachmentStorageScope();
   const expiresAt = new Date(Date.now() + jobLifetimeSeconds * 1000).toISOString();
   const db = getD1();
-  const freezeStatements: D1PreparedStatement[] = [
-    db.prepare(`INSERT INTO system_backup_jobs
+  const freezeStatements: D1PreparedStatement[] = [];
+  if (kind === "export") {
+    freezeStatements.push(
+      db.prepare(`UPDATE system_backup_jobs
+        SET status = 'expired', phase = 'expired', lease_token = NULL,
+            lease_expires_at = NULL, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+            error_code = COALESCE(error_code, 'expired_before_current_export_claim'),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE created_by_user_id = ? AND kind = 'export'
+          AND site_origin = ? AND environment_scope = ?
+          AND status IN ('running', 'ready')
+          AND datetime(expires_at) <= datetime('now')`)
+        .bind(currentUser.id, siteOrigin, environmentScope),
+    );
+    if (!reuseCurrent && current?.status === "ready") {
+      freezeStatements.push(
+        db.prepare(`UPDATE system_backup_jobs
+          SET status = 'expired', phase = 'expired', lease_token = NULL,
+              lease_expires_at = NULL, completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+              error_code = 'superseded_by_fresh_export', updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND created_by_user_id = ? AND kind = 'export'
+            AND site_origin = ? AND environment_scope = ? AND status = 'ready'`)
+          .bind(current.jobId, currentUser.id, siteOrigin, environmentScope),
+      );
+    }
+  }
+  const createStatementIndex = freezeStatements.length;
+  freezeStatements.push(
+    kind === "export"
+      ? db.prepare(`INSERT INTO system_backup_jobs
+        (id, kind, parent_job_id, created_by_user_id, status, phase,
+         site_origin, environment_scope, schema_version, schema_fingerprint,
+         exported_at, expires_at)
+        SELECT ?, ?, ?, ?, 'running', 'freezing_d1', ?, ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM system_backup_jobs
+          WHERE created_by_user_id = ? AND kind = 'export'
+            AND site_origin = ? AND environment_scope = ?
+            AND status IN ('running', 'ready')
+        )`)
+        .bind(
+          jobId,
+          kind,
+          options.parentJobId ?? null,
+          currentUser.id,
+          siteOrigin,
+          environmentScope,
+          systemBackupCurrentSchemaVersion,
+          fingerprint,
+          exportedAt,
+          expiresAt,
+          currentUser.id,
+          siteOrigin,
+          environmentScope,
+        )
+      : db.prepare(`INSERT INTO system_backup_jobs
       (id, kind, parent_job_id, created_by_user_id, status, phase,
        site_origin, environment_scope, schema_version, schema_fingerprint,
        exported_at, expires_at)
@@ -166,19 +225,25 @@ export async function createSystemBackupExportJob(
         exportedAt,
         expiresAt,
       ),
-  ];
+  );
   for (const table of tableDefinitions) {
     freezeStatements.push(
       db.prepare(`INSERT INTO system_backup_rows (job_id, table_name, ordinal, row_json)
         SELECT ?, ?, ROW_NUMBER() OVER (ORDER BY ${table.orderBy}) - 1,
           ${jsonObjectExpression(table.columns)}
         FROM ${table.name}
+        WHERE EXISTS (SELECT 1 FROM system_backup_jobs WHERE id = ?)
         ORDER BY ${table.orderBy}`)
-        .bind(jobId, table.name),
+        .bind(jobId, table.name, jobId),
     );
   }
   try {
-    await db.batch(freezeStatements);
+    const results = await db.batch(freezeStatements);
+    if (results[createStatementIndex]?.meta.changes !== 1) {
+      const reconciled = await getCurrentSystemBackupExportJob(currentUser, { siteOrigin });
+      if (reuseCurrent && reconciled) return reconciled;
+      throw new ConflictError("A system backup export is already running in this environment");
+    }
     const counts = await readFrozenCounts(jobId);
     const totalRows = Object.values(counts).reduce((sum, value) => sum + value, 0);
     await db.prepare(`UPDATE system_backup_jobs
@@ -186,6 +251,11 @@ export async function createSystemBackupExportJob(
           counts_json = ?, total_rows = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`).bind(JSON.stringify(counts), totalRows, jobId).run();
   } catch (error) {
+    if (kind === "export" && isCurrentExportConstraintConflict(error)) {
+      const reconciled = await getCurrentSystemBackupExportJob(currentUser, { siteOrigin });
+      if (reuseCurrent && reconciled) return reconciled;
+      throw new ConflictError("A system backup export is already running in this environment");
+    }
     await failJob(jobId, error);
     throw error;
   }
@@ -194,17 +264,21 @@ export async function createSystemBackupExportJob(
 
 export async function getCurrentSystemBackupExportJob(
   currentUser: UserRecord,
+  options: { siteOrigin?: string } = {},
 ): Promise<SystemBackupJobStatus | null> {
   assertConfiguredAdmin(currentUser);
   await cleanupExpiredSystemBackupJobs();
+  const siteOrigin = currentSiteOrigin(options.siteOrigin);
+  const environmentScope = attachmentStorageScope();
   const job = await getD1().prepare(`SELECT * FROM system_backup_jobs
     WHERE created_by_user_id = ? AND kind = 'export'
+      AND site_origin = ? AND environment_scope = ?
       AND status IN ('running', 'ready')
       AND datetime(expires_at) > datetime('now')
     ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END,
       exported_at DESC, id DESC
     LIMIT 1`)
-    .bind(currentUser.id)
+    .bind(currentUser.id, siteOrigin, environmentScope)
     .first<BackupJobRow>();
   return job ? statusFromRow(job) : null;
 }
@@ -387,6 +461,7 @@ export async function applySystemBackupImport(
 export async function advanceSystemBackupJob(
   currentUser: UserRecord,
   jobId: string,
+  authenticatedIdentity?: Actor,
 ): Promise<SystemBackupJobStatus> {
   assertConfiguredAdmin(currentUser);
   await cleanupExpiredSystemBackupJobs();
@@ -409,14 +484,30 @@ export async function advanceSystemBackupJob(
     job = (await getD1().prepare(`SELECT * FROM system_backup_jobs
       WHERE id = ? AND lease_token = ?`).bind(jobId, leaseToken)
       .first<BackupJobRow>())!;
-    dependency = await advanceSystemBackupJobPhase(job, currentUser, leaseToken);
+    dependency = await advanceSystemBackupJobPhase(
+      job,
+      currentUser,
+      leaseToken,
+      authenticatedIdentity,
+    );
   } catch (error) {
     const fresh = await getD1().prepare(`SELECT d1_committed_at, phase FROM system_backup_jobs WHERE id = ?`)
       .bind(job.id).first<{ d1_committed_at: string | null; phase: string }>();
     if (fresh?.d1_committed_at) {
-      const postCommitError = error instanceof Error && /Applied D1 state differs from backup table ([a-z_]+)/.test(error.message)
-        ? `applied_state_mismatch:${/Applied D1 state differs from backup table ([a-z_]+)/.exec(error.message)?.[1]}`
+      const mismatch = error instanceof Error
+        ? /Applied D1 state differs from backup table ([a-z_]+)/.exec(error.message)
+        : null;
+      const postCommitError = mismatch
+        ? `applied_state_mismatch:${mismatch[1]}`
         : job.phase === "cleanup" ? "cleanup_failed" : "post_commit_attention";
+      if (mismatch) {
+        await getD1().prepare(`UPDATE system_backup_jobs SET
+          status = 'failed', phase = 'verification_failed', error_code = ?,
+          completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?`)
+          .bind(postCommitError, job.id).run();
+        return getSystemBackupJobStatus(currentUser, job.id);
+      }
       await getD1().prepare(`UPDATE system_backup_jobs SET
         status = CASE WHEN phase = 'cleanup' THEN 'cleanup_pending' ELSE 'running' END,
         phase = CASE WHEN phase = 'd1_cutover' THEN 'verifying_d1' ELSE phase END,
@@ -510,6 +601,7 @@ async function advanceSystemBackupJobPhase(
   job: BackupJobRow,
   currentUser: UserRecord,
   leaseToken: string,
+  authenticatedIdentity?: Actor,
 ): Promise<string | null> {
   switch (job.phase) {
     case "inventory_r2":
@@ -562,7 +654,7 @@ async function advanceSystemBackupJobPhase(
       await commitExactReplace(job.id, job.rollback_job_id!, leaseToken);
       break;
     case "verifying_d1":
-      await advanceAppliedD1Verification(job, currentUser.id);
+      await advanceAppliedD1Verification(job, currentUser.id, authenticatedIdentity);
       break;
     case "verifying_objects":
       await advanceAppliedObjectVerification(job);
@@ -1269,10 +1361,14 @@ async function advanceImportMaterialization(job: BackupJobRow) {
     updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(String(ordinal + 1), job.id).run();
 }
 
-async function advanceAppliedD1Verification(job: BackupJobRow, currentUserId: string) {
+async function advanceAppliedD1Verification(
+  job: BackupJobRow,
+  currentUserId: string,
+  authenticatedIdentity?: Actor,
+) {
   const manifest = await readJobManifest(job);
   await verifyStagedRowsMatchParts(job.id, manifest);
-  await revalidateLiveAgainstJob(job.id, currentUserId);
+  await revalidateLiveAgainstJob(job.id, currentUserId, authenticatedIdentity);
   await getD1().prepare(`UPDATE system_backup_jobs
     SET phase = 'verifying_objects', phase_cursor = '0', updated_at = CURRENT_TIMESTAMP
     WHERE id = ?`).bind(job.id).run();
@@ -1804,15 +1900,66 @@ async function readJobManifest(job: BackupJobRow): Promise<SystemBackupPackageMa
   });
 }
 
-async function revalidateLiveAgainstJob(jobId: string, currentUserId: string) {
+async function revalidateLiveAgainstJob(
+  jobId: string,
+  currentUserId: string,
+  authenticatedIdentity?: Actor,
+) {
   const db = getD1();
+  if (authenticatedIdentity) {
+    const liveIdentity = await db.prepare(`SELECT
+      ui.user_id, ui.verified_email, users.email AS user_email
+      FROM user_identities ui JOIN users ON users.id = ui.user_id
+      WHERE ui.provider = ? AND ui.provider_account_key = ?`)
+      .bind(authenticatedIdentity.provider, authenticatedIdentity.providerAccountKey)
+      .first<{ user_id: string; verified_email: string; user_email: string }>();
+    if (
+      !liveIdentity
+      || liveIdentity.user_id !== currentUserId
+      || liveIdentity.verified_email !== authenticatedIdentity.email
+      || liveIdentity.user_email !== authenticatedIdentity.email
+    ) {
+      throw new Error("Applied D1 state differs from backup table user_identities");
+    }
+  }
   const comparisons: Array<{
     table: (typeof tableDefinitions)[number];
     columns: readonly string[];
-    liveFilter?: string;
-    stagedFilter?: string;
+    liveFilter?: { sql: string; values: unknown[] };
+    stagedFilter?: { sql: string; values: unknown[] };
   }> = [];
   for (const table of tableDefinitions) {
+    if (table.name === "user_identities" && authenticatedIdentity) {
+      comparisons.push({
+        table,
+        columns: table.columns.filter((column) => column !== "verified_email"),
+      });
+      comparisons.push({
+        table,
+        columns: table.columns,
+        liveFilter: {
+          sql: ` WHERE NOT (user_id = ? AND provider = ? AND provider_account_key = ?)`,
+          values: [
+            currentUserId,
+            authenticatedIdentity.provider,
+            authenticatedIdentity.providerAccountKey,
+          ],
+        },
+        stagedFilter: {
+          sql: ` AND NOT (
+            json_extract(row_json, '$.user_id') = ?
+            AND json_extract(row_json, '$.provider') = ?
+            AND json_extract(row_json, '$.provider_account_key') = ?
+          )`,
+          values: [
+            currentUserId,
+            authenticatedIdentity.provider,
+            authenticatedIdentity.providerAccountKey,
+          ],
+        },
+      });
+      continue;
+    }
     if (table.name !== "users") {
       comparisons.push({ table, columns: table.columns });
       continue;
@@ -1824,11 +1971,14 @@ async function revalidateLiveAgainstJob(jobId: string, currentUserId: string) {
     comparisons.push({
       table,
       columns: table.columns,
-      liveFilter: " WHERE users.id <> ?",
-      stagedFilter: " AND json_extract(row_json, '$.id') <> ?",
+      liveFilter: { sql: " WHERE users.id <> ?", values: [currentUserId] },
+      stagedFilter: {
+        sql: " AND json_extract(row_json, '$.id') <> ?",
+        values: [currentUserId],
+      },
     });
   }
-  const statements = comparisons.map(({ table, columns, liveFilter = "", stagedFilter = "" }) => {
+  const statements = comparisons.map(({ table, columns, liveFilter, stagedFilter }) => {
     const liveColumns = columns.map((column) => {
       if (column !== "object_key") return `${table.name}.${column}`;
       if (table.name === "stored_files") return `'stored-files/file/' || stored_files.id`;
@@ -1841,18 +1991,20 @@ async function revalidateLiveAgainstJob(jobId: string, currentUserId: string) {
     }).join(", ");
     const stagedColumns = columns.map((column) =>
       `json_extract(row_json, '$.${column}')`).join(", ");
-    const filterValues = liveFilter ? [currentUserId] : [];
-    const stagedFilterValues = stagedFilter ? [currentUserId] : [];
+    const liveFilterSql = liveFilter?.sql ?? "";
+    const stagedFilterSql = stagedFilter?.sql ?? "";
+    const filterValues = liveFilter?.values ?? [];
+    const stagedFilterValues = stagedFilter?.values ?? [];
     return db.prepare(`SELECT
       (SELECT COUNT(*) FROM (
-        SELECT ${liveColumns} FROM ${table.name}${liveFilter}
+        SELECT ${liveColumns} FROM ${table.name}${liveFilterSql}
         EXCEPT SELECT ${stagedColumns} FROM system_backup_rows
-          WHERE job_id = ? AND table_name = ?${stagedFilter}
+          WHERE job_id = ? AND table_name = ?${stagedFilterSql}
       )) +
       (SELECT COUNT(*) FROM (
         SELECT ${stagedColumns} FROM system_backup_rows
-          WHERE job_id = ? AND table_name = ?${stagedFilter}
-        EXCEPT SELECT ${liveColumns} FROM ${table.name}${liveFilter}
+          WHERE job_id = ? AND table_name = ?${stagedFilterSql}
+        EXCEPT SELECT ${liveColumns} FROM ${table.name}${liveFilterSql}
       )) AS mismatch`).bind(
       ...filterValues,
       jobId,
@@ -2055,7 +2207,11 @@ async function statusFromRow(job: BackupJobRow): Promise<SystemBackupJobStatus> 
       ])),
     },
     policies,
-    warnings: job.status === "cleanup_pending" ? ["Restore committed; old object cleanup is pending"] : [],
+    warnings: job.status === "cleanup_pending"
+      ? ["Restore committed; old object cleanup is pending"]
+      : job.phase === "verification_failed" && job.d1_committed_at
+        ? ["D1 replacement committed; post-restore verification did not pass"]
+        : [],
     validationErrors: job.error_code === "validation_failed" ? [job.error_code] : [],
     updatedAt: normalizeDatabaseTimestamp(job.updated_at),
     attemptCount: job.attempt_count,
@@ -2177,6 +2333,12 @@ async function failJob(jobId: string, error: unknown) {
     // Preserve the original error. Failure to update the durable receipt is
     // independently visible through the unfinished phase.
   }
+}
+
+function isCurrentExportConstraintConflict(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  return /idx_system_backup_jobs_current_export_scope/.test(error.message)
+    || /UNIQUE constraint failed: system_backup_jobs\.created_by_user_id, system_backup_jobs\.site_origin, system_backup_jobs\.environment_scope/.test(error.message);
 }
 
 function safeErrorCode(error: unknown) {

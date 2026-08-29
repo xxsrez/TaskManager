@@ -118,12 +118,22 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   административная страница открыта, application-level coordinator продолжает
   тот же job независимо от состояния dialog. Закрытие вкладки безопасно
   приостанавливает новые команды: повторное открытие находит текущий job на
-  сервере и продолжает его без дублирования. Первая версия не использует Queue,
-  Cron или обещание автономного выполнения при полностью закрытом браузере.
+  сервере и продолжает его без дублирования. Для одного администратора, Site и
+  environment существует не больше одного текущего ordinary export в
+  `running`/`ready`: обычный повтор переиспользует и выполняющийся, и уже
+  готовый job. Явный новый export атомарно заменяет готовый job; если другой
+  export ещё выполняется, сервер возвращает conflict и UI перечитывает
+  канонический job, не выдавая его за новый страховочный снимок. Первая версия
+  не использует Queue, Cron или обещание автономного выполнения при полностью
+  закрытом браузере.
 - Import поддерживает только полную замену. До mutation сервер проверяет format
   version, типы, уникальность, ссылки, owner/domain invariants и наличие
   текущей admin identity; затем staging atomically заменяет live state одной
-  D1 transaction. Merge и partial restore отсутствуют.
+  D1 transaction. Первый authenticated request после cutover может обновить
+  `users.email`/`updated_at` и `verified_email` ровно той provider identity,
+  которой выполнен запрос. Post-restore verification допускает только этот
+  server-verified drift; любая другая identity mutation остаётся fail-closed.
+  Merge и partial restore отсутствуют.
 - Current system backup schema `15` — единственный принимаемый формат. Он
   следует исчерпывающему D1/R2 registry, включает `stored_files`,
   `attachments.stored_file_id` и `task_sequences`; schemas `2`–`14`

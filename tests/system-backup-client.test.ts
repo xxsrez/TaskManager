@@ -371,6 +371,29 @@ test("restore safety export explicitly requests a fresh snapshot", async () => {
   assert.deepEqual(calls, ["/api/admin/export?fresh=1"]);
 });
 
+test("a fresh-export conflict rereads the canonical running job without treating it as fresh", async () => {
+  const calls: string[] = [];
+  await assert.rejects(
+    createSystemBackupExport(async (url) => {
+      calls.push(url);
+      if (url === "/api/admin/export?fresh=1") {
+        return Response.json({ error: "already running" }, { status: 409 });
+      }
+      assert.equal(url, "/api/admin/export/current");
+      return Response.json(job({
+        jobId: "system-export:44444444-4444-4444-8444-444444444444",
+        kind: "export",
+        status: "running",
+        phase: "inventory_r2",
+      }));
+    }, { fresh: true }),
+    (error: unknown) => error instanceof SystemBackupClientError
+      && error.code === "conflict"
+      && /Другой экспорт уже выполняется/.test(error.message),
+  );
+  assert.deepEqual(calls, ["/api/admin/export?fresh=1", "/api/admin/export/current"]);
+});
+
 test("preview renders dynamic D1/R2/policy evidence without record content", () => {
   const status = job({
     status: "ready",
@@ -460,4 +483,13 @@ test("Administration source has no monolithic system backup blob/text path", asy
     source.indexOf("export function SystemImportDialog"),
   );
   assert.doesNotMatch(exportDialogSource, /!busy && onClose/);
+});
+
+test("committed import verification failure is rendered as terminal and not retryable", async () => {
+  const source = await readFile(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const importDialogSource = source.slice(source.indexOf("export function SystemImportDialog"));
+  assert.match(importDialogSource, /status\?\.phase === "verification_failed"/);
+  assert.match(importDialogSource, /D1 уже заменена, но post-restore проверка не прошла/);
+  assert.match(importDialogSource, /Повторный apply не выполняйте до разбора причины/);
+  assert.match(importDialogSource, /committedVerificationFailure\s*\? <button[^>]+type="button"[^>]*>Закрыть<\/button>/);
 });

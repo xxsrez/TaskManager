@@ -1,14 +1,17 @@
-import { getCurrentActor } from "./auth";
+import { getCurrentActor, type Actor } from "./auth";
 import { getOrCreateUser } from "./repository";
 
 export async function withUser<T>(
-  action: (user: Awaited<ReturnType<typeof getOrCreateUser>>) => Promise<T>,
+  action: (
+    user: Awaited<ReturnType<typeof getOrCreateUser>>,
+    actor: Actor,
+  ) => Promise<T>,
 ) {
   const actor = await getCurrentActor();
   if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
     const user = await getOrCreateUser(actor);
-    return Response.json(await action(user));
+    return Response.json(await action(user, actor));
   } catch (error) {
     const status =
       error && typeof error === "object" && "status" in error
@@ -24,13 +27,16 @@ export async function withUser<T>(
 }
 
 export async function withUserResponse(
-  action: (user: Awaited<ReturnType<typeof getOrCreateUser>>) => Promise<Response>,
+  action: (
+    user: Awaited<ReturnType<typeof getOrCreateUser>>,
+    actor: Actor,
+  ) => Promise<Response>,
 ) {
   const actor = await getCurrentActor();
   if (!actor) return Response.json({ error: "Authentication required" }, { status: 401 });
   try {
     const user = await getOrCreateUser(actor);
-    return await action(user);
+    return await action(user, actor);
   } catch (error) {
     const status =
       error && typeof error === "object" && "status" in error

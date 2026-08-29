@@ -172,6 +172,20 @@ browser-local state не входят в формат.
 | `lease_token`, `lease_expires_at` | Эксклюзивное право на materialization/cutover |
 | `error_code`, `expires_at`, `completed_at`, `applied_at` | Явный failure/expiry/completion lifecycle |
 
+Для одного `(created_by_user_id, site_origin, environment_scope)` существует не
+больше одного ordinary `export` в `running` или `ready`; `rollback` не входит в
+эту уникальность. Повтор обычного create возвращает тот же job, а fresh-create
+может атомарно истечь только готовый predecessor. Выполняющийся predecessor
+даёт conflict и остаётся каноническим.
+
+`state_sha256` остаётся digest точного переносимого snapshot. После D1 cutover
+server-verified authenticated request может изменить только `users.email`,
+`users.updated_at` и `user_identities.verified_email` точного текущего
+`(provider, provider_account_key)`. Это узкое post-auth reconciliation не
+переписывает digest исходного package; следующий export честно получает digest
+нового live state. Любое другое расхождение переводит уже committed restore в
+явную ошибку post-restore verification.
+
 `SystemBackupRow` хранит immutable frozen/staged row по
 `(job_id, table_name, ordinal)`. `SystemBackupPart` — receipt одной package
 части и её immutable R2 key. `SystemBackupObject` хранит stable logical ref,

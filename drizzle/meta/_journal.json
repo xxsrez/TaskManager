@@ -260,6 +260,13 @@
       "when": 1787870336374,
       "tag": "0036_lonely_namorita",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1788041593107,
+      "tag": "0037_watery_captain_cross",
+      "breakpoints": true
     }
   ]
 }

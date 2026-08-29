@@ -183,6 +183,22 @@ admin boundary.
 - шифрование файла собственным backup key;
 - включение hosted configuration, secrets, analytics или deployment history.
 
+## Дополнение 2026-08-29: current export и post-auth verification
+
+- Partial unique guard допускает для одного администратора, Site и environment
+  только один ordinary `running`/`ready` export; rollback jobs остаются
+  отдельными. Обычный повтор переиспользует running и ready job. Fresh-create
+  атомарно истекает ready predecessor, но при running predecessor возвращает
+  conflict и не создаёт второй snapshot.
+- После cutover server-authenticated request может обновить email и timestamp
+  текущего User и `verified_email` только точной provider identity запроса.
+  Post-restore verification допускает лишь этот tuple и остаётся строгой для
+  provider key, других identities и остальных колонок.
+- `stateSha256` остаётся digest точного package state: разрешённый post-auth
+  drift его не переписывает, а повторный export отражает новое live state новым
+  digest. Post-commit mismatch получает фазу `verification_failed`, прямо
+  сообщающую, что D1 replace уже выполнен.
+
 ## Источники
 
 - [Sites: durable storage, access и environment values](https://learn.chatgpt.com/docs/sites)

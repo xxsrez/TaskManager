@@ -15,6 +15,7 @@ import {
 import { systemBackupCurrentSchemaVersion } from "../lib/system-backup-contract";
 import { IncrementalSha256, canonicalJson, sha256Hex } from "../lib/system-backup-package";
 import { createProject, createTask, getOrCreateUser } from "../lib/repository";
+import type { Actor } from "../lib/auth";
 import type { UserRecord } from "../lib/types";
 import { createD1TestHarness } from "./helpers/d1";
 
@@ -22,23 +23,25 @@ let database: D1Database;
 let bucket: R2Bucket;
 let admin: UserRecord;
 let other: UserRecord;
+let adminActor: Actor;
 let dispose: (() => Promise<void>) | undefined;
 
 before(async () => {
   const harness = await createD1TestHarness({
-    TASK_MANAGER_ADMIN_EMAILS: "admin@example.test",
+    TASK_MANAGER_ADMIN_EMAILS: "admin@example.test,admin+changed@example.test",
     TASK_MANAGER_PUBLIC_ORIGIN: "https://task-manager.example",
     TASK_MANAGER_ATTACHMENT_SCOPE: "test",
   }, { r2: true });
   database = harness.database;
   bucket = harness.attachmentBucket!;
   dispose = harness.dispose;
-  admin = await getOrCreateUser({
+  adminActor = {
     provider: "chatgpt",
     providerAccountKey: "system-backup-admin",
     displayName: "Backup Admin",
     email: "admin@example.test",
-  });
+  };
+  admin = await getOrCreateUser(adminActor);
   other = await getOrCreateUser({
     provider: "chatgpt",
     providerAccountKey: "system-backup-other",
@@ -57,7 +60,7 @@ async function drive(
 ) {
   let status: SystemBackupJobStatus | undefined;
   for (let attempt = 0; attempt < max; attempt += 1) {
-    status = await advanceSystemBackupJob(admin, jobId);
+    status = await advanceSystemBackupJob(admin, jobId, adminActor);
     await onStatus?.(status);
     if (terminal.includes(status.status)) return status;
     if (status.error?.startsWith("applied_state_mismatch:")) {
@@ -67,10 +70,32 @@ async function drive(
   throw new Error(`Job ${jobId} did not reach ${terminal.join("/")}; last=${status?.status}/${status?.phase}`);
 }
 
-test("export slice advances several durable checkpoints and current export is discoverable", async () => {
-  const singleStepJob = await createSystemBackupExportJob(admin);
-  const singleStep = await advanceSystemBackupJob(admin, singleStepJob.jobId);
+async function stageCurrentStateForRestore() {
+  const created = await createSystemBackupExportJob(admin);
+  const ready = await drive(created.jobId, ["ready", "failed"]);
+  assert.equal(ready.status, "ready", ready.error ?? ready.phase);
+  const response = await streamSystemBackupPackage(admin, created.jobId);
+  const lines = (await response.text()).trim().split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const header = lines[0]!;
+  const manifest = lines.at(-1)!;
+  const frames = lines.slice(1, -1);
+  const upload = await createSystemBackupImportJob(admin, header);
+  for (let index = 0; index < frames.length; index += 1) {
+    await uploadSystemBackupImportPart(admin, upload.jobId, index, frames[index]);
+  }
+  await finalizeSystemBackupImport(admin, upload.jobId, manifest);
+  const staged = await drive(upload.jobId, ["ready", "failed"]);
+  assert.equal(staged.status, "ready", staged.error ?? staged.phase);
+  await applySystemBackupImport(admin, {
+    importId: upload.jobId,
+    sha256: staged.rootSha256!,
+    confirmation: "RESTORE",
+  });
+  return { source: ready, importJobId: upload.jobId };
+}
 
+test("export slice advances several durable checkpoints and current export is discoverable", async () => {
   const slicedJob = await createSystemBackupExportJob(admin);
   assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, slicedJob.jobId);
   await database.prepare(`UPDATE system_backup_jobs
@@ -88,7 +113,6 @@ test("export slice advances several durable checkpoints and current export is di
     maximumDurationMs: 10_000,
   });
 
-  assert.equal(singleStep.phase, "hash_objects");
   assert.equal(sliced.phase, "build_rows");
   assert.match(sliced.updatedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
   assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, slicedJob.jobId);
@@ -97,15 +121,233 @@ test("export slice advances several durable checkpoints and current export is di
     slicedJob.jobId,
   );
   await database.batch([
-    database.prepare(`DELETE FROM system_backup_rows WHERE job_id IN (?, ?)`)
-      .bind(singleStepJob.jobId, slicedJob.jobId),
-    database.prepare(`DELETE FROM system_backup_objects WHERE job_id IN (?, ?)`)
-      .bind(singleStepJob.jobId, slicedJob.jobId),
-    database.prepare(`DELETE FROM system_backup_parts WHERE job_id IN (?, ?)`)
-      .bind(singleStepJob.jobId, slicedJob.jobId),
-    database.prepare(`DELETE FROM system_backup_jobs WHERE id IN (?, ?)`)
-      .bind(singleStepJob.jobId, slicedJob.jobId),
+    database.prepare(`DELETE FROM system_backup_rows WHERE job_id = ?`).bind(slicedJob.jobId),
+    database.prepare(`DELETE FROM system_backup_objects WHERE job_id = ?`).bind(slicedJob.jobId),
+    database.prepare(`DELETE FROM system_backup_parts WHERE job_id = ?`).bind(slicedJob.jobId),
+    database.prepare(`DELETE FROM system_backup_jobs WHERE id = ?`).bind(slicedJob.jobId),
   ]);
+});
+
+test("concurrent reuse requests freeze one canonical ordinary export", async () => {
+  let waiting = 0;
+  let releaseBarrier!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    releaseBarrier = resolve;
+  });
+  const startTogether = async () => {
+    waiting += 1;
+    if (waiting === 2) releaseBarrier();
+    await barrier;
+    return createSystemBackupExportJob(admin, { reuseCurrent: true });
+  };
+
+  const results = await Promise.all([startTogether(), startTogether()]);
+  const jobIds = [...new Set(results.map((result) => result.jobId))];
+  try {
+    assert.deepEqual(jobIds, [results[0]!.jobId]);
+    assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, results[0]!.jobId);
+    assert.equal(
+      (await database.prepare(`SELECT COUNT(*) AS count FROM system_backup_jobs
+        WHERE created_by_user_id = ? AND kind = 'export'
+          AND status IN ('running', 'ready')`).bind(admin.id).first<{ count: number }>())?.count,
+      1,
+    );
+    assert.equal(
+      (await database.prepare(`SELECT COUNT(DISTINCT job_id) AS count
+        FROM system_backup_rows WHERE job_id LIKE 'system-export:%'`)
+        .first<{ count: number }>())?.count,
+      1,
+    );
+  } finally {
+    for (const jobId of jobIds) {
+      await database.batch([
+        database.prepare("DELETE FROM system_backup_rows WHERE job_id = ?").bind(jobId),
+        database.prepare("DELETE FROM system_backup_objects WHERE job_id = ?").bind(jobId),
+        database.prepare("DELETE FROM system_backup_parts WHERE job_id = ?").bind(jobId),
+        database.prepare("DELETE FROM system_backup_jobs WHERE id = ?").bind(jobId),
+      ]);
+    }
+  }
+});
+
+test("current export discovery is isolated by Site origin within one environment", async () => {
+  const first = await createSystemBackupExportJob(admin, {
+    siteOrigin: "https://task-manager-a.example",
+    reuseCurrent: true,
+  });
+  const second = await createSystemBackupExportJob(admin, {
+    siteOrigin: "https://task-manager-b.example",
+    reuseCurrent: true,
+  });
+  try {
+    assert.notEqual(first.jobId, second.jobId);
+    assert.equal(
+      (await getCurrentSystemBackupExportJob(admin, {
+        siteOrigin: "https://task-manager-a.example",
+      }))?.jobId,
+      first.jobId,
+    );
+    assert.equal(
+      (await getCurrentSystemBackupExportJob(admin, {
+        siteOrigin: "https://task-manager-b.example",
+      }))?.jobId,
+      second.jobId,
+    );
+    assert.equal(
+      await getCurrentSystemBackupExportJob(admin, {
+        siteOrigin: "https://task-manager-c.example",
+      }),
+      null,
+    );
+  } finally {
+    for (const jobId of [first.jobId, second.jobId]) {
+      await database.batch([
+        database.prepare("DELETE FROM system_backup_rows WHERE job_id = ?").bind(jobId),
+        database.prepare("DELETE FROM system_backup_objects WHERE job_id = ?").bind(jobId),
+        database.prepare("DELETE FROM system_backup_parts WHERE job_id = ?").bind(jobId),
+        database.prepare("DELETE FROM system_backup_jobs WHERE id = ?").bind(jobId),
+      ]);
+    }
+  }
+});
+
+test("fresh export conflicts with a running job and replaces a ready job atomically", async () => {
+  const running = await createSystemBackupExportJob(admin);
+  await assert.rejects(
+    createSystemBackupExportJob(admin),
+    (error: unknown) => error instanceof Error
+      && "status" in error
+      && error.status === 409,
+  );
+  assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, running.jobId);
+  const ready = await drive(running.jobId, ["ready", "failed"]);
+  assert.equal(ready.status, "ready", ready.error ?? ready.phase);
+
+  const retried = await createSystemBackupExportJob(admin, { reuseCurrent: true });
+  assert.equal(retried.jobId, ready.jobId);
+  assert.equal(retried.rootSha256, ready.rootSha256);
+  assert.equal(retried.stateSha256, ready.stateSha256);
+
+  const fresh = await createSystemBackupExportJob(admin);
+  assert.notEqual(fresh.jobId, ready.jobId);
+  assert.equal((await getCurrentSystemBackupExportJob(admin))?.jobId, fresh.jobId);
+  assert.equal(
+    (await database.prepare("SELECT status FROM system_backup_jobs WHERE id = ?")
+      .bind(ready.jobId).first<{ status: string }>())?.status,
+    "expired",
+  );
+
+  for (const jobId of [ready.jobId, fresh.jobId]) {
+    await database.batch([
+      database.prepare("DELETE FROM system_backup_rows WHERE job_id = ?").bind(jobId),
+      database.prepare("DELETE FROM system_backup_objects WHERE job_id = ?").bind(jobId),
+      database.prepare("DELETE FROM system_backup_parts WHERE job_id = ?").bind(jobId),
+      database.prepare("DELETE FROM system_backup_jobs WHERE id = ?").bind(jobId),
+    ]);
+  }
+});
+
+test("post-restore verification allows only the authenticated identity email touch", async () => {
+  const originalActor = adminActor;
+  const changedActor: Actor = { ...originalActor, email: "admin+changed@example.test" };
+  const { source, importJobId } = await stageCurrentStateForRestore();
+  let reconciled = false;
+
+  const applied = await drive(importJobId, ["applied", "failed"], 1_000, async (status) => {
+    if (status.phase !== "verifying_d1" || reconciled) return;
+    reconciled = true;
+    adminActor = changedActor;
+    admin = await getOrCreateUser(changedActor);
+  });
+
+  assert.equal(applied.status, "applied", applied.error ?? applied.phase);
+  assert.equal(reconciled, true);
+  assert.equal(admin.email, changedActor.email);
+  assert.deepEqual(
+    await database.prepare(`SELECT user_id, provider, provider_account_key, verified_email
+      FROM user_identities WHERE provider = ? AND provider_account_key = ?`)
+      .bind(changedActor.provider, changedActor.providerAccountKey).first(),
+    {
+      user_id: admin.id,
+      provider: changedActor.provider,
+      provider_account_key: changedActor.providerAccountKey,
+      verified_email: changedActor.email,
+    },
+  );
+  const reexport = await createSystemBackupExportJob(admin);
+  const reexportReady = await drive(reexport.jobId, ["ready", "failed"]);
+  assert.equal(reexportReady.status, "ready", reexportReady.error ?? reexportReady.phase);
+  assert.notEqual(reexportReady.stateSha256, source.stateSha256);
+
+  adminActor = originalActor;
+  admin = await getOrCreateUser(originalActor);
+});
+
+test("post-restore verification remains fail-closed for every other identity change", async () => {
+  const otherIdentity = await database.prepare(`SELECT verified_email, created_at
+    FROM user_identities WHERE user_id = ?`).bind(other.id)
+    .first<{ verified_email: string; created_at: string }>();
+  const adminIdentity = await database.prepare(`SELECT created_at
+    FROM user_identities WHERE provider = ? AND provider_account_key = ?`)
+    .bind(adminActor.provider, adminActor.providerAccountKey)
+    .first<{ created_at: string }>();
+  assert.ok(otherIdentity);
+  assert.ok(adminIdentity);
+
+  const cases: Array<{
+    name: string;
+    mutate: () => Promise<unknown>;
+    repair: () => Promise<unknown>;
+  }> = [
+    {
+      name: "another user's verified email",
+      mutate: () => database.prepare(`UPDATE user_identities SET verified_email = 'tampered@example.test'
+        WHERE user_id = ?`).bind(other.id).run(),
+      repair: () => database.prepare("UPDATE user_identities SET verified_email = ? WHERE user_id = ?")
+        .bind(otherIdentity.verified_email, other.id).run(),
+    },
+    {
+      name: "the authenticated identity creation timestamp",
+      mutate: () => database.prepare(`UPDATE user_identities SET created_at = '2020-01-01T00:00:00.000Z'
+        WHERE provider = ? AND provider_account_key = ?`)
+        .bind(adminActor.provider, adminActor.providerAccountKey).run(),
+      repair: () => database.prepare(`UPDATE user_identities SET created_at = ?
+        WHERE provider = ? AND provider_account_key = ?`)
+        .bind(adminIdentity.created_at, adminActor.provider, adminActor.providerAccountKey).run(),
+    },
+    {
+      name: "the authenticated provider account key",
+      mutate: () => database.prepare(`UPDATE user_identities SET provider_account_key = ?
+        WHERE provider = ? AND provider_account_key = ?`)
+        .bind(`${adminActor.providerAccountKey}-tampered`, adminActor.provider, adminActor.providerAccountKey).run(),
+      repair: () => database.prepare(`UPDATE user_identities SET provider_account_key = ?
+        WHERE provider = ? AND provider_account_key = ?`)
+        .bind(adminActor.providerAccountKey, adminActor.provider, `${adminActor.providerAccountKey}-tampered`).run(),
+    },
+  ];
+
+  const { importJobId } = await stageCurrentStateForRestore();
+  let status = await advanceSystemBackupJob(admin, importJobId, adminActor);
+  for (let attempt = 0; status.phase !== "verifying_d1" && attempt < 1_000; attempt += 1) {
+    status = await advanceSystemBackupJob(admin, importJobId, adminActor);
+  }
+  assert.equal(status.phase, "verifying_d1");
+
+  for (const [index, scenario] of cases.entries()) {
+    if (index > 0) {
+      await database.prepare(`UPDATE system_backup_jobs SET
+        status = 'running', phase = 'verifying_d1', error_code = NULL,
+        completed_at = NULL, lease_token = NULL, lease_expires_at = NULL
+        WHERE id = ?`).bind(importJobId).run();
+    }
+    await scenario.mutate();
+    const result = await advanceSystemBackupJob(admin, importJobId, adminActor);
+    assert.equal(result.status, "failed", scenario.name);
+    assert.equal(result.phase, "verification_failed", scenario.name);
+    assert.equal(result.error, "applied_state_mismatch:user_identities", scenario.name);
+    assert.match(result.warnings.join(" "), /replacement committed/i, scenario.name);
+    await scenario.repair();
+  }
 });
 
 test("all-user export/import preserves bound, unbound, missing and orphan object state exactly", async () => {

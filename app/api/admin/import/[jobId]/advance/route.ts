@@ -10,11 +10,11 @@ export async function POST(
   request: Request,
   context: { params: Promise<{ jobId: string }> },
 ) {
-  return withUserResponse(async (user) => {
+  return withUserResponse(async (user, actor) => {
     assertSystemBackupAction(request);
     const { jobId } = await context.params;
     return Response.json(
-      await advanceSystemBackupJob(user, decodeURIComponent(jobId)),
+      await advanceSystemBackupJob(user, decodeURIComponent(jobId), actor),
       { headers: { "cache-control": "no-store" } },
     );
   });

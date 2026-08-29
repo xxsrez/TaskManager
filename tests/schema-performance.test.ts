@@ -69,6 +69,57 @@ test("prefix search and task sequence allocation have dedicated schema support",
   assert.deepEqual(columns.map((column) => column.name), ["owner_user_id", "last_value"]);
 });
 
+test("current-export guard migration reconciles duplicate and time-expired jobs before uniqueness", () => {
+  const database = new DatabaseSync(":memory:");
+  const migrations = readdirSync(new URL("../drizzle", import.meta.url))
+    .filter((name) => name.endsWith(".sql") && name < "0037_watery_captain_cross.sql")
+    .sort();
+  for (const migration of migrations) database.exec(migrationSql(migration));
+  const insert = database.prepare(`INSERT INTO system_backup_jobs
+    (id, kind, created_by_user_id, status, phase, site_origin, environment_scope,
+     schema_version, schema_fingerprint, exported_at, expires_at)
+    VALUES (?, ?, 'admin-1', ?, ?, ?, 'uat', 15, 'fingerprint', ?, ?)`);
+  insert.run("ready-newer", "export", "ready", "ready", "https://site.example", "2026-08-29T12:00:00.000Z", "2099-01-01T00:00:00.000Z");
+  insert.run("running-old", "export", "running", "inventory_r2", "https://site.example", "2026-08-29T10:00:00.000Z", "2099-01-01T00:00:00.000Z");
+  insert.run("running-new", "export", "running", "build_rows", "https://site.example", "2026-08-29T11:00:00.000Z", "2099-01-01T00:00:00.000Z");
+  insert.run("time-expired", "export", "running", "inventory_r2", "https://other.example", "2020-01-01T00:00:00.000Z", "2020-01-02T00:00:00.000Z");
+
+  database.exec(migrationSql("0037_watery_captain_cross.sql"));
+
+  assert.deepEqual(
+    database.prepare(`SELECT id, status FROM system_backup_jobs
+      WHERE site_origin = 'https://site.example' ORDER BY id`).all().map((row) => ({ ...row })),
+    [
+      { id: "ready-newer", status: "expired" },
+      { id: "running-new", status: "running" },
+      { id: "running-old", status: "expired" },
+    ],
+  );
+  assert.equal(
+    (database.prepare("SELECT status FROM system_backup_jobs WHERE id = 'time-expired'").get() as { status: string }).status,
+    "expired",
+  );
+  assert.throws(() => insert.run(
+    "second-active",
+    "export",
+    "ready",
+    "ready",
+    "https://site.example",
+    "2026-08-29T13:00:00.000Z",
+    "2099-01-01T00:00:00.000Z",
+  ), /UNIQUE constraint failed/);
+  assert.doesNotThrow(() => insert.run(
+    "rollback-active",
+    "rollback",
+    "ready",
+    "ready",
+    "https://site.example",
+    "2026-08-29T13:00:00.000Z",
+    "2099-01-01T00:00:00.000Z",
+  ));
+  database.close();
+});
+
 test("Project code trigger migration expands only the code grammar and preserves sequence locks", () => {
   const database = new DatabaseSync(":memory:");
   const migrations = readdirSync(new URL("../drizzle", import.meta.url))

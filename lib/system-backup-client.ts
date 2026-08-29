@@ -38,6 +38,7 @@ export type BackupConnectionState = (waiting: boolean) => void;
 export class SystemBackupClientError extends Error {
   readonly code:
     | "bad_file"
+    | "conflict"
     | "expired"
     | "network"
     | "server"
@@ -289,6 +290,15 @@ export async function createSystemBackupExport(
       "network",
       "Не удалось начать экспорт. Проверьте соединение и повторите.",
       { cause: error },
+    );
+  }
+  if (response.status === 409) {
+    const current = await getCurrentSystemBackupExport(request).catch(() => null);
+    throw new SystemBackupClientError(
+      "conflict",
+      current?.status === "running"
+        ? "Другой экспорт уже выполняется. Дождитесь его завершения и повторите создание нового снимка."
+        : "Состояние экспорта изменилось. Обновите текущий экспорт и повторите действие.",
     );
   }
   return responseStatus(response, "Сервер не смог начать экспорт.");

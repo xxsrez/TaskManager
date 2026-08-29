@@ -828,7 +828,11 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
    внутренних шагов, но сохраняет durable cursor после каждого шага. Это
    уменьшает число HTTP round trips без Queue, Cron или отдельного Worker.
    `GET /api/admin/export/current` возвращает последний незавершённый либо
-   готовый export текущего администратора. Пока `/admin` открыт,
+   готовый export текущего администратора в том же Site/environment. Partial
+   unique index и atomic claim не допускают двух ordinary `running`/`ready`
+   jobs в этом scope. Обычный create переиспользует running/ready, fresh-create
+   атомарно истекает ready, а при running возвращает conflict; rollback jobs в
+   эту уникальность не входят. Пока `/admin` открыт,
    application-level coordinator вызывает следующие slices; закрытие dialog
    его не останавливает. После закрытия вкладки job остаётся целым и
    возобновляется при следующем открытии, но сам по себе не исполняется.
@@ -836,7 +840,10 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
    и terminal manifest. Per-part SHA-256 связывает frame identity, ordinal,
    length/count и digest; `rootSha256` связывает package. Отдельный
    `stateSha256` нормализует physical object keys/time/etag и сравнивает exact
-   state после restore.
+   package state после restore. Последующий authenticated request может узко
+   согласовать email текущего User и verified email точной provider identity;
+   digest package не меняется, а следующий export получает digest нового live
+   state. Остальные identity расхождения остаются fail-closed.
 3. Import создаётся по header, принимает части отдельными bounded requests и
    финализируется manifest отдельно. Общий reader отвергает duplicate,
    out-of-order, missing, extra, truncated, foreign и legacy package до

@@ -8141,6 +8141,7 @@ function backupPhaseLabel(phase: string) {
     materializing: "Подготовка новых объектов",
     d1_cutover: "Атомарная замена D1",
     verifying_d1: "Проверка восстановленной D1",
+    verification_failed: "D1 заменена, проверка не пройдена",
     verifying_objects: "Проверка восстановленного R2",
     cleanup: "Очистка прежних объектов",
     ready: "Готово",
@@ -8353,8 +8354,10 @@ export function SystemImportDialog({
         clearBackupStatus(systemBackupImportCheckpointKey);
         clearBackupStatus(systemBackupSafetyExportCheckpointKey);
         onApplied(result);
+      } else if (result.phase === "verification_failed") {
+        setError("D1 уже заменена, но post-restore проверка не прошла. Не запускайте замену повторно вслепую.");
       } else if (result.status === "failed" || result.status === "expired") {
-        setError("Сервер остановил операцию. Рабочее состояние не считается восстановленным.");
+        setError("Сервер остановил операцию до подтверждённого восстановления.");
       }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Не удалось продолжить операцию.");
@@ -8475,7 +8478,9 @@ export function SystemImportDialog({
       const result = await runSystemBackupJob(applying, { onProgress: updateImportStatus, stepDelayMs: 0 });
       updateImportStatus(result);
       if (result.status !== "applied") {
-        setError("Восстановление не подтверждено сервером как завершённое.");
+        setError(result.phase === "verification_failed"
+          ? "D1 уже заменена, но post-restore проверка не прошла. Не запускайте замену повторно вслепую."
+          : "Восстановление не подтверждено сервером как завершённое.");
         return;
       }
       clearBackupStatus(systemBackupImportCheckpointKey);
@@ -8500,15 +8505,18 @@ export function SystemImportDialog({
   }
 
   const validated = backupImportIsFullyValidated(status);
+  const committedVerificationFailure = status?.phase === "verification_failed";
   const safetyUrl = safeSystemBackupDownloadUrl(safetyStatus?.downloadUrl ?? null);
   return <Modal onClose={() => !busy && onClose()} className="system-import-modal">
     <DialogHeader title="Импорт полного состояния" icon={<Upload size={17} />} onClose={() => !busy && onClose()} />
     {!validated ? <form onSubmit={validateFile}>
       <div className="system-import-body">
-        <p>Импорт полностью заменит состояние всех пользователей. До завершения проверки сервер не меняет рабочие таблицы и файлы.</p>
+        <p>{committedVerificationFailure
+          ? "Атомарная замена D1 уже выполнена, но post-restore проверка обнаружила расхождение. Повторный apply не выполняйте до разбора причины."
+          : "Импорт полностью заменит состояние всех пользователей. До завершения проверки сервер не меняет рабочие таблицы и файлы."}</p>
         {status && <SystemBackupProgress status={status} />}
         {status?.status === "uploading" && !file && <div className="system-backup-resume"><RotateCw size={14} /><span>Незавершённая загрузка найдена. Выберите тот же файл — уже принятые части повторно не отправятся.</span></div>}
-        <label className="system-import-file">
+        {!committedVerificationFailure && <label className="system-import-file">
           <span>Файл полного backup</span>
           <input
             type="file"
@@ -8521,15 +8529,21 @@ export function SystemImportDialog({
             }}
           />
           <small>Файл читается построчно; общий размер не ограничен 10 МБ.</small>
-        </label>
+        </label>}
         {status && (status.validationErrors.length > 0 || status.warnings.length > 0 || status.error) && <SystemBackupPreview status={status} />}
         {error && <p className="system-import-error" role="alert">{error}</p>}
       </div>
       <div className="dialog-footer system-backup-footer">
-        <span>Повреждённый или неполный файл не меняет live state</span>
+        <span>{committedVerificationFailure
+          ? "D1 replace уже committed; сохраните diagnostics ошибки проверки"
+          : "Повреждённый или неполный файл не меняет live state"}</span>
         <div>
-          {status && (status.status === "uploading" || status.status === "failed" || status.status === "expired") && <button className="button ghost" type="button" disabled={busy} onClick={chooseAnotherFile}>Сбросить загрузку</button>}
-          <button className="button primary" disabled={!file || busy}>{busy ? "Проверяем…" : status?.status === "uploading" ? "Продолжить проверку" : "Загрузить и проверить"}</button>
+          {committedVerificationFailure
+            ? <button className="button primary" type="button" onClick={onClose}>Закрыть</button>
+            : <>
+                {status && (status.status === "uploading" || status.status === "failed" || status.status === "expired") && <button className="button ghost" type="button" disabled={busy} onClick={chooseAnotherFile}>Сбросить загрузку</button>}
+                <button className="button primary" disabled={!file || busy}>{busy ? "Проверяем…" : status?.status === "uploading" ? "Продолжить проверку" : "Загрузить и проверить"}</button>
+              </>}
         </div>
       </div>
     </form> : <div>

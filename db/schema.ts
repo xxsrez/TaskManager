@@ -1088,6 +1088,9 @@ export const systemBackupJobs = sqliteTable(
       table.status,
       table.updatedAt,
     ),
+    uniqueIndex("idx_system_backup_jobs_current_export_scope")
+      .on(table.createdByUserId, table.siteOrigin, table.environmentScope)
+      .where(sql`kind = 'export' AND status IN ('running', 'ready')`),
     index("idx_system_backup_jobs_expiry").on(table.expiresAt),
     index("idx_system_backup_jobs_parent").on(table.parentJobId),
   ],
