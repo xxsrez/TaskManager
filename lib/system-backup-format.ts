@@ -665,15 +665,16 @@ function validateRelationships(
     nonEmpty(relation.id, "Relation ID");
     nonEmpty(relation.idempotency_key, "Relation idempotency key");
     positiveVersion(relation.version, "Relation version");
-    if (
-      source.id === target.id ||
-      source.project_id === null ||
-      target.project_id === null ||
-      source.project_id !== target.project_id
-    ) {
-      throw new ValidationError("Relations require different tasks in the same Project");
+    if (source.id === target.id) {
+      throw new ValidationError("Relations require different tasks");
+    }
+    if (source.project_id === null || target.project_id === null) {
+      throw new ValidationError("Relations require tasks with explicit Projects");
     }
     oneOf(relation.type, ["blocks", "related", "duplicate_of"], "Relation type");
+    if (relation.type === "duplicate_of" && source.project_id !== target.project_id) {
+      throw new ValidationError("Duplicate relations require tasks in the same Project");
+    }
     if (relation.type === "related") {
       const key = [source.id, target.id].sort().join("\u0000");
       if (relatedPairs.has(key)) throw new ValidationError("Duplicate symmetric related relation");

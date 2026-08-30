@@ -344,7 +344,7 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/move": {
       post: {
         operationId: "moveTask",
-        summary: "Move an unlinked task to another Project and allocate its identifier",
+        summary: "Move a hierarchy-detached task while preserving blocks and related relations",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter()],
         requestBody: jsonRequest("#/components/schemas/TaskMove"),
@@ -466,7 +466,7 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/relations": {
       post: {
         operationId: "createTaskRelation",
-        summary: "Create a versioned native relation between two editable Tasks in one Project",
+        summary: "Create blocks or related relations across Projects, or duplicate_of within one Project",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter()],
         requestBody: jsonRequest("#/components/schemas/TaskRelationCreate"),
@@ -481,7 +481,7 @@ export const agentApiOpenApi = {
     "/tasks/{ref}/relations/{relationRef}": {
       patch: {
         operationId: "updateTaskRelation",
-        summary: "Change a relation type or direction using its current version",
+        summary: "Change type or direction; cross-Project relations cannot become duplicate_of",
         security: [{ oauth2: ["api:write"] }, { personalToken: [] }],
         parameters: [referenceParameter(), relationReferenceParameter()],
         requestBody: jsonRequest("#/components/schemas/TaskRelationUpdate"),
@@ -901,6 +901,37 @@ export const agentApiOpenApi = {
         },
         additionalProperties: true,
       },
+      CompactTaskLink: {
+        type: "object",
+        required: ["ref", "identifier", "title", "status", "project"],
+        properties: {
+          ref: { type: "string" },
+          identifier: { type: "string" },
+          title: { type: "string" },
+          status: { $ref: "#/components/schemas/StatusSummary" },
+          project: {
+            oneOf: [
+              {
+                type: "object",
+                required: ["ref", "name", "taskCode"],
+                properties: {
+                  ref: { type: "string" },
+                  name: { type: "string" },
+                  taskCode: {
+                    type: "string",
+                    pattern: PROJECT_TASK_CODE_PATTERN_SOURCE,
+                    minLength: 1,
+                    maxLength: 12,
+                  },
+                },
+                additionalProperties: false,
+              },
+              { type: "null" },
+            ],
+          },
+        },
+        additionalProperties: false,
+      },
       TaskSummary: {
         type: "object",
         required: [
@@ -1237,7 +1268,7 @@ export const agentApiOpenApi = {
           version: { type: "integer", minimum: 1 },
           createdAt: { type: "string", format: "date-time" },
           updatedAt: { type: "string", format: "date-time" },
-          task: { type: "object" },
+          task: { $ref: "#/components/schemas/CompactTaskLink" },
         },
         additionalProperties: false,
       },
@@ -1258,7 +1289,7 @@ export const agentApiOpenApi = {
             type: "string",
             minLength: 1,
             maxLength: 200,
-            description: "Canonical peer Task ref in the same Project",
+            description: "Canonical peer Task ref. blocks and related may cross Projects; duplicate_of must stay in the same Project.",
           },
           type: { enum: ["blocks", "related", "duplicate_of"] },
           direction: { enum: ["outgoing", "incoming"] },

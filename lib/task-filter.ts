@@ -249,12 +249,25 @@ function existenceCondition(
 }
 
 function relationPredicate(alias: string, value?: ViewFilterRelationValue) {
+  const peerTaskId = value?.direction === "outgoing"
+    ? "filter_relation.target_task_id"
+    : value?.direction === "incoming"
+      ? "filter_relation.source_task_id"
+      : `CASE
+          WHEN filter_relation.source_task_id = ${alias}.id
+            THEN filter_relation.target_task_id
+          ELSE filter_relation.source_task_id
+        END`;
   const predicates = [
     value?.direction === "outgoing"
       ? `filter_relation.source_task_id = ${alias}.id`
       : value?.direction === "incoming"
         ? `filter_relation.target_task_id = ${alias}.id`
         : `(filter_relation.source_task_id = ${alias}.id OR filter_relation.target_task_id = ${alias}.id)`,
+    `EXISTS (
+      SELECT 1 FROM visible_tasks filter_relation_peer
+      WHERE filter_relation_peer.id = ${peerTaskId}
+    )`,
   ];
   const parameters: unknown[] = [];
   if (value?.type && value.type !== "any") {

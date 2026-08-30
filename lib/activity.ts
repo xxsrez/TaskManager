@@ -14,22 +14,24 @@ export async function listTaskActivity(
   const task = await getTask(currentUser, taskReference);
   const limit = boundedLimit(input.limit);
   const before = input.cursor ? decodeCursor(input.cursor, task.id) : null;
-  const predicates = ["task_id = ?"];
-  const parameters: unknown[] = [task.id];
+  const predicates = ["event.task_id = ?", relationActivityVisibilitySql("event")];
+  const visibilityParameters = [currentUser.id, currentUser.id];
+  const parameters: unknown[] = [task.id, ...visibilityParameters];
   if (before) {
-    predicates.push("(created_at < ? OR (created_at = ? AND id < ?))");
+    predicates.push("(event.created_at < ? OR (event.created_at = ? AND event.id < ?))");
     parameters.push(before.createdAt, before.createdAt, before.id);
   }
   parameters.push(limit + 1);
   const db = getD1();
   const [rows, count] = await db.batch<DbRow>([
     db.prepare(
-      `SELECT * FROM activity_events WHERE ${predicates.join(" AND ")}
-       ORDER BY created_at DESC, id DESC LIMIT ?`,
+      `SELECT event.* FROM activity_events event WHERE ${predicates.join(" AND ")}
+       ORDER BY event.created_at DESC, event.id DESC LIMIT ?`,
     ).bind(...parameters),
     db.prepare(
-      "SELECT COUNT(*) AS total_count FROM activity_events WHERE task_id = ?",
-    ).bind(task.id),
+      `SELECT COUNT(*) AS total_count FROM activity_events event
+       WHERE event.task_id = ? AND ${relationActivityVisibilitySql("event")}`,
+    ).bind(task.id, ...visibilityParameters),
   ]);
   const hasMore = rows.results.length > limit;
   const visible = rows.results.slice(0, limit).map(mapActivityEvent);
@@ -53,20 +55,87 @@ function mapActivityEvent(row: DbRow): ActivityEventRecord {
   if (source !== "native" && source !== "linear") {
     throw new Error("Activity source is unsupported");
   }
+  const eventType = String(row.event_type);
+  const payload = safeObject(row.payload_json);
   return {
     id: String(row.id),
     taskId: String(row.task_id),
     schemaVersion: 1,
-    eventType: String(row.event_type),
+    eventType,
     actor: {
       id: row.actor_user_id == null ? null : String(row.actor_user_id),
       displayName: String(row.actor_name),
       kind: actorKind,
     },
-    payload: safeObject(row.payload_json),
+    payload: privacyMinimizedActivityPayload(eventType, payload),
     source: source === "native" ? "native" : "historical",
     createdAt: String(row.created_at),
   };
+}
+
+function relationActivityVisibilitySql(alias: string): string {
+  const peerTaskId = relationPeerTaskIdSql(alias);
+  return `(
+    ${alias}.event_type NOT IN ('relation_created', 'relation_updated', 'relation_deleted')
+    OR EXISTS (
+      SELECT 1 FROM tasks activity_peer
+      JOIN projects activity_peer_project
+        ON activity_peer_project.id = activity_peer.project_id
+      WHERE activity_peer.id = (${peerTaskId})
+        AND activity_peer.deleted_at IS NULL
+        AND activity_peer_project.deleted_at IS NULL
+        AND (
+          activity_peer_project.owner_user_id = ?
+          OR EXISTS (
+            SELECT 1 FROM access_grants activity_peer_grant
+            WHERE activity_peer_grant.resource_type = 'project'
+              AND activity_peer_grant.resource_id = activity_peer_project.id
+              AND activity_peer_grant.grantee_user_id = ?
+              AND activity_peer_grant.revoked_at IS NULL
+          )
+        )
+    )
+  )`;
+}
+
+function relationPeerTaskIdSql(alias: string): string {
+  return `COALESCE(
+    json_extract(${alias}.payload_json, '$.peerTaskId'),
+    CASE
+      WHEN json_extract(${alias}.payload_json, '$.relation.sourceTaskId') = ${alias}.task_id
+        THEN json_extract(${alias}.payload_json, '$.relation.targetTaskId')
+      WHEN json_extract(${alias}.payload_json, '$.relation.targetTaskId') = ${alias}.task_id
+        THEN json_extract(${alias}.payload_json, '$.relation.sourceTaskId')
+      WHEN json_extract(${alias}.payload_json, '$.after.sourceTaskId') = ${alias}.task_id
+        THEN json_extract(${alias}.payload_json, '$.after.targetTaskId')
+      WHEN json_extract(${alias}.payload_json, '$.after.targetTaskId') = ${alias}.task_id
+        THEN json_extract(${alias}.payload_json, '$.after.sourceTaskId')
+      WHEN json_extract(${alias}.payload_json, '$.before.sourceTaskId') = ${alias}.task_id
+        THEN json_extract(${alias}.payload_json, '$.before.targetTaskId')
+      WHEN json_extract(${alias}.payload_json, '$.before.targetTaskId') = ${alias}.task_id
+        THEN json_extract(${alias}.payload_json, '$.before.sourceTaskId')
+    END
+  )`;
+}
+
+function privacyMinimizedActivityPayload(
+  eventType: string,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!eventType.startsWith("relation_")) return payload;
+  return sanitize(payload) as Record<string, unknown>;
+
+  function sanitize(input: unknown): unknown {
+    if (Array.isArray(input)) return input.map(sanitize);
+    if (!input || typeof input !== "object") return input;
+    return Object.fromEntries(
+      Object.entries(input as Record<string, unknown>)
+        .filter(([key]) =>
+          key !== "peerTaskId" && key !== "sourceTaskId" && key !== "targetTaskId"
+        )
+        .map(([key, value]) => [key, sanitize(value)]),
+    );
+  }
 }
 
 function boundedLimit(value: number | undefined) {

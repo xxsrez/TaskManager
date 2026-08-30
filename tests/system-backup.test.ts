@@ -370,7 +370,7 @@ test("snapshot validation rejects Tasks without an explicit Project mapping", as
   await assert.rejects(validateSystemBackup(backup), /project_id cannot be null|explicit Project mapping/i);
 });
 
-test("snapshot validation rejects relations across Projects", async () => {
+test("snapshot validation preserves blocks and related relations across Projects", async () => {
   const tables = validTables();
   tables.projects.push({
     ...tables.projects[0]!,
@@ -384,12 +384,39 @@ test("snapshot validation rejects relations across Projects", async () => {
   tables.tasks[1]!.project_id = "project-2";
   tables.tasks[1]!.identifier = "OP-1";
   tables.tasks[1]!.sequence_number = 1;
+  tables.task_relations.push({
+    ...tables.task_relations[0]!,
+    id: "relation-2",
+    type: "related",
+    idempotency_key: "backup-relation-2",
+  });
+  const backup = await createSystemBackup(tables, now);
+  const validated = await validateSystemBackup(backup);
+
+  assert.deepEqual(
+    validated.tables.task_relations.map((relation) => relation.type).sort(),
+    ["blocks", "related"],
+  );
+});
+
+test("snapshot validation keeps duplicate_of within one Project", async () => {
+  const tables = validTables();
+  tables.projects.push({
+    ...tables.projects[0]!,
+    id: "project-2",
+    public_id: "66666666-6666-4666-8666-666666666666",
+    name: "Other Project",
+    task_code: "OP",
+    task_sequence: 1,
+    lead_user_id: null,
+  });
+  tables.tasks[1]!.project_id = "project-2";
+  tables.tasks[1]!.identifier = "OP-1";
+  tables.tasks[1]!.sequence_number = 1;
+  tables.task_relations[0]!.type = "duplicate_of";
   const backup = await createSystemBackup(tables, now);
 
-  await assert.rejects(
-    validateSystemBackup(backup),
-    /same Project/i,
-  );
+  await assert.rejects(validateSystemBackup(backup), /duplicate.*same Project/i);
 });
 
 test("restore requires the current administrator identity in the snapshot", async () => {

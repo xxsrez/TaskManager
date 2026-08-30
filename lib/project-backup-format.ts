@@ -17,7 +17,7 @@ import { isProjectTaskCode, PROJECT_TASK_CODE_ERROR } from "./project-task-code"
 
 export const projectBackupFormat = "task-manager-project-backup" as const;
 export const projectBackupVersion = 1 as const;
-export const projectBackupSchemaVersion = 14 as const;
+export const projectBackupSchemaVersion = 15 as const;
 export const maxProjectBackupBytes = 25_000_000;
 const maxProjectBackupRows = 5_000;
 const maxProjectBackupRowBytes = 1_500_000;
@@ -55,10 +55,27 @@ export type ProjectSharingDescriptor = {
   permission: "manager" | "editor" | "viewer";
 };
 
+export type ProjectExternalTaskRelationDescriptor = {
+  relation: {
+    id: string;
+    sourceTaskId: string;
+    targetTaskId: string;
+    type: "blocks" | "related";
+    creatorUserId: string;
+    idempotencyKey: string;
+    version: number;
+    createdAt: string;
+    updatedAt: string;
+  };
+  internalTaskId: string;
+  internalEndpoint: "source" | "target";
+  restorePolicy: "not_restored";
+};
+
 export type ProjectBackup = {
   format: typeof projectBackupFormat;
   version: typeof projectBackupVersion;
-  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | typeof projectBackupSchemaVersion;
+  schemaVersion: 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | typeof projectBackupSchemaVersion;
   siteOrigin: string;
   exportedAt: string;
   projectId: string;
@@ -67,6 +84,7 @@ export type ProjectBackup = {
   ownerUserId: string;
   counts: ProjectBackupCounts;
   warnings: { externalRelationsOmitted: number };
+  externalTaskRelations: ProjectExternalTaskRelationDescriptor[];
   tables: ProjectBackupTables;
   objects: AttachmentBackupObject[];
   sharing: ProjectSharingDescriptor[];
@@ -233,6 +251,7 @@ export async function createProjectBackup(input: {
   tables: ProjectBackupTables;
   sharing: ProjectSharingDescriptor[];
   externalRelationsOmitted: number;
+  externalTaskRelations?: ProjectExternalTaskRelationDescriptor[];
   exportedAt?: string;
   objects?: AttachmentBackupObject[];
 }): Promise<ProjectBackup> {
@@ -252,11 +271,17 @@ export async function createProjectBackup(input: {
     ownerUserId: String(project.owner_user_id),
     counts: countProjectTables(input.tables, input.sharing),
     warnings: { externalRelationsOmitted: input.externalRelationsOmitted },
+    externalTaskRelations: input.externalTaskRelations ?? [],
     tables: input.tables,
     objects: input.objects ?? [],
     sharing: [...input.sharing].sort((a, b) => a.granteeUserId.localeCompare(b.granteeUserId)),
   };
   validateProjectRelationships(body.tables, body.sharing, body);
+  validateExternalTaskRelationDescriptors(body.externalTaskRelations, body.tables);
+  validateExternalRelationCount(
+    body.warnings.externalRelationsOmitted,
+    body.externalTaskRelations,
+  );
   const backup = { ...body, sha256: await sha256(JSON.stringify(body)) };
   if (new TextEncoder().encode(JSON.stringify(backup)).byteLength > maxProjectBackupBytes) {
     throw new ValidationError(
@@ -280,16 +305,8 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   const legacyLabelGroups = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 11;
   const legacyCommentAttachmentRefs = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 12;
   const legacyDeletionState = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 13;
+  const legacyExternalRelationDescriptors = typeof payload.schemaVersion === "number" && payload.schemaVersion <= 14;
   const supported = typeof payload.schemaVersion === "number" && payload.schemaVersion >= 2 && payload.schemaVersion <= projectBackupSchemaVersion;
-  exactKeys(payload, withoutAttachments ? [
-    "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
-    "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
-    "warnings", "tables", "sharing", "sha256",
-  ] : [
-    "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
-    "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
-    "warnings", "tables", "objects", "sharing", "sha256",
-  ], "Project backup");
   if (
     payload.format !== projectBackupFormat ||
     payload.version !== projectBackupVersion ||
@@ -297,6 +314,19 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   ) {
     throw new ValidationError("Unsupported Task Manager project backup format or version");
   }
+  exactKeys(payload, withoutAttachments ? [
+    "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
+    "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
+    "warnings", "tables", "sharing", "sha256",
+  ] : legacyExternalRelationDescriptors ? [
+    "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
+    "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
+    "warnings", "tables", "objects", "sharing", "sha256",
+  ] : [
+    "format", "version", "schemaVersion", "siteOrigin", "exportedAt",
+    "projectId", "projectPublicId", "projectName", "ownerUserId", "counts",
+    "warnings", "externalTaskRelations", "tables", "objects", "sharing", "sha256",
+  ], "Project backup");
   const sourceTables = object(payload.tables, "tables");
   const legacyLabelGroupsMissing = legacyLabelGroups && !Object.hasOwn(sourceTables, "label_groups");
   const sourceTableNames = projectBackupTableNames.filter((name) =>
@@ -363,6 +393,10 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     warnings.externalRelationsOmitted,
     "externalRelationsOmitted",
   );
+  const externalTaskRelations = legacyExternalRelationDescriptors
+    ? []
+    : array(payload.externalTaskRelations, "externalTaskRelations")
+        .map(normalizeExternalTaskRelationDescriptor);
   let tables = legacyWorkflow
     ? upgradeLegacyProjectWorkflow(sourceNormalizedTables)
     : sourceNormalizedTables;
@@ -384,6 +418,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     ownerUserId: requiredString(payload.ownerUserId, "ownerUserId"),
     counts: countProjectTables(sourceNormalizedTables, sharing),
     warnings: { externalRelationsOmitted },
+    externalTaskRelations,
     tables,
     sharing,
   };
@@ -406,13 +441,15 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
     !legacyCommentAttachmentRefs,
     !legacyDeletionState,
   );
+  validateExternalTaskRelationDescriptors(externalTaskRelations, tables);
+  validateExternalRelationCount(externalRelationsOmitted, externalTaskRelations);
   const objects = withoutAttachments
     ? []
     : await validateAttachmentBackupObjects(tables.attachments, payload.objects);
   const baseChecksumBody = {
     format: body.format,
     version: body.version,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
     siteOrigin: body.siteOrigin,
     exportedAt: body.exportedAt,
     projectId: body.projectId,
@@ -433,6 +470,9 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
         )
       : body.counts,
     warnings: body.warnings,
+    ...(legacyExternalRelationDescriptors
+      ? {}
+      : { externalTaskRelations: body.externalTaskRelations }),
     tables: withoutAttachments || legacyIdentifiers || legacyHistoricalComments || legacyActivity || legacyAttachmentMigration || legacyLabelGroupsMissing || legacyCommentAttachmentRefs
       ? Object.fromEntries(
           Object.entries(sourceNormalizedTables).filter(([name]) =>
@@ -460,7 +500,7 @@ export async function validateProjectBackup(value: unknown): Promise<ProjectBack
   }
   return {
     ...body,
-    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14,
+    schemaVersion: payload.schemaVersion as 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15,
     tables,
     objects,
     sha256: checksum,
@@ -1285,6 +1325,112 @@ function normalizeSharing(value: unknown, index: number): ProjectSharingDescript
     displayName: requiredString(row.displayName, "displayName"),
     permission,
   };
+}
+
+function normalizeExternalTaskRelationDescriptor(
+  value: unknown,
+  index: number,
+): ProjectExternalTaskRelationDescriptor {
+  const label = `externalTaskRelations[${index}]`;
+  const descriptor = object(value, label);
+  exactKeys(
+    descriptor,
+    ["relation", "internalTaskId", "internalEndpoint", "restorePolicy"],
+    label,
+  );
+  const relation = object(descriptor.relation, `${label}.relation`);
+  exactKeys(relation, [
+    "id", "sourceTaskId", "targetTaskId", "type", "creatorUserId",
+    "idempotencyKey", "version", "createdAt", "updatedAt",
+  ], `${label}.relation`);
+  if (relation.type !== "blocks" && relation.type !== "related") {
+    throw new ValidationError("External Task relation type must be blocks or related");
+  }
+  if (descriptor.internalEndpoint !== "source" && descriptor.internalEndpoint !== "target") {
+    throw new ValidationError("External Task relation internal endpoint is invalid");
+  }
+  if (descriptor.restorePolicy !== "not_restored") {
+    throw new ValidationError("External Task relation restore policy must be not_restored");
+  }
+  return {
+    relation: {
+      id: requiredString(relation.id, `${label}.relation.id`),
+      sourceTaskId: requiredString(relation.sourceTaskId, `${label}.relation.sourceTaskId`),
+      targetTaskId: requiredString(relation.targetTaskId, `${label}.relation.targetTaskId`),
+      type: relation.type,
+      creatorUserId: requiredString(relation.creatorUserId, `${label}.relation.creatorUserId`),
+      idempotencyKey: requiredString(relation.idempotencyKey, `${label}.relation.idempotencyKey`),
+      version: nonNegativeInteger(relation.version, `${label}.relation.version`),
+      createdAt: instant(relation.createdAt, `${label}.relation.createdAt`),
+      updatedAt: instant(relation.updatedAt, `${label}.relation.updatedAt`),
+    },
+    internalTaskId: requiredString(descriptor.internalTaskId, `${label}.internalTaskId`),
+    internalEndpoint: descriptor.internalEndpoint,
+    restorePolicy: descriptor.restorePolicy,
+  };
+}
+
+function validateExternalTaskRelationDescriptors(
+  descriptors: ProjectExternalTaskRelationDescriptor[],
+  tables: ProjectBackupTables,
+) {
+  if (descriptors.length > maxProjectBackupRows) {
+    throw new ValidationError(`Project backup contains more than ${maxProjectBackupRows} external Task relations`);
+  }
+  const taskIds = new Set(tables.tasks.map((task) => String(task.id)));
+  const relationIds = new Set<string>();
+  const relationKeys = new Set<string>();
+  for (let index = 0; index < descriptors.length; index += 1) {
+    const descriptor = normalizeExternalTaskRelationDescriptor(descriptors[index], index);
+    const { relation } = descriptor;
+    if (relation.version < 1) {
+      throw new ValidationError("External Task relation version must be positive");
+    }
+    if (relation.sourceTaskId === relation.targetTaskId) {
+      throw new ValidationError("External Task relation cannot relate a Task to itself");
+    }
+    const sourceInside = taskIds.has(relation.sourceTaskId);
+    const targetInside = taskIds.has(relation.targetTaskId);
+    if (sourceInside === targetInside) {
+      throw new ValidationError(
+        "External Task relation must have exactly one endpoint inside the project bundle boundary",
+      );
+    }
+    const expectedEndpoint = sourceInside ? "source" : "target";
+    const expectedTaskId = sourceInside ? relation.sourceTaskId : relation.targetTaskId;
+    if (
+      descriptor.internalEndpoint !== expectedEndpoint ||
+      descriptor.internalTaskId !== expectedTaskId
+    ) {
+      throw new ValidationError("External Task relation internal endpoint does not match its bundled Task");
+    }
+    if (
+      relation.type === "related" &&
+      relation.sourceTaskId > relation.targetTaskId
+    ) {
+      throw new ValidationError("External related Task pair is not canonical");
+    }
+    if (relationIds.has(relation.id)) {
+      throw new ValidationError("Duplicate external Task relation ID");
+    }
+    relationIds.add(relation.id);
+    const key = `${relation.sourceTaskId}\u0000${relation.targetTaskId}\u0000${relation.type}`;
+    if (relationKeys.has(key)) {
+      throw new ValidationError("Duplicate external Task relation descriptor");
+    }
+    relationKeys.add(key);
+  }
+}
+
+function validateExternalRelationCount(
+  externalRelationsOmitted: number,
+  descriptors: ProjectExternalTaskRelationDescriptor[],
+) {
+  if (externalRelationsOmitted < descriptors.length) {
+    throw new ValidationError(
+      "External relation omitted count cannot be smaller than its provenance descriptor count",
+    );
+  }
 }
 
 function countProjectTables(tables: ProjectBackupTables, sharing: ProjectSharingDescriptor[]): ProjectBackupCounts {

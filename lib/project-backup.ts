@@ -8,6 +8,7 @@ import {
   projectRestoreInsertSql,
   validateProjectBackup,
   type ProjectBackup,
+  type ProjectExternalTaskRelationDescriptor,
   type ProjectBackupTables,
   type ProjectSharingDescriptor,
 } from "./project-backup-format";
@@ -32,6 +33,64 @@ import {
 } from "./system-backup-contract";
 
 type DbRow = Record<string, unknown>;
+
+const unsafeExternalRelationPredicate = `(
+  (source.project_id = ? AND COALESCE(target.project_id, '') <> ?) OR
+  (target.project_id = ? AND COALESCE(source.project_id, '') <> ?)
+) AND (
+  source.id IS NULL OR target.id IS NULL OR
+  source.project_id IS NULL OR target.project_id IS NULL OR
+  tr.type NOT IN ('blocks', 'related') OR
+  (source.project_id = ? AND NOT EXISTS (
+    SELECT 1 FROM user_import_rows incoming
+    WHERE incoming.import_id = ? AND incoming.row_type = 'tasks'
+      AND json_extract(incoming.row_json, '$.id') = source.id
+  )) OR
+  (target.project_id = ? AND NOT EXISTS (
+    SELECT 1 FROM user_import_rows incoming
+    WHERE incoming.import_id = ? AND incoming.row_type = 'tasks'
+      AND json_extract(incoming.row_json, '$.id') = target.id
+  ))
+)`;
+
+export const projectExternalRelationRestoreGuardSql = `INSERT INTO user_import_rows
+  (import_id, row_type, ordinal, row_json)
+  SELECT ?, '__external_relation_restore_guard__', -1, NULL
+  WHERE EXISTS (
+    SELECT 1 FROM task_relations tr
+    LEFT JOIN tasks source ON source.id = tr.source_task_id
+    LEFT JOIN tasks target ON target.id = tr.target_task_id
+    WHERE ${unsafeExternalRelationPredicate}
+  )`;
+
+export function projectExternalRelationRestoreGuardParameters(
+  projectId: string,
+  importId: string,
+) {
+  return [
+    importId,
+    ...unsafeExternalRelationPredicateParameters(projectId, importId),
+  ];
+}
+
+function unsafeExternalRelationPredicateParameters(
+  projectId: string,
+  importId: string,
+) {
+  return [
+    projectId, projectId, projectId, projectId,
+    projectId, importId,
+    projectId, importId,
+  ];
+}
+
+export const projectInternalRelationDeleteSql = `DELETE FROM task_relations WHERE
+  source_task_id IN (SELECT id FROM tasks WHERE project_id = ?) AND
+  target_task_id IN (SELECT id FROM tasks WHERE project_id = ?)`;
+
+export function projectInternalRelationDeleteParameters(projectId: string) {
+  return [projectId, projectId];
+}
 
 export async function exportProjectBackup(
   currentUser: UserRecord,
@@ -145,14 +204,20 @@ export async function exportProjectBackup(
       WHERE ag.resource_type = 'project' AND ag.resource_id = ? AND ag.revoked_at IS NULL
         AND EXISTS (SELECT 1 FROM projects p WHERE p.id = ag.resource_id AND p.owner_user_id = ?)
       ORDER BY ag.grantee_user_id`).bind(projectId, currentUser.id),
-    db.prepare(`SELECT COUNT(*) AS count FROM task_relations tr
+    db.prepare(`SELECT
+        ${definition("task_relations").columns.map((column) => `tr.${column}`).join(", ")},
+        source.project_id AS source_project_id,
+        target.project_id AS target_project_id
+      FROM task_relations tr
+      LEFT JOIN tasks source ON source.id = tr.source_task_id
+      LEFT JOIN tasks target ON target.id = tr.target_task_id
       WHERE (
-        EXISTS (SELECT 1 FROM tasks t WHERE t.id = tr.source_task_id AND t.project_id = ?) OR
-        EXISTS (SELECT 1 FROM tasks t WHERE t.id = tr.target_task_id AND t.project_id = ?)
-      ) AND NOT (
-        EXISTS (SELECT 1 FROM tasks t WHERE t.id = tr.source_task_id AND t.project_id = ?) AND
-        EXISTS (SELECT 1 FROM tasks t WHERE t.id = tr.target_task_id AND t.project_id = ?)
-      ) AND EXISTS (SELECT 1 FROM projects p WHERE p.id = ? AND p.owner_user_id = ?)`)
+        (source.project_id = ? AND COALESCE(target.project_id, '') <> ?) OR
+        (target.project_id = ? AND COALESCE(source.project_id, '') <> ?)
+      ) AND EXISTS (
+        SELECT 1 FROM projects p WHERE p.id = ? AND p.owner_user_id = ?
+      )
+      ORDER BY tr.source_task_id, tr.target_task_id, tr.type`)
       .bind(projectId, projectId, projectId, projectId, projectId, currentUser.id),
   ]);
   const projectRow = results[0].results[0] as DbRow | undefined;
@@ -200,12 +265,40 @@ export async function exportProjectBackup(
       permission,
     } satisfies ProjectSharingDescriptor;
   });
+  const externalRelationsOmitted = results[20].results.length;
+  const externalTaskRelations = results[20].results.flatMap((value) => {
+    const row = value as DbRow;
+    const type = String(row.type);
+    if (type !== "blocks" && type !== "related") {
+      return [];
+    }
+    const internalEndpoint = row.source_project_id === projectId ? "source" : "target";
+    return [{
+      relation: {
+        id: String(row.id),
+        sourceTaskId: String(row.source_task_id),
+        targetTaskId: String(row.target_task_id),
+        type,
+        creatorUserId: String(row.creator_user_id),
+        idempotencyKey: String(row.idempotency_key),
+        version: Number(row.version),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      },
+      internalTaskId: String(
+        internalEndpoint === "source" ? row.source_task_id : row.target_task_id,
+      ),
+      internalEndpoint,
+      restorePolicy: "not_restored",
+    } satisfies ProjectExternalTaskRelationDescriptor];
+  });
   return createProjectBackup({
     siteOrigin,
     tables,
     objects: attachmentData.objects,
     sharing,
-    externalRelationsOmitted: Number((results[20].results[0] as DbRow | undefined)?.count ?? 0),
+    externalRelationsOmitted,
+    externalTaskRelations,
   });
 }
 
@@ -222,8 +315,27 @@ export async function stageProjectBackup(
   if (project && project.owner_user_id !== currentUser.id) throw new NotFoundError("Project not found");
 
   const warnings = await validateLiveDependenciesAndCollisions(db, backup, currentUser.id);
-  if (backup.warnings.externalRelationsOmitted > 0) {
-    warnings.push(`${backup.warnings.externalRelationsOmitted} legacy cross-Project relation(s) were omitted; unlink them in live data before export.`);
+  const legacyOpaqueCount =
+    backup.warnings.externalRelationsOmitted - backup.externalTaskRelations.length;
+  const livePreservedCount = await assertCurrentExternalRelationsAreSafe(
+    db,
+    backup.projectId,
+    new Set(backup.tables.tasks.map((task) => String(task.id))),
+  );
+  if (backup.externalTaskRelations.length > 0) {
+    warnings.push(
+      `${backup.externalTaskRelations.length} cross-Project relation descriptor(s) carry provenance only; peer Tasks and relation edges will not be restored.`,
+    );
+  }
+  if (legacyOpaqueCount > 0) {
+    warnings.push(
+      `${legacyOpaqueCount} legacy or unsupported cross-Project relation(s) have only an opaque count and will not be restored.`,
+    );
+  }
+  if (livePreservedCount > 0) {
+    warnings.push(
+      `${livePreservedCount} current cross-Project relation(s) are safe to preserve during this exact replacement.`,
+    );
   }
   if (backup.sharing.length > 0) warnings.push("Project sharing is staged but will only be restored with explicit opt-in.");
 
@@ -258,6 +370,13 @@ export async function stageProjectBackup(
     currentCounts,
     changes,
     sharing: backup.sharing,
+    externalRelations: {
+      descriptors: backup.externalTaskRelations,
+      legacyOpaqueCount,
+      livePreservedCount,
+      restorePolicy: "not_restored",
+      acknowledgementRequired: backup.warnings.externalRelationsOmitted > 0,
+    },
     warnings,
   };
   const statements: D1PreparedStatement[] = [
@@ -328,6 +447,7 @@ export async function applyProjectBackup(
     confirmation: string;
     currentBackupDownloaded: boolean;
     restoreSharing: boolean;
+    externalRelationsAcknowledged?: boolean;
   },
 ): Promise<AppliedProjectBackup> {
   if (!input.importId.startsWith("user-import:") || !/^[a-f0-9]{64}$/.test(input.sha256)) {
@@ -342,9 +462,18 @@ export async function applyProjectBackup(
   if (!session) throw new ValidationError("Staged project backup is missing or expired");
   const preview = JSON.parse(session.preview_json) as ProjectBackupPreview;
   if (input.confirmation !== preview.projectName) throw new ValidationError("Type the exact project name to confirm restore");
+  if (
+    preview.externalRelations.acknowledgementRequired &&
+    !input.externalRelationsAcknowledged
+  ) {
+    throw new ValidationError(
+      "Acknowledge that cross-Project relation descriptors are provenance-only and will not restore peer Tasks or relation edges",
+    );
+  }
   const live = await db.prepare("SELECT owner_user_id FROM projects WHERE id = ?").bind(session.project_id).first<{ owner_user_id: string }>();
   if (live && live.owner_user_id !== currentUser.id) throw new NotFoundError("Project not found");
   if (live && !input.currentBackupDownloaded) throw new ValidationError("Download the current project backup before replacing it");
+  await assertStagedExternalRelationsAreSafe(db, session.project_id, input.importId);
   await assertAssigneesAndLeadRemainAccessible(db, input.importId, currentUser.id, session.project_id, input.restoreSharing);
   const [descriptorRows, oldObjectRows] = await db.batch([
     db.prepare(`SELECT row_json FROM user_import_rows
@@ -376,6 +505,12 @@ export async function applyProjectBackup(
   }
 
   const statements: D1PreparedStatement[] = [
+    db.prepare(projectExternalRelationRestoreGuardSql).bind(
+      ...projectExternalRelationRestoreGuardParameters(
+        session.project_id,
+        input.importId,
+      ),
+    ),
     db.prepare(projectRestorePurgeJobCleanupSql).bind(
       ...projectRestorePurgeJobCleanupParameters(
         session.project_id,
@@ -404,10 +539,9 @@ export async function applyProjectBackup(
     db.prepare(`DELETE FROM comments WHERE task_id IN (
       SELECT id FROM tasks WHERE project_id = ?
     )`).bind(session.project_id),
-    db.prepare(`DELETE FROM task_relations WHERE
-      source_task_id IN (SELECT id FROM tasks WHERE project_id = ?) OR
-      target_task_id IN (SELECT id FROM tasks WHERE project_id = ?)`)
-      .bind(session.project_id, session.project_id),
+    db.prepare(projectInternalRelationDeleteSql).bind(
+      ...projectInternalRelationDeleteParameters(session.project_id),
+    ),
     db.prepare("DELETE FROM task_labels WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)").bind(session.project_id),
     db.prepare(`DELETE FROM external_records WHERE
       (target_type = 'project' AND target_id = ?) OR
@@ -480,6 +614,71 @@ export async function applyProjectBackup(
     counts: preview.counts,
     sharingRestored: input.restoreSharing,
   };
+}
+
+async function assertCurrentExternalRelationsAreSafe(
+  db: D1Database,
+  projectId: string,
+  incomingTaskIds: Set<string>,
+) {
+  const result = await db.prepare(`SELECT
+      tr.id, tr.type, tr.source_task_id, tr.target_task_id,
+      source.id AS source_id, source.project_id AS source_project_id,
+      target.id AS target_id, target.project_id AS target_project_id
+    FROM task_relations tr
+    LEFT JOIN tasks source ON source.id = tr.source_task_id
+    LEFT JOIN tasks target ON target.id = tr.target_task_id
+    WHERE
+      (source.project_id = ? AND COALESCE(target.project_id, '') <> ?) OR
+      (target.project_id = ? AND COALESCE(source.project_id, '') <> ?)`)
+    .bind(projectId, projectId, projectId, projectId)
+    .all<DbRow>();
+  for (const row of result.results) {
+    const type = String(row.type);
+    const sourceProjectId = row.source_project_id === null
+      ? null
+      : String(row.source_project_id);
+    const targetProjectId = row.target_project_id === null
+      ? null
+      : String(row.target_project_id);
+    const internalTaskId = sourceProjectId === projectId
+      ? String(row.source_task_id)
+      : String(row.target_task_id);
+    const peerProjectId = sourceProjectId === projectId
+      ? targetProjectId
+      : sourceProjectId;
+    if (
+      row.source_id === null || row.target_id === null ||
+      (type !== "blocks" && type !== "related") ||
+      !incomingTaskIds.has(internalTaskId) ||
+      !peerProjectId ||
+      (sourceProjectId !== projectId && targetProjectId !== projectId)
+    ) {
+      throw new ValidationError(
+        "Project restore would leave a dangling or unsupported cross-Project Task relation; unlink it or include its local Task before restoring",
+      );
+    }
+  }
+  return result.results.length;
+}
+
+async function assertStagedExternalRelationsAreSafe(
+  db: D1Database,
+  projectId: string,
+  importId: string,
+) {
+  const unsafe = await db.prepare(`SELECT tr.id FROM task_relations tr
+    LEFT JOIN tasks source ON source.id = tr.source_task_id
+    LEFT JOIN tasks target ON target.id = tr.target_task_id
+    WHERE ${unsafeExternalRelationPredicate}
+    LIMIT 1`)
+    .bind(...unsafeExternalRelationPredicateParameters(projectId, importId))
+    .first<{ id: string }>();
+  if (unsafe) {
+    throw new ValidationError(
+      "Project restore would leave a dangling or unsupported cross-Project Task relation; unlink it or include its local Task before restoring",
+    );
+  }
 }
 
 async function validateLiveDependenciesAndCollisions(

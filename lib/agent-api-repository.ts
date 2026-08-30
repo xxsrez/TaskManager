@@ -83,6 +83,7 @@ const taskScopeCte = (detail: boolean) => `WITH scoped_tasks AS (
     s.category AS status_category,
     p.public_id AS project_public_id,
     p.name AS project_name,
+    p.task_code AS project_task_code,
     p.summary AS project_summary,
     p.status AS project_status,
     p.target_date AS project_target_date,
@@ -1766,6 +1767,13 @@ async function mapCompactTaskLink(row: DbRow) {
       name: String(row.status_name),
       category: String(row.status_category),
     },
+    project: row.project_public_id
+      ? {
+          ref: String(row.project_public_id),
+          name: String(row.project_name),
+          taskCode: String(row.project_task_code),
+        }
+      : null,
   };
 }
 

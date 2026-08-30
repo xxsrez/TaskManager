@@ -861,27 +861,9 @@ test("explicit Task moves allocate atomically, preserve identity, and enforce de
   await database.prepare(
     "INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)",
   ).bind(task.id, "label-move-preserve").run();
-  const sourceSequenceBeforeRelationBlock = Number((await database.prepare(
+  const sourceSequenceBeforeRelationMove = Number((await database.prepare(
     "SELECT task_sequence FROM projects WHERE id = ?",
   ).bind(source.id).first<{ task_sequence: number }>())!.task_sequence);
-  await assert.rejects(
-    moveTask(owner, task.id, {
-      version: task.version,
-      targetProjectId: source.id,
-      releaseId: null,
-      assigneeUserId: null,
-    }),
-    /Unlink every Task relation/,
-  );
-  assert.equal((await getTask(owner, task.id)).projectId, target.id);
-  assert.equal(
-    Number((await database.prepare("SELECT task_sequence FROM projects WHERE id = ?")
-      .bind(source.id).first<{ task_sequence: number }>())!.task_sequence),
-    sourceSequenceBeforeRelationBlock,
-  );
-  await deleteTaskRelation(owner, task.id, moveRelation.id, {
-    version: moveRelation.version,
-  });
   task = await moveTask(owner, task.id, {
     version: task.version,
     targetProjectId: source.id,
@@ -889,6 +871,19 @@ test("explicit Task moves allocate atomically, preserve identity, and enforce de
     assigneeUserId: null,
   });
   assert.equal(task.projectId, source.id);
+  assert.equal(
+    Number((await database.prepare("SELECT task_sequence FROM projects WHERE id = ?")
+      .bind(source.id).first<{ task_sequence: number }>())!.task_sequence),
+    sourceSequenceBeforeRelationMove + 1,
+  );
+  assert.equal(
+    (await database.prepare("SELECT COUNT(*) AS count FROM task_relations WHERE id = ?")
+      .bind(moveRelation.id).first<{ count: number }>())!.count,
+    1,
+  );
+  await deleteTaskRelation(owner, task.id, moveRelation.id, {
+    version: moveRelation.version,
+  });
   assert.equal(task.releaseId, null);
   assert.equal(task.assigneeUserId, null);
   assert.equal(
@@ -1323,30 +1318,31 @@ test("bulk Project and Release changes preserve identity and roll back every inv
   const relationTasks = snapshot.tasks.filter(
     (task) => task.title === "Bulk relation one" || task.title === "Bulk relation two",
   );
-  await createTaskRelation(owner, relationTasks[0]!.id, {
+  const bulkMoveRelation = await createTaskRelation(owner, relationTasks[0]!.id, {
     targetTaskId: relationTasks[1]!.id,
     type: "related",
     direction: "outgoing",
     idempotencyKey: "bulk-move-unlink-required",
   });
-  const sequenceBeforeRelationBlock = snapshot.projects.find(
+  const sequenceBeforeRelationMove = snapshot.projects.find(
     (project) => project.id === target.id,
   )!.taskSequence;
-  await assert.rejects(
-    bulkMoveTasks(owner, {
-      ids: relationTasks.map((task) => task.id),
-      versions: Object.fromEntries(relationTasks.map((task) => [task.id, task.version])),
-      targetProjectId: target.id,
-    }),
-    /Unlink every selected Task relation/,
-  );
+  const movedRelations = await bulkMoveTasks(owner, {
+    ids: relationTasks.map((task) => task.id),
+    versions: Object.fromEntries(relationTasks.map((task) => [task.id, task.version])),
+    targetProjectId: target.id,
+  });
   snapshot = await getSnapshot(owner);
   assert.equal(
     snapshot.projects.find((project) => project.id === target.id)?.taskSequence,
-    sequenceBeforeRelationBlock,
+    sequenceBeforeRelationMove + relationTasks.length,
   );
-  assert.ok(relationTasks.every((task) =>
-    snapshot.tasks.find((candidate) => candidate.id === task.id)?.projectId === source.id));
+  assert.ok(movedRelations.every((task) => task.projectId === target.id));
+  assert.equal(
+    (await database.prepare("SELECT COUNT(*) AS count FROM task_relations WHERE id = ?")
+      .bind(bulkMoveRelation.id).first<{ count: number }>())!.count,
+    1,
+  );
 });
 
 test("manual rank reorder is neighbor-bound, atomic across groups, and conflict-safe", async () => {

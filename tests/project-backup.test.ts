@@ -9,16 +9,39 @@ import {
   projectBackupTableDefinitions,
   projectRestoreInsertSql,
   validateProjectBackup,
+  type ProjectExternalTaskRelationDescriptor,
   type ProjectBackupTables,
 } from "../lib/project-backup-format";
 import {
   projectRestorePurgeJobCleanupParameters,
   projectRestorePurgeJobCleanupSql,
 } from "../lib/system-backup-contract";
+import {
+  projectExternalRelationRestoreGuardParameters,
+  projectExternalRelationRestoreGuardSql,
+  projectInternalRelationDeleteParameters,
+  projectInternalRelationDeleteSql,
+} from "../lib/project-backup";
 
 const now = "2026-08-14T12:00:00.000Z";
 
 test("project bundle validates one exact subtree without user identities", async () => {
+  const externalTaskRelations: ProjectExternalTaskRelationDescriptor[] = [{
+    relation: {
+      id: "relation-external-1",
+      sourceTaskId: "task-1",
+      targetTaskId: "peer-task-1",
+      type: "blocks",
+      creatorUserId: "user-owner",
+      idempotencyKey: "backup-external-relation-1",
+      version: 2,
+      createdAt: now,
+      updatedAt: now,
+    },
+    internalTaskId: "task-1",
+    internalEndpoint: "source",
+    restorePolicy: "not_restored",
+  }];
   const backup = await createProjectBackup({
     siteOrigin: "https://task-manager.example",
     tables: validProjectTables(),
@@ -29,15 +52,84 @@ test("project bundle validates one exact subtree without user identities", async
       permission: "editor",
     }],
     externalRelationsOmitted: 1,
+    externalTaskRelations,
     exportedAt: now,
   });
-  assert.equal(backup.schemaVersion, 14);
+  assert.equal(backup.schemaVersion, 15);
   const validated = await validateProjectBackup(backup);
   assert.equal(validated.projectId, "project-1");
   assert.equal(validated.counts.tasks, 2);
   assert.equal(validated.counts.sharing, 1);
   assert.equal(validated.warnings.externalRelationsOmitted, 1);
+  assert.deepEqual(validated.externalTaskRelations, externalTaskRelations);
   assert.equal("users" in validated.tables, false);
+});
+
+test("project backup external relation provenance is checksum-protected and never embeds the peer Task", async () => {
+  const backup = await createProjectBackup({
+    siteOrigin: "https://task-manager.example",
+    tables: validProjectTables(),
+    sharing: [],
+    externalRelationsOmitted: 1,
+    externalTaskRelations: [{
+      relation: {
+        id: "relation-external-related",
+        sourceTaskId: "peer-task-2",
+        targetTaskId: "task-2",
+        type: "related",
+        creatorUserId: "user-editor",
+        idempotencyKey: "backup-external-related",
+        version: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+      internalTaskId: "task-2",
+      internalEndpoint: "target",
+      restorePolicy: "not_restored",
+    }],
+    exportedAt: now,
+  });
+
+  assert.deepEqual(backup.tables.tasks.map((task) => task.id), ["task-1", "task-2"]);
+  await assert.rejects(
+    validateProjectBackup({
+      ...backup,
+      externalTaskRelations: backup.externalTaskRelations.map((descriptor) => ({
+        ...descriptor,
+        restorePolicy: "restore" as "not_restored",
+      })),
+    }),
+    /restore policy|checksum/i,
+  );
+  await assert.rejects(
+    createProjectBackup({
+      siteOrigin: "https://task-manager.example",
+      tables: validProjectTables(),
+      sharing: [],
+      externalRelationsOmitted: 0,
+      externalTaskRelations: [{
+        ...backup.externalTaskRelations[0]!,
+        relation: {
+          ...backup.externalTaskRelations[0]!.relation,
+          sourceTaskId: "task-1",
+          targetTaskId: "task-2",
+        },
+      }],
+      exportedAt: now,
+    }),
+    /exactly one endpoint|bundle boundary/i,
+  );
+  await assert.rejects(
+    createProjectBackup({
+      siteOrigin: "https://task-manager.example",
+      tables: validProjectTables(),
+      sharing: [],
+      externalRelationsOmitted: 0,
+      externalTaskRelations: backup.externalTaskRelations,
+      exportedAt: now,
+    }),
+    /omitted count.*descriptor count/i,
+  );
 });
 
 test("project restore clears live and incoming subtree purge jobs but preserves unrelated jobs", () => {
@@ -110,6 +202,77 @@ test("project restore clears live and incoming subtree purge jobs but preserves 
       { entity_type: "saved_view", entity_id: "view-other" },
       { entity_type: "task", entity_id: "task-other" },
     ],
+  );
+  database.close();
+});
+
+test("project restore preserves safe live external relations and atomically rejects a dangling cutover", () => {
+  const database = new DatabaseSync(":memory:");
+  database.exec(`
+    CREATE TABLE projects (id TEXT PRIMARY KEY);
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY,
+      project_id TEXT,
+      deleted_at TEXT
+    );
+    CREATE TABLE task_relations (
+      id TEXT PRIMARY KEY,
+      source_task_id TEXT NOT NULL,
+      target_task_id TEXT NOT NULL,
+      type TEXT NOT NULL
+    );
+    CREATE TABLE user_import_rows (
+      import_id TEXT NOT NULL,
+      row_type TEXT NOT NULL,
+      ordinal INTEGER NOT NULL,
+      row_json TEXT NOT NULL,
+      PRIMARY KEY (import_id, row_type, ordinal)
+    );
+    INSERT INTO projects (id) VALUES ('project-1'), ('project-peer');
+    INSERT INTO tasks (id, project_id, deleted_at) VALUES
+      ('task-local', 'project-1', NULL),
+      ('task-local-2', 'project-1', NULL),
+      ('task-peer', 'project-peer', NULL);
+    INSERT INTO task_relations (id, source_task_id, target_task_id, type) VALUES
+      ('relation-external', 'task-local', 'task-peer', 'blocks'),
+      ('relation-internal', 'task-local', 'task-local-2', 'related');
+    INSERT INTO user_import_rows (import_id, row_type, ordinal, row_json) VALUES
+      ('user-import:safe', 'tasks', 0, '{"id":"task-local"}'),
+      ('user-import:safe', 'tasks', 1, '{"id":"task-local-2"}');
+  `);
+
+  database.prepare(projectExternalRelationRestoreGuardSql).run(
+    ...projectExternalRelationRestoreGuardParameters("project-1", "user-import:safe"),
+  );
+  database.prepare(projectInternalRelationDeleteSql).run(
+    ...projectInternalRelationDeleteParameters("project-1"),
+  );
+  assert.deepEqual(
+    database.prepare("SELECT id FROM task_relations ORDER BY id").all().map((row) => row.id),
+    ["relation-external"],
+  );
+
+  database.prepare("UPDATE tasks SET deleted_at = ? WHERE id IN (?, ?)")
+    .run(now, "task-local", "task-peer");
+  database.prepare(projectExternalRelationRestoreGuardSql).run(
+    ...projectExternalRelationRestoreGuardParameters("project-1", "user-import:safe"),
+  );
+  assert.equal(
+    database.prepare("SELECT COUNT(*) AS count FROM task_relations WHERE id = 'relation-external'").get()!.count,
+    1,
+  );
+
+  database.prepare("DELETE FROM user_import_rows WHERE import_id = ?")
+    .run("user-import:safe");
+  assert.throws(
+    () => database.prepare(projectExternalRelationRestoreGuardSql).run(
+      ...projectExternalRelationRestoreGuardParameters("project-1", "user-import:safe"),
+    ),
+    /NOT NULL constraint failed/i,
+  );
+  assert.equal(
+    database.prepare("SELECT COUNT(*) AS count FROM task_relations WHERE id = 'relation-external'").get()!.count,
+    1,
   );
   database.close();
 });
@@ -309,7 +472,7 @@ test("schema 3 project bundles upgrade workflow metadata without changing their 
   };
   stripDeletionState(tables);
   const body = {
-    ...current,
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "externalTaskRelations")),
     schemaVersion: 3,
     counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
@@ -342,7 +505,7 @@ test("schema 4 project bundles upgrade legacy relation identity and concurrency 
   };
   stripDeletionState(tables);
   const unsigned = {
-    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256" && key !== "externalTaskRelations")),
     schemaVersion: 4,
     counts: Object.fromEntries(Object.entries(current.counts).filter(([name]) => !["attachment_migration_outcomes", "task_identifier_aliases", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
     tables,
@@ -366,7 +529,7 @@ test("schema 6 project bundles upgrade Label catalog metadata and keep assignmen
     exportedAt: now,
   });
   const unsigned = {
-    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256" && key !== "externalTaskRelations")),
     schemaVersion: 6,
     tables: {
       ...Object.fromEntries(Object.entries(current.tables).filter(([name]) => !["attachment_migration_outcomes", "comment_attachment_refs", "comment_migration_outcomes", "activity_events", "activity_migration_outcomes"].includes(name))),
@@ -490,7 +653,7 @@ test("schema 13 project bundles require the comment attachment index", async () 
   );
 });
 
-test("schema 14 project bundles preserve shadow deletion without reviving deleted children", async () => {
+test("schema 15 project bundles preserve shadow deletion without reviving deleted children", async () => {
   const tables = validProjectTables();
   const purgeAfter = "2026-09-13T12:00:00.000Z";
   tables.projects[0]!.deleted_at = now;
@@ -508,13 +671,13 @@ test("schema 14 project bundles preserve shadow deletion without reviving delete
     exportedAt: now,
   }));
 
-  assert.equal(validated.schemaVersion, 14);
+  assert.equal(validated.schemaVersion, 15);
   assert.equal(validated.tables.projects[0]?.deleted_at, now);
   assert.equal(validated.tables.tasks[0]?.deleted_at, now);
   assert.equal(validated.tables.tasks[1]?.deleted_at, null);
 });
 
-test("schema 14 project bundles reject incomplete or invalid deletion tuples", async () => {
+test("schema 15 project bundles reject incomplete or invalid deletion tuples", async () => {
   const incomplete = validProjectTables();
   incomplete.releases[0]!.deleted_at = now;
   await assert.rejects(
@@ -549,7 +712,7 @@ test("schema 13 project bundles gain empty deletion tuples only after checksum v
   const tables = structuredClone(current.tables) as unknown as Record<string, unknown>;
   stripDeletionState(tables);
   const body = {
-    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256")),
+    ...Object.fromEntries(Object.entries(current).filter(([key]) => key !== "sha256" && key !== "externalTaskRelations")),
     schemaVersion: 13,
     tables,
   };

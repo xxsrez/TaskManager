@@ -280,3 +280,91 @@ test("a compound relation rollback leaves neither relation nor activity, then co
     source.id,
   );
 });
+
+test("relation activity requires current peer access and omits the internal peer ID", async () => {
+  const sourceOwner = await getOrCreateUser({
+    provider: "chatgpt",
+    providerAccountKey: "activity-cross-project-source-owner",
+    displayName: "Activity Source Owner",
+    email: "activity-cross-project-source-owner@example.test",
+  });
+  const peerOwner = await getOrCreateUser({
+    provider: "chatgpt",
+    providerAccountKey: "activity-cross-project-peer-owner",
+    displayName: "Activity Peer Owner",
+    email: "activity-cross-project-peer-owner@example.test",
+  });
+  const reader = await getOrCreateUser({
+    provider: "chatgpt",
+    providerAccountKey: "activity-cross-project-reader",
+    displayName: "Activity Cross Reader",
+    email: "activity-cross-project-reader@example.test",
+  });
+  await createProject(sourceOwner, { name: "Activity source Project", taskCode: "ASP" });
+  await createProject(peerOwner, { name: "Activity peer Project", taskCode: "APP" });
+  const sourceProject = (await getSnapshot(sourceOwner)).projects.find(
+    (project) => project.name === "Activity source Project",
+  )!;
+  const peerProject = (await getSnapshot(peerOwner)).projects.find(
+    (project) => project.name === "Activity peer Project",
+  )!;
+  const source = await createTask(sourceOwner, {
+    title: "Activity cross source",
+    projectId: sourceProject.id,
+  });
+  const peer = await createTask(peerOwner, {
+    title: "Activity cross peer",
+    projectId: peerProject.id,
+  });
+  await grantAccess(sourceOwner, {
+    resourceType: "project",
+    resourceId: sourceProject.id,
+    email: reader.email,
+    permission: "viewer",
+  });
+  await grantAccess(peerOwner, {
+    resourceType: "project",
+    resourceId: peerProject.id,
+    email: reader.email,
+    permission: "viewer",
+  });
+  await database.prepare(
+    `INSERT INTO activity_events
+      (id, task_id, schema_version, event_type, actor_kind, actor_user_id,
+       actor_name, payload_json, source, created_at)
+     VALUES (?, ?, 1, 'relation_created', 'user', ?, ?, ?, 'native', ?)`,
+  ).bind(
+    "activity-cross-project-relation",
+    source.id,
+    sourceOwner.id,
+    sourceOwner.displayName,
+    JSON.stringify({
+      peerTaskId: peer.id,
+      relation: {
+        id: "relation-cross-project-activity",
+        sourceTaskId: source.id,
+        targetTaskId: peer.id,
+        type: "related",
+      },
+    }),
+    "2026-08-30T20:30:00.000Z",
+  ).run();
+
+  const visible = await listTaskActivity(reader, source.id, { limit: 50 });
+  assert.equal(
+    visible.events.some((event) => event.id === "activity-cross-project-relation"),
+    true,
+  );
+  assert.equal(JSON.stringify(visible.events).includes(peer.id), false);
+
+  const peerGrant = (await getSnapshot(peerOwner)).collaborators.find(
+    (grant) => grant.resourceId === peerProject.id && grant.userId === reader.id,
+  )!;
+  await revokeAccess(peerOwner, peerGrant.grantId);
+  const hidden = await listTaskActivity(reader, source.id, { limit: 50 });
+  assert.equal(
+    hidden.events.some((event) => event.id === "activity-cross-project-relation"),
+    false,
+  );
+  assert.equal(hidden.totalCount, visible.totalCount - 1);
+});

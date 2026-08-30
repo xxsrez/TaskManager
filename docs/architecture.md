@@ -241,12 +241,13 @@ version conflict остаётся write boundary и не заменяется po
    к detail только через явный отдельный запрос. Анонимный MCP handshake может
    получить capabilities и схемы tools для установки connector, но каждый
 `tools/call` требует bearer token до data query.
-6. Relation commands разрешают обе Task references через тот же ACL predicate,
-   требуют один Project и Editor+ на каждой стороне и вызывают общий
-   application command service. Relation имеет собственную version; create
-   имеет idempotency key.
-   `duplicate_of` выполняет relation write и Task status transition одной D1
-   batch, а UI/REST/MCP затем перечитывают canonical detail projection.
+6. Relation commands разрешают обе Task references через тот же ACL predicate
+   их собственных Projects, требуют Editor+ на каждой стороне и вызывают общий
+   application command service. `blocks`/`related` могут пересекать Project
+   boundary; `duplicate_of` остаётся same-Project. Relation имеет собственную
+   version, create имеет idempotency key. `duplicate_of` выполняет relation
+   write и Task status transition одной D1 batch, а UI/REST/MCP затем
+   перечитывают canonical detail projection.
 7. Базовый Task create/update переводит external status/release/Label refs и
    write-only assignee email до общего repository command. Полная замена Labels
    использует отдельную Task-versioned transaction; set-parent/create-subtask и
@@ -334,14 +335,16 @@ identity, а edit/delete/resolve проверяют comment version. Agent proje
    Task patch не меняет Project.
 2. Repository до записи проверяет Task version, edit access к Task и обоим
    Projects, active target, explicit Release/Assignee effect и отсутствие
-   parent/subtasks/relations. Hierarchy сначала detach/reparent, а relations
-   явно unlink; command не создаёт cross-Project edges неявным переносом.
+   parent/subtasks. Hierarchy сначала detach/reparent; incident `duplicate_of`
+   необходимо unlink, но допустимые `blocks`/`related` сохраняются с прежними
+   immutable IDs и versions.
 3. Одна D1 batch transaction обновляет monotonic allocator и version target
    Project, переносит Task с новым sequence/identifier, повышает Task version и
    `INSERT OR IGNORE` сохраняет прежний identifier как alias. Guard predicates
    повторно проверяют ACL и invariants внутри transaction; constraint или
    guard failure откатывает allocator вместе с Task.
-4. Project и Task triggers записывают compact sync events в той же transaction.
+4. Project и Task triggers записывают compact sync events в той же transaction;
+   move также публикует detail invalidation для peers сохранённых relations.
    Прежний audience получает remove после current ACL projection, новый — один
    coalesced Task upsert с согласованными Project и identifier.
 5. Same-Project command возвращает текущую Task до allocator. Commit response,
@@ -722,6 +725,11 @@ trigger. No-op desired state и idempotent retry возвращаются до i
 `task_activity` sync event несёт только Task ID и обновляет client-only lazy
 cursor открытой Task; event payload не попадает в journal/bootstrap.
 
+Relation mutation добавляет согласованный Activity event для обеих endpoint
+Tasks в одной guarded batch. Невидимый peer не попадает в projection caller:
+detail, relation filter и lazy Activity сначала применяют ACL обеих сторон, а
+sync journal несёт только безопасные invalidation IDs.
+
 Частая команда изменения одной Task возвращает только подтверждённый
 `TaskRecord`, и client атомарно заменяет эту запись в текущем snapshot. Это не
 запускает заново все workspace queries и не пересылает весь набор Tasks после
@@ -763,7 +771,9 @@ optional/standalone Task semantics из ранних решений: кажда�
   DB-level exclusivity guard для всех write ingress, включая concurrent/import;
 - нормализованная `task_relations` для `blocks`, `related` и `duplicate_of` с
   immutable ID, create-idempotency, optimistic version, semantic indexes и
-  partial uniqueness одного `duplicate_of` target на source;
+  partial uniqueness одного `duplicate_of` target на source; type-aware guards
+  разрешают межпроектные `blocks`/`related`, но сохраняют same-Project
+  `duplicate_of`;
 - `comments` с nullable User author для historical rows, source identities,
   immutable historical facts, task/user/self foreign keys, idempotency и
   keyset indexes;
@@ -800,7 +810,9 @@ server mutation boundary.
 После runtime cutover страницы `/import/linear`, route `/api/import/linear` и
 external-context projections отсутствуют в deployed bundle. Versioned planner
 сохранён только как offline migration/recovery code с tests: он валидирует
-identity/body/time, Project mapping, hierarchy и source topology, создаёт
+identity/body/time, Project mapping, hierarchy и source topology. Relation
+validator разрешает межпроектные `blocks`/`related`, но требует same-Project
+для `duplicate_of` и parent/subtask; затем planner создаёт
 детерминированные historical Comments/Activity outcomes и не участвует в
 обычных HTTP/MCP requests. `external_records` остаётся приватным backup/
 reconciliation evidence; product UI, compact sync и Agent API его не читают.
@@ -869,7 +881,9 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
    tables плюс `stored_files`, `attachments.stored_file_id` и
    `task_sequences`. `task_label_group_values` rebuild; workspace sync и purge
    coordination reset; API/OAuth capability tables revoke; четыре import
-   staging tables excluded.
+   staging tables excluded. `task_relations` переносится целиком: validator
+   допускает разные Projects только для `blocks`/`related`, поэтому полный
+   restore сохраняет их byte-for-byte, а `duplicate_of` остаётся same-Project.
 9. R2 originals из `stored-files` и `attachments` сохраняются byte-for-byte,
    но получают новые environment keys. Stable logical slots сохраняют identity
    bound/unbound/legacy rows и orphan multiset независимо от physical key;
@@ -880,26 +894,38 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
 
 1. Export repository сначала загружает Project с effective role `owner`, затем
    одной consistent D1 batch читает subtree, internal joins/relations,
-   provenance, catalog dependencies и active Project grants.
+   provenance, catalog dependencies и active Project grants. Внешние
+   `blocks`/`related` читаются отдельно как boundary descriptors без peer Task.
 2. Format layer canonicalizes bundle, считает counts/warnings и SHA-256; Users,
    identities, credentials и unrelated rows не входят.
 3. Validate endpoint проверяет owner/site binding, checksum, references,
-   collisions и доступность shared catalogs до записи normalized rows в
-   `user_import_rows`.
-4. Preview сравнивает staged и live subtree. Apply повторно проверяет session,
-   confirmation и current ownership, затем set-based SQL одной D1 `batch()`
-   transaction заменяет subtree; grants вставляются только при opt-in.
+   collisions, доступность shared catalogs и то, что каждый внешний descriptor
+   пересекает boundary ровно одной внутренней Task и имеет policy
+   `not_restored`, до записи normalized rows в `user_import_rows`.
+4. Preview сравнивает staged и live subtree и отдельно показывает omitted
+   external relation count/provenance. Apply повторно проверяет session,
+   confirmation, current ownership и обязательное acknowledgement политики
+   `not_restored` через `externalRelationsAcknowledged=true`, затем set-based
+   SQL одной D1 `batch()` transaction заменяет
+   subtree; grants вставляются только при opt-in. Bundle descriptors не создают
+   edges. Уже существующие live `blocks`/`related` сохраняются, если обе endpoint
+   Tasks существуют (включая recoverably deleted) и внутренняя Task присутствует
+   в incoming set; иначе preflight или transaction guard отклоняет apply до
+   mutation.
 5. Attachment objects выбираются только через Tasks исходного Project. Общий
    25 MB container полностью валидируется до R2 staging; thumbnails не входят и
    пересоздаются по запросу.
-6. Current schema `14` сохраняет historical comments, Activity,
+6. Current schema `15` сохраняет historical comments, Activity,
    LabelGroup topology, comment/activity/attachment reconciliation outcomes и
    normalized live Comment attachment refs, а также deletion tuple Project,
-   Releases, Tasks и scoped SavedViews. Project restore сохраняет собственный
+   Releases, Tasks и scoped SavedViews. Schema `15` дополнительно включает
+   checksum-protected `externalTaskRelations` provenance без peer Task/content.
+   Project restore сохраняет собственный
    tuple child и не оживляет отдельно deleted record;
    schema `2`–`8` получает deterministic legacy upgrades после проверки
    исходного checksum и до записи staging rows; schema `2`–`13` получает
-   all-null deletion tuple после той же исходной checksum validation.
+   all-null deletion tuple, а schema `2`–`14` — пустой external provenance set
+   после той же исходной checksum validation.
 
 ## Надёжность и проверка
 

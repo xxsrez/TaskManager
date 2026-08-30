@@ -334,7 +334,10 @@ function* systemBackupStagedValidationSteps(
       AND json_extract(target.row_json, '$.id') = json_extract(r.row_json, '$.target_task_id')
     WHERE r.job_id = ? AND r.table_name = 'task_relations' AND (
       json_extract(r.row_json, '$.source_task_id') = json_extract(r.row_json, '$.target_task_id')
-      OR json_extract(source.row_json, '$.project_id') != json_extract(target.row_json, '$.project_id')
+      OR json_extract(source.row_json, '$.project_id') IS NULL
+      OR json_extract(target.row_json, '$.project_id') IS NULL
+      OR (json_extract(r.row_json, '$.type') = 'duplicate_of'
+        AND json_extract(source.row_json, '$.project_id') != json_extract(target.row_json, '$.project_id'))
       OR json_extract(r.row_json, '$.type') NOT IN ('blocks', 'related', 'duplicate_of')) LIMIT 1`);
   yield () => assertNoRows(jobId, "Task relation topology", `
     SELECT 1 FROM system_backup_rows r

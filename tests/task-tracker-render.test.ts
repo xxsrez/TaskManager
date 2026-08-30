@@ -32,6 +32,9 @@ import {
   ProjectDialog,
   ProjectOverview,
   projectGroupMovePreview,
+  relationCandidateAllowedForKind,
+  relationCandidateProjectLabel,
+  relationSelectionAfterKindChange,
   ReleaseDialog,
   ReleaseOverview,
   resolveGlobalSearchNavigation,
@@ -497,6 +500,34 @@ test("bulk assignee candidates are the privacy-safe intersection of selected Tas
   assert.deepEqual(
     bulkAssigneeOptions(data, data.tasks).map((user) => user.id),
     [common.id, snapshot.user.id],
+  );
+});
+
+test("relation candidates use Project-qualified identity", () => {
+  const project = snapshot.projects[0]!;
+  assert.equal(
+    relationCandidateProjectLabel(snapshot.tasks[0]!, [project]),
+    "TM · Task Manager",
+  );
+});
+
+test("duplicate candidates stay within the anchor Project", () => {
+  const anchor = snapshot.tasks[0]!;
+  const sameProject = { ...anchor, id: "task-same-project" };
+  const crossProject = { ...anchor, id: "task-cross-project", projectId: "project-2" };
+
+  assert.equal(relationCandidateAllowedForKind("duplicate_of", anchor, sameProject), true);
+  assert.equal(relationCandidateAllowedForKind("duplicate_of", anchor, crossProject), false);
+  assert.equal(relationCandidateAllowedForKind("related", anchor, crossProject), true);
+  assert.equal(relationCandidateAllowedForKind("blocks", anchor, crossProject), true);
+  assert.equal(relationCandidateAllowedForKind("blocked_by", anchor, crossProject), true);
+  assert.equal(
+    relationSelectionAfterKindChange("duplicate_of", anchor, [crossProject], crossProject.id),
+    "",
+  );
+  assert.equal(
+    relationSelectionAfterKindChange("related", anchor, [crossProject], crossProject.id),
+    crossProject.id,
   );
 });
 

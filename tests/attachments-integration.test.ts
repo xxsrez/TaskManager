@@ -1514,7 +1514,7 @@ test("attachment-aware logical backups include scoped metadata and verified orig
     project.id,
     "https://example.test",
   );
-  assert.equal(projectBackup.schemaVersion, 14);
+  assert.equal(projectBackup.schemaVersion, 15);
   assert.equal(projectBackup.tables.attachments.length, 1);
   assert.equal(projectBackup.objects.length, 1);
   assert.match(String(projectBackup.tables.attachments[0]?.object_key), /^sha256:/);

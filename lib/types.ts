@@ -1,3 +1,5 @@
+import type { ProjectExternalTaskRelationDescriptor } from "./project-backup-format";
+
 export type StatusCategory =
   | "backlog"
   | "unstarted"
@@ -686,6 +688,13 @@ export type ProjectBackupPreview = {
     displayName: string;
     permission: "manager" | "editor" | "viewer";
   }>;
+  externalRelations: {
+    descriptors: ProjectExternalTaskRelationDescriptor[];
+    legacyOpaqueCount: number;
+    livePreservedCount: number;
+    restorePolicy: "not_restored";
+    acknowledgementRequired: boolean;
+  };
   warnings: string[];
 };
 

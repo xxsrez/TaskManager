@@ -45,12 +45,12 @@ export async function createTaskRelation(
     getTask(currentUser, taskId),
     getTask(currentUser, targetTaskId),
   ]);
-  assertEditableSameProjectTasks(anchor, peer);
   const semantic = normalizeRelation(
     anchor.id,
     peer.id,
     relationInput(input),
   );
+  assertEditableRelationTasks(anchor, peer, semantic.type);
 
   const existingRetry = await findIdempotentRelation(
     currentUser.id,
@@ -71,12 +71,14 @@ export async function createTaskRelation(
   const relationId = `relation_${crypto.randomUUID()}`;
   const now = new Date().toISOString();
   const db = getD1();
-  const activity = activityEventStatement(db, currentUser, {
-    taskId: anchor.id,
-    eventType: "relation_created",
-    payload: { relation: { id: relationId, ...semantic } },
-    createdAt: now,
-  });
+  const activity = relationActivityStatements(
+    db,
+    currentUser,
+    [anchor.id, peer.id],
+    "relation_created",
+    { relation: { id: relationId, ...semantic } },
+    now,
+  );
   const insert = db
     .prepare(
       `INSERT INTO task_relations (
@@ -86,9 +88,9 @@ export async function createTaskRelation(
        SELECT ?, ?, ?, ?, ?, ?, 1, ?, ?
        WHERE ${editableParticipantExists("source_task")}
          AND ${editableParticipantExists("target_task")}
-         AND ${sameProjectParticipants()}
          ${semantic.type === "duplicate_of"
-           ? "AND EXISTS (SELECT 1 FROM tasks duplicate_source WHERE duplicate_source.id = ? AND duplicate_source.version = ?)"
+           ? `AND ${sameProjectParticipants()}
+              AND EXISTS (SELECT 1 FROM tasks duplicate_source WHERE duplicate_source.id = ? AND duplicate_source.version = ?)`
            : ""}`,
     )
     .bind(
@@ -106,10 +108,10 @@ export async function createTaskRelation(
       semantic.targetTaskId,
       currentUser.id,
       currentUser.id,
-      semantic.targetTaskId,
-      semantic.sourceTaskId,
       ...(semantic.type === "duplicate_of"
         ? [
+            semantic.targetTaskId,
+            semantic.sourceTaskId,
             semantic.sourceTaskId,
             expectedTaskVersion(input.taskVersion, anchor),
           ]
@@ -122,10 +124,12 @@ export async function createTaskRelation(
       const status = await loadDuplicateStatus(source.ownerUserId);
       const taskVersion = expectedTaskVersion(input.taskVersion, source);
       const timestamps = statusTimestamps(status.category, source, now);
-      const duplicateActivity = activityEventStatement(db, currentUser, {
-        taskId: anchor.id,
-        eventType: "relation_created",
-        payload: {
+      const duplicateActivity = relationActivityStatements(
+        db,
+        currentUser,
+        [anchor.id, peer.id],
+        "relation_created",
+        {
           relation: { id: relationId, ...semantic },
           changes: {
             status: {
@@ -135,8 +139,8 @@ export async function createTaskRelation(
             },
           },
         },
-        createdAt: now,
-      });
+        now,
+      );
       const results = await db.batch([
         insert,
         activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
@@ -150,7 +154,9 @@ export async function createTaskRelation(
           now,
         ),
         activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
-        duplicateActivity.statement,
+        ...duplicateActivity,
+        touchTaskActivity(db, anchor.id, now),
+        touchTaskActivity(db, peer.id, now),
       ]);
       if (
         (results[0]?.meta.changes ?? 0) < 1 ||
@@ -162,8 +168,9 @@ export async function createTaskRelation(
       const results = await db.batch([
         insert,
         activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
-        activity.statement,
+        ...activity,
         touchTaskActivity(db, anchor.id, now),
+        touchTaskActivity(db, peer.id, now),
       ]);
       if ((results[0]?.meta.changes ?? 0) < 1) {
         throw new ConflictError("Task access changed before the relation was saved");
@@ -191,20 +198,21 @@ export async function updateTaskRelation(
   assertOnlyKeys(input, ["version", "type", "direction", "taskVersion"]);
   const anchor = await getTask(currentUser, taskId);
   const current = await loadTaskRelation(relationId, anchor.id);
-  const expectedVersion = positiveInteger(input.version, "Relation version");
-  if (expectedVersion !== current.version) {
-    throw new ConflictError("Relation was changed in another session");
-  }
   const peerId = current.sourceTaskId === anchor.id
     ? current.targetTaskId
     : current.sourceTaskId;
   const peer = await getTask(currentUser, peerId);
-  assertEditableSameProjectTasks(anchor, peer);
+  assertEditableProjectTasks(anchor, peer);
+  const expectedVersion = positiveInteger(input.version, "Relation version");
+  if (expectedVersion !== current.version) {
+    throw new ConflictError("Relation was changed in another session");
+  }
   const semantic = normalizeRelation(
     anchor.id,
     peer.id,
     relationInput(input),
   );
+  assertEditableRelationTasks(anchor, peer, semantic.type);
   if (sameSemantic(current, semantic)) return current;
 
   const collision = await findLogicalRelation(semantic);
@@ -213,12 +221,14 @@ export async function updateTaskRelation(
   }
   const now = new Date().toISOString();
   const db = getD1();
-  const activity = activityEventStatement(db, currentUser, {
-    taskId: anchor.id,
-    eventType: "relation_updated",
-    payload: { before: current, after: { ...current, ...semantic, version: current.version + 1 } },
-    createdAt: now,
-  });
+  const activity = relationActivityStatements(
+    db,
+    currentUser,
+    [anchor.id, peer.id],
+    "relation_updated",
+    { before: current, after: { ...current, ...semantic, version: current.version + 1 } },
+    now,
+  );
   const update = db
     .prepare(
       `UPDATE task_relations SET
@@ -227,9 +237,9 @@ export async function updateTaskRelation(
        WHERE id = ? AND version = ?
          AND ${editableParticipantExists("source_task")}
          AND ${editableParticipantExists("target_task")}
-         AND ${sameProjectParticipants()}
          ${semantic.type === "duplicate_of"
-           ? "AND EXISTS (SELECT 1 FROM tasks duplicate_source WHERE duplicate_source.id = ? AND duplicate_source.version = ?)"
+           ? `AND ${sameProjectParticipants()}
+              AND EXISTS (SELECT 1 FROM tasks duplicate_source WHERE duplicate_source.id = ? AND duplicate_source.version = ?)`
            : ""}`,
     )
     .bind(
@@ -245,10 +255,10 @@ export async function updateTaskRelation(
       semantic.targetTaskId,
       currentUser.id,
       currentUser.id,
-      semantic.targetTaskId,
-      semantic.sourceTaskId,
       ...(semantic.type === "duplicate_of"
         ? [
+            semantic.targetTaskId,
+            semantic.sourceTaskId,
             semantic.sourceTaskId,
             expectedTaskVersion(input.taskVersion, anchor),
           ]
@@ -261,10 +271,12 @@ export async function updateTaskRelation(
       const status = await loadDuplicateStatus(source.ownerUserId);
       const taskVersion = expectedTaskVersion(input.taskVersion, source);
       const timestamps = statusTimestamps(status.category, source, now);
-      const duplicateActivity = activityEventStatement(db, currentUser, {
-        taskId: anchor.id,
-        eventType: "relation_updated",
-        payload: {
+      const duplicateActivity = relationActivityStatements(
+        db,
+        currentUser,
+        [anchor.id, peer.id],
+        "relation_updated",
+        {
           before: current,
           after: { ...current, ...semantic, version: current.version + 1 },
           changes: {
@@ -275,8 +287,8 @@ export async function updateTaskRelation(
             },
           },
         },
-        createdAt: now,
-      });
+        now,
+      );
       const results = await db.batch([
         update,
         activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
@@ -290,7 +302,9 @@ export async function updateTaskRelation(
           now,
         ),
         activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
-        duplicateActivity.statement,
+        ...duplicateActivity,
+        touchTaskActivity(db, anchor.id, now),
+        touchTaskActivity(db, peer.id, now),
       ]);
       if (
         (results[0]?.meta.changes ?? 0) < 1 ||
@@ -302,8 +316,9 @@ export async function updateTaskRelation(
       const results = await db.batch([
         update,
         activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
-        activity.statement,
+        ...activity,
         touchTaskActivity(db, anchor.id, now),
+        touchTaskActivity(db, peer.id, now),
       ]);
       if ((results[0]?.meta.changes ?? 0) < 1) {
         throw new ConflictError("A task or relation changed before save");
@@ -328,10 +343,6 @@ export async function deleteTaskRelation(
   assertOnlyKeys(input, ["version"]);
   const anchor = await getTask(currentUser, taskId);
   const relation = await loadTaskRelation(relationId, anchor.id);
-  const expectedVersion = positiveInteger(input.version, "Relation version");
-  if (relation.version !== expectedVersion) {
-    throw new ConflictError("Relation was changed in another session");
-  }
   const peer = await getTask(
     currentUser,
     relation.sourceTaskId === anchor.id
@@ -339,14 +350,20 @@ export async function deleteTaskRelation(
       : relation.sourceTaskId,
   );
   assertEditableProjectTasks(anchor, peer);
+  const expectedVersion = positiveInteger(input.version, "Relation version");
+  if (relation.version !== expectedVersion) {
+    throw new ConflictError("Relation was changed in another session");
+  }
   const now = new Date().toISOString();
   const db = getD1();
-  const activity = activityEventStatement(db, currentUser, {
-    taskId: anchor.id,
-    eventType: "relation_deleted",
-    payload: { relation },
-    createdAt: now,
-  });
+  const activity = relationActivityStatements(
+    db,
+    currentUser,
+    [anchor.id, peer.id],
+    "relation_deleted",
+    { relation },
+    now,
+  );
   let results: D1Result<unknown>[];
   try {
     results = await db.batch([
@@ -366,8 +383,9 @@ export async function deleteTaskRelation(
       currentUser.id,
       ),
       activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
-      activity.statement,
+      ...activity,
       touchTaskActivity(db, anchor.id, now),
+      touchTaskActivity(db, peer.id, now),
     ]);
   } catch (error) {
     if (isConstraintError(error)) {
@@ -389,6 +407,32 @@ function touchTaskActivity(db: D1Database, taskId: string, now: string) {
        ELSE ? END
      WHERE id = ?`,
   ).bind(now, now, taskId);
+}
+
+function relationActivityStatements(
+  db: D1Database,
+  currentUser: UserRecord,
+  taskIds: [string, string],
+  eventType: "relation_created" | "relation_updated" | "relation_deleted",
+  payload: Record<string, unknown>,
+  createdAt: string,
+) {
+  return taskIds.map((taskId, index) => {
+    const endpointPayload = index === 0 || !("changes" in payload)
+      ? payload
+      : Object.fromEntries(
+          Object.entries(payload).filter(([key]) => key !== "changes"),
+        );
+    return activityEventStatement(db, currentUser, {
+      taskId,
+      eventType,
+      payload: {
+        ...endpointPayload,
+        peerTaskId: taskIds[index === 0 ? 1 : 0],
+      },
+      createdAt,
+    }).statement;
+  });
 }
 
 export function normalizeRelation(
@@ -568,10 +612,16 @@ function assertEditableProjectTasks(...tasks: TaskRecord[]) {
   }
 }
 
-function assertEditableSameProjectTasks(anchor: TaskRecord, peer: TaskRecord) {
+function assertEditableRelationTasks(
+  anchor: TaskRecord,
+  peer: TaskRecord,
+  type: TaskRelationType,
+) {
   assertEditableProjectTasks(anchor, peer);
-  if (anchor.projectId !== peer.projectId) {
-    throw new ValidationError("Relations require both tasks to belong to the same Project");
+  if (type === "duplicate_of" && anchor.projectId !== peer.projectId) {
+    throw new ValidationError(
+      "Duplicate relations require both tasks to belong to the same Project",
+    );
   }
 }
 

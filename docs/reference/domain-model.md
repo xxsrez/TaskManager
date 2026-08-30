@@ -153,6 +153,11 @@ versions, timestamps, `stored_files`, `attachments.stored_file_id`,
 API/OAuth capabilities отзываются; import staging исключается. Старые schemas
 `2`–`14` не обновляются и отклоняются до staging.
 
+Полный snapshot переносит межпроектные `blocks`/`related` byte-for-byte как
+обычные relation rows. Validator проверяет существование обеих Tasks и
+разрешает разные Projects только этим двум types; `duplicate_of` и hierarchy
+остаются same-Project.
+
 R2 originals live namespaces `stored-files` и `attachments` сохраняются
 byte-for-byte, но environment-scoped keys создаются заново. `backup-staging`
 не переносится, а неизвестный namespace отклоняет snapshot. Hosted secrets,
@@ -200,11 +205,20 @@ operational staging других контрактов и при system cutover �
 
 `ProjectBackup` — versioned logical envelope ровно одного Project. Он хранит
 immutable identity Project, current owner, его subtree, internal joins и
-relations, native/historical comments, reconciliation outcomes/reactions,
+relations, provenance descriptors внешних `blocks`/`related`,
+native/historical comments, reconciliation outcomes/reactions,
 dependency snapshots используемых
 catalogs, active sharing
 descriptors, deletion tuple каждого included record, warnings и SHA-256. Это переносимая страховка владельца, но не
 отдельная live entity и не ACL capability.
+
+Schema `15` добавляет `externalTaskRelations[]`. Каждый descriptor содержит
+immutable relation metadata (`id`, source/target Task IDs, `blocks|related`,
+creator, idempotency key, version и timestamps), `internalTaskId`,
+`internalEndpoint=source|target` и только `restorePolicy=not_restored`. Ровно
+одна сторона обязана находиться в bundle. `warnings.externalRelationsOmitted`
+не меньше числа descriptors: разница представляет legacy/unsupported opaque
+edges без достаточного provenance.
 
 `UserImportSession` изолирует staged Project restore:
 
@@ -219,7 +233,10 @@ descriptors, deletion tuple каждого included record, warnings и SHA-256.
 
 Rows staging хранятся отдельно по `(import_id, row_type, ordinal)` и не
 участвуют в product queries. Apply читает только полностью подготовленный
-normalized staged plan.
+normalized staged plan и требует явного подтверждения `not_restored` policy
+для внешних relation descriptors. Preview хранит descriptors,
+`legacyOpaqueCount`, число безопасно сохраняемых live edges и
+`acknowledgementRequired`; оно не является инструкцией импортировать peer.
 
 ## AccessGrant
 
@@ -397,7 +414,8 @@ identifier строится из code Project и этого sequence. Прежн
 URL и API identity опираются на `public_id`; `id` остаётся ключом внутренних
 связей и идемпотентного импорта. Перенос выдаёт identifier целевого Project и
 сохраняет прежний как alias. Он не меняет `public_id`, content, comments,
-attachments, labels, relations или внутренние relation keys.
+attachments, labels, допустимые `blocks`/`related` или внутренние relation
+keys; incident `duplicate_of` должен быть предварительно удалён.
 
 `parent_id` — единственный native hierarchy edge. Parent и child обязаны иметь
 одинаковый ненулевой `project_id`; relation не расширяет ACL. Versioned
@@ -492,8 +510,10 @@ Schema `11` добавляет `attachment_migration_outcomes`; schema `2`–`10
 перенесёнными.
 System-only versioned `theme`, `sidebar_preference` и User `version` теперь
 входят в exact schema `15`. Project schema `14` добавляет deletion tuple
-Projects, Releases, Tasks и SavedViews; его legacy upgrade policy остаётся
-отдельной от current-only system format.
+Projects, Releases, Tasks и SavedViews. Project schema `15` добавляет
+checksum-protected provenance-only descriptors внешних `blocks`/`related` с
+фиксированной policy `not_restored`; peer Task и content не входят. Его legacy
+upgrade policy остаётся отдельной от current-only system format.
 
 ### CommentAttachmentRef
 
@@ -600,7 +620,9 @@ No-op, stale version, idempotent retry и rollback не оставляют event
 запрещён trigger; DELETE допустим только как cascade Task lifecycle или exact
 restore. `(source_record_id, source_index)` уникален для historical events.
 Project move создаёт один event с old/new Project и identifier; массовый
-Project-code backfill events не создаёт.
+Project-code backfill events не создаёт. Relation mutation создаёт отдельный
+согласованный event для каждого endpoint в той же transaction; projection
+каждого event по-прежнему определяется ACL его Task и видимостью relation peer.
 
 `ActivityMigrationOutcome` хранит одну reconciliation row на позицию Linear
 `stateHistory`:
@@ -783,9 +805,17 @@ desired-state add/remove идемпотентны. Назначать можно
 Для `related` хранится одна канонически упорядоченная пара. `blocked_by`
 вычисляется как обратное чтение `blocks` и не является отдельным type. Обратные
 `blocks` одной пары считаются одним logical conflict; source имеет не более
-одного `duplicate_of`. Relation допустима только между двумя разными Tasks
-одного Project; mutation требует Editor+ на обеих сторонах. Недоступный peer
-fail-closed как `not_found` до проверки relation semantics.
+одного `duplicate_of`. Все relations соединяют разные Tasks; `blocks` и
+`related` могут пересекать Project boundary, а `duplicate_of` требует один
+Project. Mutation требует Editor+ на обеих сторонах через их Project ACL.
+Read projection, filters, Activity и sync показывают edge только при read
+access к обеим Tasks; недоступный peer fail-closed как `not_found` до проверки
+relation semantics.
+
+Offline Linear migration и оба backup validators применяют тот же type-aware
+инвариант: `blocks`/`related` могут пересекать Project boundary,
+`duplicate_of`, parent и subtask — нет. Import не ослабляет ACL и не создаёт
+edge при отсутствующей стороне.
 
 ## ExternalRecord
 
@@ -874,7 +904,9 @@ grants; Tasks, base query semantics и temporary URL layer не материал
    старый как alias.
 4. Status, Label, Project, Release и parent обязаны принадлежать тому же catalog
    owner scope, что и Task. Cross-owner hierarchy запрещена. Обе стороны
-   TaskRelation обязаны быть разными Tasks одного Project.
+   TaskRelation обязаны быть разными Tasks; `duplicate_of` требует один
+   Project, `blocks` и `related` могут пересекать Project boundary при
+   независимом ACL обеих сторон.
    Active Label name уникально в owner catalog без учёта регистра. Только owner
    управляет каталогом, а Task Editor+ назначает active labels; Viewer читает.
 5. `task.release_id IS NULL` либо release существует и
@@ -886,8 +918,9 @@ grants; Tasks, base query semantics и temporary URL layer не материал
    следующий непереиспользуемый target sequence, меняет Project/identifier,
    сохраняет прежний identifier как alias и применяет согласованные
    Release/Assignee changes в одной transaction. Несовместимые Release и
-   Assignee требуют явный replacement или `null`; hierarchy и relations должны
-   быть явно отсоединены до переноса. Archive, ACL, conflict или collision
+   Assignee требуют явный replacement или `null`; hierarchy и `duplicate_of`
+   должны быть явно отсоединены до переноса. `blocks`/`related` сохраняются и
+   инвалидируют detail projection обеих сторон. Archive, ACL, conflict или collision
    откатывают всю операцию. Same-Project — no-op без расхода sequence.
 8. Terminal timestamps выводятся из status category и обновляются в одной
    транзакции со status.
@@ -959,8 +992,10 @@ grants; Tasks, base query semantics и temporary URL layer не материал
     удалить predicate, но нельзя добавить новый missing ref или перенести его в
     другой scope. Purge Release никогда не переписывает SavedView AST.
 30. System backup schema `15` сохраняет deletion tuple четырёх entity types и
-    отклоняет schemas `2`–`14`; Project schema `14` сохраняет собственную
-    compatibility policy. Operational purge jobs не входят в backup/restore.
+    межпроектные `blocks`/`related`, отклоняя schemas `2`–`14`; Project schema
+    `15` сохраняет provenance внешних edges без peer Tasks и требует явного
+    `not_restored` acknowledgement. Operational purge jobs не входят в
+    backup/restore.
 
 ## Намеренно не моделируется
 

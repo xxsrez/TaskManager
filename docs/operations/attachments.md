@@ -114,12 +114,12 @@ production Project/Release/Task запрещены.
 - System backup schema `3` впервые добавила общий 10 MB bounded JSON container,
   Project schema `3` — 25 MB. Каждый original представлен один раз по
   `sha256:<digest>` внутри package; row не раскрывает live object key. Schema
-  `2` импортируется только как legacy no-attachment state. Current schema `14`
+  `2` импортируется только как legacy no-attachment state. Current schema `15`
   переносит writable relations, comments/activity, attachment migration
   outcomes, exact `comment_attachment_refs` и recoverable deletion tuple;
   schema `13` ввела comment ref index, schema `2`–`12` импортируется с пустым
-  index, а schema `2`–`13` — с пустым deletion tuple. Это не меняет R2 object
-  contract.
+  index, schema `2`–`13` — с пустым deletion tuple, а Project schema `2`–`14` —
+  без external relation descriptors. Это не меняет R2 object contract.
 - Validate проверяет package checksum, object size/SHA-256, Attachment↔Task и
   description/comment body↔index refs до staging. Restore пишет
   `backup-staging`, копирует в новые

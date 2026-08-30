@@ -23,6 +23,8 @@ import {
   getTask,
   getTaskDetail,
   grantAccess,
+  queryTaskSummaries,
+  revokeAccess,
 } from "../lib/repository";
 import {
   createTaskRelation,
@@ -57,9 +59,11 @@ const viewerActor = {
 };
 
 let dispose: (() => Promise<void>) | undefined;
+let database: D1Database;
 
 before(async () => {
   const harness = await createD1TestHarness();
+  database = harness.database;
   dispose = harness.dispose;
 });
 
@@ -195,6 +199,24 @@ test("native relation commands preserve identity, direction, idempotency, and du
   )!;
   assert.equal(sourceAfterDuplicate.statusId, duplicateStatus.id);
   assert.ok(sourceAfterDuplicate.canceledAt);
+  const sourceActivity = await database.prepare(`SELECT payload_json
+    FROM activity_events
+    WHERE task_id = ? AND event_type = 'relation_created'
+      AND json_extract(payload_json, '$.relation.id') = ?
+    LIMIT 1`).bind(source.id, duplicate.id).first<{
+      payload_json: string;
+    }>();
+  const canonicalActivity = await database.prepare(`SELECT payload_json
+    FROM activity_events
+    WHERE task_id = ? AND event_type = 'relation_created'
+      AND json_extract(payload_json, '$.relation.id') = ?
+    LIMIT 1`).bind(target.id, duplicate.id).first<{
+      payload_json: string;
+    }>();
+  assert.ok(sourceActivity);
+  assert.ok(canonicalActivity);
+  assert.ok(JSON.parse(sourceActivity.payload_json).changes.status);
+  assert.equal("changes" in JSON.parse(canonicalActivity.payload_json), false);
   await assert.rejects(
     createTaskRelation(owner, source.id, {
       targetTaskId: secondCanonical.id,
@@ -256,15 +278,50 @@ test("relation commands require two editable project tasks and reject unsafe sha
     idempotencyKey: "relations-editor-1",
   });
   assert.equal(created.type, "blocks");
-  await assert.rejects(
-    createTaskRelation(owner, source.id, {
-      targetTaskId: crossProject.id,
-      type: "related",
-      direction: "outgoing",
-      idempotencyKey: "relations-cross-project-owner",
-    }),
-    /same Project/,
+  const activityCounts = async () => {
+    const rows = await database.prepare(
+      `SELECT task_id, COUNT(*) AS count FROM activity_events
+       WHERE event_type IN ('relation_created', 'relation_updated', 'relation_deleted')
+         AND task_id IN (?, ?)
+       GROUP BY task_id`,
+    ).bind(source.id, crossProject.id).all<{ task_id: string; count: number }>();
+    return new Map(rows.results.map((row) => [row.task_id, Number(row.count)]));
+  };
+  const invalidationCount = async () => Number((await database.prepare(
+    `SELECT COUNT(*) AS count FROM workspace_change_events
+     WHERE entity_id IN (?, ?)
+       AND entity_type IN ('task_detail', 'task_activity')`,
+  ).bind(source.id, crossProject.id).first<{ count: number }>())!.count);
+
+  const beforeCreateActivity = await activityCounts();
+  const beforeCreateInvalidations = await invalidationCount();
+  const crossProjectRelation = await createTaskRelation(owner, source.id, {
+    targetTaskId: crossProject.id,
+    type: "related",
+    direction: "outgoing",
+    idempotencyKey: "relations-cross-project-owner",
+  });
+  assert.equal(crossProjectRelation.type, "related");
+  const afterCreateActivity = await activityCounts();
+  assert.equal(
+    afterCreateActivity.get(source.id),
+    (beforeCreateActivity.get(source.id) ?? 0) + 1,
   );
+  assert.equal(
+    afterCreateActivity.get(crossProject.id),
+    (beforeCreateActivity.get(crossProject.id) ?? 0) + 1,
+  );
+  const afterCreateInvalidations = await invalidationCount();
+  assert.ok(afterCreateInvalidations >= beforeCreateInvalidations + 4);
+  assert.equal((await createTaskRelation(owner, source.id, {
+    targetTaskId: crossProject.id,
+    type: "related",
+    direction: "outgoing",
+    idempotencyKey: "relations-cross-project-owner",
+  })).id, crossProjectRelation.id);
+  assert.deepEqual(await activityCounts(), afterCreateActivity);
+  assert.equal(await invalidationCount(), afterCreateInvalidations);
+
   await assert.rejects(
     createTaskRelation(collaborator, source.id, {
       targetTaskId: crossProject.id,
@@ -273,6 +330,161 @@ test("relation commands require two editable project tasks and reject unsafe sha
       idempotencyKey: "relations-cross-project-hidden",
     }),
     NotFoundError,
+  );
+  const hiddenRelationFilter = await queryTaskSummaries(collaborator, {
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [{
+        field: "relation",
+        operator: "is",
+        value: { type: "related", direction: "either" },
+      }],
+    },
+  });
+  assert.equal(hiddenRelationFilter.taskIds.includes(source.id), false);
+  const ownerRelationFilter = await queryTaskSummaries(owner, {
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [{
+        field: "relation",
+        operator: "is",
+        value: { type: "related", direction: "either" },
+      }],
+    },
+  });
+  assert.equal(ownerRelationFilter.taskIds.includes(source.id), true);
+  assert.equal(ownerRelationFilter.taskIds.includes(crossProject.id), true);
+
+  const beforeUpdateActivity = await activityCounts();
+  const beforeUpdateInvalidations = await invalidationCount();
+  const updatedCrossProjectRelation = await updateTaskRelation(
+    owner,
+    source.id,
+    crossProjectRelation.id,
+    {
+      version: crossProjectRelation.version,
+      type: "blocks",
+      direction: "incoming",
+    },
+  );
+  const afterUpdateActivity = await activityCounts();
+  assert.equal(
+    afterUpdateActivity.get(source.id),
+    (beforeUpdateActivity.get(source.id) ?? 0) + 1,
+  );
+  assert.equal(
+    afterUpdateActivity.get(crossProject.id),
+    (beforeUpdateActivity.get(crossProject.id) ?? 0) + 1,
+  );
+  assert.ok(await invalidationCount() >= beforeUpdateInvalidations + 4);
+  const beforeDeleteActivity = await activityCounts();
+  const beforeDeleteInvalidations = await invalidationCount();
+  await deleteTaskRelation(owner, source.id, updatedCrossProjectRelation.id, {
+    version: updatedCrossProjectRelation.version,
+  });
+  const afterDeleteActivity = await activityCounts();
+  assert.equal(
+    afterDeleteActivity.get(source.id),
+    (beforeDeleteActivity.get(source.id) ?? 0) + 1,
+  );
+  assert.equal(
+    afterDeleteActivity.get(crossProject.id),
+    (beforeDeleteActivity.get(crossProject.id) ?? 0) + 1,
+  );
+  assert.ok(await invalidationCount() >= beforeDeleteInvalidations + 4);
+
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: otherProject.id,
+    email: collaborator.email,
+    permission: "editor",
+  });
+  const collaboratorCrossProject = await createTaskRelation(collaborator, source.id, {
+    targetTaskId: crossProject.id,
+    type: "related",
+    direction: "outgoing",
+    idempotencyKey: "relations-cross-project-editor",
+  });
+  assert.equal(collaboratorCrossProject.type, "related");
+  await assert.rejects(
+    updateTaskRelation(owner, source.id, collaboratorCrossProject.id, {
+      version: collaboratorCrossProject.version,
+      type: "duplicate_of",
+      direction: "outgoing",
+      taskVersion: source.version,
+    }),
+    /same Project/,
+  );
+  const unchangedCrossProjectRelation = await database.prepare(
+    "SELECT type, version FROM task_relations WHERE id = ?",
+  ).bind(collaboratorCrossProject.id).first<{ type: string; version: number }>();
+  assert.deepEqual(unchangedCrossProjectRelation, {
+    type: "related",
+    version: collaboratorCrossProject.version,
+  });
+  const collaboratorOtherGrant = (await getSnapshot(owner)).collaborators.find(
+    (grant) =>
+      grant.resourceId === otherProject.id && grant.userId === collaborator.id,
+  )!;
+  await revokeAccess(owner, collaboratorOtherGrant.grantId);
+  for (const version of [
+    collaboratorCrossProject.version,
+    collaboratorCrossProject.version + 100,
+  ]) {
+    await assert.rejects(
+      updateTaskRelation(collaborator, source.id, collaboratorCrossProject.id, {
+        version,
+        type: "blocks",
+        direction: "outgoing",
+      }),
+      NotFoundError,
+    );
+    await assert.rejects(
+      deleteTaskRelation(collaborator, source.id, collaboratorCrossProject.id, {
+        version,
+      }),
+      NotFoundError,
+    );
+  }
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: otherProject.id,
+    email: viewer.email,
+    permission: "viewer",
+  });
+  const viewerRelationFilter = await queryTaskSummaries(viewer, {
+    query: {
+      version: 1,
+      op: "all",
+      conditions: [{
+        field: "relation",
+        operator: "is",
+        value: { type: "related", direction: "either" },
+      }],
+    },
+  });
+  assert.equal(viewerRelationFilter.taskIds.includes(source.id), true);
+  assert.equal(viewerRelationFilter.taskIds.includes(crossProject.id), true);
+  await assert.rejects(
+    createTaskRelation(viewer, source.id, {
+      targetTaskId: crossProject.id,
+      type: "blocks",
+      direction: "outgoing",
+      idempotencyKey: "relations-cross-project-viewer",
+    }),
+    PermissionError,
+  );
+  await assert.rejects(
+    createTaskRelation(owner, source.id, {
+      targetTaskId: crossProject.id,
+      type: "duplicate_of",
+      direction: "outgoing",
+      idempotencyKey: "relations-cross-project-duplicate",
+      taskVersion: source.version,
+    }),
+    /same Project/,
   );
   const unrelated = await createTaskRelation(owner, target.id, {
     targetTaskId: third.id,

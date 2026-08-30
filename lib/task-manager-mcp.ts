@@ -351,7 +351,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Move task",
       description:
-        "Atomically moves a task to another editable active Project. First detach or reparent hierarchy and explicitly unlink every Task relation, then resolve the task and target Project and pass canonical refs plus the current task version. If the current Release or assignee cannot remain valid, explicitly pass releaseRef or assigneeEmail as null, or choose a compatible value. The returned identifier is authoritative; the preview does not reserve a number.",
+        "Atomically moves a task to another editable active Project while preserving blocks and related relations. First detach or reparent hierarchy and unlink duplicate_of, then resolve the task and target Project and pass canonical refs plus the current task version. If the current Release or assignee cannot remain valid, explicitly pass releaseRef or assigneeEmail as null, or choose a compatible value. The returned identifier is authoritative; the preview does not reserve a number.",
       inputSchema: z.object({
         taskRef: reference("Canonical current or historical Task ref."),
         version: z.number().int().positive(),
@@ -440,10 +440,12 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Create task relation",
       description:
-        "Creates one native relation after resolving two different Tasks in the same Project. Use outgoing blocks for taskRef blocks targetTaskRef, incoming blocks for taskRef is blocked by targetTaskRef, related for a symmetric relation, and outgoing duplicate_of to mark taskRef as a duplicate and move it to the reserved Duplicate status. Reuse idempotencyKey only when retrying the identical command.",
+        "Creates one native relation after resolving two different Tasks that are both editable. blocks and related may connect Tasks across Projects; duplicate_of must stay within one Project. Use outgoing blocks for taskRef blocks targetTaskRef, incoming blocks for taskRef is blocked by targetTaskRef, related for a symmetric relation, and outgoing duplicate_of to mark taskRef as a duplicate and move it to the reserved Duplicate status. Reuse idempotencyKey only when retrying the identical command.",
       inputSchema: z.object({
         taskRef: reference("Canonical source/context task ref."),
-        targetTaskRef: reference("Canonical peer Task ref in the same Project."),
+        targetTaskRef: reference(
+          "Canonical peer Task ref. blocks and related may cross Projects; duplicate_of must stay in the same Project.",
+        ),
         type: z.enum(["blocks", "related", "duplicate_of"]),
         direction: z.enum(["outgoing", "incoming"]),
         idempotencyKey: z.string().min(1).max(200),
@@ -549,7 +551,7 @@ export function buildTaskManagerMcp(context: AgentAuthorizationContext) {
     {
       title: "Update task relation",
       description:
-        "Changes the type or direction of one relation using its current relation version. Read get_task again after an unknown outcome before retrying. Changing away from duplicate_of does not guess or restore a previous task status.",
+        "Changes the type or direction of one relation using its current relation version. blocks and related may cross Projects; duplicate_of must stay within one Project. Read get_task again after an unknown outcome before retrying. Changing away from duplicate_of does not guess or restore a previous task status.",
       inputSchema: z.object({
         taskRef: reference("Canonical context task ref."),
         relationRef: reference("Canonical relation ref from get_task."),

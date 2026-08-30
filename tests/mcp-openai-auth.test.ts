@@ -311,7 +311,10 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
   }
   const moveTool = listBody.result.tools.find(
     (tool) => tool.name === "move_task",
-  ) as { inputSchema?: { required?: string[]; properties?: Record<string, unknown> } } | undefined;
+  ) as {
+    description?: string;
+    inputSchema?: { required?: string[]; properties?: Record<string, unknown> };
+  } | undefined;
   assert.deepEqual(moveTool?.inputSchema?.required, [
     "taskRef",
     "version",
@@ -319,6 +322,8 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
   ]);
   assert.ok(moveTool?.inputSchema?.properties?.releaseRef);
   assert.ok(moveTool?.inputSchema?.properties?.assigneeEmail);
+  assert.match(moveTool?.description ?? "", /preserving blocks and related/i);
+  assert.doesNotMatch(moveTool?.description ?? "", /unlink every Task relation/i);
   const createTool = listBody.result.tools.find(
     (tool) => tool.name === "create_task",
   ) as { inputSchema?: { properties?: Record<string, unknown> } } | undefined;
@@ -346,7 +351,8 @@ test("MCP route exposes tool schemas but keeps tool calls behind bearer auth", a
   const createRelationTool = listBody.result.tools.find(
     (tool) => tool.name === "create_task_relation",
   ) as { description?: string } | undefined;
-  assert.match(createRelationTool?.description ?? "", /same Project/);
+  assert.match(createRelationTool?.description ?? "", /may connect Tasks across Projects/i);
+  assert.match(createRelationTool?.description ?? "", /duplicate_of must stay within one Project/i);
   const uploadTool = listBody.result.tools.find(
     (tool) => tool.name === "upload_task_attachment",
   ) as {

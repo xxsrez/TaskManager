@@ -241,7 +241,7 @@ test("Linear import accepts expanded Project codes and parses the final numeric 
   );
 });
 
-test("Linear import rejects relations across Projects", () => {
+test("Linear import accepts blocks and related relations across Projects", () => {
   const payload = fixture();
   const projects = payload.projects as Array<Record<string, unknown>>;
   projects.push({
@@ -255,9 +255,78 @@ test("Linear import rejects relations across Projects", () => {
   issues[0]!.projectMilestone = null;
   issues[0]!.parentId = null;
 
+  const plan = buildLinearImportPlan("usr_test", payload);
+  assert.deepEqual(
+    plan.relations.map((relation) => relation.type).sort(),
+    ["blocks", "related"],
+  );
+  const tasksBySourceId = new Map(plan.tasks.map((task) => [task.sourceId, task]));
+  assert.notEqual(
+    tasksBySourceId.get("AND-1")?.projectId,
+    tasksBySourceId.get("AND-2")?.projectId,
+  );
+});
+
+test("Linear import rejects duplicate relations across Projects", () => {
+  const payload = fixture();
+  const projects = payload.projects as Array<Record<string, unknown>>;
+  projects.push({
+    ...projects[0]!,
+    id: "p2",
+    name: "Other Project",
+    milestones: [],
+  });
+  const issues = payload.issues as Array<Record<string, unknown>>;
+  issues[0]!.projectId = "p2";
+  issues[0]!.projectMilestone = null;
+  issues[0]!.parentId = null;
+  issues[0]!.relations = {
+    blocks: [],
+    blockedBy: [],
+    relatedTo: [],
+    duplicateOf: { id: "AND-1", title: "Parent" },
+  };
+  issues[1]!.relations = {
+    blocks: [],
+    blockedBy: [],
+    relatedTo: [],
+    duplicateOf: null,
+  };
+
   assert.throws(
     () => buildLinearImportPlan("usr_test", payload),
-    /crosses Projects/,
+    /duplicate relation AND-2 -> AND-1 crosses Projects/,
+  );
+});
+
+test("Linear import rejects parent hierarchies across Projects", () => {
+  const payload = fixture();
+  const projects = payload.projects as Array<Record<string, unknown>>;
+  projects.push({
+    ...projects[0]!,
+    id: "p2",
+    name: "Other Project",
+    milestones: [],
+  });
+  const issues = payload.issues as Array<Record<string, unknown>>;
+  issues[0]!.projectId = "p2";
+  issues[0]!.projectMilestone = null;
+  issues[0]!.relations = {
+    blocks: [],
+    blockedBy: [],
+    relatedTo: [],
+    duplicateOf: null,
+  };
+  issues[1]!.relations = {
+    blocks: [],
+    blockedBy: [],
+    relatedTo: [],
+    duplicateOf: null,
+  };
+
+  assert.throws(
+    () => buildLinearImportPlan("usr_test", payload),
+    /parent AND-1 crosses Projects/,
   );
 });
 

@@ -37,6 +37,18 @@ Tasks и scoped SavedViews. Schemas `2`–`13` получают all-null tuple �
 child tuples, поэтому exact restore не оживляет отдельно deleted child.
 Operational purge jobs не входят в bundle; R2-first cleanup возобновляет runtime.
 
+Дополнение 2026-08-30: межпроектные `blocks`/`related` повышают Project bundle
+`schemaVersion` до `15`. Внутренние relations по-прежнему входят в exact
+subtree, а каждый edge через границу Project сохраняется только как
+checksum-protected `externalTaskRelations` provenance: immutable relation
+metadata, внутренняя Task/сторона и фиксированная policy `not_restored`. Peer
+Task и её content не включаются. Preview требует отдельного acknowledgement,
+apply не импортирует внешний edge. Уже существующий live `blocks`/`related`
+сохраняется при exact replacement, если обе endpoint Tasks существуют (включая
+recoverably deleted) и внутренняя Task есть в incoming set; иначе restore
+отклоняется до mutation. Schemas `2`–`14`
+нормализуются с пустым provenance set.
+
 ## Контекст
 
 Владельцу Project нужна доступная без application-admin роли страховка от
@@ -70,9 +82,13 @@ ADR-0004 для этого не подходит: он раскрывает со
    имя Project и выполняет set-based replace subtree одной D1 `batch()`
    transaction. Ошибка не оставляет частичный restore. Для удалённого Project
    применяется тот же bundle и current owner check.
-7. Relations и parent links на Tasks вне bundle не восстанавливаются как live
-   связи. Их count и исходный metadata остаются в warnings/provenance, чтобы
-   частичный Project не создавал скрытых cross-scope ссылок.
+7. Parent links всегда same-Project и обязаны быть внутренними. Внутренние
+   relations восстанавливаются точно; внешний `blocks`/`related` не входит в
+   subtree и описывается отдельным provenance descriptor без peer Task. Restore
+   требует явного acknowledgement и никогда не создаёт такой edge. Текущий live
+   edge сохраняется только при безопасном exact replacement его внутренней
+   Task; иначе restore fail-closed до mutation. Поэтому отсутствуют silent
+   loss, dangling reference и неявный импорт чужого Project.
 8. Attachment originals входят byte-for-byte; logical `sha256:<digest>` refs
    заменяют live object keys. Thumbnail пересоздаётся. Общий container ограничен
    25 MB и полностью проверяет size/checksum, Task ownership и description
@@ -91,6 +107,9 @@ ADR-0004 для этого не подходит: он раскрывает со
   owner-scoped no-store response.
 - Restore sharing не создаёт новых identities и не сопоставляет пользователей
   по одному лишь display name.
+- Project bundle не является средством переноса graph boundary. Descriptor
+  внешней relation доказывает намеренное исключение edge, но не даёт доступа к
+  peer и не является инструкцией создать связь.
 
 ## Не входит в первую версию
 

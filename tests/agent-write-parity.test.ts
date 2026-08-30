@@ -33,6 +33,7 @@ import {
   getAgentSavedViewDetail,
   getAgentTaskDetail,
   getAgentWorkspace,
+  listAgentTaskActivity,
   listAgentLabels,
   listAgentProjects,
   listAgentReleases,
@@ -49,6 +50,7 @@ import {
   getOrCreateUser,
   getSnapshot,
   grantAccess,
+  revokeAccess,
   updateLabel,
 } from "../lib/repository";
 import { createD1TestHarness } from "./helpers/d1";
@@ -230,6 +232,7 @@ test("Agent REST creates and updates complete basic Task metadata with versioned
 test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided ACL, and retry identity", async () => {
   const owner = await getOrCreateUser(actor("rest-graph-owner"));
   const oneSideEditor = await getOrCreateUser(actor("rest-graph-editor"));
+  const relationViewer = await getOrCreateUser(actor("rest-graph-viewer"));
   await createProject(owner, { name: "REST graph A", taskCode: "GA" });
   await createProject(owner, { name: "REST graph B", taskCode: "GB" });
   const snapshot = await getSnapshot(owner);
@@ -249,6 +252,18 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
     resourceId: projectA.id,
     email: oneSideEditor.email,
     permission: "editor",
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: projectA.id,
+    email: relationViewer.email,
+    permission: "viewer",
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: projectB.id,
+    email: relationViewer.email,
+    permission: "viewer",
   });
   const credential = await issueApiCredential(owner, {
     name: "REST graph",
@@ -278,19 +293,8 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
   assert.equal(cycle.status, 400);
   assert.equal((await getAgentTaskDetail(owner, source.publicId)).parent, null);
 
-  const crossProjectDenied = await createAgentTaskRelationRoute(
-    jsonRequest(`https://example.test/api/agent/v1/tasks/${source.publicId}/relations`, authorization, {
-      targetTaskRef: crossProject.publicId,
-      type: "related",
-      direction: "outgoing",
-      idempotencyKey: "rest-cross-project-denied",
-    }, "POST"),
-    taskContext(source.publicId),
-  );
-  assert.equal(crossProjectDenied.status, 400);
-
   const relationInput = {
-    targetTaskRef: peer.publicId,
+    targetTaskRef: crossProject.publicId,
     type: "blocks",
     direction: "outgoing",
     idempotencyKey: "rest-cross-project-retry",
@@ -303,8 +307,16 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
   const relationResult = (await relationResponse.json() as {
     data: { relation: RelationDetail; task: TaskDetail };
   }).data;
-  assert.equal(relationResult.relation.task.ref, peer.publicId);
+  assert.equal(relationResult.relation.task.ref, crossProject.publicId);
+  assert.deepEqual(relationResult.relation.task.project, {
+    ref: projectB.publicId,
+    name: projectB.name,
+    taskCode: projectB.taskCode,
+  });
   assert.equal(relationResult.relation.presentation, "blocks");
+  const oneSideDetail = await getAgentTaskDetail(oneSideEditor, source.publicId);
+  assert.equal(oneSideDetail.relations.length, 0);
+  assert.equal(oneSideDetail.contextHints.relationCount, 0);
 
   const retry = await createAgentTaskRelationRoute(
     jsonRequest(`https://example.test/api/agent/v1/tasks/${source.publicId}/relations`, authorization, relationInput, "POST"),
@@ -379,6 +391,43 @@ test("Agent REST hierarchy and relation commands enforce refs, cycles, two-sided
   );
   assert.equal(removed.status, 200);
   const afterRemoval = await getAgentTaskDetail(owner, source.publicId);
+  const crossProjectDuplicate = await createAgentTaskRelationRoute(
+    jsonRequest(`https://example.test/api/agent/v1/tasks/${source.publicId}/relations`, authorization, {
+      targetTaskRef: crossProject.publicId,
+      type: "duplicate_of",
+      direction: "outgoing",
+      idempotencyKey: "rest-cross-project-duplicate",
+      taskVersion: afterRemoval.version,
+    }, "POST"),
+    taskContext(source.publicId),
+  );
+  assert.equal(crossProjectDuplicate.status, 400);
+  const visibleActivity = await listAgentTaskActivity(
+    relationViewer,
+    source.publicId,
+    { limit: 50 },
+  );
+  assert.equal(
+    visibleActivity.data.some((event) => event.eventType === "relation_created"),
+    true,
+  );
+  const relationActivityJson = JSON.stringify(visibleActivity.data);
+  assert.equal(relationActivityJson.includes(crossProject.id), false);
+  assert.equal(relationActivityJson.includes("peerTaskId"), false);
+  const peerViewerGrant = (await getSnapshot(owner)).collaborators.find(
+    (item) => item.resourceId === projectB.id && item.userId === relationViewer.id,
+  )!;
+  await revokeAccess(owner, peerViewerGrant.grantId);
+  const hiddenActivity = await listAgentTaskActivity(
+    relationViewer,
+    source.publicId,
+    { limit: 50 },
+  );
+  assert.equal(
+    hiddenActivity.data.some((event) => event.eventType.startsWith("relation_")),
+    false,
+  );
+  assert.equal(hiddenActivity.totalCount < visibleActivity.totalCount, true);
   const duplicateResponse = await createAgentTaskRelationRoute(
     jsonRequest(`https://example.test/api/agent/v1/tasks/${source.publicId}/relations`, authorization, {
       targetTaskRef: peer.publicId,
@@ -484,24 +533,19 @@ test("MCP exposes the same Project-code projection, assignee, Label replacement,
     parentTaskRef: parent.publicId,
   }) as TaskDetail;
   assert.equal(attached.parent?.ref, parent.publicId);
-  assert.match(
-    await mcpCallFailure(credential.token, "create_task_relation", {
-      taskRef: created.ref,
-      targetTaskRef: crossProject.publicId,
-      type: "related",
-      direction: "outgoing",
-      idempotencyKey: "mcp-parity-cross-project",
-    }),
-    /same Project/,
-  );
   const relationResult = await mcpCall(credential.token, "create_task_relation", {
     taskRef: created.ref,
-    targetTaskRef: parent.publicId,
+    targetTaskRef: crossProject.publicId,
     type: "related",
     direction: "outgoing",
-    idempotencyKey: "mcp-parity-relation",
+    idempotencyKey: "mcp-parity-cross-project",
   }) as { relation: RelationDetail; task: TaskDetail };
   assert.equal(relationResult.relation.presentation, "related");
+  assert.deepEqual(relationResult.relation.task.project, {
+    ref: otherProject.publicId,
+    name: otherProject.name,
+    taskCode: otherProject.taskCode,
+  });
   const changed = await mcpCall(credential.token, "update_task_relation", {
     taskRef: created.ref,
     relationRef: relationResult.relation.ref,
@@ -516,6 +560,17 @@ test("MCP exposes the same Project-code projection, assignee, Label replacement,
     version: changed.relation.version,
   }) as { deleted: boolean; relationRef: string; task: TaskDetail };
   assert.equal(removed.deleted, true);
+  assert.match(
+    await mcpCallFailure(credential.token, "create_task_relation", {
+      taskRef: created.ref,
+      targetTaskRef: crossProject.publicId,
+      type: "duplicate_of",
+      direction: "outgoing",
+      idempotencyKey: "mcp-parity-cross-project-duplicate",
+      taskVersion: removed.task.version,
+    }),
+    /same Project/,
+  );
   const duplicate = await mcpCall(credential.token, "create_task_relation", {
     taskRef: created.ref,
     targetTaskRef: parent.publicId,
@@ -915,5 +970,8 @@ type RelationDetail = {
   type: string;
   direction: string;
   presentation: string;
-  task: { ref: string };
+  task: {
+    ref: string;
+    project: { ref: string; name: string; taskCode: string } | null;
+  };
 };

@@ -443,9 +443,26 @@ export function taskDetailUiApiPath(taskId: string, workspaceScope: string) {
   );
 }
 
-export function taskRelationSearchUiApiPath(query: string, workspaceScope: string) {
-  const parameters = new URLSearchParams({ search: query });
-  return scopedUiApiPath(`/api/tasks?${parameters}`, workspaceScope);
+export function taskRelationSearchUiApiPath(
+  query: string,
+  anchorTaskId: string,
+  kind: RelativeRelationKind,
+) {
+  const parameters = new URLSearchParams({
+    search: query,
+    relation_search: "true",
+    relation_anchor: anchorTaskId,
+    relation_kind: kind,
+  });
+  return `/api/tasks?${parameters}`;
+}
+
+export function relationCandidateProjectLabel(
+  candidate: TaskRecord,
+  projects: ProjectRecord[],
+) {
+  const project = projects.find((item) => item.id === candidate.projectId);
+  return project ? `${project.taskCode} · ${project.name}` : "Project unavailable";
 }
 
 const priorityMeta: Record<Priority, { label: string }> = {
@@ -6030,6 +6047,26 @@ function ReadOnlyTaskDetails({ task, data, onClose, onOpenTask }: { task: TaskRe
 
 type RelativeRelationKind = "blocks" | "blocked_by" | "related" | "duplicate_of" | "duplicates";
 
+export function relationCandidateAllowedForKind(
+  kind: RelativeRelationKind,
+  anchor: TaskRecord,
+  candidate: TaskRecord,
+) {
+  return kind !== "duplicate_of" || candidate.projectId === anchor.projectId;
+}
+
+export function relationSelectionAfterKindChange(
+  kind: RelativeRelationKind,
+  anchor: TaskRecord,
+  candidates: TaskRecord[],
+  selectedTaskId: string,
+) {
+  const selected = candidates.find((candidate) => candidate.id === selectedTaskId);
+  return selected && relationCandidateAllowedForKind(kind, anchor, selected)
+    ? selectedTaskId
+    : "";
+}
+
 function TaskRelations({
   task,
   data,
@@ -6052,6 +6089,7 @@ function TaskRelations({
   const [kind, setKind] = useState<RelativeRelationKind>("related");
   const [query, setQuery] = useState("");
   const [candidates, setCandidates] = useState<TaskRecord[]>(data.tasks);
+  const [candidateProjects, setCandidateProjects] = useState<ProjectRecord[]>(data.projects);
   const [selectedTaskId, setSelectedTaskId] = useState("");
   const [searching, setSearching] = useState(false);
   const [pendingRelationId, setPendingRelationId] = useState<string | null>(null);
@@ -6068,6 +6106,7 @@ function TaskRelations({
       candidate.id !== task.id &&
       candidate.projectId !== null &&
       canEditContent(candidate.accessRole) &&
+      relationCandidateAllowedForKind(kind, task, candidate) &&
       !existingTargetIds.has(candidate.id) &&
       (!query.trim() || `${candidate.identifier} ${candidate.title}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase())))
     .slice(0, 8);
@@ -6076,6 +6115,7 @@ function TaskRelations({
     setQuery(nextQuery);
     setSelectedTaskId("");
     setCandidates(data.tasks);
+    setCandidateProjects(data.projects);
     if (searchTimer.current) clearTimeout(searchTimer.current);
     if (!nextQuery.trim()) {
       setSearching(false);
@@ -6083,14 +6123,18 @@ function TaskRelations({
     }
     setSearching(true);
     searchTimer.current = setTimeout(() => {
-      void fetch(taskRelationSearchUiApiPath(
-        nextQuery.trim(),
-        data.workspaceScope?.selectedToken ?? "",
-      ), { cache: "no-store" })
+      void fetch(taskRelationSearchUiApiPath(nextQuery.trim(), task.id, kind), {
+        cache: "no-store",
+      })
         .then(async (response) => {
-          const value = await response.json() as { tasks?: TaskRecord[]; error?: string };
+          const value = await response.json() as {
+            tasks?: TaskRecord[];
+            projects?: ProjectRecord[];
+            error?: string;
+          };
           if (!response.ok || value.error) throw new Error(value.error ?? "Task search failed");
           setCandidates(value.tasks ?? []);
+          setCandidateProjects(value.projects ?? []);
           setRelationError("");
         })
         .catch((requestError: unknown) => {
@@ -6098,6 +6142,16 @@ function TaskRelations({
         })
         .finally(() => setSearching(false));
     }, 180);
+  }
+
+  function changeKind(nextKind: RelativeRelationKind) {
+    setKind(nextKind);
+    setSelectedTaskId(relationSelectionAfterKindChange(
+      nextKind,
+      task,
+      candidates,
+      selectedTaskId,
+    ));
   }
 
   async function sendRelationMutation(
@@ -6202,13 +6256,19 @@ function TaskRelations({
       <h3>{group}</h3>
       <div className="details-links">
         {items.map((item) => <div className="task-relation-row" key={item.relation.id} aria-busy={pendingRelationId === item.relation.id}>
-          <TaskReference label={item.label} task={item.target} onOpen={onOpenTask} />
+          <TaskReference
+            label={data.projects.some((project) => project.id === item.target.projectId)
+              ? `${item.label} · ${relationCandidateProjectLabel(item.target, data.projects)}`
+              : item.label}
+            task={item.target}
+            onOpen={onOpenTask}
+          />
           {canWrite && <div className="task-relation-actions">
             <select aria-label={`Change relation to ${item.target.identifier}`} value={relativeRelationKind(item)} disabled={relationBusy} onChange={(event) => void updateRelation(item, event.target.value as RelativeRelationKind)}>
               <option value="related">Related</option>
               <option value="blocks">Blocks</option>
               <option value="blocked_by">Blocked by</option>
-              <option value="duplicate_of">Duplicate of</option>
+              {item.target.projectId === task.projectId && <option value="duplicate_of">Duplicate of</option>}
               {relativeRelationKind(item) === "duplicates" && <option value="duplicates" disabled>Duplicate</option>}
             </select>
             <button className="icon-button" type="button" aria-label={`Remove relation to ${item.target.identifier}`} disabled={relationBusy} onClick={() => void removeRelation(item)}><X size={13} /></button>
@@ -6218,7 +6278,7 @@ function TaskRelations({
     </div>)}
     {adding && <div className="task-relation-composer">
       <div>
-        <select aria-label="Relation type" value={kind} disabled={relationBusy} onChange={(event) => setKind(event.target.value as RelativeRelationKind)}>
+        <select aria-label="Relation type" value={kind} disabled={relationBusy} onChange={(event) => changeKind(event.target.value as RelativeRelationKind)}>
           <option value="related">Related</option>
           <option value="blocks">Blocks</option>
           <option value="blocked_by">Blocked by</option>
@@ -6229,7 +6289,7 @@ function TaskRelations({
       <div className="task-relation-candidates" aria-busy={searching}>
         {searching && <span>Searching…</span>}
         {!searching && availableCandidates.length === 0 && <span>No editable project Tasks found.</span>}
-        {!searching && availableCandidates.map((candidate) => <button type="button" key={candidate.id} className={selectedTaskId === candidate.id ? "selected" : ""} onClick={() => setSelectedTaskId(candidate.id)}><span>{candidate.identifier}</span><b>{candidate.title}</b></button>)}
+        {!searching && availableCandidates.map((candidate) => <button type="button" key={candidate.id} className={selectedTaskId === candidate.id ? "selected" : ""} onClick={() => setSelectedTaskId(candidate.id)}><span>{candidate.identifier}</span><b>{relationCandidateProjectLabel(candidate, candidateProjects)} · {candidate.title}</b></button>)}
       </div>
       <div className="task-relation-composer-actions">
         <button className="button ghost" type="button" disabled={relationBusy} onClick={() => setAdding(false)}>Cancel</button>

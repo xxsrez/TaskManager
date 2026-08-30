@@ -128,7 +128,9 @@ delivery, OpenAI native file input, versioned attachment delete и native
 relation commands. System backup schema `15` имеет исчерпывающий D1/R2 registry,
 включает `stored_files`, `attachments.stored_file_id` и `task_sequences`, не
 поддерживает schemas `2`–`14` и отдельно классифицирует rebuild/reset/revoke/
-excluded state. Project bundle сохраняет свой отдельный schema `14` contract.
+excluded state. Project bundle использует отдельный schema `15`: внешние
+`blocks`/`related` остаются provenance-only boundary descriptors и не импортируют
+peer Task или внешний edge.
 Task Activity, browser authoring для
 root/reply/edit и lazy Comment renderer реализованы с LabelGroup topology,
 versioned User preferences и resumable legacy attachment

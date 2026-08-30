@@ -16,6 +16,7 @@ export function ProjectBackupManager({
   const [applied, setApplied] = useState<AppliedProjectBackup | null>(null);
   const [downloaded, setDownloaded] = useState(false);
   const [restoreSharing, setRestoreSharing] = useState(false);
+  const [externalRelationsAcknowledged, setExternalRelationsAcknowledged] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -47,7 +48,7 @@ export function ProjectBackupManager({
   async function selectFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    setBusy(true); setError(""); setPreview(null); setApplied(null); setDownloaded(false); setConfirmation("");
+    setBusy(true); setError(""); setPreview(null); setApplied(null); setDownloaded(false); setConfirmation(""); setExternalRelationsAcknowledged(false);
     try {
       const payload = JSON.parse(await file.text()) as unknown;
       const response = await fetch("/api/import/project/validate", {
@@ -69,7 +70,7 @@ export function ProjectBackupManager({
       const response = await fetch("/api/import/project", {
         method: "POST",
         headers: { "content-type": "application/json", "x-task-manager-action": "project-backup" },
-        body: JSON.stringify({ importId: preview.importId, sha256: preview.sha256, confirmation, currentBackupDownloaded: downloaded, restoreSharing }),
+        body: JSON.stringify({ importId: preview.importId, sha256: preview.sha256, confirmation, currentBackupDownloaded: downloaded, restoreSharing, externalRelationsAcknowledged }),
       });
       const value = await response.json() as AppliedProjectBackup | { error: string };
       if (!response.ok || "error" in value) throw new Error("error" in value ? value.error : "Project restore failed");
@@ -90,10 +91,20 @@ export function ProjectBackupManager({
         <dl>{Object.entries(preview.counts).filter(([, value]) => value > 0).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl>
         <ul className="import-warnings">{Object.entries(preview.changes).filter(([, change]) => change.create + change.update + change.delete > 0).map(([name, change]) => <li key={name}>{name}: {change.create} create, {change.update} update, {change.delete} delete</li>)}</ul>
         {preview.warnings.length > 0 && <ul className="import-warnings">{preview.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
+        {(preview.externalRelations.descriptors.length > 0 || preview.externalRelations.legacyOpaqueCount > 0 || preview.externalRelations.livePreservedCount > 0) && <section className="import-step">
+          <h3>Cross-Project Task relations</h3>
+          <p>Bundle relation records are provenance only. Restore never imports a peer Task or recreates an external edge.</p>
+          {preview.externalRelations.descriptors.length > 0 && <ul className="import-warnings">{preview.externalRelations.descriptors.map((descriptor) => <li key={descriptor.relation.id}>
+            {descriptor.relation.type}: {descriptor.relation.sourceTaskId} → {descriptor.relation.targetTaskId}; {descriptor.internalEndpoint} endpoint {descriptor.internalTaskId}; not restored
+          </li>)}</ul>}
+          {preview.externalRelations.legacyOpaqueCount > 0 && <p>{preview.externalRelations.legacyOpaqueCount} legacy or unsupported relation(s) have only an opaque count and cannot be restored.</p>}
+          {preview.externalRelations.livePreservedCount > 0 && <p>{preview.externalRelations.livePreservedCount} current external relation(s) will remain linked during this exact replacement.</p>}
+        </section>}
         {preview.projectExists && currentProject && <button className="button secondary" disabled={busy} onClick={() => void download(currentProject)}>{downloaded ? "Current backup downloaded" : "Download current backup"}</button>}
         {preview.sharing.length > 0 && <label className="check-row"><input type="checkbox" checked={restoreSharing} onChange={(event) => setRestoreSharing(event.target.checked)} />Restore {preview.sharing.length} project participant(s)</label>}
+        {preview.externalRelations.acknowledgementRequired && <label className="check-row"><input type="checkbox" checked={externalRelationsAcknowledged} onChange={(event) => setExternalRelationsAcknowledged(event.target.checked)} />I understand that external relation descriptors do not restore peer Tasks or relation edges</label>}
         <label><span>Type <b>{preview.projectName}</b> to confirm</span><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>
-        <button className="button danger" disabled={busy || confirmation !== preview.projectName || (preview.projectExists && !downloaded)} onClick={() => void apply()}>{busy ? "Restoring…" : "Restore project"}</button>
+        <button className="button danger" disabled={busy || confirmation !== preview.projectName || (preview.projectExists && !downloaded) || (preview.externalRelations.acknowledgementRequired && !externalRelationsAcknowledged)} onClick={() => void apply()}>{busy ? "Restoring…" : "Restore project"}</button>
       </section>}
       {applied && <section className="import-report"><h2>Project restored</h2><p>{applied.projectName} was applied atomically.</p><a className="button primary" href="/projects">Open Task Manager</a></section>}
       {!embedded && <a className="button ghost" href="/">Back to Task Manager</a>}

@@ -522,6 +522,11 @@ export function buildLinearImportPlan(
         `Linear issue ${task.sourceId} references missing parent ${parentSourceId}`,
       );
     }
+    if (parent.projectId !== task.projectId) {
+      throw new ValidationError(
+        `Linear issue ${task.sourceId} parent ${parentSourceId} crosses Projects`,
+      );
+    }
     task.parentTaskId = parent.id;
   }
   validateParentGraph(tasks);
@@ -1104,9 +1109,12 @@ function buildRelations(
     if (sourceTask.id === targetTask.id) {
       throw new ValidationError(`Linear issue ${sourceId} relates to itself`);
     }
-    if (sourceTask.projectId !== targetTask.projectId) {
+    if (
+      type === "duplicate_of" &&
+      sourceTask.projectId !== targetTask.projectId
+    ) {
       throw new ValidationError(
-        `Linear relation ${sourceId} -> ${targetSourceId} crosses Projects`,
+        `Linear duplicate relation ${sourceId} -> ${targetSourceId} crosses Projects`,
       );
     }
     let sourceTaskId = sourceTask.id;

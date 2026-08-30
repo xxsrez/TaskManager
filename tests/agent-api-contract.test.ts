@@ -158,6 +158,23 @@ test("OpenAPI exposes task work but no administration or sharing operations", ()
   assert.equal(paths.includes("/tasks/{ref}/subtasks"), true);
   assert.equal(paths.includes("/tasks/{ref}/relations"), true);
   assert.equal(paths.includes("/tasks/{ref}/relations/{relationRef}"), true);
+  assert.match(
+    agentApiOpenApi.paths["/tasks/{ref}/relations"].post.summary,
+    /across Projects/i,
+  );
+  assert.match(
+    agentApiOpenApi.components.schemas.TaskRelationCreate.properties.targetTaskRef
+      .description,
+    /blocks and related/i,
+  );
+  assert.match(
+    agentApiOpenApi.paths["/tasks/{ref}/move"].post.summary,
+    /preserving blocks and related/i,
+  );
+  assert.deepEqual(
+    agentApiOpenApi.components.schemas.CompactTaskLink.required,
+    ["ref", "identifier", "title", "status", "project"],
+  );
   assert.equal(paths.includes("/labels"), true);
   assert.equal(paths.includes("/tasks/{ref}/labels"), true);
   assert.equal(paths.includes("/label-groups"), true);

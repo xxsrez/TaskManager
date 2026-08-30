@@ -14,5 +14,6 @@ export async function POST(request: Request) {
     confirmation: String(input.confirmation ?? ""),
     currentBackupDownloaded: input.currentBackupDownloaded === true,
     restoreSharing: input.restoreSharing === true,
+    externalRelationsAcknowledged: input.externalRelationsAcknowledged === true,
   }));
 }

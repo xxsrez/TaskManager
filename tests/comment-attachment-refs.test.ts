@@ -131,7 +131,7 @@ test("native comments atomically index ready image/file refs across create, edit
     project.id,
     "https://example.test",
   );
-  assert.equal(projectBackup.schemaVersion, 14);
+  assert.equal(projectBackup.schemaVersion, 15);
   assert.equal(projectBackup.tables.comment_attachment_refs.length, 2);
   assert.match(
     String(projectBackup.tables.comments.find((comment) => comment.id === root.id)?.body ?? ""),

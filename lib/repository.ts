@@ -1523,10 +1523,7 @@ export async function getTaskDetail(
   options: { workspaceScope?: string | null } = {},
 ): Promise<TaskDetailRecord> {
   const task = await loadAccessibleTask(currentUser.id, taskId);
-  const workspaceScope = await resolveWorkspaceScope(
-    currentUser,
-    options.workspaceScope,
-  );
+  void options;
   const db = getD1();
   const [labelRows, relationRows, childRows] = await db.batch([
     db
@@ -1572,9 +1569,6 @@ export async function getTaskDetail(
         viewIds: [],
         labelGroupIds: [],
         invalidatedTaskIds: [],
-        ...(workspaceScope
-          ? { workspaceOwnerUserId: workspaceScope.ownerUserId }
-          : {}),
       })).tasks
     : [];
   const visibleIds = new Set([task.id, ...relatedTasks.map((item) => item.id)]);
@@ -3238,13 +3232,14 @@ export async function moveTask(
   const relation = await getD1()
     .prepare(
       `SELECT 1 AS related FROM task_relations
-       WHERE source_task_id = ? OR target_task_id = ? LIMIT 1`,
+       WHERE type = 'duplicate_of'
+         AND (source_task_id = ? OR target_task_id = ?) LIMIT 1`,
     )
     .bind(task.id, task.id)
     .first<{ related: number }>();
   if (relation) {
     throw new ValidationError(
-      "Unlink every Task relation before moving it to another Project",
+      "Unlink the duplicate relation before moving this Task to another Project",
     );
   }
 
@@ -3285,8 +3280,9 @@ export async function moveTask(
       )
       AND NOT EXISTS (
         SELECT 1 FROM task_relations relation
-        WHERE relation.source_task_id = moving.id
-           OR relation.target_task_id = moving.id
+        WHERE relation.type = 'duplicate_of'
+          AND (relation.source_task_id = moving.id
+            OR relation.target_task_id = moving.id)
       )
       AND (
         ? IS NULL OR EXISTS (
@@ -3426,6 +3422,7 @@ export async function moveTask(
         )
         .bind(aliasId, task.id, task.identifier, now),
       activityInsert,
+      invalidateTaskRelationDetails(db, task.id),
     ]);
     if (
       (results[0]?.meta.changes ?? 0) < 1 ||
@@ -3457,6 +3454,23 @@ function moveBatchAssertion(
        SELECT ?, NULL, ? WHERE changes() = 0`,
     )
     .bind(assertionId, `move-assert-${step}`);
+}
+
+function invalidateTaskRelationDetails(db: D1Database, taskId: string) {
+  return db.prepare(
+    `INSERT INTO workspace_sync_invalidations (task_id, invalidation_type)
+     SELECT affected.task_id, 'task_detail'
+     FROM (
+       SELECT ? AS task_id
+       UNION
+       SELECT CASE
+         WHEN relation.source_task_id = ? THEN relation.target_task_id
+         ELSE relation.source_task_id
+       END AS task_id
+       FROM task_relations relation
+       WHERE relation.source_task_id = ? OR relation.target_task_id = ?
+     ) affected`,
+  ).bind(taskId, taskId, taskId, taskId);
 }
 
 function isConstraintError(error: unknown) {
@@ -3525,16 +3539,23 @@ export async function bulkMoveTasks(
   }
   const relation = await db.prepare(
     `SELECT 1 AS related FROM task_relations
-     WHERE source_task_id IN (${placeholders})
-        OR target_task_id IN (${placeholders})
+     WHERE type = 'duplicate_of'
+       AND (source_task_id IN (${placeholders})
+         OR target_task_id IN (${placeholders}))
+       AND NOT (
+         source_task_id IN (${placeholders})
+         AND target_task_id IN (${placeholders})
+       )
      LIMIT 1`,
   ).bind(
+    ...movingTasks.map((task) => task.id),
+    ...movingTasks.map((task) => task.id),
     ...movingTasks.map((task) => task.id),
     ...movingTasks.map((task) => task.id),
   ).first<{ related: number }>();
   if (relation) {
     throw new ValidationError(
-      "Unlink every selected Task relation before moving Tasks to another Project",
+      "Move both duplicate relation endpoints together or unlink the relation first",
     );
   }
 
@@ -3643,8 +3664,13 @@ export async function bulkMoveTasks(
            AND NOT EXISTS (SELECT 1 FROM tasks child WHERE child.parent_task_id = tasks.id)
            AND NOT EXISTS (
              SELECT 1 FROM task_relations relation
-             WHERE relation.source_task_id = tasks.id
-                OR relation.target_task_id = tasks.id
+             WHERE relation.type = 'duplicate_of'
+               AND (relation.source_task_id = tasks.id
+                 OR relation.target_task_id = tasks.id)
+               AND NOT (
+                 relation.source_task_id IN (${placeholders})
+                 AND relation.target_task_id IN (${placeholders})
+               )
            )
            AND ${editableTaskPredicate}
            AND EXISTS (
@@ -3689,6 +3715,8 @@ export async function bulkMoveTasks(
         task.id,
         expectedVersion,
         task.projectId,
+        ...movingTasks.map((movingTask) => movingTask.id),
+        ...movingTasks.map((movingTask) => movingTask.id),
         currentUser.id,
         currentUser.id,
         currentUser.id,
@@ -3707,6 +3735,7 @@ export async function bulkMoveTasks(
            (id, task_id, identifier, created_at) VALUES (?, ?, ?, ?)`,
       ).bind(`alias_${crypto.randomUUID()}`, task.id, task.identifier, now),
       activity.statement,
+      invalidateTaskRelationDetails(db, task.id),
     );
   });
 

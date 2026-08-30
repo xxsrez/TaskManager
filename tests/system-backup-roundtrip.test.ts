@@ -123,6 +123,17 @@ test("TM-318 proves the complete current-format system backup round-trip", async
         assert.deepEqual(after.rows, before.rows);
         assert.deepEqual(after.objects, before.objects);
 
+        const crossProjectRelations = await database.prepare(`SELECT r.type
+          FROM task_relations r
+          JOIN tasks source ON source.id = r.source_task_id
+          JOIN tasks target ON target.id = r.target_task_id
+          WHERE source.project_id != target.project_id
+          ORDER BY r.type`).all<{ type: string }>();
+        assert.deepEqual(
+          crossProjectRelations.results.map((relation) => relation.type),
+          ["blocks", "related"],
+        );
+
         assert.equal(
           (await database.prepare("SELECT COUNT(*) AS count FROM access_grants WHERE revoked_at IS NULL")
             .first<{ count: number }>())?.count,
@@ -263,6 +274,11 @@ test("TM-318 proves the complete current-format system backup round-trip", async
         rows[0]!.parent_task_id = String(rows[1]!.id);
         rows[1]!.parent_task_id = String(rows[0]!.id);
       }), "parent cycle");
+      await assertDomainPackageRejected(admin, mutateRow(compactPackage, "task_relations", (rows) => {
+        const crossProject = rows.find((row) => row.id === "relation-cross-project-blocks");
+        assert.ok(crossProject);
+        crossProject.type = "duplicate_of";
+      }), "cross-Project duplicate relation");
       await assertDomainPackageRejected(admin, mutateRow(compactPackage, "access_grants", (rows) => {
         rows[0]!.owner_user_id = outsider.id;
       }), "invalid ACL");
@@ -599,6 +615,7 @@ async function seedCompleteState(database: D1Database, bucket: R2Bucket) {
   await bucket.put("test/attachments/legacy", legacyBytes);
   await bucket.put("test/attachments/orphan", orphanBytes, { customMetadata: { sha256: orphanSha } });
 
+  const [relatedSourceTaskId, relatedTargetTaskId] = [child.id, deletedTask.id].sort();
   await database.batch([
     database.prepare(`INSERT INTO task_identifier_aliases (id, task_id, identifier, created_at)
       VALUES ('alias-root', ?, 'OLD-42', ?)`).bind(root.id, fixtureTime),
@@ -606,6 +623,14 @@ async function seedCompleteState(database: D1Database, bucket: R2Bucket) {
       (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key, version, created_at, updated_at)
       VALUES ('relation-root-child', ?, ?, 'blocks', ?, 'relation-proof', 2, ?, ?)`)
       .bind(root.id, child.id, admin.id, fixtureTime, fixtureTime),
+    database.prepare(`INSERT INTO task_relations
+      (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key, version, created_at, updated_at)
+      VALUES ('relation-cross-project-blocks', ?, ?, 'blocks', ?, 'relation-cross-project-blocks-proof', 1, ?, ?)`)
+      .bind(root.id, deletedTask.id, admin.id, fixtureTime, fixtureTime),
+    database.prepare(`INSERT INTO task_relations
+      (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key, version, created_at, updated_at)
+      VALUES ('relation-cross-project-related', ?, ?, 'related', ?, 'relation-cross-project-related-proof', 1, ?, ?)`)
+      .bind(relatedSourceTaskId, relatedTargetTaskId, admin.id, fixtureTime, fixtureTime),
     database.prepare(`INSERT INTO external_records
       (id, owner_user_id, target_type, target_id, source, source_id, source_url, metadata_json, imported_at)
       VALUES ('external-root', ?, 'task', ?, 'linear', 'LIN-42', 'https://linear.example/LIN-42', '{"team":"proof"}', ?)`)

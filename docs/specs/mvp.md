@@ -137,7 +137,8 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Current system backup schema `15` — единственный принимаемый формат. Он
   следует исчерпывающему D1/R2 registry, включает `stored_files`,
   `attachments.stored_file_id` и `task_sequences`; schemas `2`–`14`
-  отклоняются без upgrade. Project bundle сохраняет отдельный schema `14`.
+  отклоняются без upgrade. Project bundle использует отдельный schema `15` и
+  свой compatibility contract.
 - Отдельный login-event или audit-event log пока не моделируется. Поэтому
   «last active» означает последний подтверждённый запрос, а не доказанный новый
   sign-in внутри уже действующей Sites session.
@@ -287,8 +288,9 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   не расходует sequence.
 - Несовместимый Release и Assignee без доступа к target нельзя очистить молча:
   command содержит явный compatible replacement либо `null`. Task с parent или
-  subtask сначала detach/reparent; все relations необходимо явно unlink до
-  переноса, чтобы ни один edge не стал cross-Project.
+  subtask сначала detach/reparent. `duplicate_of` необходимо явно unlink до
+  переноса, потому что этот type остаётся same-Project; допустимые `blocks` и
+  `related` сохраняют immutable relation identity при переносе.
 - В одной D1 transaction allocator целевого Project, новый
   `project_id`/sequence/identifier, Release/Assignee и alias прежнего identifier
   либо применяются вместе, либо полностью откатываются. `public_id`, content,
@@ -379,13 +381,23 @@ immutable ID и может группировать Tasks по значения�
 - `blocks` направлено; обратная сторона показывается как `blocked_by`.
 - `related` симметрично.
 - `duplicate_of` направлено на каноническую задачу; self-relations и дубликаты
-  одной связи запрещены.
-- Relation создаётся только между двумя разными Tasks одного Project. Автор
-  mutation обязан иметь Editor или выше на обеих Tasks; недоступный target
-  возвращает `not_found`, не раскрывая существование Task.
+  одной связи запрещены. В отличие от `blocks` и `related`, `duplicate_of`
+  допустимо только между Tasks одного Project.
+- `blocks` и `related` могут связывать разные Projects того же Site. Автор
+  mutation обязан иметь Editor или выше на обеих Tasks через ACL их собственных
+  Projects. Viewer видит relation только при read access к обеим сторонам и не
+  может её изменить; недоступный peer возвращает `not_found` без раскрытия
+  существования Task или самого edge.
 - Каждая relation имеет immutable identity, idempotency key создания и
   независимую optimistic `version`. Изменение direction/type и удаление требуют
-  актуальную relation version; sync инвалидирует lazy details обеих сторон.
+  актуальную relation version. Изменение type повторно проверяет same-Project
+  ограничение `duplicate_of`; обратные `blocks`, self-relation и semantic
+  duplicate остаются запрещены.
+- Detail, relation filters, Activity и sync проецируют edge только когда caller
+  по-прежнему читает обе Tasks. Успешная mutation создаёт согласованный Activity
+  event для каждой стороны и инвалидирует lazy details обоих peers; перенос
+  Task дополнительно инвалидирует details сохранённых `blocks`/`related`, чтобы
+  новый Project и identifier стали видны без полного bootstrap.
 - Для одного source допускается не более одного `duplicate_of`. Создание или
   перевод в `duplicate_of` атомарно назначает source зарезервированный статус
   `Duplicate`. Изменение/удаление связи не пытается угадать и восстановить
@@ -396,6 +408,9 @@ immutable ID и может группировать Tasks по значения�
 - Автоматическое распознавание Task references в description/comments и
   создание `related` не входят в первый native-write slice: связь создаётся
   только явным действием пользователя или Agent command.
+- Offline Linear migration и backup/import validators применяют те же границы:
+  межпроектные `blocks`/`related` допустимы, `duplicate_of` и hierarchy требуют
+  один Project; недоступный или отсутствующий peer не превращается в живой edge.
 - Автоматическое закрытие parent по subtasks не входит в MVP.
 
 ### 5.5 Comments и импортированная история
@@ -464,15 +479,17 @@ immutable ID и может группировать Tasks по значения�
 
 ### 5.6 Task Activity
 
-- Каждая успешная перечисленная ниже Task mutation создаёт ровно один versioned append-only
-  `ActivityEvent` в той же D1 transaction. Event хранит Task, server-verified
+- Каждая успешная перечисленная ниже Task mutation создаёт ровно один versioned
+  append-only `ActivityEvent` для каждой затронутой Task в той же D1
+  transaction. Event хранит Task, server-verified
   User actor либо historical actor snapshot, timestamp, тип и минимальный
   structured before/after payload.
 - Покрываются create/update, status/lifecycle, priority, assignee,
   Project/Release, due date, estimate, labels, hierarchy, relations,
-  archive/restore и значимые comment events. Compound relation/`Duplicate`
-  сохраняется одним согласованным event; Project move содержит old/new Project
-  и old/new identifier в одной записи.
+  archive/restore и значимые comment events. Relation mutation сохраняет по
+  одному согласованному event на каждом endpoint; `Duplicate` дополнительно
+  остаётся атомарным со status source. Project move содержит old/new Project и
+  old/new identifier в одной записи moving Task.
 - No-op desired state, idempotent retry, stale optimistic version, failed SQL
   guard и rollback не создают ложного event. Project-code backfill не создаёт
   synthetic event на каждую историческую Task и остаётся migration provenance.
@@ -488,7 +505,7 @@ immutable ID и может группировать Tasks по значения�
   Каждая source row получает `migrated`/`exception`; offline повторный прогон не
   дублирует events. Raw evidence остаётся только в reconciliation/backup до
   отдельно разрешённого durable-data cleanup.
-- Project backup schema `14` и system backup schema `15` сохраняют events,
+- Project backup schema `15` и system backup schema `15` сохраняют events,
   attachment migration outcomes, LabelGroup topology, normalized comment
   attachment refs и reconciliation evidence вместе с recoverable deletion
   tuple. System schema `15` дополнительно сохраняет versioned profile,
@@ -668,12 +685,20 @@ immutable ID и может группировать Tasks по значения�
   cross-Site remapping отсутствуют. Перед mutation сервер полностью проверяет
   checksum, ссылки, catalogs, collisions и domain invariants и сохраняет
   normalized rows в staging.
-- Preview показывает create/update/delete, conflicts, потерянные external
+- Preview показывает create/update/delete, conflicts, внешние relation
   references и sharing. Для существующего Project apply требует свежий backup
-  текущего состояния и точное имя Project; sharing восстанавливается только
-  после отдельного opt-in.
+  текущего состояния, точное имя Project и отдельное подтверждение того, что
+  внешние edges из provenance не восстанавливаются. Sharing восстанавливается
+  только после отдельного opt-in.
 - Replace Project subtree выполняется одной D1 transaction. Ошибка оставляет
-  live state без изменений; relations к Tasks вне bundle не становятся живыми.
+  live state без изменений. Descriptor внешней relation содержит только
+  provenance самого edge и внутренней стороны, но не peer Task; apply не
+  импортирует и не создаёт такой edge. Уже существующий live `blocks`/`related`
+  через границу Project сохраняется при exact replacement, только если его
+  внутренняя Task входит в incoming set, обе endpoint Tasks существуют
+  (включая recoverably deleted) и type допустим; иначе stage/apply fail-closed
+  до mutation. Так restore не создаёт dangling
+  references и не импортирует чужой Project неявно.
 - Schema `3` включает Attachment metadata и originals в bounded
   content-addressed JSON container; live R2 keys и thumbnails не входят.
   System limit — 10 MB, Project — 25 MB. Schema `2` без Attachments остаётся
@@ -689,6 +714,12 @@ immutable ID и может группировать Tasks по значения�
   `comment_attachment_refs`; schema `2`–`12` после
   проверки исходного checksum получает пустой index без попытки синтезировать
   historical edges из legacy comment bodies.
+- Schema `15` добавляет checksum-protected `externalTaskRelations`: для каждого
+  намеренно не включённого `blocks`/`related` edge сохраняются immutable
+  relation metadata, внутренняя Task и сторона boundary с фиксированной
+  политикой `not_restored`. Peer Task и content в bundle не входят. Legacy
+  schemas `2`–`14` нормализуются с пустым provenance set и не заявляют внешние
+  edges восстановленными.
 - Restore materializes новые environment-scoped R2 keys до атомарного D1
   cutover, удаляет старые objects только после success и компенсирует новые при
   failure. Cross-Site Project restore по-прежнему запрещён.
@@ -1083,8 +1114,10 @@ created/updated/started/completed/canceled dates и archived state.
     `duplicate_of`, изменить direction/type и удалить relation. Проверить
     группировку `Blocked by`/`Blocking`/`Related`/`Duplicate of`, перенос
     terminal blocker в `Related`, атомарный статус `Duplicate`, Viewer без
-    mutation controls, отказ cross-Project без existence leak, stale
-    relation/task version и lazy sync invalidation обеих Tasks. Повторить
+    mutation controls, межпроектные `blocks`/`related` при Editor+ на обеих
+    Tasks и отказ без existence leak, stale relation/task version и lazy sync
+    invalidation обеих Tasks. Проверить, что межпроектный `duplicate_of`
+    отклоняется, а move сохраняет допустимые edges. Повторить
     create/update/delete через Agent REST и MCP canonical refs; retry create с
     тем же idempotency key не создаёт вторую row.
 36. Owner создаёт, переименовывает, архивирует и восстанавливает Label; active
@@ -1153,8 +1186,8 @@ created/updated/started/completed/canceled dates и archived state.
     delivery, OpenAI file input, versioned delete и transport/security tests.
 18. Attachment-aware system/project backup и restore.
 19. Native Task relations: application UI/API, versioned Agent REST/MCP,
-    idempotency, ACL обеих сторон, atomic Duplicate transition, lazy sync и
-    backup/import compatibility.
+    idempotency, ACL обеих сторон, межпроектные `blocks`/`related`,
+    same-Project Duplicate transition, lazy sync и backup/import compatibility.
 20. Append-only Task Activity: атомарные native events, Linear status-history
     migration, lazy UI/Agent/MCP reads, ACL/revoke и backup/restore schema `10`.
 21. Legacy attachment reconciliation: resumable admin inventory/apply,

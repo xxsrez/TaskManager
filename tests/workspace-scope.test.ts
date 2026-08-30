@@ -89,8 +89,8 @@ test("workspace scope tokens are opaque, bounded, and fail closed to the current
     `/api/tasks/task%2Fa?workspace_scope=${encodeURIComponent(otherToken)}`,
   );
   assert.equal(
-    taskRelationSearchUiApiPath("needle / one", otherToken),
-    `/api/tasks?search=needle+%2F+one&workspace_scope=${encodeURIComponent(otherToken)}`,
+    taskRelationSearchUiApiPath("needle / one", "task/anchor", "blocked_by"),
+    "/api/tasks?search=needle+%2F+one&relation_search=true&relation_anchor=task%2Fanchor&relation_kind=blocked_by",
   );
 
   assert.deepEqual(
@@ -103,7 +103,7 @@ test("workspace scope tokens are opaque, bounded, and fail closed to the current
   );
 });
 
-test("task detail context and relation search narrow by re-resolved UI owner scope", async () => {
+test("task detail and relation search use the readable ACL union across UI owner scopes", async () => {
   const currentActor = {
     provider: "chatgpt" as const,
     providerAccountKey: "workspace-detail-current",
@@ -134,12 +134,21 @@ test("task detail context and relation search narrow by re-resolved UI owner sco
     projectId: foreignProject.id,
     title: "Scoped relation needle foreign",
   });
+  const foreignCandidate = await createTask(foreign, {
+    projectId: foreignProject.id,
+    title: "Scoped relation needle candidate",
+  });
   await grantAccess(foreign, {
     resourceType: "project",
     resourceId: foreignProject.id,
     email: current.email,
     permission: "editor",
   });
+  const foreignGrant = (await getSnapshot(foreign)).collaborators.find(
+    (grant) => grant.resourceType === "project" &&
+      grant.resourceId === foreignProject.id &&
+      grant.userId === current.id,
+  )!;
   await database.prepare(`INSERT INTO task_relations
     (id, source_task_id, target_task_id, type, creator_user_id, idempotency_key)
     VALUES (?, ?, ?, ?, ?, ?)`)
@@ -160,13 +169,13 @@ test("task detail context and relation search narrow by re-resolved UI owner sco
   const scopedDetail = await getTaskDetail(current, source.id, {
     workspaceScope: currentToken,
   });
-  assert.deepEqual(scopedDetail.relatedTasks, []);
-  assert.deepEqual(scopedDetail.relations, []);
+  assert.deepEqual(scopedDetail.relatedTasks.map((task) => task.id), [foreignTarget.id]);
+  assert.equal(scopedDetail.relations.length, 1);
 
   const unionSearch = await searchTaskSummaries(current, "Scoped relation needle");
   assert.deepEqual(
     new Set(unionSearch.map((task) => task.id)),
-    new Set([source.id, foreignTarget.id]),
+    new Set([source.id, foreignTarget.id, foreignCandidate.id]),
   );
   const scopedSearch = await searchTaskSummaries(current, "Scoped relation needle", {
     workspaceScope: currentToken,
@@ -182,8 +191,8 @@ test("task detail context and relation search narrow by re-resolved UI owner sco
   );
   assert.equal(detailResponse.status, 200);
   const detailPayload = await detailResponse.json() as typeof scopedDetail;
-  assert.deepEqual(detailPayload.relatedTasks, []);
-  assert.deepEqual(detailPayload.relations, []);
+  assert.deepEqual(detailPayload.relatedTasks.map((task) => task.id), [foreignTarget.id]);
+  assert.equal(detailPayload.relations.length, 1);
 
   const searchResponse = await searchTasksRoute(new Request(
     `https://example.test/api/tasks?search=Scoped+relation+needle&workspace_scope=${encodeURIComponent(currentToken)}`,
@@ -191,6 +200,87 @@ test("task detail context and relation search narrow by re-resolved UI owner sco
   assert.equal(searchResponse.status, 200);
   const searchPayload = await searchResponse.json() as { tasks: TaskRecord[] };
   assert.deepEqual(searchPayload.tasks.map((task) => task.id), [source.id]);
+
+  const relationSearchResponse = await searchTasksRoute(new Request(
+    `https://example.test/api/tasks?search=Scoped+relation+needle&relation_search=true&relation_anchor=${source.id}&relation_kind=related&workspace_scope=${encodeURIComponent(currentToken)}`,
+  ));
+  assert.equal(relationSearchResponse.status, 200);
+  const relationSearchPayload = await relationSearchResponse.json() as {
+    tasks: TaskRecord[];
+    projects: ProjectRecord[];
+  };
+  assert.deepEqual(relationSearchPayload.tasks.map((task) => task.id), [foreignCandidate.id]);
+  assert.deepEqual(
+    new Set(relationSearchPayload.projects.map((project) => project.id)),
+    new Set([foreignProject.id]),
+  );
+
+  await revokeAccess(foreign, foreignGrant.grantId);
+  const revokedRelationSearchResponse = await searchTasksRoute(new Request(
+    `https://example.test/api/tasks?search=Scoped+relation+needle&relation_search=true&relation_anchor=${source.id}&relation_kind=related&workspace_scope=${encodeURIComponent(currentToken)}`,
+  ));
+  assert.equal(revokedRelationSearchResponse.status, 200);
+  const revokedRelationSearchPayload = await revokedRelationSearchResponse.json() as {
+    tasks: TaskRecord[];
+    projects: ProjectRecord[];
+  };
+  assert.deepEqual(revokedRelationSearchPayload.tasks, []);
+  assert.deepEqual(revokedRelationSearchPayload.projects, []);
+  const revokedDetail = await getTaskDetail(current, source.id, {
+    workspaceScope: currentToken,
+  });
+  assert.deepEqual(revokedDetail.relatedTasks, []);
+  assert.deepEqual(revokedDetail.relations, []);
+});
+
+test("relation search filters invalid candidates before applying its result limit", async () => {
+  const actor = {
+    provider: "chatgpt" as const,
+    providerAccountKey: "relation-search-limit-owner",
+    displayName: "Relation search limit owner",
+    email: "relation-search-limit-owner@example.test",
+  };
+  const owner = await getOrCreateUser(actor);
+  await createProject(owner, { name: "Relation search local", taskCode: "RSL" });
+  await createProject(owner, { name: "Relation search foreign", taskCode: "RSF" });
+  const projects = (await getSnapshot(owner)).projects;
+  const localProject = projects.find((project) => project.name === "Relation search local")!;
+  const foreignProject = projects.find((project) => project.name === "Relation search foreign")!;
+  const anchor = await createTask(owner, {
+    projectId: localProject.id,
+    title: "Relation search anchor",
+  });
+  const validCandidate = await createTask(owner, {
+    projectId: localProject.id,
+    title: "Twenty candidate needle valid",
+  });
+  const invalidCandidateIds: string[] = [];
+  for (let index = 0; index < 20; index += 1) {
+    invalidCandidateIds.push((await createTask(owner, {
+      projectId: foreignProject.id,
+      title: `Twenty candidate needle foreign ${index}`,
+    })).id);
+  }
+  await database.prepare(`UPDATE tasks SET updated_at = ? WHERE id = ?`)
+    .bind("2020-01-01T00:00:00.000Z", validCandidate.id).run();
+  await database.prepare(`UPDATE tasks SET updated_at = ?
+    WHERE id IN (${invalidCandidateIds.map(() => "?").join(", ")})`)
+    .bind("2030-01-01T00:00:00.000Z", ...invalidCandidateIds).run();
+
+  const rawMatches = await searchTaskSummaries(owner, "Twenty candidate needle");
+  assert.ok(rawMatches.findIndex((task) => task.id === validCandidate.id) >= 20);
+
+  configureActorResolverForTests(async () => actor);
+  const response = await searchTasksRoute(new Request(
+    `https://example.test/api/tasks?search=Twenty+candidate+needle&relation_search=true&relation_anchor=${anchor.id}&relation_kind=duplicate_of`,
+  ));
+  assert.equal(response.status, 200);
+  const payload = await response.json() as {
+    tasks: TaskRecord[];
+    projects: ProjectRecord[];
+  };
+  assert.deepEqual(payload.tasks.map((task) => task.id), [validCandidate.id]);
+  assert.deepEqual(payload.projects.map((project) => project.id), [localProject.id]);
 });
 
 test("project children use the current Project owner while global views use their own owner", () => {

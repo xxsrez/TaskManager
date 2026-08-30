@@ -494,7 +494,9 @@ List повторяет плотную grouped-list модель Linear.
   `<target-code>-<next-sequence>`, явно отмечая preview как нерезервирующий.
   Отдельные controls требуют выбрать compatible Release либо clear и сохранить
   доступного target assignee либо явно change/clear. Parent/subtasks блокируют
-  submit с инструкцией detach/reparent. После commit details/list/board/search
+  submit с инструкцией detach/reparent; same-Project `duplicate_of` требует
+  предварительного unlink. Межпроектно допустимые `blocks`/`related` не
+  блокируют перенос и сохраняются. После commit details/list/board/search
   используют authoritative identifier из server response; stale/conflict не
   оставляет оптимистически показанный перенос.
 - Timestamps muted и доступны в нижней metadata section.
@@ -508,12 +510,18 @@ List повторяет плотную grouped-list модель Linear.
   остаётся видимым под `Related` как resolved blocker; после reopen возвращается
   в `Blocked by`.
 - Editor+ открывает `Add relation`, выбирает relative type и ищет Task по
-  identifier/title. Результаты содержат только доступные Project Tasks, для
-  которых есть write access; selected target, поиск, сохранение и ошибка имеют
-  явные состояния. Existing relation можно изменить или удалить по её version.
+  identifier/title во всех доступных Projects. Результат всегда показывает
+  Project qualification рядом с identifier/title и попадает в список только
+  при write access к обеим Tasks. `blocks`/`related` разрешают другой Project,
+  а `duplicate_of` оставляет только Tasks текущего Project; selected target,
+  поиск, сохранение и ошибка имеют явные состояния. Existing relation можно
+  изменить или удалить по её version.
   `Duplicate of` формулируется как отдельное destructive domain outcome, а не
   как обычная cosmetic link.
-- Viewer видит те же группы и deep links без add/edit/remove controls. На touch
+- Viewer видит те же группы, Project qualification и deep links без
+  add/edit/remove controls, только если ACL разрешает чтение обеих сторон.
+  Недоступный peer и сам edge не появляются в details, filters или Activity.
+  На touch
   target actions имеют не менее 40 px, composer перестраивается в одну колонку,
   а portrait/landscape details не создаёт horizontal overflow.
 - Ниже properties, hierarchy и relations располагается lazy секция
@@ -725,6 +733,9 @@ List повторяет плотную grouped-list модель Linear.
   type и direction. Пустой searchable catalog показывает явный empty state.
 - MVP соединяет условия через `AND`; `OR` и nested groups не показываются как
   disabled promises.
+- Relation condition учитывает только edges, для которых текущий User читает
+  обе Tasks. Потеря доступа к peer убирает совпадение без признака того, что
+  скрытая relation существует.
 - В Saved View Filter surface показывает два визуально различимых слоя:
   `Saved in <View name>` с полной base formula и `Temporary filters` с
   дополнительными URL/session conditions. Saved chips доступны read-only
@@ -944,11 +955,18 @@ Linear, но они обязаны использовать тот же visual l
 - Project backup показывает только Projects, где current User — Owner. Для
   каждого доступен download; ниже находится dropzone restore-файла.
 - После выбора bundle UI сначала показывает verified preview: имя/ID Project,
-  export time, counts, create/update/delete, warnings и sharing descriptors.
+  export time, counts, create/update/delete, warnings, sharing descriptors и
+  отдельный список внешних `blocks`/`related` provenance без peer content.
   Existing Project требует отдельный текущий download, checkbox восстановления
-  sharing и точное имя Project. Destructive apply отделён от file selection.
-- После успешного Project restore UI показывает итоговые counts и даёт
-  основной action `Open Task Manager`.
+  sharing и точное имя Project. Если bundle содержит внешние edges, apply также
+  disabled до отдельного acknowledgement, что они не будут восстановлены.
+  Destructive apply отделён от file selection.
+- Preview отдельно сообщает, сколько текущих live `blocks`/`related` безопасно
+  сохранятся при exact replacement. Если incoming Tasks не позволяют сохранить
+  такой edge без dangling reference, validation блокирует apply до mutation.
+  После успешного Project restore UI показывает обычный success result и
+  основной action `Open Task Manager`; автоматически найти или импортировать
+  peer Project он не предлагает.
 
 ### 12.6 Recently deleted
 
@@ -1058,7 +1076,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Context/command actions | Right-click, overflow, `Cmd/Ctrl+K` | Берём ядро | Не полная command palette |
 | Peek | Preview task/project по `Space` | Берём | Только comment count, без thread bodies |
 | Issue composer/details | Modal composer, details, native attachments, discussions и change Activity | Берём | Без task templates и mentions; Comment authoring и renderer переиспользуют существующие Task attachments; Task-file upload после create имеет честный partial result |
-| Issue relations | Grouped blocking/related/duplicate links и explicit add/edit/remove | Берём ядро | Без auto-related из description/comments в первом writable slice |
+| Issue relations | Grouped blocking/related/duplicate links и explicit add/edit/remove | Берём ядро | Межпроектные `blocks`/`related` проходят ACL обеих Tasks; без auto-related из description/comments |
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
 | Themes | System/light/dark | Берём | Собственные tokens и branding |
@@ -1088,7 +1106,9 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 ## 18. Официальные референсы Linear
 
-Проверены 2026-08-18; перед реализацией крупных surfaces требуется повторная
+Базовый набор проверен 2026-08-18. `Issue relations` и `Edit issues` повторно
+проверены 2026-08-30: официальный picker различает relation types, а при move
+существующие relations сохраняются. Перед следующей крупной surface нужна новая
 сверка, потому что интерфейс Linear развивается.
 
 - [Board layout](https://linear.app/docs/board-layout)
