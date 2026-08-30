@@ -6,60 +6,108 @@ import {
   type BackupColumnShape,
 } from "./system-backup-contract";
 
+type SystemBackupValidationStep = () => Promise<void>;
+
+export interface SystemBackupValidationProgress {
+  nextStepIndex: number;
+  complete: boolean;
+}
+
 export async function validateSystemBackupStagedState(
   jobId: string,
   claimedCounts: Record<string, number>,
   currentAdminUserId: string,
 ) {
+  for (const step of systemBackupStagedValidationSteps(
+    jobId,
+    claimedCounts,
+    currentAdminUserId,
+  )) {
+    await step();
+  }
+}
+
+export async function validateSystemBackupStagedStateStep(
+  jobId: string,
+  claimedCounts: Record<string, number>,
+  currentAdminUserId: string,
+  stepIndex: number,
+): Promise<SystemBackupValidationProgress> {
+  if (!Number.isInteger(stepIndex) || stepIndex < 0) {
+    throw new ValidationError("Invalid system backup preflight cursor");
+  }
+  const steps = [...systemBackupStagedValidationSteps(
+    jobId,
+    claimedCounts,
+    currentAdminUserId,
+  )];
+  if (stepIndex >= steps.length) {
+    throw new ValidationError("Invalid system backup preflight cursor");
+  }
+  await steps[stepIndex]!();
+  const nextStepIndex = stepIndex + 1;
+  return {
+    nextStepIndex,
+    complete: nextStepIndex >= steps.length,
+  };
+}
+
+function* systemBackupStagedValidationSteps(
+  jobId: string,
+  claimedCounts: Record<string, number>,
+  currentAdminUserId: string,
+): Generator<SystemBackupValidationStep, void, void> {
   const db = getD1();
   for (const table of systemBackupExactTableContracts) {
-    const actual = await db.prepare(`SELECT COUNT(*) AS count
-      FROM system_backup_rows WHERE job_id = ? AND table_name = ?`)
-      .bind(jobId, table.name).first<{ count: number }>();
-    if (!actual || Number(actual.count) !== claimedCounts[table.name]) {
-      throw new ValidationError(`Count mismatch for ${table.name}`);
-    }
-    await validateRowShape(jobId, table.name, table.columns, table.shapes ?? {});
+    yield async () => {
+      const actual = await db.prepare(`SELECT COUNT(*) AS count
+        FROM system_backup_rows WHERE job_id = ? AND table_name = ?`)
+        .bind(jobId, table.name).first<{ count: number }>();
+      if (!actual || Number(actual.count) !== claimedCounts[table.name]) {
+        throw new ValidationError(`Count mismatch for ${table.name}`);
+      }
+    };
+    yield () => validateRowShape(jobId, table.name, table.columns, table.shapes ?? {});
   }
 
-  await assertUnique(jobId, "users", ["id"]);
-  await assertUnique(jobId, "user_identities", ["provider", "provider_account_key"]);
-  await assertUnique(jobId, "workflow_statuses", ["id"]);
-  await assertUnique(jobId, "workflow_statuses", ["owner_user_id", "name"]);
-  await assertUnique(jobId, "projects", ["id"]);
-  await assertUnique(jobId, "projects", ["public_id"]);
-  await assertUnique(jobId, "releases", ["id"]);
-  await assertUnique(jobId, "releases", ["public_id"]);
-  await assertUnique(jobId, "tasks", ["id"]);
-  await assertUnique(jobId, "tasks", ["public_id"]);
-  await assertUnique(jobId, "tasks", ["project_id", "sequence_number"]);
-  await assertUnique(jobId, "task_identifier_aliases", ["id"]);
-  await assertUnique(jobId, "task_identifier_aliases", ["task_id", "identifier"]);
-  await assertUnique(jobId, "stored_files", ["id"]);
-  await assertUnique(jobId, "stored_files", ["public_id"]);
-  await assertUnique(jobId, "stored_files", ["object_key"]);
-  await assertUnique(jobId, "attachments", ["id"]);
-  await assertUnique(jobId, "attachments", ["public_id"]);
-  await assertUnique(jobId, "attachments", ["object_key"]);
-  await assertUnique(jobId, "attachments", ["stored_file_id"], true);
-  await assertUnique(jobId, "comments", ["id"]);
-  await assertUnique(jobId, "comment_reactions", ["comment_id", "user_id", "emoji"]);
-  await assertUnique(jobId, "comment_attachment_refs", ["comment_id", "attachment_id"]);
-  await assertUnique(jobId, "activity_events", ["id"]);
-  await assertUnique(jobId, "label_groups", ["id"]);
-  await assertUnique(jobId, "labels", ["id"]);
-  await assertUnique(jobId, "task_labels", ["task_id", "label_id"]);
-  await assertUnique(jobId, "task_relations", ["id"]);
-  await assertUnique(jobId, "task_relations", ["source_task_id", "target_task_id", "type"]);
-  await assertUnique(jobId, "task_relations", ["creator_user_id", "idempotency_key"]);
-  await assertUnique(jobId, "saved_views", ["id"]);
-  await assertUnique(jobId, "saved_views", ["public_id"]);
-  await assertUnique(jobId, "external_records", ["id"]);
-  await assertUnique(jobId, "access_grants", ["id"]);
-  await assertUnique(jobId, "access_grants", ["resource_type", "resource_id", "grantee_user_id"]);
-  await assertUnique(jobId, "task_sequences", ["owner_user_id"]);
+  yield () => assertUnique(jobId, "users", ["id"]);
+  yield () => assertUnique(jobId, "user_identities", ["provider", "provider_account_key"]);
+  yield () => assertUnique(jobId, "workflow_statuses", ["id"]);
+  yield () => assertUnique(jobId, "workflow_statuses", ["owner_user_id", "name"]);
+  yield () => assertUnique(jobId, "projects", ["id"]);
+  yield () => assertUnique(jobId, "projects", ["public_id"]);
+  yield () => assertUnique(jobId, "releases", ["id"]);
+  yield () => assertUnique(jobId, "releases", ["public_id"]);
+  yield () => assertUnique(jobId, "tasks", ["id"]);
+  yield () => assertUnique(jobId, "tasks", ["public_id"]);
+  yield () => assertUnique(jobId, "tasks", ["project_id", "sequence_number"]);
+  yield () => assertUnique(jobId, "task_identifier_aliases", ["id"]);
+  yield () => assertUnique(jobId, "task_identifier_aliases", ["task_id", "identifier"]);
+  yield () => assertUnique(jobId, "stored_files", ["id"]);
+  yield () => assertUnique(jobId, "stored_files", ["public_id"]);
+  yield () => assertUnique(jobId, "stored_files", ["object_key"]);
+  yield () => assertUnique(jobId, "attachments", ["id"]);
+  yield () => assertUnique(jobId, "attachments", ["public_id"]);
+  yield () => assertUnique(jobId, "attachments", ["object_key"]);
+  yield () => assertUnique(jobId, "attachments", ["stored_file_id"], true);
+  yield () => assertUnique(jobId, "comments", ["id"]);
+  yield () => assertUnique(jobId, "comment_reactions", ["comment_id", "user_id", "emoji"]);
+  yield () => assertUnique(jobId, "comment_attachment_refs", ["comment_id", "attachment_id"]);
+  yield () => assertUnique(jobId, "activity_events", ["id"]);
+  yield () => assertUnique(jobId, "label_groups", ["id"]);
+  yield () => assertUnique(jobId, "labels", ["id"]);
+  yield () => assertUnique(jobId, "task_labels", ["task_id", "label_id"]);
+  yield () => assertUnique(jobId, "task_relations", ["id"]);
+  yield () => assertUnique(jobId, "task_relations", ["source_task_id", "target_task_id", "type"]);
+  yield () => assertUnique(jobId, "task_relations", ["creator_user_id", "idempotency_key"]);
+  yield () => assertUnique(jobId, "saved_views", ["id"]);
+  yield () => assertUnique(jobId, "saved_views", ["public_id"]);
+  yield () => assertUnique(jobId, "external_records", ["id"]);
+  yield () => assertUnique(jobId, "access_grants", ["id"]);
+  yield () => assertUnique(jobId, "access_grants", ["resource_type", "resource_id", "grantee_user_id"]);
+  yield () => assertUnique(jobId, "task_sequences", ["owner_user_id"]);
 
-  await assertNoRows(jobId, "administrator identity", `
+  yield () => assertNoRows(jobId, "administrator identity", `
     SELECT 1
     WHERE NOT EXISTS (
       SELECT 1 FROM system_backup_rows imported
@@ -70,9 +118,9 @@ export async function validateSystemBackupStagedState(
       WHERE imported.job_id = ? AND imported.table_name = 'user_identities'
     )`, [currentAdminUserId, jobId], false);
 
-  await assertNoRows(jobId, "identity user", referenceQuery("user_identities", "user_id", "users", "id"));
-  await assertNoRows(jobId, "workflow owner", referenceQuery("workflow_statuses", "owner_user_id", "users", "id"));
-  await assertNoRows(jobId, "Project users", `
+  yield () => assertNoRows(jobId, "identity user", referenceQuery("user_identities", "user_id", "users", "id"));
+  yield () => assertNoRows(jobId, "workflow owner", referenceQuery("workflow_statuses", "owner_user_id", "users", "id"));
+  yield () => assertNoRows(jobId, "Project users", `
     SELECT 1 FROM system_backup_rows p
     WHERE p.job_id = ? AND p.table_name = 'projects' AND (
       NOT ${hasRef("users", "id", "json_extract(p.row_json, '$.owner_user_id')")}
@@ -80,7 +128,7 @@ export async function validateSystemBackupStagedState(
       OR (json_extract(p.row_json, '$.lead_user_id') IS NOT NULL
           AND NOT ${hasRef("users", "id", "json_extract(p.row_json, '$.lead_user_id')")})
     ) LIMIT 1`);
-  await assertNoRows(jobId, "Project code and deletion state", `
+  yield () => assertNoRows(jobId, "Project code and deletion state", `
     SELECT 1 FROM system_backup_rows p
     WHERE p.job_id = ? AND p.table_name = 'projects' AND (
       length(json_extract(p.row_json, '$.task_code')) NOT BETWEEN 1 AND 12
@@ -90,7 +138,7 @@ export async function validateSystemBackupStagedState(
       OR json_extract(p.row_json, '$.task_code') LIKE '%-'
       OR ${invalidDeletionTuple("p")}
     ) LIMIT 1`);
-  await assertNoRows(jobId, "active Project code", `
+  yield () => assertNoRows(jobId, "active Project code", `
     SELECT 1 FROM system_backup_rows p
     JOIN system_backup_rows other
       ON other.job_id = p.job_id AND other.table_name = 'projects'
@@ -101,7 +149,7 @@ export async function validateSystemBackupStagedState(
     WHERE p.job_id = ? AND p.table_name = 'projects'
       AND json_extract(p.row_json, '$.archived_at') IS NULL LIMIT 1`);
 
-  await assertNoRows(jobId, "Release references", `
+  yield () => assertNoRows(jobId, "Release references", `
     SELECT 1 FROM system_backup_rows r
     WHERE r.job_id = ? AND r.table_name = 'releases' AND (
       NOT ${hasRef("projects", "id", "json_extract(r.row_json, '$.project_id')")}
@@ -114,7 +162,7 @@ export async function validateSystemBackupStagedState(
       OR ${invalidDeletionTuple("r")}
     ) LIMIT 1`);
 
-  await assertNoRows(jobId, "Task references and invariants", `
+  yield () => assertNoRows(jobId, "Task references and invariants", `
     SELECT 1 FROM system_backup_rows t
     WHERE t.job_id = ? AND t.table_name = 'tasks' AND (
       trim(json_extract(t.row_json, '$.title')) = ''
@@ -141,7 +189,7 @@ export async function validateSystemBackupStagedState(
       OR ${invalidDeletionTuple("t")}
     ) LIMIT 1`);
 
-  await assertNoRows(jobId, "Task lifecycle timestamps", `
+  yield () => assertNoRows(jobId, "Task lifecycle timestamps", `
     SELECT 1 FROM system_backup_rows t
     JOIN system_backup_rows s ON s.job_id = t.job_id AND s.table_name = 'workflow_statuses'
       AND json_extract(s.row_json, '$.id') = json_extract(t.row_json, '$.status_id')
@@ -153,7 +201,7 @@ export async function validateSystemBackupStagedState(
       OR (json_extract(s.row_json, '$.category') NOT IN ('completed', 'canceled')
         AND (json_extract(t.row_json, '$.completed_at') IS NOT NULL OR json_extract(t.row_json, '$.canceled_at') IS NOT NULL))
     ) LIMIT 1`);
-  await assertNoRows(jobId, "Task hierarchy cycle", `
+  yield () => assertNoRows(jobId, "Task hierarchy cycle", `
     WITH RECURSIVE ancestry(root_id, current_id) AS (
       SELECT json_extract(row_json, '$.id'), json_extract(row_json, '$.parent_task_id')
       FROM system_backup_rows WHERE job_id = ? AND table_name = 'tasks'
@@ -165,7 +213,7 @@ export async function validateSystemBackupStagedState(
        AND json_extract(parent.row_json, '$.id') = ancestry.current_id
       WHERE ancestry.current_id IS NOT NULL
     ) SELECT 1 FROM ancestry WHERE root_id = current_id LIMIT 1`, [jobId]);
-  await assertNoRows(jobId, "Project Task counter", `
+  yield () => assertNoRows(jobId, "Project Task counter", `
     SELECT 1 FROM system_backup_rows p
     WHERE p.job_id = ? AND p.table_name = 'projects' AND (
       json_extract(p.row_json, '$.task_sequence') < COALESCE((
@@ -177,7 +225,7 @@ export async function validateSystemBackupStagedState(
           (json_extract(p.row_json, '$.code_locked_at') IS NOT NULL))
     ) LIMIT 1`);
 
-  await assertNoRows(jobId, "StoredFile references and object slot", `
+  yield () => assertNoRows(jobId, "StoredFile references and object slot", `
     SELECT 1 FROM system_backup_rows f
     WHERE f.job_id = ? AND f.table_name = 'stored_files' AND (
       NOT ${hasRef("users", "id", "json_extract(f.row_json, '$.uploader_user_id')")}
@@ -195,7 +243,7 @@ export async function validateSystemBackupStagedState(
           AND (o.byte_size != json_extract(f.row_json, '$.byte_size')
             OR o.sha256 != json_extract(f.row_json, '$.checksum_sha256')))
     ) LIMIT 1`);
-  await assertNoRows(jobId, "Attachment references and object slot", `
+  yield () => assertNoRows(jobId, "Attachment references and object slot", `
     SELECT 1 FROM system_backup_rows a
     WHERE a.job_id = ? AND a.table_name = 'attachments' AND (
       NOT ${hasRef("tasks", "id", "json_extract(a.row_json, '$.task_id')")}
@@ -247,17 +295,17 @@ export async function validateSystemBackupStagedState(
     ["grant actor", "access_grants", "granted_by_user_id", "users", "id"],
     ["task sequence owner", "task_sequences", "owner_user_id", "users", "id"],
   ] as const) {
-    await assertNoRows(jobId, label, referenceQuery(child, column, parent, parentColumn));
+    yield () => assertNoRows(jobId, label, referenceQuery(child, column, parent, parentColumn));
   }
 
-  await assertNoRows(jobId, "Label group owner mismatch", `
+  yield () => assertNoRows(jobId, "Label group owner mismatch", `
     SELECT 1 FROM system_backup_rows l JOIN system_backup_rows g
       ON g.job_id = l.job_id AND g.table_name = 'label_groups'
      AND json_extract(g.row_json, '$.id') = json_extract(l.row_json, '$.group_id')
     WHERE l.job_id = ? AND l.table_name = 'labels'
       AND json_extract(l.row_json, '$.group_id') IS NOT NULL
       AND json_extract(l.row_json, '$.owner_user_id') != json_extract(g.row_json, '$.owner_user_id') LIMIT 1`);
-  await assertNoRows(jobId, "Task Label catalog mismatch", `
+  yield () => assertNoRows(jobId, "Task Label catalog mismatch", `
     SELECT 1 FROM system_backup_rows tl
     JOIN system_backup_rows t ON t.job_id = tl.job_id AND t.table_name = 'tasks'
       AND json_extract(t.row_json, '$.id') = json_extract(tl.row_json, '$.task_id')
@@ -265,7 +313,7 @@ export async function validateSystemBackupStagedState(
       AND json_extract(l.row_json, '$.id') = json_extract(tl.row_json, '$.label_id')
     WHERE tl.job_id = ? AND tl.table_name = 'task_labels'
       AND json_extract(t.row_json, '$.owner_user_id') != json_extract(l.row_json, '$.owner_user_id') LIMIT 1`);
-  await assertNoRows(jobId, "Task Label Group exclusivity", `
+  yield () => assertNoRows(jobId, "Task Label Group exclusivity", `
     SELECT 1 FROM system_backup_rows first
     JOIN system_backup_rows l1 ON l1.job_id = first.job_id AND l1.table_name = 'labels'
       AND json_extract(l1.row_json, '$.id') = json_extract(first.row_json, '$.label_id')
@@ -278,7 +326,7 @@ export async function validateSystemBackupStagedState(
       AND json_extract(l1.row_json, '$.group_id') IS NOT NULL
       AND json_extract(l1.row_json, '$.group_id') = json_extract(l2.row_json, '$.group_id') LIMIT 1`);
 
-  await assertNoRows(jobId, "Task relation invariant", `
+  yield () => assertNoRows(jobId, "Task relation invariant", `
     SELECT 1 FROM system_backup_rows r
     JOIN system_backup_rows source ON source.job_id = r.job_id AND source.table_name = 'tasks'
       AND json_extract(source.row_json, '$.id') = json_extract(r.row_json, '$.source_task_id')
@@ -288,7 +336,7 @@ export async function validateSystemBackupStagedState(
       json_extract(r.row_json, '$.source_task_id') = json_extract(r.row_json, '$.target_task_id')
       OR json_extract(source.row_json, '$.project_id') != json_extract(target.row_json, '$.project_id')
       OR json_extract(r.row_json, '$.type') NOT IN ('blocks', 'related', 'duplicate_of')) LIMIT 1`);
-  await assertNoRows(jobId, "Task relation topology", `
+  yield () => assertNoRows(jobId, "Task relation topology", `
     SELECT 1 FROM system_backup_rows r
     WHERE r.job_id = ? AND r.table_name = 'task_relations' AND (
       (json_extract(r.row_json, '$.type') = 'related'
@@ -306,7 +354,7 @@ export async function validateSystemBackupStagedState(
           AND json_extract(other.row_json, '$.source_task_id') = json_extract(r.row_json, '$.source_task_id')))
     ) LIMIT 1`);
 
-  await assertNoRows(jobId, "Saved View scope", `
+  yield () => assertNoRows(jobId, "Saved View scope", `
     SELECT 1 FROM system_backup_rows v
     WHERE v.job_id = ? AND v.table_name = 'saved_views' AND (
       (json_extract(v.row_json, '$.scope_project_id') IS NOT NULL
@@ -317,7 +365,7 @@ export async function validateSystemBackupStagedState(
       OR json_type(json_extract(v.row_json, '$.display_json')) != 'object'
       OR ${invalidDeletionTuple("v")}
     ) LIMIT 1`);
-  await assertNoRows(jobId, "Access grant resource", `
+  yield () => assertNoRows(jobId, "Access grant resource", `
     SELECT 1 FROM system_backup_rows g
     WHERE g.job_id = ? AND g.table_name = 'access_grants' AND (
       json_extract(g.row_json, '$.grantee_user_id') = json_extract(g.row_json, '$.owner_user_id')
@@ -355,12 +403,14 @@ export async function validateSystemBackupStagedState(
         AND json_extract(g.row_json, '$.permission') NOT IN ('editor','viewer','full_access'))
     ) LIMIT 1`);
 
-  await validateCommentAndHistoryState(jobId);
-  await validateActivityAndMigrationState(jobId);
+  yield* validateCommentAndHistoryState(jobId);
+  yield* validateActivityAndMigrationState(jobId);
 }
 
-async function validateCommentAndHistoryState(jobId: string) {
-  await assertNoRows(jobId, "comment topology and provenance", `
+function* validateCommentAndHistoryState(
+  jobId: string,
+): Generator<SystemBackupValidationStep, void, void> {
+  yield () => assertNoRows(jobId, "comment topology and provenance", `
     SELECT 1 FROM system_backup_rows c
     WHERE c.job_id = ? AND c.table_name = 'comments' AND (
       (json_extract(c.row_json, '$.source') = 'native' AND (
@@ -400,7 +450,7 @@ async function validateCommentAndHistoryState(jobId: string) {
           AND (json_extract(resolution.row_json, '$.id') = json_extract(c.row_json, '$.id')
             OR json_extract(resolution.row_json, '$.parent_comment_id') = json_extract(c.row_json, '$.id'))))
     ) LIMIT 1`);
-  await assertNoRows(jobId, "Task comment counter", `
+  yield () => assertNoRows(jobId, "Task comment counter", `
     SELECT 1 FROM system_backup_rows t
     WHERE t.job_id = ? AND t.table_name = 'tasks'
       AND json_extract(t.row_json, '$.comment_count') != (
@@ -409,7 +459,7 @@ async function validateCommentAndHistoryState(jobId: string) {
           AND json_extract(c.row_json, '$.task_id') = json_extract(t.row_json, '$.id')
           AND json_extract(c.row_json, '$.deleted_at') IS NULL)
     LIMIT 1`);
-  await assertNoRows(jobId, "comment attachment live scope", `
+  yield () => assertNoRows(jobId, "comment attachment live scope", `
     SELECT 1 FROM system_backup_rows ref
     JOIN system_backup_rows c ON c.job_id = ref.job_id AND c.table_name = 'comments'
       AND json_extract(c.row_json, '$.id') = json_extract(ref.row_json, '$.comment_id')
@@ -421,7 +471,7 @@ async function validateCommentAndHistoryState(jobId: string) {
       OR json_extract(c.row_json, '$.source') != 'native'
       OR json_extract(c.row_json, '$.deleted_at') IS NOT NULL
       OR json_extract(a.row_json, '$.state') != 'ready') LIMIT 1`);
-  await assertNoRows(jobId, "external record shape", `
+  yield () => assertNoRows(jobId, "external record shape", `
     SELECT 1 FROM system_backup_rows e
     WHERE e.job_id = ? AND e.table_name = 'external_records' AND (
       json_valid(json_extract(e.row_json, '$.metadata_json')) = 0
@@ -436,7 +486,7 @@ async function validateCommentAndHistoryState(jobId: string) {
         AND json_extract(target.row_json, '$.id') = json_extract(e.row_json, '$.target_id')
         AND json_extract(target.row_json, '$.owner_user_id') = json_extract(e.row_json, '$.owner_user_id'))
     ) LIMIT 1`);
-  await assertNoRows(jobId, "attachment migration outcome", `
+  yield () => assertNoRows(jobId, "attachment migration outcome", `
     SELECT 1 FROM system_backup_rows o
     WHERE o.job_id = ? AND o.table_name = 'attachment_migration_outcomes' AND (
       json_extract(o.row_json, '$.source') != 'linear'
@@ -464,8 +514,10 @@ async function validateCommentAndHistoryState(jobId: string) {
     ) LIMIT 1`);
 }
 
-async function validateActivityAndMigrationState(jobId: string) {
-  await assertNoRows(jobId, "activity schema and provenance", `
+function* validateActivityAndMigrationState(
+  jobId: string,
+): Generator<SystemBackupValidationStep, void, void> {
+  yield () => assertNoRows(jobId, "activity schema and provenance", `
     SELECT 1 FROM system_backup_rows e
     WHERE e.job_id = ? AND e.table_name = 'activity_events' AND (
       json_extract(e.row_json, '$.schema_version') != 1
@@ -496,7 +548,7 @@ async function validateActivityAndMigrationState(jobId: string) {
     ["comment_migration_outcomes", "comment_id", "comments"],
     ["activity_migration_outcomes", "activity_event_id", "activity_events"],
   ] as const) {
-    await assertNoRows(jobId, `${table} provenance`, `
+    yield () => assertNoRows(jobId, `${table} provenance`, `
       SELECT 1 FROM system_backup_rows o
       WHERE o.job_id = ? AND o.table_name = '${table}' AND (
         json_extract(o.row_json, '$.source') != 'linear'

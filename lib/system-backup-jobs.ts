@@ -41,7 +41,7 @@ import {
   type SystemBackupPartDescriptor,
 } from "./system-backup-package";
 import type { UserRecord } from "./types";
-import { validateSystemBackupStagedState } from "./system-backup-validation";
+import { validateSystemBackupStagedStateStep } from "./system-backup-validation";
 
 const encoder = new TextEncoder();
 const jobLifetimeSeconds = 24 * 60 * 60;
@@ -1118,8 +1118,28 @@ async function advancePackageObjectValidation(job: BackupJobRow) {
 
 async function advancePackagePreflight(job: BackupJobRow, currentUser: UserRecord) {
   const manifest = await readJobManifest(job);
-  await verifyStagedRowsMatchParts(job.id, manifest);
-  await validateSystemBackupStagedState(job.id, manifest.counts, currentUser.id);
+  const cursor = Number(job.phase_cursor ?? "0");
+  if (!Number.isInteger(cursor) || cursor < 0) {
+    throw new ValidationError("Invalid system backup preflight cursor");
+  }
+  if (cursor === 0) {
+    await verifyStagedRowsMatchParts(job.id, manifest);
+    await getD1().prepare(`UPDATE system_backup_jobs SET phase_cursor = '1',
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(job.id).run();
+    return;
+  }
+  const validation = await validateSystemBackupStagedStateStep(
+    job.id,
+    manifest.counts,
+    currentUser.id,
+    cursor - 1,
+  );
+  if (!validation.complete) {
+    await getD1().prepare(`UPDATE system_backup_jobs SET phase_cursor = ?,
+      updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(String(validation.nextStepIndex + 1), job.id).run();
+    return;
+  }
   if (job.kind === "import") {
     if (job.state_sha256 && job.state_sha256 !== manifest.stateSha256) {
       throw new ValidationError("System backup canonical state digest does not match");

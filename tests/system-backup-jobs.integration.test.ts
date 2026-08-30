@@ -72,8 +72,16 @@ async function drive(
 
 async function stageCurrentStateForRestore() {
   const created = await createSystemBackupExportJob(admin);
-  const ready = await drive(created.jobId, ["ready", "failed"]);
+  const exportPreflightCursors: Array<string | null> = [];
+  const ready = await drive(created.jobId, ["ready", "failed"], 500, async (status) => {
+    if (status.phase !== "preflight") return;
+    exportPreflightCursors.push(
+      (await database.prepare("SELECT phase_cursor FROM system_backup_jobs WHERE id = ?")
+        .bind(created.jobId).first<{ phase_cursor: string | null }>())?.phase_cursor ?? null,
+    );
+  });
   assert.equal(ready.status, "ready", ready.error ?? ready.phase);
+  assert.deepEqual(exportPreflightCursors.slice(0, 3), [null, "1", "2"]);
   const response = await streamSystemBackupPackage(admin, created.jobId);
   const lines = (await response.text()).trim().split("\n")
     .map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -85,8 +93,16 @@ async function stageCurrentStateForRestore() {
     await uploadSystemBackupImportPart(admin, upload.jobId, index, frames[index]);
   }
   await finalizeSystemBackupImport(admin, upload.jobId, manifest);
-  const staged = await drive(upload.jobId, ["ready", "failed"]);
+  const importPreflightCursors: Array<string | null> = [];
+  const staged = await drive(upload.jobId, ["ready", "failed"], 500, async (status) => {
+    if (status.phase !== "preflight") return;
+    importPreflightCursors.push(
+      (await database.prepare("SELECT phase_cursor FROM system_backup_jobs WHERE id = ?")
+        .bind(upload.jobId).first<{ phase_cursor: string | null }>())?.phase_cursor ?? null,
+    );
+  });
   assert.equal(staged.status, "ready", staged.error ?? staged.phase);
+  assert.deepEqual(importPreflightCursors.slice(0, 3), [null, "1", "2"]);
   await applySystemBackupImport(admin, {
     importId: upload.jobId,
     sha256: staged.rootSha256!,
@@ -167,6 +183,101 @@ test("concurrent reuse requests freeze one canonical ordinary export", async () 
         database.prepare("DELETE FROM system_backup_jobs WHERE id = ?").bind(jobId),
       ]);
     }
+  }
+});
+
+test("export preflight checkpoints validation work and resumes from a legacy empty cursor", async () => {
+  const created = await createSystemBackupExportJob(admin);
+  try {
+    let status: SystemBackupJobStatus = created;
+    for (let attempt = 0; status.phase !== "preflight" && attempt < 500; attempt += 1) {
+      status = await advanceSystemBackupJob(admin, created.jobId, adminActor);
+    }
+    assert.equal(status.phase, "preflight", status.error ?? status.status);
+    assert.equal(
+      (await database.prepare("SELECT phase_cursor FROM system_backup_jobs WHERE id = ?")
+        .bind(created.jobId).first<{ phase_cursor: string | null }>())?.phase_cursor,
+      null,
+    );
+
+    const firstSlice = await advanceSystemBackupExportSlice(admin, created.jobId, {
+      maximumSteps: 1,
+      maximumDurationMs: 100,
+    });
+    assert.equal(firstSlice.phase, "preflight");
+    assert.equal(
+      (await database.prepare("SELECT phase_cursor FROM system_backup_jobs WHERE id = ?")
+        .bind(created.jobId).first<{ phase_cursor: string | null }>())?.phase_cursor,
+      "1",
+    );
+
+    const secondSlice = await advanceSystemBackupExportSlice(admin, created.jobId, {
+      maximumSteps: 1,
+      maximumDurationMs: 100,
+    });
+    assert.equal(secondSlice.phase, "preflight");
+    assert.equal(
+      (await database.prepare("SELECT phase_cursor FROM system_backup_jobs WHERE id = ?")
+        .bind(created.jobId).first<{ phase_cursor: string | null }>())?.phase_cursor,
+      "2",
+    );
+
+    await database.prepare(`UPDATE system_backup_rows
+      SET row_json = json_set(row_json, '$.unexpected', 'boom')
+      WHERE job_id = ? AND table_name = 'users' AND ordinal = 0`)
+      .bind(created.jobId).run();
+    await assert.rejects(
+      advanceSystemBackupExportSlice(admin, created.jobId, {
+        maximumSteps: 1,
+        maximumDurationMs: 100,
+      }),
+      /Invalid row shape for users/,
+    );
+    assert.equal(
+      (await database.prepare("SELECT status FROM system_backup_jobs WHERE id = ?")
+        .bind(created.jobId).first<{ status: string }>())?.status,
+      "failed",
+    );
+  } finally {
+    await database.batch([
+      database.prepare("DELETE FROM system_backup_rows WHERE job_id = ?").bind(created.jobId),
+      database.prepare("DELETE FROM system_backup_objects WHERE job_id = ?").bind(created.jobId),
+      database.prepare("DELETE FROM system_backup_parts WHERE job_id = ?").bind(created.jobId),
+      database.prepare("DELETE FROM system_backup_jobs WHERE id = ?").bind(created.jobId),
+    ]);
+  }
+});
+
+test("export preflight rejects a corrupted cursor", async () => {
+  const created = await createSystemBackupExportJob(admin);
+  try {
+    let status: SystemBackupJobStatus = created;
+    for (let attempt = 0; status.phase !== "preflight" && attempt < 500; attempt += 1) {
+      status = await advanceSystemBackupJob(admin, created.jobId, adminActor);
+    }
+    assert.equal(status.phase, "preflight", status.error ?? status.status);
+    await database.prepare(`UPDATE system_backup_jobs
+      SET phase_cursor = '999999', updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?`).bind(created.jobId).run();
+    await assert.rejects(
+      advanceSystemBackupExportSlice(admin, created.jobId, {
+        maximumSteps: 1,
+        maximumDurationMs: 100,
+      }),
+      /Invalid system backup preflight cursor/,
+    );
+    assert.equal(
+      (await database.prepare("SELECT status FROM system_backup_jobs WHERE id = ?")
+        .bind(created.jobId).first<{ status: string }>())?.status,
+      "failed",
+    );
+  } finally {
+    await database.batch([
+      database.prepare("DELETE FROM system_backup_rows WHERE job_id = ?").bind(created.jobId),
+      database.prepare("DELETE FROM system_backup_objects WHERE job_id = ?").bind(created.jobId),
+      database.prepare("DELETE FROM system_backup_parts WHERE job_id = ?").bind(created.jobId),
+      database.prepare("DELETE FROM system_backup_jobs WHERE id = ?").bind(created.jobId),
+    ]);
   }
 });
 
