@@ -5122,6 +5122,10 @@ function taskAssigneeOptions(
   } else if (taskId) {
     const task = data.tasks.find((item) => item.id === taskId);
     if (task) ids.add(task.ownerUserId);
+  } else {
+    ids.add(data.user.id);
+  }
+  if (taskId) {
     ids.add(data.user.id);
     for (const collaborator of data.collaborators) {
       if (
@@ -5131,8 +5135,6 @@ function taskAssigneeOptions(
         ids.add(collaborator.userId);
       }
     }
-  } else {
-    ids.add(data.user.id);
   }
   return [...ids]
     .map((id) => userById.get(id))
@@ -10504,7 +10506,14 @@ export function BulkProjectDialog({ data, tasks, busy, onClose, onSubmit, initia
       }
     }
   }
-  const assigneeChanges = moving.filter((task) => task.assigneeUserId && !targetMembers.has(task.assigneeUserId));
+  const assigneeChanges = moving.filter((task) => {
+    if (!task.assigneeUserId || targetMembers.has(task.assigneeUserId)) return false;
+    return !data.collaborators.some((collaborator) =>
+      collaborator.resourceType === "task" &&
+      collaborator.resourceId === task.id &&
+      collaborator.userId === task.assigneeUserId
+    );
+  });
   const expectedStart = target ? target.taskSequence + 1 : 0;
   const eligibleProjects = data.projects.filter((project) =>
     !project.archivedAt && project.status !== "canceled" && canEditContent(project.accessRole)
@@ -10582,10 +10591,10 @@ export function bulkAssigneeOptions(data: AppSnapshot, tasks: TaskRecord[]): Use
       }
     } else {
       candidateIds.add(task.ownerUserId);
-      for (const collaborator of data.collaborators) {
-        if (collaborator.resourceType === "task" && collaborator.resourceId === task.id) {
-          candidateIds.add(collaborator.userId);
-        }
+    }
+    for (const collaborator of data.collaborators) {
+      if (collaborator.resourceType === "task" && collaborator.resourceId === task.id) {
+        candidateIds.add(collaborator.userId);
       }
     }
     const currentIntersection: Set<string> | null = intersection;

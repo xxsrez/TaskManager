@@ -502,13 +502,14 @@ test("bulk assignee candidates are the privacy-safe intersection of selected Tas
       { grantId: "common-a", resourceType: "project", resourceId: "project-1", userId: common.id, displayName: common.displayName, email: common.email, permission: "editor" },
       { grantId: "common-b", resourceType: "project", resourceId: "project-2", userId: common.id, displayName: common.displayName, email: common.email, permission: "viewer" },
       { grantId: "only-a", resourceType: "project", resourceId: "project-1", userId: onlyA.id, displayName: onlyA.displayName, email: onlyA.email, permission: "editor" },
+      { grantId: "team-only-a-task-b", source: "team", resourceType: "task", resourceId: taskB.id, userId: onlyA.id, displayName: onlyA.displayName, email: onlyA.email, permission: "editor" },
       { grantId: "only-b", resourceType: "project", resourceId: "project-2", userId: onlyB.id, displayName: onlyB.displayName, email: onlyB.email, permission: "editor" },
     ],
   };
 
   assert.deepEqual(
     bulkAssigneeOptions(data, data.tasks).map((user) => user.id),
-    [common.id, snapshot.user.id],
+    [common.id, onlyA.id, snapshot.user.id],
   );
 });
 
