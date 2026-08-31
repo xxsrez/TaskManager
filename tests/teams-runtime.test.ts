@@ -32,6 +32,12 @@ const outsiderActor = {
   displayName: "Teams Runtime Outsider",
   email: "teams-runtime-outsider@example.test",
 };
+const concurrentActor = {
+  provider: "chatgpt" as const,
+  providerAccountKey: "teams-runtime-concurrent",
+  displayName: "Teams Runtime Concurrent",
+  email: "teams-runtime-concurrent@example.test",
+};
 
 let dispose: (() => Promise<void>) | undefined;
 
@@ -50,6 +56,7 @@ test("Team lifecycle enforces active visibility, owner membership protection, an
   const owner = await getOrCreateUser(ownerActor);
   const member = await getOrCreateUser(memberActor);
   const outsider = await getOrCreateUser(outsiderActor);
+  const concurrent = await getOrCreateUser(concurrentActor);
 
   const createdResponse = await createTeam(jsonRequest("POST", "/api/teams", {
     name: "  Runtime Team  ",
@@ -110,6 +117,64 @@ test("Team lifecycle enforces active visibility, owner membership protection, an
   assert.deepEqual(duplicate, added);
 
   configureActorResolverForTests(async () => memberActor);
+  const memberUnknown = await getTeam(
+    new Request("https://example.test/api/teams/unknown"),
+    params({ id: "unknown-team" }),
+  );
+  const memberUnknownError = (await memberUnknown.json() as { error: string }).error;
+  assert.equal(memberUnknown.status, 404);
+  const memberAdd = await addMember(
+    jsonRequest("POST", "/api/teams/members", { email: concurrent.email }),
+    params({ id: created.team.publicId }),
+  );
+  const memberPatch = await updateMember(
+    jsonRequest("PATCH", "/api/teams/member", {
+      status: "inactive",
+      version: added.membership.version,
+    }),
+    params({ id: created.team.publicId, membershipId: added.membership.id }),
+  );
+  const memberDelete = await deleteMember(
+    jsonRequest("DELETE", "/api/teams/member", { version: added.membership.version }),
+    params({ id: created.team.publicId, membershipId: added.membership.id }),
+  );
+  for (const response of [memberAdd, memberPatch, memberDelete]) {
+    assert.equal(response.status, memberUnknown.status);
+    assert.equal((await response.json() as { error: string }).error, memberUnknownError);
+  }
+
+  configureActorResolverForTests(async () => ownerActor);
+  const concurrentResponses = await Promise.all([
+    addMember(
+      jsonRequest("POST", "/api/teams/members", { email: concurrent.email }),
+      params({ id: created.team.publicId }),
+    ),
+    addMember(
+      jsonRequest("POST", "/api/teams/members", { email: concurrent.email }),
+      params({ id: created.team.publicId }),
+    ),
+  ]);
+  assert.deepEqual(concurrentResponses.map((response) => response.status), [200, 200]);
+  const concurrentResults = await Promise.all(
+    concurrentResponses.map(async (response) => await response.json() as {
+      membership: { id: string; userId: string; status: string; version: number };
+    }),
+  );
+  assert.equal(concurrentResults[0]!.membership.id, concurrentResults[1]!.membership.id);
+  assert.equal(concurrentResults[0]!.membership.userId, concurrent.id);
+  assert.equal(concurrentResults[0]!.membership.status, "active");
+  assert.equal(concurrentResults[0]!.membership.version, 1);
+  const concurrentReadBack = await getMembers(
+    new Request("https://example.test/api/teams/detail/members"),
+    params({ id: created.team.publicId }),
+  );
+  const concurrentMembers = (await concurrentReadBack.json() as {
+    members: Array<{ id: string; userId: string }>;
+  }).members.filter((item) => item.userId === concurrent.id);
+  assert.equal(concurrentMembers.length, 1);
+  assert.equal(concurrentMembers[0]!.id, concurrentResults[0]!.membership.id);
+
+  configureActorResolverForTests(async () => memberActor);
   const memberDetail = await getTeam(
     new Request("https://example.test/api/teams/detail"),
     params({ id: created.team.publicId }),
@@ -122,14 +187,14 @@ test("Team lifecycle enforces active visibility, owner membership protection, an
   assert.equal(detail.team.publicId, created.team.publicId);
   assert.deepEqual(
     detail.members.map((item) => item.id).sort(),
-    [created.membership.id, added.membership.id].sort(),
+    [created.membership.id, added.membership.id, concurrentResults[0]!.membership.id].sort(),
   );
   const memberList = await getMembers(
     new Request("https://example.test/api/teams/detail/members"),
     params({ id: created.team.publicId }),
   );
   assert.equal(memberList.status, 200);
-  assert.equal((await memberList.json() as { members: unknown[] }).members.length, 2);
+  assert.equal((await memberList.json() as { members: unknown[] }).members.length, 3);
 
   configureActorResolverForTests(async () => outsiderActor);
   const outsiderDetail = await getTeam(
@@ -167,6 +232,17 @@ test("Team lifecycle enforces active visibility, owner membership protection, an
   assert.equal(typeof deactivated.membership.deactivatedAt, "string");
   assert.equal(deactivated.membership.version, 2);
 
+  configureActorResolverForTests(async () => memberActor);
+  const deactivatedMemberDetail = await getTeam(
+    new Request("https://example.test/api/teams/detail"),
+    params({ id: created.team.publicId }),
+  );
+  assert.equal(deactivatedMemberDetail.status, 404);
+  const deactivatedMemberList = await getTeams();
+  assert.equal(deactivatedMemberList.status, 200);
+  assert.equal((await deactivatedMemberList.json() as { teams: unknown[] }).teams.length, 0);
+
+  configureActorResolverForTests(async () => ownerActor);
   const staleResponse = await updateMember(
     jsonRequest("PATCH", "/api/teams/member", {
       status: "active",
@@ -224,7 +300,7 @@ test("Team lifecycle enforces active visibility, owner membership protection, an
   assert.equal(ownerAfterDelete.status, 200);
   assert.equal(
     (await ownerAfterDelete.json() as { members: unknown[] }).members.length,
-    1,
+    2,
   );
 
   configureActorResolverForTests(async () => memberActor);
