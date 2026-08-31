@@ -48,26 +48,29 @@
     — superseded история неудачного loopback acceptance path.
 20. [ADR-0015: production canary для file-first release gate](decisions/0015-production-file-first-release-canary.md)
     — exact production candidate, bounded fixture, hash/read-back и cleanup.
-21. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
+21. [ADR-0016: dormant Teams schema baseline](decisions/0016-dormant-teams-schema-baseline.md)
+    — постоянные пустые Team tables до пяти функциональных прогонов, без
+    runtime/API/UI и без schema rollback.
+22. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
-22. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
+23. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
     cleanup и recovery.
-23. [Runbook импортированной истории комментариев](operations/imported-comments.md)
+24. [Runbook импортированной истории комментариев](operations/imported-comments.md)
     — reconciliation, backup, rollback и UAT smoke для cutover/import.
-24. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
+25. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
     bounded inventory/apply, allowlist, outcomes, cutover и rollback.
-25. [Runbook Task Activity](operations/task-activity.md) — atomic events,
+26. [Runbook Task Activity](operations/task-activity.md) — atomic events,
     Linear status-history reconciliation, retention, backup и UAT smoke.
-26. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+27. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-27. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+28. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-28. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+29. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
-29. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+30. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
-30. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
+31. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
     — environment inventory, удалённые public surfaces, сохранённое migration
     evidence и отдельная production authority boundary.
 
@@ -143,6 +146,10 @@ ADR-0014 сохранён как superseded incident history. ADR-0015 опре�
 release gate: обычный UAT остаётся private, а fresh local-path proof после
 отдельного production approval выполняется bounded production canary без
 Keychain, Sites bypass, публичного machine edge или hosted Codex.
+ADR-0016 добавляет только постоянную dormant schema baseline для будущих Teams:
+три пустые D1-таблицы с constraints/indexes и без runtime, authorization, API,
+UI, sync или portability behavior. Функциональные benchmark-задачи не могут
+менять эту схему; между пятью прогонами сохраняются migration и journal.
 
 ## Категории
 

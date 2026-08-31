@@ -23,6 +23,79 @@ export const users = sqliteTable("users", {
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
+export const teams = sqliteTable(
+  "teams",
+  {
+    id: text("id").primaryKey(),
+    publicId: text("public_id").notNull(),
+    ownerUserId: text("owner_user_id")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    archivedAt: text("archived_at"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_teams_public_id").on(table.publicId),
+    index("idx_teams_owner_archived").on(table.ownerUserId, table.archivedAt),
+    index("idx_teams_name_search").on(sql`lower(${table.name})`),
+    check(
+      "teams_name_check",
+      sql`length(trim(${table.name})) BETWEEN 1 AND 100`,
+    ),
+  ],
+);
+
+export const teamMemberships = sqliteTable(
+  "team_memberships",
+  {
+    id: text("id").primaryKey(),
+    teamId: text("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    role: text("role").notNull().default("member"),
+    status: text("status").notNull().default("active"),
+    deactivatedAt: text("deactivated_at"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_team_memberships_team_user").on(
+      table.teamId,
+      table.userId,
+    ),
+    index("idx_team_memberships_team_status").on(
+      table.teamId,
+      table.status,
+      table.userId,
+    ),
+    index("idx_team_memberships_user_status").on(
+      table.userId,
+      table.status,
+      table.teamId,
+    ),
+    check(
+      "team_memberships_role_check",
+      sql`${table.role} IN ('owner', 'member')`,
+    ),
+    check(
+      "team_memberships_status_check",
+      sql`${table.status} IN ('active', 'inactive')`,
+    ),
+    check(
+      "team_memberships_lifecycle_check",
+      sql`(${table.status} = 'active' AND ${table.deactivatedAt} IS NULL)
+        OR (${table.status} = 'inactive' AND ${table.deactivatedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
 export const userIdentities = sqliteTable(
   "user_identities",
   {
@@ -1002,6 +1075,46 @@ export const accessGrants = sqliteTable(
     index("idx_access_grants_owner_resource_active")
       .on(table.ownerUserId, table.resourceType, table.resourceId)
       .where(sql`${table.revokedAt} IS NULL`),
+  ],
+);
+
+export const teamGrants = sqliteTable(
+  "team_grants",
+  {
+    id: text("id").primaryKey(),
+    teamId: text("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    resourceType: text("resource_type").notNull(),
+    resourceId: text("resource_id").notNull(),
+    permission: text("permission").notNull(),
+    grantedByUserId: text("granted_by_user_id")
+      .notNull()
+      .references(() => users.id),
+    revokedAt: text("revoked_at"),
+    version: integer("version").notNull().default(1),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_team_grants_team_resource").on(
+      table.teamId,
+      table.resourceType,
+      table.resourceId,
+    ),
+    index("idx_team_grants_team_active")
+      .on(table.teamId, table.resourceType, table.resourceId)
+      .where(sql`${table.revokedAt} IS NULL`),
+    index("idx_team_grants_resource_active")
+      .on(table.resourceType, table.resourceId, table.teamId)
+      .where(sql`${table.revokedAt} IS NULL`),
+    check(
+      "team_grants_resource_permission_check",
+      sql`(${table.resourceType} = 'project'
+          AND ${table.permission} IN ('manager', 'editor', 'viewer'))
+        OR (${table.resourceType} IN ('task', 'saved_view')
+          AND ${table.permission} IN ('editor', 'viewer'))`,
+    ),
   ],
 );
 

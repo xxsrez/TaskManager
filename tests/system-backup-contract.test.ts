@@ -17,7 +17,13 @@ import {
   liveTableDeleteOrder,
 } from "../lib/system-backup-format";
 
-test("the system backup contract classifies every live D1 table and column", () => {
+const dormantTeamsBaselineTables = new Set([
+  "teams",
+  "team_memberships",
+  "team_grants",
+]);
+
+test("the system backup contract classifies every participating D1 table and column", () => {
   const liveTables = Object.values(schema)
     .flatMap((value) => {
       try {
@@ -35,6 +41,7 @@ test("the system backup contract classifies every live D1 table and column", () 
         return [];
       }
     })
+    .filter((table) => !dormantTeamsBaselineTables.has(table.name))
     .sort((left, right) => left.name.localeCompare(right.name));
   const classifiedTables = systemBackupD1TableContracts
     .map((table) => ({ name: table.name, columns: [...table.columns].sort() }))
@@ -135,6 +142,15 @@ test("the current full snapshot has one explicit D1 policy for every table", () 
       "user_import_sessions",
       "user_import_rows",
     ],
+  );
+});
+
+test("dormant Teams baseline stays outside current backup and restore behavior", () => {
+  assert.deepEqual(
+    systemBackupD1TableContracts
+      .filter((table) => dormantTeamsBaselineTables.has(table.name))
+      .map((table) => table.name),
+    [],
   );
 });
 

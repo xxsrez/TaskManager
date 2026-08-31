@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-17
+Последнее обновление: 2026-08-31
 
 Документ фиксирует логическую модель, а не конкретную ORM или SQL-схему.
 Имена полей могут адаптироваться к выбранному стеку, но семантика и инварианты
@@ -21,6 +21,11 @@ erDiagram
     USER ||--o{ TASK : owns
     USER ||--o{ PROJECT : owns
     USER ||--o{ SAVED_VIEW : owns
+    USER ||--o{ TEAM : owns
+    USER ||--o{ TEAM_MEMBERSHIP : participates
+    USER ||--o{ TEAM_GRANT : grants
+    TEAM ||--o{ TEAM_MEMBERSHIP : contains
+    TEAM ||--o{ TEAM_GRANT : receives
     USER ||--o{ ACCESS_GRANT : grants
     USER ||--o{ ACCESS_GRANT : receives
     USER ||--o{ TASK : creates_or_is_assigned
@@ -269,6 +274,64 @@ Project Owner имеет implicit highest access и не представлен 
 - Project Owner управляет grant вплоть до `manager` и атомарно передаёт
   ownership уже добавленному участнику. Target становится Owner, прежний Owner
   — Manager; подтверждение target не требуется.
+
+## Dormant Teams schema baseline
+
+Три таблицы ниже являются заранее применённой persistence baseline из
+[ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md). До отдельного
+функционального среза они не подключены к repository, authorization, API, sync
+или UI и должны оставаться пустыми вне синтетической проверки.
+
+### Team
+
+| Поле | Семантика |
+|---|---|
+| `id`, `public_id` | Internal primary key и стабильный opaque ref для будущего server contract |
+| `owner_user_id` | Current owner самой Team; ссылка на существующего User |
+| `name` | Непустое отображаемое имя длиной не более 100 символов |
+| `archived_at` | Nullable archive lifecycle без изменения membership/grants |
+| `version` | Optimistic concurrency будущих Team mutations |
+| `created_at`, `updated_at` | Timestamps Team record |
+
+`public_id` уникален. Owner catalog и case-insensitive name lookup имеют
+отдельные индексы. Создание owner membership остаётся будущей атомарной server
+операцией и не выполняется migration.
+
+### TeamMembership
+
+| Поле | Семантика |
+|---|---|
+| `id` | Stable membership record ID |
+| `team_id`, `user_id` | Team и уже зарегистрированный User |
+| `role` | `owner` или `member` |
+| `status` | `active` или `inactive` |
+| `deactivated_at` | `NULL` только для active membership; обязателен для inactive |
+| `version` | Optimistic concurrency membership lifecycle |
+| `created_at`, `updated_at` | Timestamps membership record |
+
+Пара `(team_id, user_id)` уникальна, поэтому повторное добавление не создаёт
+вторую active row. Удаление Team каскадно удаляет её memberships; удаление User
+с сохранённым membership запрещено foreign key. Индексы поддерживают member
+list Team и поиск active Teams пользователя.
+
+### TeamGrant
+
+| Поле | Семантика |
+|---|---|
+| `id` | Stable Team grant ID |
+| `team_id` | Team, участникам которой предназначен будущий access route |
+| `resource_type`, `resource_id` | Полиморфный share target: `project`, `task` или `saved_view` |
+| `permission` | Project: `manager`, `editor`, `viewer`; Task/SavedView: `editor`, `viewer` |
+| `granted_by_user_id` | Server-verified User, выдавший или изменивший grant |
+| `revoked_at` | Nullable revoke timestamp |
+| `version` | Optimistic concurrency grant lifecycle |
+| `created_at`, `updated_at` | Timestamps Team grant record |
+
+Одна row уникальна по `(team_id, resource_type, resource_id)` и может быть
+отозвана или повторно активирована будущим server contract. D1 проверяет
+resource/permission domain и Team/User foreign keys. Существование и ACL самого
+полиморфного resource должны проверяться сервером до чтения или mutation;
+наличие dormant row само по себе доступа не даёт.
 
 ## WorkspaceSyncSequence и WorkspaceChangeEvent
 
@@ -996,9 +1059,28 @@ grants; Tasks, base query semantics и temporary URL layer не материал
     `15` сохраняет provenance внешних edges без peer Tasks и требует явного
     `not_restored` acknowledgement. Operational purge jobs не входят в
     backup/restore.
+31. Dormant Team name непустое и не длиннее 100 символов; `public_id` уникален,
+    owner ссылается на существующего User, а delete Team каскадно удаляет только
+    её memberships и Team grants.
+32. TeamMembership уникален по Team–User. `role` принадлежит
+    `owner|member`; active membership имеет `deactivated_at IS NULL`, inactive
+    — непустой timestamp.
+33. TeamGrant уникален по Team/resource. Project допускает
+    Manager/Editor/Viewer, Task и SavedView — только Editor/Viewer; revoke не
+    меняет direct `AccessGrant` или сам resource.
+34. До функционального cutover новые таблицы не участвуют в effective role,
+    repository reads, search, sync, API или UI. Их наличие не является access
+    route и не расширяет SavedView result.
+35. Functional tasks TM-331–TM-335 используют schema baseline без migrations.
+    Между сравнительными прогонами сохраняются schema и migration journal, а
+    targeted reset удаляет только синтетические Team rows.
 
 ## Намеренно не моделируется
 
-`Team`, `Initiative`, `Cycle`, `Milestone`, `Roadmap`, `Document`,
+`Initiative`, `Cycle`, `Milestone`, `Roadmap`, `Document`,
 `Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
 `Integration` не входят в начальную модель.
+
+Team описана только как dormant persistence baseline. Team-owned resources,
+tenant boundary, issue assignment, workflows, cycles, labels, templates,
+private teams и subteams по-прежнему не моделируются.

@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-25
+Последнее обновление: 2026-08-31
 
 ## 1. Цель
 
@@ -42,6 +42,10 @@ MVP должен позволить вести задачи от backlog до п
 - **Owner workspace scope** — UI-проекция доступных records по владельцу,
   применяемая только как дополнительное сужение уже вычисленного ACL; это не
   entity, tenant, grant или источник authorization.
+- **Dormant Teams schema baseline** — заранее применённая пустая D1-структура
+  `teams`, `team_memberships` и `team_grants`. Пока отдельный функциональный
+  срез не подключён, она не является пользовательской возможностью, не меняет
+  authorization и не создаёт UI/API surface.
 
 ### 2.1 Интерфейсный принцип
 
@@ -269,6 +273,21 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   version. Permanent Task purge отсоединяет оставшихся children, удаляет
   relations/Comments/Activity/Attachments после R2 cleanup и не возвращает
   identifier sequence в allocator.
+
+### 4.1 Dormant Teams schema baseline
+
+- До сравнительной реализации Teams одна versioned migration создаёт пустые
+  `teams`, `team_memberships` и `team_grants` согласно
+  [ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md).
+- Этот шаг не добавляет Team catalog, membership commands, Team-derived access,
+  autocomplete, sharing controls или navigation. Все существующие queries и
+  mutations продолжают использовать прежний owner/direct-grant contract.
+- Последующие функциональные задачи используют готовую структуру без schema
+  changes. Между прогонами migration и migration journal сохраняются, а reset
+  может удалять только синтетические строки новых таблиц.
+- Dormant Team rows намеренно не входят в system/Project backup format текущего
+  экспериментального среза. Backup/export/import/restore не являются его
+  guardrail или acceptance и требуют отдельной прямой команды пользователя.
 
 ## 5. Задачи
 
@@ -1205,3 +1224,7 @@ created/updated/started/completed/canceled dates и archived state.
 25. Единый recoverable deletion contract для Tasks, Projects, Releases и
     SavedViews: `Recently deleted`, 30-day cutoff, project shadow, lossless
     Release membership, owner-only R2-first purge и backup schema `14`.
+26. Одноразовая dormant Teams schema baseline: пустые `teams`,
+    `team_memberships` и `team_grants` с constraints/indexes, без runtime, ACL,
+    API, UI или portability behavior; структура сохраняется между пятью
+    функциональными прогонами.
