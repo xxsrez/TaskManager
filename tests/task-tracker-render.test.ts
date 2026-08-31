@@ -52,6 +52,7 @@ import {
   taskRowReorderDirection,
   sortTasks,
   snapshotProvesCollectionAbsence,
+  surfaceBreadcrumbs,
   taskMutationVersion,
   taskNeedsDetailRefresh,
   taskDraftSyncMode,
@@ -3861,6 +3862,21 @@ test("Teams states, catalog cards, and detail controls render the frozen UI cont
   assert.doesNotMatch(memberMarkup, /Owner controls|Add member|Reactivate|Deactivate|Remove/);
 });
 
+test("resolved Team detail supplies the persistent breadcrumb name", () => {
+  const unresolved = surfaceBreadcrumbs("team:team-public-1", snapshot);
+  assert.equal(unresolved.at(-1)?.label, "Team");
+
+  const resolved = surfaceBreadcrumbs("team:team-public-1", snapshot, undefined, {
+    publicId: teamRecord.publicId,
+    name: teamRecord.name,
+  });
+  assert.deepEqual(resolved, [
+    { label: "Workspace", surface: "workspace", layout: "list" },
+    { label: "Teams", surface: "teams", layout: "list" },
+    { label: "Platform" },
+  ]);
+});
+
 test("Teams UI keeps API paths and authoritative member lifecycle wiring scoped", () => {
   assert.equal(teamUiApiPath("team/public"), "/api/teams/team%2Fpublic");
   assert.equal(teamMembersUiApiPath("team/public"), "/api/teams/team%2Fpublic/members");
@@ -3879,4 +3895,5 @@ test("Teams UI keeps API paths and authoritative member lifecycle wiring scoped"
   assert.match(source, /method: "DELETE"[\s\S]*?body: JSON\.stringify\(\{ version: member\.version \}\)/);
   assert.match(source, /await readBackTeam\(teamReference\)/);
   assert.match(source, /routeDetail\.team\.ownerUserId === currentUserId/);
+  assert.match(source, /onTeamResolved\(value\.team\)/);
 });

@@ -1313,6 +1313,7 @@ export function TaskTracker({
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
   const [teamPrefetchedDetail, setTeamPrefetchedDetail] = useState<TeamDetail | null>(null);
+  const [teamNavigationContext, setTeamNavigationContext] = useState<Pick<TeamRecord, "publicId" | "name"> | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -1369,6 +1370,10 @@ export function TaskTracker({
     initialData.user.theme ?? "system",
   );
   const preferenceSaveQueueRef = useRef<ReturnType<typeof createUserPreferenceSaveQueue> | null>(null);
+
+  const handleTeamResolved = useCallback((team: TeamRecord) => {
+    setTeamNavigationContext({ publicId: team.publicId, name: team.name });
+  }, []);
 
   const updateSystemExportStatus = useCallback((next: SystemBackupJobStatus | null) => {
     systemExportStatusRef.current = next;
@@ -2637,7 +2642,7 @@ export function TaskTracker({
         : null
     : null;
 
-  const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
+  const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView, teamNavigationContext);
   const activeTaskSummary = taskPool.find((task) => task.id === activeTaskId);
   const activeTask = taskDetail?.task.id === activeTaskId
     ? activeTaskSummary
@@ -3452,6 +3457,11 @@ export function TaskTracker({
     setTemporaryQuery(emptyViewQuery());
     setDialog(null);
     setTeamPrefetchedDetail(prefetchedDetail ?? null);
+    setTeamNavigationContext(
+      prefetchedDetail
+        ? { publicId: prefetchedDetail.team.publicId, name: prefetchedDetail.team.name }
+        : null,
+    );
     applyNavigation({ surface: `team:${publicId}`, layout: "list", taskId: null });
   }
 
@@ -3460,7 +3470,10 @@ export function TaskTracker({
     setMobileActionsOpen(false);
     setSearch("");
     setTemporaryQuery(emptyViewQuery());
-    if (nextSurface === "teams") setTeamPrefetchedDetail(null);
+    if (!isTeamSurface(nextSurface) || nextSurface === "teams") {
+      setTeamPrefetchedDetail(null);
+      setTeamNavigationContext(null);
+    }
     if (nextSurface === "admin") {
       // The initial workspace snapshot intentionally omits the admin overview.
       // Let the server build the gated projection before rendering this surface.
@@ -3925,7 +3938,8 @@ export function TaskTracker({
           setSurface(resolved.surface);
           setLayout(resolved.layout);
           setActiveTaskId(resolved.taskId);
-          if (!isTeamSurface(resolved.surface)) setTeamPrefetchedDetail(null);
+          setTeamPrefetchedDetail(null);
+          setTeamNavigationContext(null);
           if (!resolved.taskId) {
             taskReturnPath.current = navigationPath(resolved, currentData);
           }
@@ -4610,6 +4624,7 @@ export function TaskTracker({
             initialDetail={teamPrefetchedDetail}
             onOpenTeam={navigateTeam}
             onOpenCatalog={() => navigateSurface("teams", "list")}
+            onTeamResolved={handleTeamResolved}
           />
         ) : surface === "admin" && data.admin ? (
           <AdminSurface
@@ -9520,6 +9535,7 @@ type TeamsSurfaceProps = {
   initialDetail?: TeamDetail | null;
   onOpenTeam: (publicId: string, prefetchedDetail?: TeamDetail) => void;
   onOpenCatalog: () => void;
+  onTeamResolved: (team: TeamRecord) => void;
 };
 
 export function TeamsSurface({
@@ -9528,6 +9544,7 @@ export function TeamsSurface({
   initialDetail,
   onOpenTeam,
   onOpenCatalog,
+  onTeamResolved,
 }: TeamsSurfaceProps) {
   const [teams, setTeams] = useState<TeamRecord[]>([]);
   const [catalogState, setCatalogState] = useState<TeamLoadState>("loading");
@@ -9572,6 +9589,7 @@ export function TeamsSurface({
       setDetailState("ready");
       setDetailError("");
       setDetailErrorReference(null);
+      onTeamResolved(value.team);
       return true;
     } catch (requestError) {
       setDetailErrorReference(reference);
@@ -9582,7 +9600,7 @@ export function TeamsSurface({
       );
       return false;
     }
-  }, [fetchTeamDetail]);
+  }, [fetchTeamDetail, onTeamResolved]);
 
   useEffect(() => {
     if (teamReference) return;
@@ -9628,6 +9646,7 @@ export function TeamsSurface({
         setDetailState("ready");
         setDetailError("");
         setDetailErrorReference(null);
+        onTeamResolved(value.team);
       })
       .catch((requestError: unknown) => {
         if (controller.signal.aborted) return;
@@ -9641,7 +9660,7 @@ export function TeamsSurface({
         );
       });
     return () => controller.abort();
-  }, [detailRetry, fetchTeamDetail, initialDetail, teamReference]);
+  }, [detailRetry, fetchTeamDetail, initialDetail, onTeamResolved, teamReference]);
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -10601,10 +10620,11 @@ function defaultLayoutForSurface(surface: string, data: AppSnapshot): Layout {
   )?.display.layout ?? "list";
 }
 
-function surfaceBreadcrumbs(
+export function surfaceBreadcrumbs(
   surface: string,
   data: AppSnapshot,
   view?: SavedViewRecord,
+  team?: Pick<TeamRecord, "publicId" | "name"> | null,
 ): BreadcrumbItem[] {
   const workspace: BreadcrumbItem = {
     label: "Workspace",
@@ -10632,7 +10652,9 @@ function surfaceBreadcrumbs(
   if (surface === "shared") return [workspace, current("Shared with me")];
   if (surface === "teams") return [workspace, current("Teams")];
   if (surface.startsWith("team:")) {
-    return [workspace, ancestor("Teams", "teams"), current("Team")];
+    const publicId = surface.slice("team:".length);
+    const teamName = team?.publicId === publicId ? team.name : "Team";
+    return [workspace, ancestor("Teams", "teams"), current(teamName)];
   }
 
   if (surface.startsWith("view:")) {

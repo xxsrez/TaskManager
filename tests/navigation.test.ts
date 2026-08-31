@@ -107,6 +107,21 @@ test("Teams catalog and detail routes stay canonical and encode public ids", () 
   assert.equal(teamPath("team/alpha"), "/teams/team%2Falpha");
 });
 
+test("Teams surfaces keep dedicated metadata without leaking a direct-link id", () => {
+  const catalog = metadataForNavigation(
+    { surface: "teams", layout: "list", taskId: null },
+    snapshot,
+  );
+  const detail = metadataForNavigation(
+    { surface: "team:team-alpha", layout: "list", taskId: null },
+    snapshot,
+  );
+  assert.equal(catalog.title, "Teams – Task Manager");
+  assert.equal(catalog.description, "Teams and their members in Task Manager.");
+  assert.equal(detail.title, "Team – Task Manager");
+  assert.equal(detail.description, "Team members and access in Task Manager.");
+});
+
 test("settings sections keep canonical direct URLs and reject unknown sections", () => {
   for (const section of [
     "profile",
