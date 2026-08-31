@@ -51,29 +51,32 @@
 21. [ADR-0016: dormant Teams schema baseline](decisions/0016-dormant-teams-schema-baseline.md)
     — постоянные пустые Team tables до пяти функциональных прогонов, без
     runtime/API/UI и без schema rollback.
-22. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
+22. [ADR-0017: экспериментальный Teams runtime](decisions/0017-experimental-teams-runtime.md)
+    — функциональный Release 0.4 UAT-кандидат поверх неизменяемой baseline:
+    membership, strongest-role ACL и `People & Teams` без production selection.
+23. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
-23. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
+24. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
     cleanup и recovery.
-24. [Runbook импортированной истории комментариев](operations/imported-comments.md)
+25. [Runbook импортированной истории комментариев](operations/imported-comments.md)
     — reconciliation, backup, rollback и UAT smoke для cutover/import.
-25. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
+26. [Runbook миграции legacy-вложений](operations/imported-attachments.md) —
     bounded inventory/apply, allowlist, outcomes, cutover и rollback.
-26. [Runbook Task Activity](operations/task-activity.md) — atomic events,
+27. [Runbook Task Activity](operations/task-activity.md) — atomic events,
     Linear status-history reconciliation, retention, backup и UAT smoke.
-27. [Временный reset Teams для benchmark](operations/benchmark-team-reset.md) —
+28. [Временный reset Teams для benchmark](operations/benchmark-team-reset.md) —
     UAT-only канал, последовательная очистка и обязательное удаление после пяти
     прогонов.
-28. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+29. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-29. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+30. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-30. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+31. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
-31. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+32. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
-32. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
+33. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
     — environment inventory, удалённые public surfaces, сохранённое migration
     evidence и отдельная production authority boundary.
 
@@ -149,10 +152,17 @@ ADR-0014 сохранён как superseded incident history. ADR-0015 опре�
 release gate: обычный UAT остаётся private, а fresh local-path proof после
 отдельного production approval выполняется bounded production canary без
 Keychain, Sites bypass, публичного machine edge или hosted Codex.
-ADR-0016 добавляет только постоянную dormant schema baseline для будущих Teams:
+ADR-0016 добавляет только постоянную dormant schema baseline для Teams:
 три пустые D1-таблицы с constraints/indexes и без runtime, authorization, API,
 UI, sync или portability behavior. Функциональные benchmark-задачи не могут
 менять эту схему; между пятью прогонами сохраняются migration и journal.
+ADR-0017 не переписывает эту историю: он активирует один экспериментальный
+Release 0.4 UAT-кандидат с Team catalog/membership, дополнительным strongest-role
+ACL route и `People & Teams`. Team не становится tenant или владельцем
+resources; direct grants/resources не переписываются, schema/migrations
+неизменны, dedicated sync и portability не выбраны. Кандидат оставляет UAT Team
+rows для центрального benchmark read-back и не означает production selection
+до завершения пяти прогонов.
 
 ## Категории
 

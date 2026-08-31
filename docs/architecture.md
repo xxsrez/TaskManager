@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-31
+Последнее обновление: 2026-09-01
 
 Архитектура реализована первым вертикальным срезом на TypeScript, React 19,
 Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentication
@@ -68,7 +68,8 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 | Views | Filter AST, query compilation, grouping, ordering, display config |
 | Search | Identifier lookup и text search поверх разрешённого scope |
 | Identity | ChatGPT/Google adapters, UserIdentity linking, sessions, current User и versioned Profile/Settings |
-| Access | Ownership scope, AccessGrant inheritance, share/revoke decisions |
+| Teams | Экспериментальные Team catalog/detail, membership lifecycle и versioned Team grants поверх ADR-0016 baseline |
+| Access | Ownership scope, strongest direct/Team route, inheritance, share/revoke decisions |
 | Administration | Server allowlist, content-free overview и explicit full-state backup/restore |
 | Portability | Owner Project bundles, validation/preview и atomic exact restore |
 | Agent API | Compact/detail projections, versioned REST, remote MCP и OAuth/personal credential scopes |
@@ -131,9 +132,10 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 ### Авторизованный доступ к данным
 
 1. Identity middleware устанавливает current User из server-verified session.
-2. Access вычисляет effective role: для Project и его subtree, включая каждую
-   Task, — через current Project owner/active Project grant; для global
-   SavedView — через собственный owner/active direct grant.
+2. Access вычисляет effective role как самую сильную из ownership, active
+   direct grant и active Team grants current User. Project route наследуется
+   subtree; exact Task Team route применяется только к указанной Task; global
+   SavedView route открывает View, но не расширяет ACL underlying Tasks.
 3. Repository применяет predicate внутри SQL/query до pagination, aggregation,
    grouping или full-text search.
 4. Mutation дополнительно требует minimum role (`editor` для content,
@@ -151,6 +153,9 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
    membership возвращает current-user fallback. Если UI scope omitted, как в
    Agent API/MCP и существующих внутренних callers, repository сохраняет
    прежний ACL union.
+8. Team route участвует только при active membership, active Team и
+   non-revoked grant. Team не становится tenant, resource owner или owner
+   workspace scope; direct grants и строки resources не материализуются заново.
 
 ### Share и revoke
 
@@ -162,9 +167,44 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 4. Revoke атомарно закрывает grant. Следующий query/mutation grantee больше не
    включает resource subtree.
 5. Project grant наследуется Tasks/Releases/project-scoped SavedViews. Direct
-   Task/global SavedView grant поддерживает только Editor/Viewer.
+   global SavedView grant поддерживает только Editor/Viewer; direct Person
+   grant на project Task не создаётся.
 6. Ownership transfer одним batch обновляет Project owner, отзывает grant нового
    owner и создаёт прежнему owner grant Manager.
+7. Экспериментальный Team grant использует отдельную row в `team_grants` и не
+   создаёт direct `AccessGrant` каждому member. Project допускает
+   Manager/Editor/Viewer; exact Task и global SavedView — Editor/Viewer.
+8. Project Team grant наследуется Task/Release/scoped View. Exact Task grant не
+   открывает Project/siblings. Release и scoped View не получают отдельный
+   Team root; global View сохраняет ACL intersection.
+9. Team grant authority выводится из target resource: Project Owner назначает
+   вплоть до Manager, Manager — Editor/Viewer; exact Task route назначает
+   Project Owner/Manager; global View route — только owner View. Active Team
+   membership необходима для выбора Team, но не даёт authority над target.
+10. Brand-new Team grant начинает с version 1; reactivate/update/revoke
+    проверяет optimistic version и заканчивается resource-scoped read-back.
+    Revoke одного route не удаляет другой direct/Team/Project route и потому
+    не обещает полную потерю доступа.
+
+### Team catalog и membership
+
+1. `GET /api/teams` возвращает только неархивные Teams с active membership
+   current User; `POST /api/teams` одним D1 batch создаёт Team и owner
+   membership, затем перечитывает result.
+2. `GET /api/teams/{id}` и member list требуют active membership. Только
+   current Team owner добавляет зарегистрированного User по verified email,
+   меняет active status или удаляет member membership; owner membership этими
+   командами защищена от mutation.
+3. Membership update/delete использует current version и authoritative Team
+   detail read-back. Duplicate active add идемпотентен; inactive row требует
+   явной versioned реактивации.
+4. `GET /api/team-grants` поддерживает member-scoped Team list и
+   resource-scoped management list. Resource-scoped read повторно разрешает
+   target ACL и может вернуть revoked row, чтобы client передал current version
+   при реактивации.
+5. Dedicated Team sync, Agent/MCP и portability не входят в Release 0.4.
+   Catalog/detail и `People & Teams` читают authoritative HTTP state; выбор
+   production lifecycle и sync выполняется после сравнительных прогонов.
 
 ### Открытие view
 
@@ -760,12 +800,15 @@ optional/standalone Task semantics из ранних решений: кажда�
   повторяют UI, backup validators, OpenAPI projection и D1 insert/update guards;
 - `task_identifier_aliases` с нормализованным lookup index для прежних
   identifiers;
-- dormant Teams baseline из
+- постоянная Teams baseline из
   [ADR-0016](decisions/0016-dormant-teams-schema-baseline.md): `teams` со stable
   public ref и owner catalog indexes, `team_memberships` с unique Team–User
   pair, role/status lifecycle и lookup по Team/User, `team_grants` с type-aware
-  permission check и active lookup по Team/resource. Request runtime пока не
-  импортирует эти таблицы и не включает их в authorization, API, sync или UI;
+  permission check и active lookup по Team/resource. Экспериментальный runtime
+  [ADR-0017](decisions/0017-experimental-teams-runtime.md) использует эти
+  таблицы для catalog/membership и strongest-role ACL без schema changes,
+  переписывания direct grants или resources; dedicated sync и portability пока
+  не подключены;
 - индексы по owner/status/archive/deletion, `purge_after`, project/release и
   updated time;
 - expression indexes по нормализованным task title/identifier, project
@@ -944,6 +987,10 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
 - Access tests покрывают role hierarchy/ceiling, viewer mutation denial,
   project inheritance к Task/Release/scoped View, global View intersection,
   revoke и atomic ownership transfer.
+- Teams tests отдельно покрывают atomic Team+owner membership, active-member
+  catalog/detail, owner-only versioned membership, role ceilings, strongest
+  direct/Team route, Project inheritance, exact Task isolation, global View
+  intersection, revoke/reactivate CAS и persistence только в трёх Team tables.
 - Admin tests покрывают allowlist normalization, отказ обычному User и
   registration/activity aggregates при изменении source counts.
 - Backup tests покрывают format/domain validation, identity continuity,
@@ -1013,6 +1060,11 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
   проверяться server-side.
 - Ошибка в role ceiling увеличивает blast radius grant; server-side hierarchy,
   provenance и быстрый revoke обязательны.
+- Team grant добавляет ещё один ACL route: ошибка strongest-role union или
+  забытая проверка active membership/Team/revoke может дать лишний доступ.
+  Поэтому direct и Team provenance не смешиваются, а target ACL проверяется до
+  grant read/mutation. Dedicated sync и portability остаются открытой границей,
+  а UAT-кандидат не должен выдаваться за production selection.
 - Sites contract сегодня даёт ChatGPT identity через email/name headers, а не
   отдельный immutable subject; account linking и provider key требуют
   осторожной миграционной стратегии.
@@ -1038,6 +1090,7 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
 5. Server-side idempotency task create, bulk command contract, OAuth/API rate
    limits, retention audit events и критерии перехода на managed IdP перед
    публичным каталогом.
-6. После пяти сравнительных прогонов выбрать функциональную реализацию Teams и
-   отдельно решить её production lifecycle, sync и portability contract; до
-   этого dormant tables остаются исключены из system/Project backup.
+6. После пяти сравнительных прогонов выбрать между функциональными реализациями
+   Teams; Release 0.4 по ADR-0017 остаётся одним UAT-кандидатом. Отдельно решить
+   production lifecycle, dedicated sync и portability contract; до этого Team
+   tables исключены из system/Project backup.

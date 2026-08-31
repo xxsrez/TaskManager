@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-31
+Последнее обновление: 2026-09-01
 
 Документ фиксирует логическую модель, а не конкретную ORM или SQL-схему.
 Имена полей могут адаптироваться к выбранному стеку, но семантика и инварианты
@@ -275,12 +275,14 @@ Project Owner имеет implicit highest access и не представлен 
   ownership уже добавленному участнику. Target становится Owner, прежний Owner
   — Manager; подтверждение target не требуется.
 
-## Dormant Teams schema baseline
+## Экспериментальный Teams runtime
 
 Три таблицы ниже являются заранее применённой persistence baseline из
-[ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md). До отдельного
-функционального среза они не подключены к repository, authorization, API, sync
-или UI и должны оставаться пустыми вне синтетической проверки.
+[ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md). Release 0.4
+подключает их как функциональный UAT-кандидат по
+[ADR-0017](../decisions/0017-experimental-teams-runtime.md), не меняя schema,
+migrations, constraints или migration journal. Это не выбранный production
+outcome пяти сравнительных прогонов.
 
 ### Team
 
@@ -294,8 +296,9 @@ Project Owner имеет implicit highest access и не представлен 
 | `created_at`, `updated_at` | Timestamps Team record |
 
 `public_id` уникален. Owner catalog и case-insensitive name lookup имеют
-отдельные индексы. Создание owner membership остаётся будущей атомарной server
-операцией и не выполняется migration.
+отдельные индексы. Создание Team атомарно создаёт active owner membership;
+наличие Team без этой membership считается нарушением runtime contract. Team
+не владеет Project, Task, Release или SavedView и не образует tenant/workspace.
 
 ### TeamMembership
 
@@ -312,7 +315,11 @@ Project Owner имеет implicit highest access и не представлен 
 Пара `(team_id, user_id)` уникальна, поэтому повторное добавление не создаёт
 вторую active row. Удаление Team каскадно удаляет её memberships; удаление User
 с сохранённым membership запрещено foreign key. Индексы поддерживают member
-list Team и поиск active Teams пользователя.
+list Team и поиск active Teams пользователя. Catalog/detail читает только
+active member неархивной Team. Только current Team owner добавляет уже
+зарегистрированного User по verified email, меняет `active`/`inactive` с
+optimistic version или удаляет member row; owner membership этими командами не
+изменяется.
 
 ### TeamGrant
 
@@ -328,10 +335,44 @@ list Team и поиск active Teams пользователя.
 | `created_at`, `updated_at` | Timestamps Team grant record |
 
 Одна row уникальна по `(team_id, resource_type, resource_id)` и может быть
-отозвана или повторно активирована будущим server contract. D1 проверяет
+отозвана или повторно активирована versioned server contract. D1 проверяет
 resource/permission domain и Team/User foreign keys. Существование и ACL самого
-полиморфного resource должны проверяться сервером до чтения или mutation;
-наличие dormant row само по себе доступа не даёт.
+полиморфного resource проверяются сервером до чтения или mutation.
+
+Active Team grant является дополнительным access route для каждого active
+member неархивной Team. Он не создаёт `AccessGrant` на каждого User и не меняет
+строку target resource. Effective role выбирается как самая сильная из owner,
+direct User grants и всех Team routes пользователя; revoke, inactive membership
+или archive Team немедленно исключает соответствующий route.
+
+### Семантика Team share targets
+
+- Project Team grant наследуется его Tasks, Releases и SavedViews с
+  `scope_project_id`.
+- Exact Task Team grant открывает только указанную Task, не меняет её Project и
+  не открывает Project или sibling Tasks. Это исключение относится только к
+  Team grant; direct Person grant на project Task не создаётся.
+- Global SavedView Team grant открывает View с `Editor` или `Viewer`, но query
+  по-прежнему возвращает только Tasks, отдельно доступные читателю.
+- Release и project-scoped SavedView не являются самостоятельными Team share
+  targets и получают Team access только через Project.
+- Project Owner может назначить Team `Manager`/`Editor`/`Viewer`, Project
+  Manager — `Editor`/`Viewer`; exact Task route может назначить Project
+  Owner/Manager, global SavedView route — только owner View. Team ownership или
+  membership сами по себе не дают authority над resource.
+- Brand-new Team grant начинает с version 1; reactivate, update и revoke
+  используют current `version` и завершаются authoritative resource-scoped
+  read-back. Conflict не применяет last-write-wins.
+
+### Persistence и lifecycle boundary кандидата
+
+Team-specific writes ограничены `teams`, `team_memberships`, `team_grants`.
+Direct `access_grants` и Projects/Tasks/Releases/SavedViews не переписываются
+ради Team functionality. Dedicated Team sync, Agent/MCP и portability пока не
+определены; system/Project backup не переносит Team rows. Delivery Release 0.4
+не удаляет UAT Team rows после проверки, чтобы exact counts/read-back остались
+доступны центральному benchmark. Targeted reset является отдельной operation,
+а не частью product lifecycle.
 
 ## WorkspaceSyncSequence и WorkspaceChangeEvent
 
@@ -1059,21 +1100,24 @@ grants; Tasks, base query semantics и temporary URL layer не материал
     `15` сохраняет provenance внешних edges без peer Tasks и требует явного
     `not_restored` acknowledgement. Operational purge jobs не входят в
     backup/restore.
-31. Dormant Team name непустое и не длиннее 100 символов; `public_id` уникален,
-    owner ссылается на существующего User, а delete Team каскадно удаляет только
-    её memberships и Team grants.
+31. Team name непустое и не длиннее 100 символов; `public_id` уникален, owner
+    ссылается на существующего User, а create Team атомарно создаёт active owner
+    membership. Delete Team каскадно удаляет только её memberships и Team
+    grants.
 32. TeamMembership уникален по Team–User. `role` принадлежит
     `owner|member`; active membership имеет `deactivated_at IS NULL`, inactive
     — непустой timestamp.
 33. TeamGrant уникален по Team/resource. Project допускает
     Manager/Editor/Viewer, Task и SavedView — только Editor/Viewer; revoke не
     меняет direct `AccessGrant` или сам resource.
-34. До функционального cutover новые таблицы не участвуют в effective role,
-    repository reads, search, sync, API или UI. Их наличие не является access
-    route и не расширяет SavedView result.
-35. Functional tasks TM-331–TM-335 используют schema baseline без migrations.
-    Между сравнительными прогонами сохраняются schema и migration journal, а
-    targeted reset удаляет только синтетические Team rows.
+34. Effective role равна strongest owner/direct/active-Team route. Project Team
+    grant наследуется subtree; exact Task Team grant открывает только Task;
+    global SavedView остаётся ACL intersection. Release и project-scoped View
+    доступны только через Project.
+35. Functional tasks TM-331–TM-335 используют schema baseline без migrations и
+    сохраняют Team-specific state только в трёх Team tables. Между
+    сравнительными прогонами сохраняются schema и migration journal; delivery
+    candidate не выполняет cleanup до центрального benchmark read-back.
 
 ## Намеренно не моделируется
 
@@ -1081,6 +1125,7 @@ grants; Tasks, base query semantics и temporary URL layer не материал
 `Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
 `Integration` не входят в начальную модель.
 
-Team описана только как dormant persistence baseline. Team-owned resources,
-tenant boundary, issue assignment, workflows, cycles, labels, templates,
-private teams и subteams по-прежнему не моделируются.
+Team-owned resources, tenant boundary, issue assignment, собственные workflows,
+cycles, labels, templates, private teams и subteams не моделируются.
+Экспериментальный Team runtime не вводит dedicated sync, Agent/MCP surface или
+portability contract и не является выбранным production outcome.

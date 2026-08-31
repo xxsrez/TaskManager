@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-19
+Последнее обновление: 2026-09-01
 
 ## 1. Назначение
 
@@ -44,6 +44,7 @@ Desktop-first shell повторяет композицию Linear:
 │ product/user switcher   search   create  │ breadcrumb / title / actions │
 │ My tasks                                 ├──────────────────────────────│
 │ Shared with me                           │ tabs / filters / display     │
+│ Teams                                    │                              │
 │ Views                                    ├──────────────────────────────│
 │ Projects                                 │ list | board | details       │
 │ Releases                                 │                              │
@@ -60,9 +61,11 @@ Desktop-first shell повторяет композицию Linear:
   ссылкой на workspace root без chevron или другого ложного menu affordance;
   dropdown появляется только вместе с реально реализованным workspace menu.
 - Основная навигация начинается с `Workspace`, затем следуют `My tasks`,
-  `Shared with me`, `Views`, `Projects`, `Releases`. `Workspace` ведёт на тот
-  же canonical `/workspace`, что product mark/name, и имеет собственный active
-  state. Исключённые функции Linear не показываются даже disabled.
+  `Shared with me`, экспериментальный `Teams`, `Views`, `Projects`, `Releases`.
+  `Workspace` ведёт на тот же canonical `/workspace`, что product mark/name, и
+  имеет собственный active state. `Teams` открывает catalog по `/teams`, а
+  detail сохраняет public Team ref в `/teams/{team-id}`. Исключённые функции
+  Linear не показываются даже disabled.
 - `Views`, `Projects` и `Releases` всегда начинаются с канонической collection
   link (`All views`, `All projects`, `All releases`), после которой показывают
   не более трёх доступных неархивных записей. Общий порядок recent —
@@ -817,11 +820,14 @@ Linear, но они обязаны использовать тот же visual l
 
 ### 12.2 Share dialog
 
-- Trigger `Share` находится в header Project и global SavedView. Для Task,
-  Release и project-scoped SavedView он открывает
-  access surface родительского Project либо не дублируется.
-- Compact dialog `Members & access` содержит verified-email input, role picker,
-  Owner отдельной первой строкой и список active grants с inline role picker.
+- Trigger `Share` находится в header Project, Task и global SavedView. Для
+  Release и project-scoped SavedView он открывает access surface родительского
+  Project; Release и scoped View не получают отдельный Team grant.
+- Compact dialog `People & Teams` использует доступные с клавиатуры tabs
+  `People` и `Teams`. Вкладка `People` сохраняет verified-email input, role
+  picker, Owner отдельной первой строкой и список active direct grants с inline
+  role picker. Synthetic Team collaborators не становятся direct grants и не
+  участвуют в People mutations.
 - Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView —
   `Editor`, `Viewer`. Copy рядом с email явно говорит, что
   User должен уже войти и письмо не отправляется.
@@ -837,6 +843,49 @@ Linear, но они обязаны использовать тот же visual l
   underlying data.
 - Revoke требует подтверждения только когда последствия могут оборвать текущую
   работу; результат обновляется после server response.
+
+- Вкладка `Teams` сначала предлагает только owned Teams. После ввода текста
+  поиск идёт по всем Teams, где current User имеет active membership; owned
+  результаты остаются первыми. Search использует combobox semantics,
+  поддерживает мышь, `ArrowUp`/`ArrowDown` и `Enter`, но не создаёт grant без
+  явного выбора.
+- Каждый вариант показывает Team name, число active members и текущую
+  membership role (`Owner` или `Member`). Loading, empty, error и retry
+  состояния не заменяют друг друга; недоступная Team остаётся read-only и не
+  превращается в возможность mutation.
+- Для Project доступны Team-роли `Manager`, `Editor`, `Viewer`. Для exact Task
+  и global SavedView — `Editor`, `Viewer`. Для каждой роли и выбранного access
+  root dialog показывает предметное объяснение до подтверждения.
+- В Task dialog есть два разных roots: весь Project и `Exact Task`. Первый
+  включает весь Project subtree, второй сохраняет Project Task, но открывает
+  только её, без Project и sibling Tasks. Release и project-scoped SavedView
+  явно объясняют, что route проходит только через Project. Global SavedView
+  поясняет ACL intersection underlying Tasks.
+- Список `Teams with access` отделён от `People with direct access`. Удаление
+  одного Team route не обещает удалить direct, Project или другой Team route;
+  effective access может сохраниться по более сильному оставшемуся пути.
+- Brand-new grant создаётся без прежней version; reactivate, role change и
+  revoke передают current version. После любой успешной mutation dialog
+  перечитывает resource-scoped Team grants; `409` сначала загружает
+  authoritative state и только затем предлагает повторить действие.
+
+### 12.2.1 Team catalog и membership
+
+- `/teams` группирует active catalog на `Your teams` и `Teams you're a member
+  of`. Empty state предлагает создать Team только как группу доступа и не
+  обещает отдельный workspace, workflow или Team-owned resources.
+- Create dialog принимает непустое имя длиной до 100 символов. Успешный ответ
+  сразу открывает detail с atomic owner membership; failure сохраняет draft и
+  даёт retry.
+- Team detail показывает active/inactive members, display name, verified email,
+  роль, status и versioned actions. Любой active member читает detail; только
+  current Team Owner добавляет уже зарегистрированного User, меняет active
+  status или удаляет member membership. Owner membership недоступна этим
+  controls.
+- Membership mutation отправляет current version, затем перечитывает detail.
+  Conflict/error остаётся рядом с member surface без оптимистичного
+  last-write-wins. Catalog и detail имеют отдельные loading, empty, error и
+  retry states.
 
 ### 12.3 Shared with me, Profile и Settings
 
@@ -1025,8 +1074,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
   в title row как overlay drawer; это одинаково работает в portrait и
   landscape.
 - Mobile drawer содержит полный разрешённый набор навигации и действий:
-  `My tasks`, `Shared with me`, `Views`, `Projects`, `Releases`, search, create
-  controls и отдельные account trigger/sign out. Account menu сохраняет
+  `My tasks`, `Shared with me`, `Teams`, `Views`, `Projects`, `Releases`,
+  search, create controls и отдельные account trigger/sign out. Account menu сохраняет
   identity, `Workspace`, `Settings` и условный `Administration` в portrait и
   landscape; Administration не дублируется как primary navigation item.
   Section actions не зависят от hover. Выбор route, backdrop и `Esc` закрывают
@@ -1039,6 +1088,9 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 - Ниже `768px` task/project details и composer открываются full-screen, а list
   скрывает необязательные display properties. Touch targets имеют размер не
   меньше `40px`.
+- При ширине `900px` и меньше Team catalog/detail и `People & Teams` используют
+  одну колонку без horizontal overflow; tabs, search results, role/root
+  controls, retry и member actions имеют touch target не меньше `40px`.
 - Kanban сохраняет горизонтальные columns, а не превращается автоматически в
   другую сущность; touch drag имеет альтернативу через property picker.
 - Минимальная responsive-приёмка включает геометрии `390×844` и `844×390`,
@@ -1066,8 +1118,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 | Surface/паттерн Linear | Task Manager | Статус MVP | Осознанное отличие |
 |---|---|---|---|
-| Left application sidebar | My tasks, Shared, Views, Projects, Releases | Берём | Без teams/inbox/initiatives |
-| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace без teams, initiatives и cross-user analytics |
+| Left application sidebar | My tasks, Shared, Teams, Views, Projects, Releases | Берём | Экспериментальный Teams catalog без inbox/initiatives |
+| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace; Team не становится workspace или owner scope |
 | Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
 | Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
 | Filters | Searchable property formula | Берём ядро | Только `AND` |
@@ -1080,7 +1132,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
 | Themes | System/light/dark | Берём | Собственные tokens и branding |
-| Share controls | Linear-like compact members dialog | Адаптируем | Owner/Manager/Editor/Viewer и inheritance |
+| Share controls | `People & Teams` с direct и Team routes | Адаптируем | Owner/Manager/Editor/Viewer, strongest role, Project inheritance и exact Task route |
+| Team catalog/detail | Owned/member Teams, active membership lifecycle | Экспериментальный кандидат | Без Team tenant, ownership ресурсов, workflow, sync или portability |
 | Login/profile | Та же visual system | Адаптируем | ChatGPT/Google identity model |
 | Administration | Compact metrics + dense user table | Адаптируем | Operational aggregates, не Linear analytics |
 | Project backup utility | Compact staged wizard | Адаптируем | Только current Project Owner |
