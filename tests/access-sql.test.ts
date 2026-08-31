@@ -23,9 +23,9 @@ test("ACL SQL fragments accept identifiers only as aliases", () => {
 });
 
 test("legacy full_access grants normalize to the current effective roles", () => {
-  assert.match(taskAccessRoleSql("task_row", "project_row"), /WHEN 'full_access' THEN 'manager'/);
-  assert.match(savedViewAccessRoleSql("view_row", "project_row"), /WHEN 'full_access' THEN 'editor'/);
-  assert.match(editableTaskWhere("task_row"), /'editor', 'manager', 'full_access'/);
+  assert.match(taskAccessRoleSql("task_row", "project_row"), /WHEN 'full_access' THEN 3/);
+  assert.match(savedViewAccessRoleSql("view_row", "project_row"), /WHEN 'full_access' THEN 2/);
+  assert.match(editableTaskWhere("task_row"), /IN \('editor', 'manager', 'owner'\)/);
 });
 
 function placeholders(value: string): number {
