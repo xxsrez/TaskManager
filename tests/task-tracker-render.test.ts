@@ -45,7 +45,9 @@ import {
   TeamCatalogSection,
   TeamDetailSurface,
   TeamSurfaceState,
+  teamAccessRoots,
   teamActiveMemberCount,
+  teamCatalogSuggestions,
   teamMembersUiApiPath,
   teamMembershipUiApiPath,
   teamUiApiPath,
@@ -70,7 +72,7 @@ import {
   viewDialogDraftQuery,
   viewDisplayDependencies,
 } from "../components/task-tracker";
-import type { TeamDetail, TeamMembershipRecord, TeamRecord } from "../components/task-tracker";
+import type { TeamAccessChoice, TeamDetail, TeamMembershipRecord, TeamRecord } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
 import type { AppSnapshot } from "../lib/types";
 
@@ -3897,4 +3899,91 @@ test("Teams UI keeps API paths and authoritative member lifecycle wiring scoped"
   assert.match(source, /await readBackTeam\(teamReference\)/);
   assert.match(source, /routeDetail\.team\.ownerUserId === currentUserId/);
   assert.match(source, /onTeamResolved\(value\.team\)/);
+});
+
+test("People & Teams keeps exact Task and inherited Project roots explicit", () => {
+  const base = {
+    resourceType: "project" as const,
+    resourceId: "project-1",
+    label: "Task Manager",
+    accessRole: "owner" as const,
+    ownerUserId: "user-1",
+    inherited: true,
+  };
+  const taskRoots = teamAccessRoots({
+    ...base,
+    context: "task",
+    exactTask: { id: "task-1", label: "TM-1" },
+  });
+  assert.deepEqual(taskRoots.map((root) => [root.resourceType, root.resourceId, root.roles]), [
+    ["project", "project-1", ["manager", "editor", "viewer"]],
+    ["task", "task-1", ["editor", "viewer"]],
+  ]);
+  assert.match(taskRoots[0]!.explanation, /Project route includes every Task/);
+  assert.match(taskRoots[1]!.explanation, /keeps its Project/);
+  assert.match(taskRoots[1]!.explanation, /not the Project or sibling Tasks/);
+
+  const releaseRoots = teamAccessRoots({ ...base, context: "release" });
+  assert.equal(releaseRoots.length, 1);
+  assert.match(releaseRoots[0]!.explanation, /Releases do not receive a separate Team grant/);
+  const projectViewRoots = teamAccessRoots({ ...base, context: "project_view" });
+  assert.match(projectViewRoots[0]!.explanation, /changes access to the whole Project/);
+  const globalViewRoots = teamAccessRoots({
+    ...base,
+    resourceType: "saved_view",
+    resourceId: "view-1",
+    inherited: false,
+    context: "global_view",
+  });
+  assert.deepEqual(globalViewRoots[0]!.roles, ["editor", "viewer"]);
+  assert.match(globalViewRoots[0]!.explanation, /Tasks each reader can already access/);
+});
+
+test("Team access suggestions prioritize owned Teams without hiding member search", () => {
+  const memberTeam = { ...teamRecord, id: "team-2", publicId: "team-public-2", ownerUserId: "user-9", name: "Design" };
+  const memberMembership: TeamMembershipRecord = {
+    ...teamOwner,
+    id: "membership-current-member",
+    teamId: memberTeam.id,
+    role: "member",
+  };
+  const choices: TeamAccessChoice[] = [
+    { team: memberTeam, membership: memberMembership, activeMemberCount: 3 },
+    { team: teamRecord, membership: teamOwner, activeMemberCount: 4 },
+  ];
+  assert.deepEqual(
+    teamCatalogSuggestions(choices, "user-1", "").map((choice) => choice.team.name),
+    ["Platform"],
+  );
+  assert.deepEqual(
+    teamCatalogSuggestions(choices, "user-1", "des").map((choice) => choice.team.name),
+    ["Design"],
+  );
+  assert.deepEqual(
+    teamCatalogSuggestions(choices, "user-1", "a").map((choice) => choice.team.name),
+    ["Platform"],
+  );
+});
+
+test("People & Teams uses versioned Team grants and authoritative read-back", () => {
+  const source = readFileSync(
+    new URL("../components/task-tracker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /People & Teams/);
+  assert.match(source, /role="combobox"/);
+  assert.match(source, /event\.key === "ArrowDown" \|\| event\.key === "ArrowUp"/);
+  assert.match(source, /event\.key === "Enter"[\s\S]*?chooseTeam/);
+  assert.match(source, /No owned Teams to suggest\. Search Teams you belong to\./);
+  assert.match(source, /disabled=!selectedTeamId|disabled=\{!selectedTeamId/);
+  assert.match(source, /fetch\(`\/api\/team-grants\?resourceType=[\s\S]*?includeRevoked=1/);
+  assert.match(source, /aria-selected=\{selectedTeamId === choice\.team\.id\}/);
+  assert.match(source, /canManageGrant\(target\.accessRole, root\.resourceType, grant\.permission\)/);
+  assert.match(source, /method === "DELETE"[\s\S]*?\{ version: existing!\.version \}/);
+  assert.match(source, /method === "POST"[\s\S]*?existing \? \{ version: existing\.version \} : \{\}/);
+  assert.match(source, /response\.status === 409[\s\S]*?await readBackGrants\(root\)/);
+  assert.match(source, /await readTeamResponse\(response[\s\S]*?await readBackGrants\(root\)/);
+  assert.match(source, /People with direct access/);
+  assert.match(source, /Teams with access/);
+  assert.match(source, /Removing one Team route does not remove independent People, Project, or other Team routes/);
 });

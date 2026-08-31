@@ -371,6 +371,19 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
   assert.equal(revokedProjectGrant.grant.revokedAt !== null, true);
   assert.equal(revokedProjectGrant.grant.version, 3);
 
+  const grantsWithRevoked = await listTeamGrants(
+    new Request(
+      `https://example.test/api/team-grants?resourceType=project&resourceId=${project.id}&includeRevoked=1`,
+    ),
+  );
+  assert.equal(grantsWithRevoked.status, 200);
+  const grantsWithRevokedBody = await json<{ grants: TeamGrant[] }>(grantsWithRevoked);
+  assert.ok(grantsWithRevokedBody.grants.some((grant) =>
+    grant.id === revokedProjectGrant.grant.id &&
+    grant.version === revokedProjectGrant.grant.version &&
+    grant.revokedAt !== null
+  ));
+
   configureActorResolverForTests(async () => recipientActor);
   const strongestAfterRevoke = await loadAccessibleProject(recipient.id, project.id);
   assert.equal(strongestAfterRevoke.accessRole, "viewer");

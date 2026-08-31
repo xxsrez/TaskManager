@@ -263,14 +263,15 @@ export async function deleteTeamMembership(
 
 /**
  * List active Team grants either for one Team or for one resource. A
- * resource-scoped list is an access-management read and therefore requires
- * the same target authority as assigning the least privileged role.
+ * resource-scoped access-management read may also include revoked rows so a
+ * client can supply the current CAS version when reactivating a route.
  */
 export async function listTeamGrants(
   currentUser: UserRecord,
   teamReference: string,
   resourceType?: unknown,
   resourceReference?: unknown,
+  includeRevoked = false,
 ): Promise<{ grants: TeamGrantRecord[] }> {
   const hasResourceType = resourceType !== undefined && resourceType !== null && resourceType !== "";
   const hasResourceReference = resourceReference !== undefined && resourceReference !== null && resourceReference !== "";
@@ -295,10 +296,8 @@ export async function listTeamGrants(
   if (!team && !target) throw teamNotFound();
 
   const resourceScoped = normalizedResourceType !== null && target !== null;
-  const predicates = [
-    "tg.revoked_at IS NULL",
-    "t.archived_at IS NULL",
-  ];
+  const predicates = ["t.archived_at IS NULL"];
+  if (!includeRevoked || !resourceScoped) predicates.push("tg.revoked_at IS NULL");
   const parameters: unknown[] = [];
   if (!resourceScoped) {
     predicates.push("tm.user_id = ?", "tm.status = 'active'");

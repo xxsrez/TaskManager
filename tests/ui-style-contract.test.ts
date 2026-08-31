@@ -51,6 +51,23 @@ test("share member actions keep a padded desktop hit target", () => {
   assert.match(rule, /padding:\s*0\s+[1-9][0-9]*px\s*;/);
 });
 
+test("People & Teams stays bounded and touch-safe on desktop and mobile", () => {
+  assert.match(declarations(".people-teams-dialog"), /width:\s*min\(620px/);
+  assert.match(declarations(".people-teams-dialog"), /max-height:\s*min\(760px/);
+  assert.match(declarations(".team-access-results"), /max-height:\s*224px/);
+  assert.match(declarations(".team-access-results"), /overflow:\s*auto/);
+  assert.match(declarations(".team-grant-composer"), /grid-template-columns:\s*minmax\(120px,\s*160px\)\s+auto/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.access-tabs button,[\s\S]*?\.team-access-results button\s*\{[^}]*min-height:\s*var\(--control-height-touch\)/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*900px\)[\s\S]*?\.team-grant-composer\s*\{[^}]*grid-template-columns:\s*1fr/,
+  );
+  assert.match(taskTracker, /role="combobox"[\s\S]*?role="listbox"[\s\S]*?role="option"/);
+});
+
 test("entity deletion entrypoints stay touch-visible with 44px targets", () => {
   assert.match(declarations(".entity-card-shell"), /position:\s*relative\s*;/);
   assert.match(declarations(".release-row-shell"), /position:\s*relative\s*;/);

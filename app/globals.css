@@ -663,6 +663,30 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .access-row button { min-height: 28px; padding: 0 7px; border-radius: 5px; background: transparent; color: var(--danger); cursor: pointer; font-size: 11px; }
 .access-row button:hover { background: var(--hover); }
 .access-row select { min-width: 92px; height: 28px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); color: var(--text); font-size: 11px; padding: 0 7px; }
+.people-teams-dialog { width: min(620px, calc(100vw - 24px)); max-height: min(760px, calc(100dvh - 24px)); overflow: auto; }
+.access-tabs { display: flex; gap: 4px; padding: 8px 18px 12px; border-bottom: 1px solid var(--border); }
+.access-tabs button { min-height: 34px; padding: 0 14px; border-radius: 6px; color: var(--muted); cursor: pointer; }
+.access-tabs button[aria-selected="true"] { background: var(--active); color: var(--accent); font-weight: 600; }
+.access-section-title { margin: 0; padding: 8px 18px 4px; color: var(--muted); font-size: 10px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
+.team-access-panel { display: grid; gap: 12px; padding: 14px 18px 18px; }
+.team-access-root, .team-search-composer > label { display: grid; gap: 5px; color: var(--text-secondary); font-size: 10px; font-weight: 600; }
+.team-access-root select, .team-search-composer input, .team-grant-composer select { width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; outline: 0; background: var(--surface-subtle); color: var(--text); }
+.team-access-root select:focus, .team-search-composer input:focus, .team-grant-composer select:focus { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent); }
+.team-root-explanation, .team-route-warning, .team-access-empty { margin: 0; color: var(--muted); font-size: 10px; line-height: 16px; }
+.team-root-explanation { padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--accent) 5%, var(--surface-subtle)); color: var(--text-secondary); }
+.team-search-composer { display: grid; gap: 6px; }
+.team-search-composer > p { margin: 0; color: var(--muted); font-size: 10px; }
+.team-search-composer > p[role="alert"] { color: var(--danger); }
+.team-search-composer > p button, .team-access-panel > p button { margin-left: 7px; color: var(--accent); cursor: pointer; }
+.team-access-results { max-height: 224px; margin: 0; padding: 3px; overflow: auto; border: 1px solid var(--border); border-radius: 7px; background: var(--raised); list-style: none; }
+.team-access-results button { width: 100%; min-height: 48px; display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 6px; cursor: pointer; text-align: left; }
+.team-access-results button:hover, .team-access-results button[aria-selected="true"], .team-access-results button[data-active="true"] { background: var(--active); }
+.team-access-results button > span:nth-child(2) { display: grid; min-width: 0; }
+.team-access-results button b { overflow: hidden; font-size: 12px; font-weight: 560; text-overflow: ellipsis; white-space: nowrap; }
+.team-access-results button small { color: var(--muted); font-size: 10px; }
+.team-grant-composer { display: grid; grid-template-columns: minmax(120px, 160px) auto; justify-content: end; gap: 7px; }
+.team-grant-list { padding-inline: 0; border: 1px solid var(--border); border-radius: 7px; }
+.team-route-warning { padding-top: 9px; border-top: 1px solid var(--border); }
 .access-actions { display: flex; align-items: center; gap: 5px; }
 .access-actions button:first-child:not(:last-child) { color: var(--text-secondary); }
 .row-check-spacer { width: 20px; height: 20px; }
@@ -1327,6 +1351,12 @@ kbd { min-width: 17px; height: 17px; display: inline-grid; place-items: center; 
 .auth-note { max-width: 310px; margin: 15px 0 0; color: var(--muted); font-size: 10px; line-height: 16px; }
 
 @media (max-width: 900px) {
+  .people-teams-dialog { width: min(100%, calc(100vw - 12px)); max-height: calc(100dvh - 12px); }
+  .access-tabs button, .team-access-root select, .team-search-composer input, .team-grant-composer select, .team-grant-composer .button, .team-access-results button { min-height: var(--control-height-touch); }
+  .team-access-panel { padding-inline: 12px; }
+  .team-grant-composer { grid-template-columns: 1fr; }
+  .team-grant-list .access-row { grid-template-columns: 28px minmax(0, 1fr) auto; }
+  .team-grant-list .access-actions { grid-column: 2 / -1; justify-content: flex-end; }
   .teams-surface { padding: 12px; }
   .teams-header { align-items: stretch; flex-direction: column; }
   .teams-header > .button { min-height: 40px; align-self: flex-start; }

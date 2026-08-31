@@ -8,11 +8,13 @@ export async function GET(request: Request) {
   const teamReference = params.get("teamId") ?? params.get("team") ?? "";
   const resourceType = params.get("resourceType") ?? undefined;
   const resourceReference = params.get("resourceId") ?? undefined;
+  const includeRevoked = params.get("includeRevoked") === "1";
   return noStore(await withUser((user) => listTeamGrants(
     user,
     teamReference,
     resourceType,
     resourceReference,
+    includeRevoked,
   )));
 }
 
