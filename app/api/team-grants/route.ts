@@ -6,7 +6,14 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const params = new URL(request.url).searchParams;
   const teamReference = params.get("teamId") ?? params.get("team") ?? "";
-  return noStore(await withUser((user) => listTeamGrants(user, teamReference)));
+  const resourceType = params.get("resourceType") ?? undefined;
+  const resourceReference = params.get("resourceId") ?? undefined;
+  return noStore(await withUser((user) => listTeamGrants(
+    user,
+    teamReference,
+    resourceType,
+    resourceReference,
+  )));
 }
 
 export async function POST(request: Request) {

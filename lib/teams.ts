@@ -262,24 +262,67 @@ export async function deleteTeamMembership(
 }
 
 /**
- * List a Team's complete grant lifecycle for an active Team member. Revoked
- * rows stay visible to members so the owner can reactivate the same grant
- * without creating a second row.
+ * List active Team grants either for one Team or for one resource. A
+ * resource-scoped list is an access-management read and therefore requires
+ * the same target authority as assigning the least privileged role.
  */
 export async function listTeamGrants(
   currentUser: UserRecord,
   teamReference: string,
+  resourceType?: unknown,
+  resourceReference?: unknown,
 ): Promise<{ grants: TeamGrantRecord[] }> {
-  const team = await loadTeamForActiveMember(currentUser.id, teamReference);
+  const hasResourceType = resourceType !== undefined && resourceType !== null && resourceType !== "";
+  const hasResourceReference = resourceReference !== undefined && resourceReference !== null && resourceReference !== "";
+  if (hasResourceType !== hasResourceReference) {
+    throw new ValidationError("resourceType and resourceId are required together");
+  }
+
+  const team = teamReference
+    ? await loadTeamForActiveMember(currentUser.id, teamReference)
+    : null;
+  const normalizedResourceType = hasResourceType
+    ? teamGrantResourceType(resourceType)
+    : null;
+  const target = normalizedResourceType
+    ? await resolveTeamGrantTarget(
+      currentUser,
+      normalizedResourceType,
+      String(resourceReference),
+      "viewer",
+    )
+    : null;
+  if (!team && !target) throw teamNotFound();
+
+  const resourceScoped = normalizedResourceType !== null && target !== null;
+  const predicates = [
+    "tg.revoked_at IS NULL",
+    "t.archived_at IS NULL",
+  ];
+  const parameters: unknown[] = [];
+  if (!resourceScoped) {
+    predicates.push("tm.user_id = ?", "tm.status = 'active'");
+    parameters.push(currentUser.id);
+  }
+  if (team) {
+    predicates.push("tg.team_id = ?");
+    parameters.push(team.id);
+  }
+  if (normalizedResourceType && target) {
+    predicates.push("tg.resource_type = ?", "tg.resource_id = ?");
+    parameters.push(normalizedResourceType, target.resourceId);
+  }
   const rows = await getD1()
     .prepare(
-      `SELECT id, team_id, resource_type, resource_id, permission,
-              granted_by_user_id, revoked_at, version, created_at, updated_at
-       FROM team_grants
-       WHERE team_id = ?
-       ORDER BY created_at DESC, id DESC`,
+      `SELECT tg.id, tg.team_id, tg.resource_type, tg.resource_id, tg.permission,
+              tg.granted_by_user_id, tg.revoked_at, tg.version, tg.created_at, tg.updated_at
+       FROM team_grants tg
+       JOIN teams t ON t.id = tg.team_id
+       ${resourceScoped ? "" : "JOIN team_memberships tm ON tm.team_id = tg.team_id"}
+       WHERE ${predicates.join(" AND ")}
+       ORDER BY tg.created_at DESC, tg.id DESC`,
     )
-    .bind(team.id)
+    .bind(...parameters)
     .all<DbRow>();
   return { grants: rows.results.map(mapTeamGrant) };
 }
@@ -332,13 +375,16 @@ export async function upsertTeamGrant(
     ) {
       return { grant: existing };
     }
+    if (expectedVersion === null) {
+      throw new ValidationError("Team grant version is required");
+    }
     const result = await db
       .prepare(
         `UPDATE team_grants
          SET permission = ?, granted_by_user_id = ?, revoked_at = NULL,
              version = version + 1, updated_at = ?
          WHERE id = ? AND team_id = ?
-           AND (? IS NULL OR version = ?)`,
+           AND version = ?`,
       )
       .bind(
         permission,
@@ -346,7 +392,6 @@ export async function upsertTeamGrant(
         now,
         existing.id,
         teamId,
-        expectedVersion,
         expectedVersion,
       )
       .run();

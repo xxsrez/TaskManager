@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { configureActorResolverForTests } from "../lib/auth";
 import {
+  getAgentTaskDetail,
+  getAgentWorkspace,
+  listAgentLabels,
+} from "../lib/agent-api-repository";
+import {
+  createLabel,
   createProject,
   createRelease,
   createSavedView,
@@ -21,6 +27,7 @@ import {
   createTeam,
   updateTeamMembership,
 } from "../lib/teams";
+import { createWorkflowStatus } from "../lib/workflow-statuses";
 import { getOrCreateUser } from "../lib/repository";
 import { grantAccess } from "../lib/repository";
 import {
@@ -125,6 +132,16 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
     query: {},
     display: { layout: "list" },
   });
+  await createWorkflowStatus(resourceOwner, {
+    name: "Team grant project status",
+    category: "started",
+    color: "#aa55cc",
+  });
+  const projectLabelCatalog = await createLabel(resourceOwner, {
+    name: "Team grant project label",
+    color: "#55aacc",
+  });
+  assert.ok(projectLabelCatalog.some((label) => label.name === "Team grant project label"));
   await grantAccess(resourceOwner, {
     resourceType: "project",
     resourceId: project.id,
@@ -146,7 +163,7 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
   const recipientMembershipTwo = await addTeamMember(teamOwnerTwo, teamTwo.team.publicId, {
     email: recipient.email,
   });
-  await addTeamMember(teamOwnerOne, teamOne.team.publicId, {
+  const resourceOwnerMembershipOne = await addTeamMember(teamOwnerOne, teamOne.team.publicId, {
     email: resourceOwner.email,
   });
   assert.equal(actorMembershipOne.membership.role, "member");
@@ -226,6 +243,26 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
   assert.equal(exactTask.projectId, project.id);
   await assert.rejects(loadAccessibleTask(recipient.id, siblingTask.id), /tasks? were? not found/i);
   await assert.rejects(loadAccessibleProject(recipient.id, project.id), /Project not found/i);
+  const exactTaskSnapshot = await getSnapshot(recipient);
+  assert.ok(exactTaskSnapshot.users.some((user) => user.id === teamOwnerOne.id));
+  assert.ok(exactTaskSnapshot.tasks.some((task) => task.id === firstTask.id));
+  assert.equal(exactTaskSnapshot.tasks.some((task) => task.id === siblingTask.id), false);
+  assert.equal(exactTaskSnapshot.projects.some((item) => item.id === project.id), false);
+  const agentWorkspace = await getAgentWorkspace({
+    authorizationId: "team-grants-agent",
+    authorizationType: "personal_token",
+    clientId: "team-grants-agent",
+    scopes: ["api:read", "api:write"] as Array<"api:read" | "api:write">,
+    user: recipient,
+    expiresAt: null,
+    resource: null,
+  });
+  assert.equal(agentWorkspace.counts.projects, 0);
+  assert.ok(agentWorkspace.statuses.some((status) => status.name === "Team grant project status"));
+  const agentTaskDetail = await getAgentTaskDetail(recipient, firstTask.publicId);
+  assert.ok(agentTaskDetail.availableStatuses.some((status) => status.name === "Team grant project status"));
+  const agentLabels = await listAgentLabels(recipient);
+  assert.ok(agentLabels.items.some((label) => label.name === "Team grant project label"));
   assert.equal((await loadAccessibleView(recipient.id, globalView.id)).id, globalView.id);
   await assert.rejects(loadAccessibleView(recipient.id, projectView.id), /View not found/i);
   const globalIntersectionBeforeProject = await queryTaskSummaries(recipient, {
@@ -375,6 +412,7 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
     params({ id: reactivatedProjectGrant.grant.id }),
   );
   assert.equal(revokeReactivatedProjectGrant.status, 200);
+  const revokedReactivatedProjectGrant = await json<{ grant: TeamGrant }>(revokeReactivatedProjectGrant);
   configureActorResolverForTests(async () => grantActor);
   const revokeRemainingProjectViewer = await revokeTeamGrant(
     jsonRequest("DELETE", "/api/team-grants/grant", {
@@ -418,6 +456,7 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
     resourceType: "project",
     resourceId: project.id,
     permission: "viewer",
+    version: revokedReactivatedProjectGrant.grant.version,
   }));
   assert.equal(teamViewerAfterDirectResponse.status, 200);
   const teamViewerAfterDirect = await json<{ grant: TeamGrant }>(teamViewerAfterDirectResponse);
@@ -434,17 +473,83 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
     params({ id: teamViewerAfterDirect.grant.id }),
   );
   assert.equal(revokedTeamViewer.status, 200);
+  const revokedTeamViewerGrant = await json<{ grant: TeamGrant }>(revokedTeamViewer);
   configureActorResolverForTests(async () => recipientActor);
   assert.equal((await loadAccessibleProject(recipient.id, project.id)).accessRole, "editor");
 
-  configureActorResolverForTests(async () => recipientActor);
+  configureActorResolverForTests(async () => resourceOwnerActor);
   const listed = await listTeamGrants(
     new Request(`https://example.test/api/team-grants?teamId=${teamOne.team.publicId}`),
   );
   assert.equal(listed.status, 200);
   const listedBody = await json<{ grants: TeamGrant[] }>(listed);
   assert.ok(listedBody.grants.some((grant) => grant.id === globalViewGrant.grant.id));
-  assert.ok(listedBody.grants.some((grant) => grant.id === revokedProjectGrant.grant.id));
+  assert.equal(listedBody.grants.some((grant) => grant.id === revokedProjectGrant.grant.id), false);
+  assert.equal(listedBody.grants.every((grant) => grant.revokedAt === null), true);
+
+  configureActorResolverForTests(async () => teamOwnerOneActor);
+  await updateTeamMembership(
+    teamOwnerOne,
+    teamOne.team.publicId,
+    resourceOwnerMembershipOne.membership.id,
+    { status: "inactive", version: resourceOwnerMembershipOne.membership.version },
+  );
+  configureActorResolverForTests(async () => resourceOwnerActor);
+  const resourceScoped = await listTeamGrants(
+    new Request(
+      `https://example.test/api/team-grants?resourceType=saved_view&resourceId=${globalView.id}`,
+    ),
+  );
+  assert.equal(resourceScoped.status, 200);
+  const resourceScopedBody = await json<{ grants: TeamGrant[] }>(resourceScoped);
+  assert.deepEqual(
+    resourceScopedBody.grants.map((grant) => grant.id),
+    [globalViewGrant.grant.id],
+  );
+  assert.equal(resourceScopedBody.grants[0]?.revokedAt, null);
+
+  configureActorResolverForTests(async () => grantActor);
+  const reactivateWithoutVersion = await createTeamGrant(jsonRequest("POST", "/api/team-grants", {
+    teamId: teamOne.team.publicId,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "editor",
+  }));
+  assert.equal(reactivateWithoutVersion.status, 400);
+  const reactivatedWithVersion = await createTeamGrant(jsonRequest("POST", "/api/team-grants", {
+    teamId: teamOne.team.publicId,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "editor",
+    version: revokedTeamViewerGrant.grant.version,
+  }));
+  assert.equal(reactivatedWithVersion.status, 200);
+  const reactivatedWithVersionGrant = await json<{ grant: TeamGrant }>(reactivatedWithVersion);
+  const roleChangeWithoutVersion = await createTeamGrant(jsonRequest("POST", "/api/team-grants", {
+    teamId: teamOne.team.publicId,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "viewer",
+  }));
+  assert.equal(roleChangeWithoutVersion.status, 400);
+  const roleChangeWithVersion = await createTeamGrant(jsonRequest("POST", "/api/team-grants", {
+    teamId: teamOne.team.publicId,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "viewer",
+    version: reactivatedWithVersionGrant.grant.version,
+  }));
+  assert.equal(roleChangeWithVersion.status, 200);
+  const roleChangeWithVersionGrant = await json<{ grant: TeamGrant }>(roleChangeWithVersion);
+
+  configureActorResolverForTests(async () => grantActor);
+  const cleanupProjectGrant = await revokeTeamGrant(
+    jsonRequest("DELETE", "/api/team-grants/grant", {
+      version: roleChangeWithVersionGrant.grant.version,
+    }),
+    params({ id: roleChangeWithVersionGrant.grant.id }),
+  );
+  assert.equal(cleanupProjectGrant.status, 200);
 
   configureActorResolverForTests(async () => outsiderActor);
   const outsiderTarget = await createTeamGrant(jsonRequest("POST", "/api/team-grants", {
@@ -461,6 +566,22 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
   assert.equal(
     (await outsiderTarget.clone().json() as { error: string }).error,
     (await outsiderUnknown.json() as { error: string }).error,
+  );
+  const outsiderResource = await listTeamGrants(
+    new Request(
+      `https://example.test/api/team-grants?resourceType=saved_view&resourceId=${globalView.id}`,
+    ),
+  );
+  const unknownResource = await listTeamGrants(
+    new Request(
+      "https://example.test/api/team-grants?resourceType=saved_view&resourceId=missing-view",
+    ),
+  );
+  assert.equal(outsiderResource.status, 404);
+  assert.equal(unknownResource.status, 404);
+  assert.equal(
+    (await outsiderResource.clone().json() as { error: string }).error,
+    (await unknownResource.json() as { error: string }).error,
   );
 
   const finalDirectGrantCount = Number(

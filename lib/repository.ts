@@ -879,15 +879,15 @@ export async function getSnapshot(
                )
            ) OR EXISTS (
              SELECT 1 FROM tasks t
-             WHERE t.project_id IS NULL AND t.deleted_at IS NULL AND (
-               t.owner_user_id = ? OR EXISTS (
-                 SELECT 1 FROM access_grants actor_grant
-                 WHERE actor_grant.resource_type = 'task'
-                   AND actor_grant.resource_id = t.id
-                   AND actor_grant.grantee_user_id = ?
-                   AND actor_grant.revoked_at IS NULL
-               ) OR ${activeTeamGrantExistsSql("task", "t.id", "?")}
-             ) AND ${workspacePredicate("t.owner_user_id", workspaceScope).sql} AND (
+             LEFT JOIN projects task_project ON task_project.id = t.project_id
+             WHERE t.deleted_at IS NULL
+               AND (t.project_id IS NULL OR task_project.deleted_at IS NULL)
+               AND ${taskAccessRoleSql("t", "task_project")} IS NOT NULL
+               AND ${workspacePredicate(
+                 "CASE WHEN t.project_id IS NOT NULL THEN task_project.owner_user_id ELSE t.owner_user_id END",
+                 workspaceScope,
+               ).sql}
+               AND (
                t.owner_user_id = u.id OR EXISTS (
                  SELECT 1 FROM access_grants member_grant
                  WHERE member_grant.resource_type = 'task'
@@ -895,7 +895,7 @@ export async function getSnapshot(
                    AND member_grant.grantee_user_id = u.id
                    AND member_grant.revoked_at IS NULL
                ) OR ${activeTeamGrantExistsSql("task", "t.id", "u.id")}
-             )
+               )
            ) ORDER BY u.display_name, u.id`,
         )
         .bind(
@@ -906,7 +906,11 @@ export async function getSnapshot(
           user.id,
           user.id,
           user.id,
-          ...workspacePredicate("t.owner_user_id", workspaceScope).parameters,
+          user.id,
+          ...workspacePredicate(
+            "CASE WHEN t.project_id IS NOT NULL THEN task_project.owner_user_id ELSE t.owner_user_id END",
+            workspaceScope,
+          ).parameters,
         ),
       db
         .prepare(
