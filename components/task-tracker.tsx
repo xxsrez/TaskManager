@@ -94,6 +94,7 @@ import {
   resolveNavigationHistoryState,
   resolveNavigationTarget,
   taskPath,
+  teamPath,
   type Layout,
   type ResolvedNavigation,
   type SettingsSection,
@@ -321,6 +322,36 @@ type ShareTarget = {
   inherited: boolean;
 };
 
+export type TeamRecord = {
+  id: string;
+  publicId: string;
+  ownerUserId: string;
+  name: string;
+  archivedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamMembershipRecord = {
+  id: string;
+  teamId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: "owner" | "member";
+  status: "active" | "inactive";
+  deactivatedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamDetail = {
+  team: TeamRecord;
+  members: TeamMembershipRecord[];
+};
+
 type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | null;
 export type CodexSetupMode = "desktop" | "cli";
 export type CodexSetupModeAction =
@@ -441,6 +472,21 @@ export function taskDetailUiApiPath(taskId: string, workspaceScope: string) {
     `/api/tasks/${encodeURIComponent(taskId)}`,
     workspaceScope,
   );
+}
+
+export function teamUiApiPath(teamReference: string) {
+  return `/api/teams/${encodeURIComponent(teamReference)}`;
+}
+
+export function teamMembersUiApiPath(teamReference: string) {
+  return `${teamUiApiPath(teamReference)}/members`;
+}
+
+export function teamMembershipUiApiPath(
+  teamReference: string,
+  membershipId: string,
+) {
+  return `${teamMembersUiApiPath(teamReference)}/${encodeURIComponent(membershipId)}`;
 }
 
 export function taskRelationSearchUiApiPath(
@@ -1266,6 +1312,7 @@ export function TaskTracker({
   );
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false);
+  const [teamPrefetchedDetail, setTeamPrefetchedDetail] = useState<TeamDetail | null>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const [displayOpen, setDisplayOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
@@ -2703,6 +2750,8 @@ export function TaskTracker({
       ? data.admin.registeredUserCount
     : surface === "shared"
       ? sharedWithMeRoots(data).projects.length + sharedWithMeRoots(data).views.length
+    : isTeamSurface(surface)
+      ? ""
     : surface.startsWith("settings:")
       ? ""
     : projectReleaseSurfaceId
@@ -3396,11 +3445,22 @@ export function TaskTracker({
     }
   }
 
+  function navigateTeam(publicId: string, prefetchedDetail?: TeamDetail) {
+    setMobileSidebarOpen(false);
+    setMobileActionsOpen(false);
+    setSearch("");
+    setTemporaryQuery(emptyViewQuery());
+    setDialog(null);
+    setTeamPrefetchedDetail(prefetchedDetail ?? null);
+    applyNavigation({ surface: `team:${publicId}`, layout: "list", taskId: null });
+  }
+
   function navigateSurface(nextSurface: string, nextLayout?: Layout) {
     setMobileSidebarOpen(false);
     setMobileActionsOpen(false);
     setSearch("");
     setTemporaryQuery(emptyViewQuery());
+    if (nextSurface === "teams") setTeamPrefetchedDetail(null);
     if (nextSurface === "admin") {
       // The initial workspace snapshot intentionally omits the admin overview.
       // Let the server build the gated projection before rendering this surface.
@@ -3865,6 +3925,7 @@ export function TaskTracker({
           setSurface(resolved.surface);
           setLayout(resolved.layout);
           setActiveTaskId(resolved.taskId);
+          if (!isTeamSurface(resolved.surface)) setTeamPrefetchedDetail(null);
           if (!resolved.taskId) {
             taskReturnPath.current = navigationPath(resolved, currentData);
           }
@@ -4208,6 +4269,7 @@ export function TaskTracker({
           <NavItem compact={sidebarCompact} icon={<PanelsTopLeft size={15} />} label="Workspace" active={surface === "workspace"} href="/workspace" onNavigate={() => navigateSurface("workspace", "list")} />
           <NavItem compact={sidebarCompact} icon={<Inbox size={15} />} label="My tasks" active={surface === "mine"} href="/issues" onNavigate={() => navigateSurface("mine", "list")} count={taskCountForView("mine", data, statusMap)} />
           <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
+          <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Teams" active={isTeamSurface(surface)} href={navigationPath({ surface: "teams", layout: "list", taskId: null }, data)} onNavigate={() => navigateSurface("teams", "list")} />
           {!sidebarCompact && (
             <>
               <SidebarSection title="Views" action={() => void openDialogWithCatalog("view", ["projects"])}>
@@ -4540,6 +4602,14 @@ export function TaskTracker({
               y,
               focus,
             )}
+          />
+        ) : isTeamSurface(surface) ? (
+          <TeamsSurface
+            currentUserId={data.user.id}
+            teamReference={surface.startsWith("team:") ? surface.slice(5) : null}
+            initialDetail={teamPrefetchedDetail}
+            onOpenTeam={navigateTeam}
+            onOpenCatalog={() => navigateSurface("teams", "list")}
           />
         ) : surface === "admin" && data.admin ? (
           <AdminSurface
@@ -9424,6 +9494,675 @@ function SharedWithMeSurface({ data, tasks, statuses, users, onOpenProject, onOp
   );
 }
 
+export function teamActiveMemberCount(
+  members: readonly TeamMembershipRecord[],
+): number {
+  return members.filter((member) => member.status === "active").length;
+}
+
+export function teamMembershipRoleLabel(
+  role: TeamMembershipRecord["role"],
+): string {
+  return role === "owner" ? "Owner" : "Member";
+}
+
+export function teamMembershipStatusLabel(
+  status: TeamMembershipRecord["status"],
+): string {
+  return status === "active" ? "Active" : "Inactive";
+}
+
+type TeamLoadState = "loading" | "ready" | "error";
+
+type TeamsSurfaceProps = {
+  currentUserId: string;
+  teamReference: string | null;
+  initialDetail?: TeamDetail | null;
+  onOpenTeam: (publicId: string, prefetchedDetail?: TeamDetail) => void;
+  onOpenCatalog: () => void;
+};
+
+export function TeamsSurface({
+  currentUserId,
+  teamReference,
+  initialDetail,
+  onOpenTeam,
+  onOpenCatalog,
+}: TeamsSurfaceProps) {
+  const [teams, setTeams] = useState<TeamRecord[]>([]);
+  const [catalogState, setCatalogState] = useState<TeamLoadState>("loading");
+  const [catalogError, setCatalogError] = useState("");
+  const [catalogRetry, setCatalogRetry] = useState(0);
+  const [detail, setDetail] = useState<TeamDetail | null>(() =>
+    teamReference && initialDetail?.team.publicId === teamReference
+      ? initialDetail
+      : null,
+  );
+  const [detailState, setDetailState] = useState<TeamLoadState>(
+    teamReference ? "loading" : "ready",
+  );
+  const [detailError, setDetailError] = useState("");
+  const [detailErrorReference, setDetailErrorReference] = useState<string | null>(null);
+  const [detailRetry, setDetailRetry] = useState(0);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState("");
+  const [memberEmail, setMemberEmail] = useState("");
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState("");
+
+  const fetchTeamDetail = useCallback(async (
+    reference: string,
+    signal?: AbortSignal,
+  ): Promise<TeamDetail> => {
+    const response = await fetch(teamUiApiPath(reference), {
+      cache: "no-store",
+      signal,
+    });
+    const value = await readTeamResponse<TeamDetail>(response, "Team could not be loaded");
+    if (!isTeamDetail(value)) throw new Error("Team response was incomplete");
+    return value;
+  }, []);
+
+  const readBackTeam = useCallback(async (reference: string) => {
+    try {
+      const value = await fetchTeamDetail(reference);
+      setDetail(value);
+      setDetailState("ready");
+      setDetailError("");
+      setDetailErrorReference(null);
+      return true;
+    } catch (requestError) {
+      setDetailErrorReference(reference);
+      setDetailError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Team could not be refreshed",
+      );
+      return false;
+    }
+  }, [fetchTeamDetail]);
+
+  useEffect(() => {
+    if (teamReference) return;
+    const controller = new AbortController();
+    void fetch("/api/teams", { cache: "no-store", signal: controller.signal })
+      .then(async (response) => {
+        const value = await readTeamResponse<{ teams: TeamRecord[] }>(
+          response,
+          "Teams could not be loaded",
+        );
+        if (!Array.isArray(value.teams)) throw new Error("Teams response was incomplete");
+        return value.teams;
+      })
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        setTeams(value);
+        setCatalogState("ready");
+      })
+      .catch((requestError: unknown) => {
+        if (controller.signal.aborted) return;
+        setCatalogState("error");
+        setCatalogError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Teams could not be loaded",
+        );
+      });
+    return () => controller.abort();
+  }, [catalogRetry, teamReference]);
+
+  useEffect(() => {
+    if (!teamReference) {
+      return;
+    }
+    const controller = new AbortController();
+    const seeded = initialDetail?.team.publicId === teamReference
+      ? initialDetail
+      : null;
+    void fetchTeamDetail(teamReference, controller.signal)
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        setDetail(value);
+        setDetailState("ready");
+        setDetailError("");
+        setDetailErrorReference(null);
+      })
+      .catch((requestError: unknown) => {
+        if (controller.signal.aborted) return;
+        if (!seeded) setDetail(null);
+        setDetailState(seeded ? "ready" : "error");
+        setDetailErrorReference(teamReference);
+        setDetailError(
+          requestError instanceof Error
+            ? requestError.message
+            : "Team could not be loaded",
+        );
+      });
+    return () => controller.abort();
+  }, [detailRetry, fetchTeamDetail, initialDetail, teamReference]);
+
+  async function handleCreate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = createName.trim();
+    if (!name) {
+      setCreateError("Team name is required.");
+      return;
+    }
+    setCreateBusy(true);
+    setCreateError("");
+    try {
+      const response = await fetch("/api/teams", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      const value = await readTeamResponse<{
+        team: TeamRecord;
+        membership: TeamMembershipRecord;
+      }>(response, "Team could not be created");
+      if (!isTeamRecord(value.team) || !isTeamMembershipRecord(value.membership)) {
+        throw new Error("Team response was incomplete");
+      }
+      const createdDetail: TeamDetail = {
+        team: value.team,
+        members: [value.membership],
+      };
+      setTeams((current) => [
+        value.team,
+        ...current.filter((team) => team.id !== value.team.id),
+      ]);
+      setCreateName("");
+      setCreateOpen(false);
+      onOpenTeam(value.team.publicId, createdDetail);
+    } catch (requestError) {
+      setCreateError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Team could not be created",
+      );
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
+  async function handleAddMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!teamReference || !memberEmail.trim()) {
+      setActionError("Enter a registered user's email.");
+      return;
+    }
+    setActionBusy("add-member");
+    setActionError("");
+    try {
+      const response = await fetch(teamMembersUiApiPath(teamReference), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: memberEmail.trim() }),
+      });
+      const value = await readTeamResponse<{ membership: TeamMembershipRecord }>(
+        response,
+        "Member could not be added",
+      );
+      if (!isTeamMembershipRecord(value.membership)) {
+        throw new Error("Member response was incomplete");
+      }
+      setDetail((current) => current
+        ? { ...current, members: upsertTeamMembership(current.members, value.membership) }
+        : current);
+      setMemberEmail("");
+      await readBackTeam(teamReference);
+    } catch (requestError) {
+      setActionError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Member could not be added",
+      );
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleMembershipStatus(
+    member: TeamMembershipRecord,
+    status: TeamMembershipRecord["status"],
+  ) {
+    if (!teamReference || member.role === "owner") return;
+    const key = `status:${member.id}`;
+    setActionBusy(key);
+    setActionError("");
+    try {
+      const response = await fetch(teamMembershipUiApiPath(teamReference, member.id), {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ status, version: member.version }),
+      });
+      const value = await readTeamResponse<{ membership: TeamMembershipRecord }>(
+        response,
+        "Membership could not be updated",
+      );
+      if (!isTeamMembershipRecord(value.membership)) {
+        throw new Error("Membership response was incomplete");
+      }
+      setDetail((current) => current
+        ? { ...current, members: upsertTeamMembership(current.members, value.membership) }
+        : current);
+      await readBackTeam(teamReference);
+    } catch (requestError) {
+      setActionError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Membership could not be updated",
+      );
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  async function handleRemoveMember(member: TeamMembershipRecord) {
+    if (!teamReference || member.role === "owner") return;
+    const key = `remove:${member.id}`;
+    setActionBusy(key);
+    setActionError("");
+    try {
+      const response = await fetch(teamMembershipUiApiPath(teamReference, member.id), {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ version: member.version }),
+      });
+      const value = await readTeamResponse<{ deleted: true }>(
+        response,
+        "Member could not be removed",
+      );
+      if (!value.deleted) throw new Error("Member response was incomplete");
+      setDetail((current) => current
+        ? { ...current, members: current.members.filter((item) => item.id !== member.id) }
+        : current);
+      await readBackTeam(teamReference);
+    } catch (requestError) {
+      setActionError(
+        requestError instanceof Error
+          ? requestError.message
+          : "Member could not be removed",
+      );
+    } finally {
+      setActionBusy(null);
+    }
+  }
+
+  if (teamReference) {
+    const routeDetail = detail?.team.publicId === teamReference
+      ? detail
+      : initialDetail?.team.publicId === teamReference
+        ? initialDetail
+        : null;
+    const detailFailed = detailState === "error" && detailErrorReference === teamReference;
+    const ownMembership = routeDetail?.members.find((member) => member.userId === currentUserId);
+    const canManage = Boolean(
+      routeDetail &&
+      routeDetail.team.ownerUserId === currentUserId &&
+      ownMembership?.role === "owner" &&
+      ownMembership.status === "active",
+    );
+    return (
+      <div className="teams-surface">
+        {!routeDetail && !detailFailed && (
+          <TeamSurfaceState status="loading" title="Loading team" description="Fetching the latest team members and access state." />
+        )}
+        {!routeDetail && detailFailed && (
+          <TeamSurfaceState
+            status="error"
+            title="Team unavailable"
+            description={detailError || "This Team could not be loaded."}
+            actionLabel="Retry"
+            onAction={() => {
+              setDetailErrorReference(null);
+              setDetailRetry((current) => current + 1);
+            }}
+            secondaryLabel="Back to Teams"
+            onSecondary={onOpenCatalog}
+          />
+        )}
+        {routeDetail && (
+          <TeamDetailSurface
+            detail={routeDetail}
+            currentUserId={currentUserId}
+            canManage={canManage}
+            actionBusy={actionBusy}
+            actionError={actionError || (detailErrorReference === teamReference ? detailError : "")}
+            memberEmail={memberEmail}
+            onMemberEmail={setMemberEmail}
+            onAddMember={handleAddMember}
+            onMembershipStatus={handleMembershipStatus}
+            onRemoveMember={handleRemoveMember}
+            onBack={onOpenCatalog}
+          />
+        )}
+      </div>
+    );
+  }
+
+  const ownedTeams = teams.filter((team) => team.ownerUserId === currentUserId);
+  const memberTeams = teams.filter((team) => team.ownerUserId !== currentUserId);
+  return (
+    <div className="teams-surface">
+      <header className="teams-header">
+        <div>
+          <span className="eyebrow">TEAM DIRECTORY</span>
+          <h2>Teams</h2>
+          <p>Organize the people you work with. Team access stays separate from Tasks and Projects.</p>
+        </div>
+        <button className="button primary" type="button" onClick={() => { setCreateOpen(true); setCreateError(""); }}>
+          <Plus size={14} />Create team
+        </button>
+      </header>
+
+      {createOpen && (
+        <form className="team-create-form" onSubmit={handleCreate} aria-label="Create team">
+          <label>
+            <span>Team name</span>
+            <input
+              autoFocus
+              value={createName}
+              onChange={(event) => setCreateName(event.target.value)}
+              maxLength={100}
+              required
+              placeholder="e.g. Platform"
+            />
+          </label>
+          {createError && <p className="team-inline-error" role="alert">{createError}</p>}
+          <div className="team-form-actions">
+            <button className="button ghost" type="button" onClick={() => { setCreateOpen(false); setCreateError(""); }}>Cancel</button>
+            <button className="button primary" type="submit" disabled={createBusy}>{createBusy ? "Creating…" : "Create team"}</button>
+          </div>
+        </form>
+      )}
+
+      {catalogState === "loading" && (
+        <TeamSurfaceState status="loading" title="Loading teams" description="Fetching the teams available to your account." />
+      )}
+      {catalogState === "error" && (
+        <TeamSurfaceState
+          status="error"
+          title="Teams could not be loaded"
+          description={catalogError || "Try again to refresh the team catalog."}
+          actionLabel="Retry"
+          onAction={() => {
+            setCatalogState("loading");
+            setCatalogError("");
+            setCatalogRetry((current) => current + 1);
+          }}
+        />
+      )}
+      {catalogState === "ready" && teams.length === 0 && (
+        <TeamSurfaceState
+          status="empty"
+          title="No teams yet"
+          description="Create a Team to keep its members and access state together."
+          actionLabel="Create team"
+          onAction={() => { setCreateOpen(true); setCreateError(""); }}
+        />
+      )}
+      {catalogState === "ready" && teams.length > 0 && (
+        <div className="team-catalog">
+          {ownedTeams.length > 0 && <TeamCatalogSection title="Your teams" teams={ownedTeams} accessLabel="Owner" onOpen={onOpenTeam} />}
+          {memberTeams.length > 0 && <TeamCatalogSection title="Teams you're a member of" teams={memberTeams} accessLabel="Member" onOpen={onOpenTeam} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function TeamCatalogSection({
+  title,
+  teams,
+  accessLabel,
+  onOpen,
+}: {
+  title: string;
+  teams: TeamRecord[];
+  accessLabel: "Owner" | "Member";
+  onOpen: (publicId: string) => void;
+}) {
+  return (
+    <section className="team-catalog-section" aria-labelledby={`team-section-${accessLabel.toLowerCase()}`}>
+      <header>
+        <h3 id={`team-section-${accessLabel.toLowerCase()}`}>{title}</h3>
+        <span>{teams.length}</span>
+      </header>
+      <div className="team-card-grid">
+        {teams.map((team) => (
+          <a
+            className="team-card"
+            key={team.id}
+            href={teamPath(team.publicId)}
+            onClick={(event) => handleLocalLink(event, () => onOpen(team.publicId))}
+          >
+            <span className="team-card-icon"><UsersRound size={18} /></span>
+            <span className="team-card-copy">
+              <span className="team-card-title"><b>{team.name}</b><span className="status-badge">{accessLabel}</span></span>
+              <span className="team-card-meta">Active Team · Open member directory</span>
+            </span>
+            <ChevronRight size={15} aria-hidden="true" />
+          </a>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function TeamDetailSurface({
+  detail,
+  currentUserId,
+  canManage,
+  actionBusy,
+  actionError,
+  memberEmail,
+  onMemberEmail,
+  onAddMember,
+  onMembershipStatus,
+  onRemoveMember,
+  onBack,
+}: {
+  detail: TeamDetail;
+  currentUserId: string;
+  canManage: boolean;
+  actionBusy: string | null;
+  actionError: string;
+  memberEmail: string;
+  onMemberEmail: (value: string) => void;
+  onAddMember: (event: FormEvent<HTMLFormElement>) => void;
+  onMembershipStatus: (member: TeamMembershipRecord, status: TeamMembershipRecord["status"]) => void;
+  onRemoveMember: (member: TeamMembershipRecord) => void;
+  onBack: () => void;
+}) {
+  const ownMembership = detail.members.find((member) => member.userId === currentUserId);
+  const activeCount = teamActiveMemberCount(detail.members);
+  return (
+    <div className="team-detail">
+      <button className="team-back-link" type="button" onClick={onBack}>
+        <ArrowUp size={14} className="team-back-icon" aria-hidden="true" />Teams
+      </button>
+      <header className="team-detail-header">
+        <span className="team-detail-icon"><UsersRound size={22} /></span>
+        <div>
+          <span className="eyebrow">TEAM</span>
+          <h2>{detail.team.name}</h2>
+          <p>{activeCount} active member{activeCount === 1 ? "" : "s"}</p>
+        </div>
+        {ownMembership && (
+          <span className="team-self-state">Your access: {teamMembershipRoleLabel(ownMembership.role)} · {teamMembershipStatusLabel(ownMembership.status)}</span>
+        )}
+      </header>
+
+      {canManage && (
+        <section className="team-owner-controls" aria-labelledby="team-owner-controls-title">
+          <div>
+            <h3 id="team-owner-controls-title">Owner controls</h3>
+            <p>Add a registered user or update an existing member&apos;s access state.</p>
+          </div>
+          <form className="team-member-form" onSubmit={onAddMember}>
+            <label>
+              <span className="visually-hidden">Registered user email</span>
+              <input
+                type="email"
+                value={memberEmail}
+                onChange={(event) => onMemberEmail(event.target.value)}
+                required
+                placeholder="registered.user@example.com"
+                aria-label="Registered user email"
+              />
+            </label>
+            <button className="button secondary" type="submit" disabled={Boolean(actionBusy)}>
+              <Plus size={14} />{actionBusy === "add-member" ? "Adding…" : "Add member"}
+            </button>
+          </form>
+        </section>
+      )}
+
+      {actionError && <p className="team-inline-error" role="alert">{actionError}</p>}
+      <section className="team-members-section" aria-labelledby="team-members-title">
+        <header>
+          <div>
+            <h3 id="team-members-title">Members</h3>
+            <p>{detail.members.length} account{detail.members.length === 1 ? "" : "s"} in this Team</p>
+          </div>
+          <span className="status-badge">{activeCount} active</span>
+        </header>
+        <ul className="team-member-list">
+          {detail.members.map((member) => {
+            const isSelf = member.userId === currentUserId;
+            const statusAction = member.status === "active" ? "inactive" : "active";
+            const statusBusy = actionBusy === `status:${member.id}`;
+            const removeBusy = actionBusy === `remove:${member.id}`;
+            return (
+              <li className="team-member-row" key={member.id}>
+                <span className="avatar">{initials(member.displayName)}</span>
+                <span className="team-member-identity">
+                  <b>{member.displayName}</b>
+                  <small>{member.email}{isSelf ? " · You" : ""}</small>
+                </span>
+                <span className="team-member-role status-badge">{teamMembershipRoleLabel(member.role)}</span>
+                <span className={`team-member-status team-member-status-${member.status}`}>{teamMembershipStatusLabel(member.status)}</span>
+                {canManage && member.role !== "owner" ? (
+                  <span className="team-member-actions">
+                    <button
+                      className="button ghost compact"
+                      type="button"
+                      disabled={Boolean(actionBusy)}
+                      onClick={() => onMembershipStatus(member, statusAction)}
+                    >
+                      {statusBusy ? "Saving…" : statusAction === "active" ? "Reactivate" : "Deactivate"}
+                    </button>
+                    <button
+                      className="button ghost compact danger"
+                      type="button"
+                      disabled={Boolean(actionBusy)}
+                      onClick={() => onRemoveMember(member)}
+                    >
+                      {removeBusy ? "Removing…" : "Remove"}
+                    </button>
+                  </span>
+                ) : <span className="team-member-actions-placeholder" aria-hidden="true" />}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+export function TeamSurfaceState({
+  status,
+  title,
+  description,
+  actionLabel,
+  onAction,
+  secondaryLabel,
+  onSecondary,
+}: {
+  status: "loading" | "error" | "empty";
+  title: string;
+  description: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
+}) {
+  return (
+    <div className={`team-surface-state team-surface-state-${status}`} role={status === "error" ? "alert" : "status"}>
+      <span className="team-state-icon">
+        {status === "loading" ? <span className="team-loading-spinner" aria-hidden="true" /> : <UsersRound size={22} />}
+      </span>
+      <h2>{title}</h2>
+      <p>{description}</p>
+      {(actionLabel || secondaryLabel) && (
+        <div className="team-state-actions">
+          {actionLabel && onAction && <button className="button primary" type="button" onClick={onAction}>{actionLabel}</button>}
+          {secondaryLabel && onSecondary && <button className="button ghost" type="button" onClick={onSecondary}>{secondaryLabel}</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function upsertTeamMembership(
+  members: TeamMembershipRecord[],
+  incoming: TeamMembershipRecord,
+): TeamMembershipRecord[] {
+  const found = members.some((member) => member.id === incoming.id);
+  return found
+    ? members.map((member) => member.id === incoming.id ? incoming : member)
+    : [...members, incoming];
+}
+
+async function readTeamResponse<T>(
+  response: Response,
+  fallback: string,
+): Promise<T> {
+  const value = await response.json() as unknown;
+  if (!response.ok) {
+    if (value && typeof value === "object" && "error" in value && typeof value.error === "string") {
+      throw new Error(value.error);
+    }
+    throw new Error(fallback);
+  }
+  return value as T;
+}
+
+function isTeamRecord(value: unknown): value is TeamRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<TeamRecord>;
+  return typeof record.id === "string" &&
+    typeof record.publicId === "string" &&
+    typeof record.ownerUserId === "string" &&
+    typeof record.name === "string" &&
+    typeof record.version === "number";
+}
+
+function isTeamMembershipRecord(value: unknown): value is TeamMembershipRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<TeamMembershipRecord>;
+  return typeof record.id === "string" &&
+    typeof record.teamId === "string" &&
+    typeof record.userId === "string" &&
+    typeof record.displayName === "string" &&
+    typeof record.email === "string" &&
+    (record.role === "owner" || record.role === "member") &&
+    (record.status === "active" || record.status === "inactive") &&
+    typeof record.version === "number";
+}
+
+function isTeamDetail(value: unknown): value is TeamDetail {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Partial<TeamDetail>;
+  return isTeamRecord(record.team) &&
+    Array.isArray(record.members) &&
+    record.members.every(isTeamMembershipRecord);
+}
+
 function ViewsSurface({ data, statusMap, onOpen, onContextActions, onRestore, busy }: { data: AppSnapshot; statusMap: Map<string, WorkflowStatusRecord>; onOpen: (surface: string, layout: Layout) => void; onContextActions: (view: SavedViewRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onRestore: (view: SavedViewRecord) => Promise<boolean>; busy: boolean }) {
   const activeViews = data.views.filter((view) => !view.archivedAt);
   const archivedViews = data.views.filter((view) => Boolean(view.archivedAt));
@@ -9891,6 +10630,10 @@ function surfaceBreadcrumbs(
   if (surface === "projects") return [workspace, current("Projects")];
   if (surface === "releases") return [workspace, current("Releases")];
   if (surface === "shared") return [workspace, current("Shared with me")];
+  if (surface === "teams") return [workspace, current("Teams")];
+  if (surface.startsWith("team:")) {
+    return [workspace, ancestor("Teams", "teams"), current("Team")];
+  }
 
   if (surface.startsWith("view:")) {
     return [
@@ -9942,7 +10685,10 @@ function surfaceBreadcrumbs(
   const builtIn = builtInViews.find((item) => item.id === surface);
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
-function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
+function isTeamSurface(surface: string) {
+  return surface === "teams" || surface.startsWith("team:");
+}
+function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || isTeamSurface(surface) || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
 function taskContextualEntity(task: TaskRecord): ContextualActionEntity {
   return { kind: "task", id: task.id, label: task.identifier, accessRole: task.accessRole, archivedAt: task.archivedAt, version: taskMutationVersion(task) };
 }

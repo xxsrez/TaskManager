@@ -42,6 +42,13 @@ import {
   runSingleFlight,
   shouldTriggerPullRefresh,
   StatusIcon,
+  TeamCatalogSection,
+  TeamDetailSurface,
+  TeamSurfaceState,
+  teamActiveMemberCount,
+  teamMembersUiApiPath,
+  teamMembershipUiApiPath,
+  teamUiApiPath,
   taskRowReorderDirection,
   sortTasks,
   snapshotProvesCollectionAbsence,
@@ -62,6 +69,7 @@ import {
   viewDialogDraftQuery,
   viewDisplayDependencies,
 } from "../components/task-tracker";
+import type { TeamDetail, TeamMembershipRecord, TeamRecord } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
 import type { AppSnapshot } from "../lib/types";
 
@@ -2708,6 +2716,7 @@ test("sidebar keeps collection links and at most three recent records with activ
   assert.match(navigation, /aria-label="All views"/);
   assert.match(navigation, /aria-label="All projects"/);
   assert.match(navigation, /aria-label="All releases"/);
+  assert.match(navigation, /href="\/teams"[^>]*aria-label="Teams"/);
   assert.equal(navigation.match(/aria-label="Saved view \d+"/g)?.length, 3);
   assert.equal(navigation.match(/aria-label="Project \d+"/g)?.length, 3);
   assert.equal(navigation.match(/aria-label="Project \d+ Release \d+"/g)?.length, 3);
@@ -3731,4 +3740,143 @@ test("Release overview and edit dialog expose native lifecycle metadata", () => 
   }
   assert.match(dialog, /Save changes/);
   assert.match(dialog, /Delete release/);
+});
+
+const teamRecord: TeamRecord = {
+  id: "team-1",
+  publicId: "team-public-1",
+  ownerUserId: "user-1",
+  name: "Platform",
+  archivedAt: null,
+  version: 3,
+  createdAt: now,
+  updatedAt: now,
+};
+
+const teamOwner: TeamMembershipRecord = {
+  id: "membership-owner",
+  teamId: teamRecord.id,
+  userId: "user-1",
+  displayName: "Test User",
+  email: "test@example.com",
+  role: "owner",
+  status: "active",
+  deactivatedAt: null,
+  version: 2,
+  createdAt: now,
+  updatedAt: now,
+};
+
+const teamMember: TeamMembershipRecord = {
+  id: "membership-member",
+  teamId: teamRecord.id,
+  userId: "user-2",
+  displayName: "Second User",
+  email: "second@example.com",
+  role: "member",
+  status: "inactive",
+  deactivatedAt: now,
+  version: 4,
+  createdAt: now,
+  updatedAt: now,
+};
+
+test("Teams states, catalog cards, and detail controls render the frozen UI contract", () => {
+  const loading = renderToStaticMarkup(createElement(TeamSurfaceState, {
+    status: "loading",
+    title: "Loading teams",
+    description: "Fetching teams.",
+  }));
+  const error = renderToStaticMarkup(createElement(TeamSurfaceState, {
+    status: "error",
+    title: "Teams could not be loaded",
+    description: "Try again.",
+    actionLabel: "Retry",
+    onAction: () => undefined,
+  }));
+  const empty = renderToStaticMarkup(createElement(TeamSurfaceState, {
+    status: "empty",
+    title: "No teams yet",
+    description: "Create a Team.",
+    actionLabel: "Create team",
+    onAction: () => undefined,
+  }));
+  assert.match(loading, /Loading teams/);
+  assert.match(loading, /team-loading-spinner/);
+  assert.match(error, /role="alert"/);
+  assert.match(error, /Retry/);
+  assert.match(empty, /No teams yet/);
+  assert.match(empty, /Create team/);
+
+  const catalog = renderToStaticMarkup(createElement(TeamCatalogSection, {
+    title: "Your teams",
+    teams: [teamRecord],
+    accessLabel: "Owner",
+    onOpen: () => undefined,
+  }));
+  assert.match(catalog, /Your teams/);
+  assert.match(catalog, /Platform/);
+  assert.match(catalog, /href="\/teams\/team-public-1"/);
+  assert.match(catalog, /Active Team/);
+  assert.equal(teamActiveMemberCount([teamOwner, teamMember]), 1);
+
+  const detail: TeamDetail = { team: teamRecord, members: [teamOwner, teamMember] };
+  const ownerMarkup = renderToStaticMarkup(createElement(TeamDetailSurface, {
+    detail,
+    currentUserId: "user-1",
+    canManage: true,
+    actionBusy: null,
+    actionError: "",
+    memberEmail: "",
+    onMemberEmail: () => undefined,
+    onAddMember: () => undefined,
+    onMembershipStatus: () => undefined,
+    onRemoveMember: () => undefined,
+    onBack: () => undefined,
+  }));
+  assert.match(ownerMarkup, /Platform/);
+  assert.match(ownerMarkup, /1 active member/);
+  assert.match(ownerMarkup, /Your access: Owner · Active/);
+  assert.match(ownerMarkup, /Owner controls/);
+  assert.match(ownerMarkup, /Add member/);
+  assert.match(ownerMarkup, /Reactivate/);
+  assert.match(ownerMarkup, /Remove/);
+  assert.match(ownerMarkup, /Second User/);
+  assert.match(ownerMarkup, /Inactive/);
+
+  const memberMarkup = renderToStaticMarkup(createElement(TeamDetailSurface, {
+    detail,
+    currentUserId: "user-2",
+    canManage: false,
+    actionBusy: null,
+    actionError: "",
+    memberEmail: "",
+    onMemberEmail: () => undefined,
+    onAddMember: () => undefined,
+    onMembershipStatus: () => undefined,
+    onRemoveMember: () => undefined,
+    onBack: () => undefined,
+  }));
+  assert.match(memberMarkup, /Your access: Member · Inactive/);
+  assert.doesNotMatch(memberMarkup, /Owner controls|Add member|Reactivate|Deactivate|Remove/);
+});
+
+test("Teams UI keeps API paths and authoritative member lifecycle wiring scoped", () => {
+  assert.equal(teamUiApiPath("team/public"), "/api/teams/team%2Fpublic");
+  assert.equal(teamMembersUiApiPath("team/public"), "/api/teams/team%2Fpublic/members");
+  assert.equal(
+    teamMembershipUiApiPath("team/public", "membership/1"),
+    "/api/teams/team%2Fpublic/members/membership%2F1",
+  );
+  const source = readFileSync(
+    new URL("../components/task-tracker.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /fetch\("\/api\/teams", \{ cache: "no-store"/);
+  assert.match(source, /method: "POST"[\s\S]*?body: JSON\.stringify\(\{ name \}\)/);
+  assert.match(source, /teamMembersUiApiPath\(teamReference\)[\s\S]*?method: "POST"/);
+  assert.match(source, /method: "PATCH"[\s\S]*?body: JSON\.stringify\(\{ status, version: member\.version \}\)/);
+  assert.match(source, /method: "DELETE"[\s\S]*?body: JSON\.stringify\(\{ version: member\.version \}\)/);
+  assert.match(source, /await readBackTeam\(teamReference\)/);
+  assert.match(source, /routeDetail\.team\.ownerUserId === currentUserId/);
 });

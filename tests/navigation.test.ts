@@ -9,6 +9,7 @@ import {
   pathFromRouteSegments,
   resolveNavigationHistoryState,
   resolveNavigationTarget,
+  teamPath,
 } from "../lib/navigation";
 import { metadataForNavigation } from "../lib/navigation-metadata";
 import type { AppSnapshot } from "../lib/types";
@@ -80,6 +81,30 @@ test("short REST paths cover issue, view, project, and release collections", () 
     parseNavigationPath(`/projects/${projectPublicId}/releases`),
     { kind: "projectReleases", projectId: projectPublicId },
   );
+});
+
+test("Teams catalog and detail routes stay canonical and encode public ids", () => {
+  assert.deepEqual(parseNavigationPath("/teams"), { kind: "teams" });
+  assert.deepEqual(parseNavigationPath("/teams/team-alpha"), {
+    kind: "team",
+    id: "team-alpha",
+  });
+  assert.deepEqual(parseNavigationPath("/teams/team%2Falpha"), {
+    kind: "team",
+    id: "team/alpha",
+  });
+  assert.equal(parseNavigationPath("/teams/team-alpha/extra"), null);
+
+  const catalog = resolveNavigationTarget(parseNavigationPath("/teams")!, snapshot);
+  const detail = resolveNavigationTarget(
+    parseNavigationPath("/teams/team-alpha")!,
+    snapshot,
+  );
+  assert.deepEqual(catalog, { surface: "teams", layout: "list", taskId: null });
+  assert.deepEqual(detail, { surface: "team:team-alpha", layout: "list", taskId: null });
+  assert.equal(navigationPath(catalog!, snapshot), "/teams");
+  assert.equal(navigationPath(detail!, snapshot), "/teams/team-alpha");
+  assert.equal(teamPath("team/alpha"), "/teams/team%2Falpha");
 });
 
 test("settings sections keep canonical direct URLs and reject unknown sections", () => {
