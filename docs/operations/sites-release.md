@@ -21,7 +21,9 @@ synthetic test data.
 
 1. Убедиться, что `.openai/hosting.json` содержит UAT `project_id`, а
    production binding не менялся.
-2. Выполнить полный обязательный набор проверок репозитория.
+2. Выполнить обязательный набор проверок из `AGENTS.md` и точечные acceptance
+   tests изменённого поведения. Backup/restore tests без отдельной прямой
+   команды не запускать.
 3. Закоммитить и push exact validated SHA.
 4. Упаковать UAT из этого SHA стандартным Sites packaging helper либо командой
    `scripts/package-site-environment.sh uat <absolute-archive-path>`.
@@ -39,11 +41,16 @@ production.
 
 ### Проверка полного backup в UAT
 
-Для изменения system backup создайте в UAT минимум двух Users и данные во всех
-exact-классах registry, включая unbound/bound `StoredFile`, Attachment original,
-ACL, SavedView, provenance и sequence state. Export обязан зафиксировать counts,
-per-chunk и общий digest; import принимается только для schema `15` и того же
-Site/environment. Перед destructive apply сохраните отдельный rollback backup.
+Этот сценарий не является частью обычного release guardrail или acceptance и
+не запускается автоматически даже для изменения backup-кода. Выполняйте его
+только по отдельной прямой команде пользователя.
+
+После такого разрешения для изменения system backup создайте в UAT минимум двух
+Users и данные во всех exact-классах registry, включая unbound/bound
+`StoredFile`, Attachment original, ACL, SavedView, provenance и sequence state.
+Export обязан зафиксировать counts, per-chunk и общий digest; import принимается
+только для schema `15` и того же Site/environment. Перед destructive apply
+сохраните отдельный rollback backup.
 
 D1-состояние фиксируется одним D1 batch в начале export job. Обычные записи после
 завершения этого batch не входят в уже начатый snapshot и не должны прерывать
@@ -55,8 +62,9 @@ D1-состояние фиксируется одним D1 batch в начале
 перестроенный `task_label_group_values`, сброшенный sync/purge state и отсутствие
 старых API/OAuth capabilities. Отдельно проверьте отказ schema `2`–`14`,
 повреждённого chunk/object и неизвестного R2 namespace без изменения live state.
-Эта процедура разрешена только для UAT synthetic data; production restore
-требует отдельной прямой команды пользователя.
+Эта процедура разрешена только для UAT synthetic data. Production export,
+import, restore и любые backup acceptance tests требуют отдельной прямой
+команды пользователя.
 
 ## Production workflow
 

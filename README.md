@@ -43,8 +43,9 @@ npm install
 npm run dev
 ```
 
-Основные проверки: `npm run typecheck`, `npm run lint`, `npm test` и
-`npm run build`.
+Основные проверки: `npm run typecheck`, `npm run lint`, `npm run build` и
+точечные тесты изменённого поведения. Полный `npm test` включает дорогие
+backup/restore round-trip сценарии и запускается только по прямой команде.
 
 ## Документация
 

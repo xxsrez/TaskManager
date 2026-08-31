@@ -160,12 +160,19 @@ Application-level admin overview реализован отдельно от reso
 ```bash
 npm run typecheck
 npm run lint
-npm test
 npm run build
 git diff --check
 ruby /Users/andrey/.codex/skills/project-docs/scripts/validate_docs.rb . \
   --strict-navigation
 ```
+
+Дополнительно запускайте точечные тесты изменённого поведения. Не запускайте
+`npm test` как автоматический guardrail: полный набор включает дорогие
+system/Project backup и restore round-trip сценарии. Любые тесты export,
+backup, import или restore — локально, в UAT или в production — выполняются
+только по прямой текущей команде пользователя и не входят по умолчанию ни в
+release guardrail, ни в acceptance. Production data mutation по-прежнему
+требует отдельного явного разрешения.
 
 При изменении `db/schema.ts` также запустите `npm run db:generate` и проверьте
 сгенерированную SQL migration. Не заявляйте о проверке, которую не запускали.
