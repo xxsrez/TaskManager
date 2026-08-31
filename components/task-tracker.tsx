@@ -8223,7 +8223,11 @@ export function ViewDialog({ view, editing, query, display, data, initialScopePr
 
 function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
   if (!target) return null;
-  const grants = collaborators.filter((grant) => grant.resourceType === target.resourceType && grant.resourceId === target.resourceId);
+  const grants = collaborators.filter((grant) =>
+    grant.source !== "team" &&
+    grant.resourceType === target.resourceType &&
+    grant.resourceId === target.resourceId
+  );
   const assignableRoles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
   const owner = target.ownerUserId === currentUser.id
     ? currentUser

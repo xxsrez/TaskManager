@@ -534,6 +534,7 @@ export type ViewDisplay = {
 
 export type CollaboratorRecord = {
   grantId: string;
+  source?: "direct" | "team";
   resourceType: "project" | "task" | "saved_view";
   resourceId: string;
   userId: string;

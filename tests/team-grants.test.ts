@@ -248,6 +248,17 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
   assert.ok(exactTaskSnapshot.tasks.some((task) => task.id === firstTask.id));
   assert.equal(exactTaskSnapshot.tasks.some((task) => task.id === siblingTask.id), false);
   assert.equal(exactTaskSnapshot.projects.some((item) => item.id === project.id), false);
+  const exactTaskTeamCollaborators = exactTaskSnapshot.collaborators.filter((collaborator) =>
+    collaborator.source === "team"
+  );
+  assert.ok(exactTaskTeamCollaborators.some((collaborator) =>
+    collaborator.resourceType === "task" &&
+    collaborator.resourceId === firstTask.id &&
+    collaborator.userId === teamOwnerOne.id
+  ));
+  assert.equal(exactTaskTeamCollaborators.some((collaborator) =>
+    collaborator.resourceType === "project" || collaborator.resourceId === siblingTask.id
+  ), false);
   const agentWorkspace = await getAgentWorkspace({
     authorizationId: "team-grants-agent",
     authorizationType: "personal_token",
@@ -309,6 +320,19 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
   const snapshot = await getSnapshot(recipient);
   assert.ok(snapshot.projects.some((item) => item.id === project.id));
   assert.ok(snapshot.tasks.some((item) => item.id === siblingTask.id));
+  const projectTeamCollaborators = snapshot.collaborators.filter((collaborator) =>
+    collaborator.source === "team" &&
+    collaborator.resourceType === "project" &&
+    collaborator.resourceId === project.id
+  );
+  assert.ok(projectTeamCollaborators.some((collaborator) => collaborator.userId === teamOwnerOne.id));
+  assert.ok(projectTeamCollaborators.some((collaborator) => collaborator.userId === teamOwnerTwo.id));
+  assert.ok(snapshot.collaborators.some((collaborator) =>
+    collaborator.source === "direct" &&
+    collaborator.resourceType === "project" &&
+    collaborator.resourceId === project.id &&
+    collaborator.userId === actor.id
+  ));
 
   const editorTask = await getTask(recipient, siblingTask.id);
   const updatedTask = await updateTask(recipient, siblingTask.id, {
@@ -389,6 +413,11 @@ test("Team grants use effective ACL roles, exact targets, lifecycle CAS, and no 
   );
   configureActorResolverForTests(async () => recipientActor);
   await assert.rejects(loadAccessibleProject(recipient.id, project.id), /Project not found/i);
+  configureActorResolverForTests(async () => resourceOwnerActor);
+  const inactiveMembershipSnapshot = await getSnapshot(resourceOwner);
+  assert.equal(inactiveMembershipSnapshot.collaborators.some((collaborator) =>
+    collaborator.source === "team" && collaborator.userId === recipient.id
+  ), false);
   configureActorResolverForTests(async () => teamOwnerOneActor);
   await updateTeamMembership(
     teamOwnerOne,

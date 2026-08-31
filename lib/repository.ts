@@ -915,21 +915,16 @@ export async function getSnapshot(
       db
         .prepare(
           `SELECT ag.id, ag.resource_type, ag.resource_id, ag.permission,
-                  u.id AS user_id, u.display_name, u.email
+                  u.id AS user_id, u.display_name, u.email,
+                  'direct' AS grant_source
            FROM access_grants ag
            JOIN users u ON u.id = ag.grantee_user_id
            WHERE ag.revoked_at IS NULL AND (
              (ag.resource_type = 'project' AND EXISTS (
                SELECT 1 FROM projects p
-               WHERE p.id = ag.resource_id AND p.deleted_at IS NULL AND (
-                 p.owner_user_id = ? OR EXISTS (
-                   SELECT 1 FROM access_grants actor_grant
-                   WHERE actor_grant.resource_type = 'project'
-                     AND actor_grant.resource_id = p.id
-                     AND actor_grant.grantee_user_id = ?
-                     AND actor_grant.revoked_at IS NULL
-                 )
-               ) AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
+               WHERE p.id = ag.resource_id
+                 AND ${projectAccessRoleSql("p")} IS NOT NULL
+                 AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
              )) OR
              (ag.resource_type = 'task' AND EXISTS (
                SELECT 1 FROM tasks t
@@ -962,6 +957,53 @@ export async function getSnapshot(
           ...workspacePredicate("t.owner_user_id", workspaceScope).parameters,
           user.id,
           ...workspacePredicate("v.owner_user_id", workspaceScope).parameters,
+        ),
+      db
+        .prepare(
+          `SELECT 'team:' || tg.id || ':' || tm.id AS id,
+                  tg.resource_type, tg.resource_id, tg.permission,
+                  u.id AS user_id, u.display_name, u.email,
+                  'team' AS grant_source
+           FROM team_grants tg
+           JOIN teams team ON team.id = tg.team_id
+             AND team.archived_at IS NULL
+           JOIN team_memberships tm ON tm.team_id = tg.team_id
+             AND tm.status = 'active'
+           JOIN users u ON u.id = tm.user_id
+           WHERE tg.revoked_at IS NULL AND (
+             (tg.resource_type = 'project' AND EXISTS (
+               SELECT 1 FROM projects p
+               WHERE p.id = tg.resource_id
+                 AND ${projectAccessRoleSql("p")} IS NOT NULL
+                 AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
+             )) OR
+             (tg.resource_type = 'task' AND EXISTS (
+               SELECT 1 FROM tasks task
+               LEFT JOIN projects task_project ON task_project.id = task.project_id
+               WHERE task.id = tg.resource_id
+                 AND task.deleted_at IS NULL
+                 AND (task.project_id IS NULL OR task_project.deleted_at IS NULL)
+                 AND ${taskAccessRoleSql("task", "task_project")} IS NOT NULL
+                 AND ${workspacePredicate(
+                   "CASE WHEN task.project_id IS NOT NULL THEN task_project.owner_user_id ELSE task.owner_user_id END",
+                   workspaceScope,
+                 ).sql}
+             ))
+           )
+           ORDER BY tg.created_at DESC, tg.id, u.display_name, u.id`,
+        )
+        .bind(
+          user.id,
+          user.id,
+          ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          ...workspacePredicate(
+            "CASE WHEN task.project_id IS NOT NULL THEN task_project.owner_user_id ELSE task.owner_user_id END",
+            workspaceScope,
+          ).parameters,
         ),
       db
         .prepare(
@@ -1083,6 +1125,7 @@ export async function getSnapshot(
     statuses,
     users,
     collaborators,
+    teamCollaborators,
     labels,
     labelGroups,
     taskLabels,
@@ -1167,7 +1210,7 @@ export async function getSnapshot(
       releases: navigationOnly ? "bounded" : "complete",
       views: navigationOnly ? "bounded" : "complete",
     },
-    collaborators: collaborators.results.map(mapCollaborator),
+    collaborators: [...collaborators.results, ...teamCollaborators.results].map(mapCollaborator),
     syncCursor: encodeWorkspaceSyncCursor(
       Number((syncState.results[0] as DbRow | undefined)?.last_sequence ?? 0),
     ),
@@ -6452,6 +6495,7 @@ function mapView(row: DbRow): SavedViewRecord {
 function mapCollaborator(row: DbRow): CollaboratorRecord {
   return {
     grantId: String(row.id),
+    source: row.grant_source === "team" ? "team" : "direct",
     resourceType: String(row.resource_type) as CollaboratorRecord["resourceType"],
     resourceId: String(row.resource_id),
     userId: String(row.user_id),
