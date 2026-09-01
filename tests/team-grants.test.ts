@@ -36,6 +36,7 @@ import {
   grantAccess,
   moveTask,
   queryTaskSummaries,
+  setTaskLabel,
   updateProject,
   updateLabel,
   updateLabelGroup,
@@ -1170,6 +1171,106 @@ test("an explicit Task route observes the Task but not its inaccessible Project 
   await expectOneTeamFingerprintReset(member, parentPoll.cursor);
 });
 
+test("an explicit Task route tracks only labels and groups attached to that Task", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  await createProject(owner, { name: "Task label parent", taskCode: "TLP" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Task label parent",
+  )!;
+  await createTask(owner, { title: "Task label exact", projectId: project.id });
+  const task = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Task label exact",
+  )!;
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "task",
+    resourceId: task.id,
+    permission: "viewer",
+  });
+  const baseline = await getSnapshot(member);
+  assert.deepEqual(baseline.labels, []);
+  assert.deepEqual(baseline.labelGroups, []);
+
+  let groups = await createLabelGroup(owner, {
+    name: "Task label exact group",
+    position: 50,
+  });
+  let group = groups.find((item) => item.name === "Task label exact group")!;
+  let labels = await createLabel(owner, {
+    name: "Task label exact label",
+    color: "#123456",
+    groupId: group.id,
+  });
+  let label = labels.find((item) => item.name === "Task label exact label")!;
+  let cursor = baseline.syncCursor!;
+  let poll = await getWorkspaceSync(member, cursor);
+  assert.equal(poll.resetRequired, false);
+  assert.equal(poll.cursor, cursor);
+
+  labels = await updateLabel(owner, label.id, {
+    version: label.version,
+    name: "Task label still unrelated",
+  });
+  label = labels.find((item) => item.id === label.id)!;
+  groups = await updateLabelGroup(owner, group.id, {
+    version: group.version,
+    name: "Task group still unrelated",
+  });
+  group = groups.find((item) => item.id === group.id)!;
+  poll = await getWorkspaceSync(member, cursor);
+  assert.equal(poll.resetRequired, false);
+  assert.equal(poll.cursor, cursor);
+
+  await setTaskLabel(owner, task.id, { labelId: label.id, active: true });
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+  let memberSnapshot = await getSnapshot(member);
+  assert.ok(memberSnapshot.labels.some((item) => item.id === label.id));
+  assert.ok(memberSnapshot.labelGroups?.some((item) => item.id === group.id));
+
+  labels = await updateLabel(owner, label.id, {
+    version: label.version,
+    name: "Task label visible rename",
+  });
+  label = labels.find((item) => item.id === label.id)!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  groups = await updateLabelGroup(owner, group.id, {
+    version: group.version,
+    name: "Task group visible rename",
+  });
+  group = groups.find((item) => item.id === group.id)!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  labels = await updateLabel(owner, label.id, {
+    action: "archive",
+    version: label.version,
+  });
+  label = labels.find((item) => item.id === label.id)!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  await setTaskLabel(owner, task.id, { labelId: label.id, active: false });
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+  memberSnapshot = await getSnapshot(member);
+  assert.ok(!memberSnapshot.labels.some((item) => item.id === label.id));
+  assert.ok(!memberSnapshot.labelGroups?.some((item) => item.id === group.id));
+
+  labels = await updateLabel(owner, label.id, {
+    action: "restore",
+    version: label.version,
+  });
+  label = labels.find((item) => item.id === label.id)!;
+  groups = await updateLabelGroup(owner, group.id, {
+    version: group.version,
+    name: "Task group unrelated again",
+  });
+  poll = await getWorkspaceSync(member, cursor);
+  assert.equal(poll.resetRequired, false);
+  assert.equal(poll.cursor, cursor);
+});
+
 test("a large Project fingerprint stays route-sized and uses event-first entity lookups", async () => {
   harness = await createD1TestHarness();
   const owner = await getOrCreateUser(ownerActor);
@@ -1252,6 +1353,11 @@ test("Team runtime and Team grant CRUD never write the workspace sync journal", 
   assert.match(fingerprintSql, /route_owner_events AS MATERIALIZED/);
   assert.match(fingerprintSql, /routed_resource_events AS MATERIALIZED/);
   assert.match(fingerprintSql, /resource_event_max AS MATERIALIZED/);
+  assert.match(fingerprintSql, /catalog_owner_ids AS MATERIALIZED/);
+  assert.equal(
+    fingerprintSql.match(/catalog_owner_ids owner/g)?.length,
+    3,
+  );
   assert.match(fingerprintSql, /label_catalog_state AS MATERIALIZED/);
   assert.doesNotMatch(fingerprintSql, /project_tasks|route_tasks|visible_task_ids/);
   assert.doesNotMatch(fingerprintSql, /group_concat/);

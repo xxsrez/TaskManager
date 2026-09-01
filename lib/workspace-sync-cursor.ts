@@ -194,9 +194,17 @@ export function teamAccessFingerprintSql(): string {
     SELECT DISTINCT route_owner_user_id AS owner_user_id
     FROM resource_roots
     WHERE root_visible = 1 AND route_owner_user_id IS NOT NULL
+  ), catalog_owner_ids AS MATERIALIZED (
+    -- Project and global SavedView snapshots expose the selectable owner
+    -- catalog. An explicit Task snapshot exposes only Labels attached to that
+    -- Task (and their Groups), whose exact task invalidations are routed below.
+    SELECT DISTINCT route_owner_user_id AS owner_user_id
+    FROM resource_roots
+    WHERE root_visible = 1 AND route_owner_user_id IS NOT NULL
+      AND resource_type IN ('project', 'saved_view')
   ), label_catalog_rows AS MATERIALIZED (
     SELECT label.owner_user_id, label.id, label.version, label.updated_at
-    FROM route_owner_ids owner
+    FROM catalog_owner_ids owner
     JOIN labels label INDEXED BY idx_labels_owner_name_active
       ON label.owner_user_id = owner.owner_user_id
     WHERE label.archived_at IS NULL
@@ -206,7 +214,7 @@ export function teamAccessFingerprintSql(): string {
     -- missing index would require the schema change forbidden by TM-334.
     SELECT label.owner_user_id, label.id, label.version, label.updated_at
     FROM labels label
-    JOIN route_owner_ids owner ON owner.owner_user_id = label.owner_user_id
+    JOIN catalog_owner_ids owner ON owner.owner_user_id = label.owner_user_id
     WHERE label.archived_at IS NOT NULL
   ), label_catalog_state AS MATERIALIZED (
     SELECT label.owner_user_id,
@@ -226,7 +234,7 @@ export function teamAccessFingerprintSql(): string {
       MIN(label_group.id) AS label_group_min_id,
       MAX(label_group.id) AS label_group_max_id,
       COALESCE(SUM(length(label_group.id)), 0) AS label_group_id_length_sum
-    FROM route_owner_ids owner
+    FROM catalog_owner_ids owner
     JOIN label_groups label_group INDEXED BY idx_label_groups_owner_position
       ON label_group.owner_user_id = owner.owner_user_id
     GROUP BY label_group.owner_user_id
@@ -282,9 +290,11 @@ export function teamAccessFingerprintSql(): string {
     FROM resource_roots route
     LEFT JOIN label_catalog_state label
       ON route.root_visible = 1
+      AND route.resource_type IN ('project', 'saved_view')
       AND label.owner_user_id = route.route_owner_user_id
     LEFT JOIN label_group_catalog_state label_group
       ON route.root_visible = 1
+      AND route.resource_type IN ('project', 'saved_view')
       AND label_group.owner_user_id = route.route_owner_user_id
     LEFT JOIN status_catalog_state status_catalog
       ON route.root_visible = 1 AND route.resource_type = 'project'
