@@ -8635,6 +8635,13 @@ export function canManageTeamRouteGrant(
   return canManageGrant(route.accessRole, route.resourceType, permission);
 }
 
+export function normalizedTeamSharePermission(
+  selected: TeamGrantPermission | "",
+  allowed: readonly TeamGrantPermission[],
+): TeamGrantPermission | "" {
+  return selected && allowed.includes(selected) ? selected : "";
+}
+
 function validShareEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
@@ -8883,7 +8890,9 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
       ? teamRouteRoles(selectedRoute)
       : []
     : directRoles;
-  const addDisabled = busy || Boolean(teamMutation) || !selectedPrincipal || !selectedPermission ||
+  const selectedPermissionValue = normalizedTeamSharePermission(selectedPermission, selectedRoles);
+  const selectedPermissionAllowed = selectedPermissionValue !== "";
+  const addDisabled = busy || Boolean(teamMutation) || !selectedPrincipal || !selectedPermissionAllowed ||
     (selectedPrincipal.kind === "person" && !directTarget) ||
     (selectedPrincipal.kind === "team" && (
       !selectedRoute ||
@@ -8970,7 +8979,7 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
 
   async function submitPrincipal(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (addDisabled || !selectedPrincipal || !selectedPermission) return;
+    if (addDisabled || !selectedPrincipal || !selectedPermission || !selectedPermissionAllowed) return;
     if (selectedPrincipal.kind === "person") {
       if (!directTarget) return;
       setDirectError("");
@@ -9092,7 +9101,7 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
           return <label key={route.key} htmlFor={routeInputId} aria-label={`${route.label}: ${route.explanation}`}><input id={routeInputId} type="radio" name="teamRoute" value={route.key} checked={selectedRouteKey === route.key} disabled={busy || Boolean(teamMutation)} onChange={() => { setSelectedRouteKey(route.key); setSelectedPermission(""); }} /><span><b>{route.label}</b><small>{route.explanation}</small></span></label>;
         })}</fieldset>}
 
-        <label className="share-role-select" htmlFor={`${listboxId}-role`}><span>Role</span><select id={`${listboxId}-role`} aria-label="Role" value={selectedPermission} disabled={busy || Boolean(teamMutation) || !selectedPrincipal || (selectedPrincipal.kind === "team" && !selectedRoute)} onChange={(event) => setSelectedPermission(event.target.value as TeamGrantPermission | "")}><option value="">Choose role…</option>{selectedRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
+        <label className="share-role-select" htmlFor={`${listboxId}-role`}><span>Role</span><select id={`${listboxId}-role`} aria-label="Role" value={selectedPermissionValue} disabled={busy || Boolean(teamMutation) || !selectedPrincipal || (selectedPrincipal.kind === "team" && !selectedRoute)} onChange={(event) => setSelectedPermission(event.target.value as TeamGrantPermission | "")}><option value="">Choose role…</option>{selectedRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
         <button className="button primary share-add-button" disabled={addDisabled}>{busy || teamMutation ? "Saving…" : existingTeamGrant?.revokedAt ? "Restore access" : "Add access"}</button>
         {selectedPrincipal?.kind === "team" && existingTeamGrant?.revokedAt === null && <p className="share-selection-note" role="status">This Team already has active access through the selected route.</p>}
       </form>

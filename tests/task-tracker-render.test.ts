@@ -22,6 +22,7 @@ import {
   mergeDeferredSnapshot,
   nextTaskActivityInvalidationCursor,
   nextCodexSetupMode,
+  normalizedTeamSharePermission,
   mergeSearchTaskSummaries,
   pullRefreshDistance,
   reconcileTaskDetail,
@@ -637,6 +638,23 @@ test("Project managers cannot create or manage an explicit Task-only Team grant"
   const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /route\.resourceType === "task" && route\.accessRole === "manager"/);
   assert.match(source, /selectableTeamRoutes = context\.teamRoutes\.filter\(\(route\) => teamRouteRoles\(route\)\.length > 0\)/);
+});
+
+test("a stale Manager selection is reset and blocked after authority drops to manager", () => {
+  const ownerRoute = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[0]!;
+  const managerRoute = { ...ownerRoute, accessRole: "manager" as const };
+  const ownerRoles = teamRouteRoles(ownerRoute);
+  const managerRoles = teamRouteRoles(managerRoute);
+  assert.equal(normalizedTeamSharePermission("manager", ownerRoles), "manager");
+  assert.equal(normalizedTeamSharePermission("manager", managerRoles), "");
+  assert.equal(normalizedTeamSharePermission("editor", managerRoles), "editor");
+  assert.equal(normalizedTeamSharePermission("viewer", managerRoles), "viewer");
+
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /selectedPermissionValue = normalizedTeamSharePermission\(selectedPermission, selectedRoles\)/);
+  assert.match(source, /const addDisabled =[^;]*!selectedPermissionAllowed/);
+  assert.match(source, /if \(addDisabled \|\| !selectedPrincipal \|\| !selectedPermission \|\| !selectedPermissionAllowed\) return/);
+  assert.match(source, /aria-label="Role" value=\{selectedPermissionValue\}/);
 });
 
 test("a forbidden Team mutation retains the authoritative route for review", () => {
