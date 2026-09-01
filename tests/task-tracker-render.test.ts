@@ -37,6 +37,7 @@ import {
   relationSelectionAfterKindChange,
   ReleaseDialog,
   ReleaseOverview,
+  resolveShareContext,
   resolveGlobalSearchNavigation,
   resolveArchiveBulkAction,
   runSingleFlight,
@@ -65,13 +66,18 @@ import {
   teamConflictReadbackMessage,
   teamRequestIsCurrent,
   SettingsSurface,
+  ShareDialog,
   ViewDialog,
+  filterShareTeamOptions,
+  teamGrantConflictReadbackMessage,
+  teamGrantResponseMatchesRoute,
+  teamShareRequestIsCurrent,
   viewDialogDraftIsDirty,
   viewDialogDraftQuery,
   viewDisplayDependencies,
 } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
-import type { AppSnapshot, TeamDetail, TeamList, TeamMembershipRecord } from "../lib/types";
+import type { AppSnapshot, TeamDetail, TeamGrantList, TeamList, TeamMembershipRecord } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
 const snapshot: AppSnapshot = {
@@ -389,6 +395,223 @@ test("Team re-entry and concurrent navigation retain authoritative convergence",
     "This Team changed, but the latest details could not be loaded. Retry.",
   );
   assert.equal(teamConflictReadbackMessage(false, true), "");
+});
+
+test("People and Teams sharing maps Project, Task, View, and Release routes explicitly", () => {
+  const project = snapshot.projects[0]!;
+  const task = snapshot.tasks[0]!;
+  const taskContext = resolveShareContext("all", task, snapshot);
+  assert.ok(taskContext);
+  assert.equal(taskContext.directTarget?.resourceType, "project");
+  assert.deepEqual(taskContext.teamRoutes.map((route) => route.resourceType), ["project", "task"]);
+  assert.deepEqual(taskContext.teamRoutes.map((route) => route.label), ["Project access", "This Task only"]);
+  assert.match(taskContext.teamRoutes[0]!.explanation, /Every Task, Release, and Project-scoped View inherits/);
+  assert.match(taskContext.teamRoutes[1]!.explanation, /does not expose the Project, sibling Tasks, or Releases/);
+
+  const scopedView = {
+    id: "view-scoped",
+    publicId: "77777777-7777-4777-8777-777777777777",
+    ownerUserId: snapshot.user.id,
+    name: "Scoped delivery",
+    scopeProjectId: project.id,
+    query: {},
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "manual" as const,
+      direction: "asc" as const,
+      showEmptyGroups: true,
+      visibleFields: [],
+    },
+    version: 1,
+    accessRole: "owner" as const,
+  };
+  const scopedContext = resolveShareContext(
+    `view:${scopedView.id}`,
+    null,
+    { ...snapshot, views: [scopedView] },
+  );
+  assert.equal(scopedContext?.directTarget?.resourceType, "project");
+  assert.deepEqual(scopedContext?.teamRoutes.map((route) => route.resourceType), ["project"]);
+
+  const globalView = { ...scopedView, id: "view-global", name: "Global delivery", scopeProjectId: null };
+  const globalContext = resolveShareContext(
+    `view:${globalView.id}`,
+    null,
+    { ...snapshot, views: [globalView] },
+  );
+  assert.equal(globalContext?.directTarget?.resourceType, "saved_view");
+  assert.deepEqual(globalContext?.teamRoutes.map((route) => route.resourceType), ["saved_view"]);
+
+  const release = {
+    id: "release-1",
+    publicId: "88888888-8888-4888-8888-888888888888",
+    projectId: project.id,
+    ownerUserId: snapshot.user.id,
+    creatorUserId: snapshot.user.id,
+    name: "September",
+    description: "",
+    status: "active" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const releaseContext = resolveShareContext(
+    `release:${release.id}`,
+    null,
+    { ...snapshot, releases: [release] },
+  );
+  assert.equal(releaseContext?.directTarget?.resourceType, "project");
+  assert.deepEqual(releaseContext?.teamRoutes, []);
+  assert.match(releaseContext?.teamUnavailableCopy ?? "", /Releases do not have a Team grant route/);
+});
+
+test("People and Teams sharing keeps own active Teams first and fences route responses", () => {
+  const memberTeam = {
+    team: {
+      ...teamDetail.team,
+      id: "team-member",
+      publicId: "99999999-9999-4999-8999-999999999999",
+      name: "Alpha members",
+    },
+    currentMembership: {
+      ...teamMemberMembership,
+      id: "membership-current-member",
+      teamId: "team-member",
+      userId: snapshot.user.id,
+      status: "active" as const,
+    },
+    activeMemberCount: 7,
+  };
+  const inactiveTeam = {
+    ...memberTeam,
+    team: { ...memberTeam.team, id: "team-inactive", publicId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Hidden Team" },
+    currentMembership: { ...memberTeam.currentMembership, teamId: "team-inactive", status: "inactive" as const },
+  };
+  const ordered = filterShareTeamOptions({ teams: [memberTeam, inactiveTeam, teamList.teams[0]!] }, "");
+  assert.deepEqual(ordered.map((entry) => entry.team.id), ["team-1", "team-member"]);
+  assert.deepEqual(filterShareTeamOptions({ teams: ordered }, "alpha").map((entry) => entry.team.id), ["team-member"]);
+
+  const route = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[0]!;
+  const response: TeamGrantList = {
+    target: {
+      resourceType: route.resourceType,
+      resourceId: route.resourceId,
+      publicId: route.publicId,
+      name: route.label,
+      accessRole: route.accessRole,
+    },
+    grants: [],
+  };
+  assert.equal(teamGrantResponseMatchesRoute(route, response), true);
+  assert.equal(teamGrantResponseMatchesRoute(route, {
+    ...response,
+    target: { ...response.target, publicId: "wrong-route" },
+  }), false);
+  assert.equal(teamShareRequestIsCurrent(4, 4, "task:1", "task:1", false), true);
+  assert.equal(teamShareRequestIsCurrent(3, 4, "task:1", "task:1", false), false);
+  assert.equal(teamShareRequestIsCurrent(4, 4, "task:1", "project:1", false), false);
+  assert.equal(teamShareRequestIsCurrent(4, 4, "task:1", "task:1", true), false);
+  assert.match(teamGrantConflictReadbackMessage(true), /latest routes were loaded/);
+  assert.match(teamGrantConflictReadbackMessage(false), /latest routes could not be loaded\. Retry/);
+});
+
+test("People and Teams dialog separates routes and requires principal, role, and Task route", () => {
+  const taskContext = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!;
+  const markup = renderToStaticMarkup(createElement(ShareDialog, {
+    context: taskContext,
+    currentUser: snapshot.user,
+    users: snapshot.users,
+    collaborators: snapshot.collaborators,
+    onClose: () => undefined,
+    onShare: async () => true,
+    onRoleChange: async () => true,
+    onRevoke: async () => true,
+    onTransfer: async () => true,
+    busy: false,
+  }));
+  assert.match(markup, /aria-label="Members &amp; access · TM-1"/);
+  assert.match(markup, /role="combobox" aria-expanded="false" aria-autocomplete="list"/);
+  assert.match(markup, /People &amp; Teams/);
+  assert.match(markup, />People</);
+  assert.match(markup, />Teams</);
+  assert.match(markup, /Choose role/);
+  assert.match(markup, /<button[^>]*class="button primary share-add-button"[^>]*disabled=""/);
+  assert.match(markup, /Loading Team access/);
+  assert.match(markup, /Strongest route wins/);
+
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /role="listbox" aria-label=\{hasTeamRoutes \? "People and Teams" : "People"\}/);
+  assert.match(source, /role="group" aria-label="People"/);
+  assert.match(source, /role="group" aria-label="Teams"/);
+  assert.match(source, /event\.key === "Escape" && comboOpen[\s\S]{0,160}event\.stopPropagation\(\)/);
+  assert.match(source, /event\.key === "ArrowDown" \|\| event\.key === "ArrowUp"/);
+  assert.match(source, /event\.key === "Enter" && comboOpen/);
+  assert.match(source, /Choose where this Team gets access/);
+  assert.match(source, /!selectedPrincipal \|\| !selectedPermission/);
+  assert.match(source, /context\.teamRoutes\.length === 1[\s\S]{0,160}selectedRouteKey/);
+});
+
+test("Team sharing uses exact CAS payloads and authoritative route replacement", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /requestTeamApi<TeamList>\("\/api\/teams"/);
+  assert.match(source, /resource_type: route\.resourceType,[\s\S]{0,100}resource_id: route\.publicId/);
+  assert.match(source, /requestTeamApi<TeamGrantList>\(`\/api\/shares\/teams\?\$\{parameters\}`/);
+  assert.match(source, /teamId: selectedPrincipal\.entry\.team\.publicId,[\s\S]{0,180}resourceId: selectedRoute\.publicId,[\s\S]{0,100}permission: selectedPermission/);
+  assert.match(source, /existingTeamGrant\?\.revokedAt\) body\.version = existingTeamGrant\.version/);
+  assert.match(source, /"PATCH", \{ grantId: grant\.id, version: grant\.version, action: "role", permission: event\.target\.value \}/);
+  assert.match(source, /"DELETE", \{ grantId: grant\.id, version: grant\.version \}/);
+  assert.match(source, /setRouteState\(route\.key, \{ status: "ready", value, error: "" \}\)/);
+  assert.match(source, /teamMutationRef\.current = true;[\s\S]{0,180}routeGenerationRef\.current\[route\.key\]/);
+  assert.match(source, /requestError\.status === 409[\s\S]{0,180}const latest = await loadTeamGrantRoute\(route\)/);
+  assert.match(source, /teamGrantConflictReadbackMessage\(latest !== null\)/);
+  assert.match(source, /new AbortController\(\)[\s\S]{0,500}controller\.abort\(\)/);
+  assert.match(source, /teamGrantResponseMatchesRoute\(route, value\)/);
+  assert.match(source, /key=\{currentShareContext\.key\}/);
+  assert.doesNotMatch(source, /resourceType:\s*"release"/);
+});
+
+test("Release sharing keeps direct People access but exposes no Team mutation", () => {
+  const release = {
+    id: "release-share",
+    publicId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    projectId: snapshot.projects[0]!.id,
+    ownerUserId: snapshot.user.id,
+    creatorUserId: snapshot.user.id,
+    name: "No direct Team route",
+    description: "",
+    status: "active" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const context = resolveShareContext(`release:${release.id}`, null, {
+    ...snapshot,
+    releases: [release],
+  })!;
+  const markup = renderToStaticMarkup(createElement(ShareDialog, {
+    context,
+    currentUser: snapshot.user,
+    users: snapshot.users,
+    collaborators: snapshot.collaborators,
+    onClose: () => undefined,
+    onShare: async () => true,
+    onRoleChange: async () => true,
+    onRevoke: async () => true,
+    onTransfer: async () => true,
+    busy: false,
+  }));
+  assert.match(markup, />People</);
+  assert.match(markup, /Releases do not have a Team grant route/);
+  assert.doesNotMatch(markup, /Loading your Teams|Loading Team access|Choose where this Team gets access/);
 });
 
 test("task ordering uses priority by default with rank and immutable id tie-breakers", () => {
