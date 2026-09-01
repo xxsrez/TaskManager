@@ -8,7 +8,11 @@ import {
   POST as postTeamGrantRoute,
 } from "../app/api/shares/teams/route";
 import { configureActorResolverForTests, type Actor } from "../lib/auth";
-import { updateAgentTask } from "../lib/agent-api-repository";
+import {
+  listAgentLabelGroups,
+  listAgentLabels,
+  updateAgentTask,
+} from "../lib/agent-api-repository";
 import { createComment } from "../lib/comments";
 import {
   deleteEntity,
@@ -84,6 +88,87 @@ afterEach(async () => {
   configureActorResolverForTests(null);
   await harness?.dispose();
   harness = null;
+});
+
+test("Agent catalogs scope task-only Team access to labels used by visible Tasks", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(actor("catalog-owner", "Catalog Owner"));
+  const taskMember = await getOrCreateUser(actor("catalog-task-member", "Catalog Task Member"));
+  const projectMember = await getOrCreateUser(actor("catalog-project-member", "Catalog Project Member"));
+
+  await createProject(owner, { name: "Catalog scope project", taskCode: "CSP" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Catalog scope project",
+  )!;
+  let groups = await createLabelGroup(owner, { name: "Visible task group" });
+  groups = await createLabelGroup(owner, { name: "Hidden sibling group" });
+  const visibleGroup = groups.find((group) => group.name === "Visible task group")!;
+  const hiddenGroup = groups.find((group) => group.name === "Hidden sibling group")!;
+  let labels = await createLabel(owner, {
+    name: "Visible task label",
+    groupId: visibleGroup.id,
+  });
+  labels = await createLabel(owner, {
+    name: "Hidden same-group label",
+    groupId: visibleGroup.id,
+  });
+  labels = await createLabel(owner, {
+    name: "Hidden sibling label",
+    groupId: hiddenGroup.id,
+  });
+  const visibleLabel = labels.find((label) => label.name === "Visible task label")!;
+  const hiddenSameGroupLabel = labels.find(
+    (label) => label.name === "Hidden same-group label",
+  )!;
+  const hiddenLabel = labels.find((label) => label.name === "Hidden sibling label")!;
+  const visibleTask = await createTask(owner, {
+    title: "Visible Team Task",
+    projectId: project.id,
+    labelIds: [visibleLabel.id],
+  });
+  await createTask(owner, {
+    title: "Hidden sibling Task",
+    projectId: project.id,
+    labelIds: [hiddenSameGroupLabel.id, hiddenLabel.id],
+  });
+
+  const taskTeam = await teamWithMember(owner, taskMember);
+  await createTeamGrant(owner, {
+    teamId: taskTeam.team.id,
+    resourceType: "task",
+    resourceId: visibleTask.id,
+    permission: "viewer",
+  });
+  await grantAccess(owner, {
+    resourceType: "project",
+    resourceId: project.id,
+    email: projectMember.email,
+    permission: "viewer",
+  });
+
+  assert.deepEqual(
+    (await listAgentLabels(taskMember)).items.map((label) => label.name),
+    ["Visible task label"],
+  );
+  assert.deepEqual(
+    (await listAgentLabelGroups(taskMember)).items.map((group) => ({
+      name: group.name,
+      labelCount: group.labelCount,
+      taskCount: group.taskCount,
+    })),
+    [{ name: "Visible task group", labelCount: 1, taskCount: 1 }],
+  );
+
+  for (const catalogReader of [owner, projectMember]) {
+    assert.deepEqual(
+      (await listAgentLabels(catalogReader)).items.map((label) => label.name).sort(),
+      ["Hidden same-group label", "Hidden sibling label", "Visible task label"],
+    );
+    assert.deepEqual(
+      (await listAgentLabelGroups(catalogReader)).items.map((group) => group.name).sort(),
+      ["Hidden sibling group", "Visible task group"],
+    );
+  }
 });
 
 test("strongest Team route, Project inheritance, explicit Task isolation, lifecycle, and global View intersection", async () => {
