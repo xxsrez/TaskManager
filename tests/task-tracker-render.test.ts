@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   CodexSetupDialog,
+  canManageTeamRouteGrant,
   canStartPullRefresh,
   commentDraftStorageKey,
   fetchTaskSnapshot,
@@ -58,6 +59,7 @@ import {
   TaskMoveDialog,
   TaskTracker,
   TeamDetailSurface,
+  TeamGrantAccessRow,
   TeamMemberDeleteDialog,
   TeamMemberDialog,
   TeamNameDialog,
@@ -71,13 +73,15 @@ import {
   filterShareTeamOptions,
   teamGrantConflictReadbackMessage,
   teamGrantResponseMatchesRoute,
+  teamRouteRoles,
+  teamShareRouteIdentity,
   teamShareRequestIsCurrent,
   viewDialogDraftIsDirty,
   viewDialogDraftQuery,
   viewDisplayDependencies,
 } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
-import type { AppSnapshot, TeamDetail, TeamGrantList, TeamList, TeamMembershipRecord } from "../lib/types";
+import type { AppSnapshot, TeamDetail, TeamGrantList, TeamGrantRecord, TeamList, TeamMembershipRecord } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
 const snapshot: AppSnapshot = {
@@ -520,6 +524,127 @@ test("People and Teams sharing keeps own active Teams first and fences route res
   assert.match(teamGrantConflictReadbackMessage(false), /latest routes could not be loaded\. Retry/);
 });
 
+test("People and Teams sharing reloads a changed Project route for the same Task dialog", () => {
+  const secondProject = {
+    ...snapshot.projects[0]!,
+    id: "project-2",
+    publicId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    name: "Moved Project",
+    taskCode: "MOVE",
+  };
+  const task = snapshot.tasks[0]!;
+  const beforeMove = resolveShareContext("all", task, {
+    ...snapshot,
+    projects: [...snapshot.projects, secondProject],
+  })!;
+  const afterMove = resolveShareContext("all", { ...task, projectId: secondProject.id }, {
+    ...snapshot,
+    projects: [...snapshot.projects, secondProject],
+  })!;
+  assert.equal(beforeMove.key, afterMove.key);
+  assert.equal(beforeMove.teamRoutes[0]?.publicId, snapshot.projects[0]!.publicId);
+  assert.equal(afterMove.teamRoutes[0]?.publicId, secondProject.publicId);
+  assert.notEqual(
+    teamShareRouteIdentity(beforeMove.teamRoutes),
+    teamShareRouteIdentity(afterMove.teamRoutes),
+  );
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const syncIndex = source.indexOf("const nextRoutes = context.teamRoutes");
+  const loadIndex = source.indexOf("if (!routesRef.current.length) return", syncIndex);
+  assert.ok(syncIndex >= 0 && loadIndex > syncIndex);
+  assert.match(source, /previousRoute[\s\S]{0,300}routeGenerationRef\.current\[previousRoute\.key\][\s\S]{0,120}\+ 1/);
+  assert.match(source, /routeControllers\.forEach\(\(controller\) => controller\.abort\(\)\)/);
+});
+
+test("Team grant rows apply the actor role ceiling without hiding stronger grants", () => {
+  const ownerRoute = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[0]!;
+  const managerRoute = { ...ownerRoute, accessRole: "manager" as const };
+  const managerGrant: TeamGrantRecord = {
+    id: "team-grant-manager",
+    teamId: teamDetail.team.id,
+    teamPublicId: teamDetail.team.publicId,
+    teamName: "Core Team",
+    teamArchivedAt: null,
+    resourceType: "project",
+    resourceId: snapshot.projects[0]!.id,
+    permission: "manager",
+    grantedByUserId: snapshot.user.id,
+    revokedAt: null,
+    version: 4,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const renderRow = (route: typeof ownerRoute, grant: TeamGrantRecord) => renderToStaticMarkup(createElement(TeamGrantAccessRow, {
+    route,
+    grant,
+    busy: false,
+    routeReady: true,
+    onRoleChange: () => undefined,
+    onRevoke: () => undefined,
+  }));
+
+  assert.equal(canManageTeamRouteGrant(managerRoute, "manager"), false);
+  assert.equal(canManageTeamRouteGrant(managerRoute, "editor"), true);
+  assert.equal(canManageTeamRouteGrant(managerRoute, "viewer"), true);
+  assert.equal(canManageTeamRouteGrant(ownerRoute, "manager"), true);
+
+  const managerMarkup = renderRow(managerRoute, managerGrant);
+  assert.match(managerMarkup, /Core Team/);
+  assert.match(managerMarkup, /<select[^>]*disabled=""[^>]*><option value="manager" selected="">Manager<\/option><\/select>/);
+  assert.doesNotMatch(managerMarkup, />Revoke<\/button>/);
+
+  const ownerMarkup = renderRow(ownerRoute, managerGrant);
+  assert.doesNotMatch(ownerMarkup, /<select[^>]*disabled=""/);
+  assert.match(ownerMarkup, />Revoke<\/button>/);
+
+  const editorMarkup = renderRow(managerRoute, { ...managerGrant, permission: "editor" });
+  assert.doesNotMatch(editorMarkup, /<select[^>]*disabled=""/);
+  assert.match(editorMarkup, />Revoke<\/button>/);
+});
+
+test("Project managers cannot create or manage an explicit Task-only Team grant", () => {
+  const taskRoute = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[1]!;
+  const managerTaskRoute = { ...taskRoute, accessRole: "manager" as const };
+  const editorGrant: TeamGrantRecord = {
+    id: "task-team-grant-editor",
+    teamId: teamDetail.team.id,
+    teamPublicId: teamDetail.team.publicId,
+    teamName: "Task Team",
+    teamArchivedAt: null,
+    resourceType: "task",
+    resourceId: snapshot.tasks[0]!.id,
+    permission: "editor",
+    grantedByUserId: snapshot.user.id,
+    revokedAt: null,
+    version: 2,
+    createdAt: now,
+    updatedAt: now,
+  };
+  assert.deepEqual(teamRouteRoles(managerTaskRoute), []);
+  assert.equal(canManageTeamRouteGrant(managerTaskRoute, "editor"), false);
+  const markup = renderToStaticMarkup(createElement(TeamGrantAccessRow, {
+    route: managerTaskRoute,
+    grant: editorGrant,
+    busy: false,
+    routeReady: true,
+    onRoleChange: () => undefined,
+    onRevoke: () => undefined,
+  }));
+  assert.match(markup, /Task Team/);
+  assert.match(markup, /<select[^>]*disabled=""/);
+  assert.doesNotMatch(markup, />Revoke<\/button>/);
+
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /route\.resourceType === "task" && route\.accessRole === "manager"/);
+  assert.match(source, /selectableTeamRoutes = context\.teamRoutes\.filter\(\(route\) => teamRouteRoles\(route\)\.length > 0\)/);
+});
+
+test("a forbidden Team mutation retains the authoritative route for review", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /const forbidden = requestError instanceof TeamRequestError && requestError\.status === 403;[\s\S]{0,180}value: retained/);
+  assert.match(source, /Your role cannot change or revoke this Team grant/);
+});
+
 test("People and Teams dialog separates routes and requires principal, role, and Task route", () => {
   const taskContext = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!;
   const markup = renderToStaticMarkup(createElement(ShareDialog, {
@@ -563,7 +688,7 @@ test("Team sharing uses exact CAS payloads and authoritative route replacement",
   assert.match(source, /requestTeamApi<TeamGrantList>\(`\/api\/shares\/teams\?\$\{parameters\}`/);
   assert.match(source, /teamId: selectedPrincipal\.entry\.team\.publicId,[\s\S]{0,180}resourceId: selectedRoute\.publicId,[\s\S]{0,100}permission: selectedPermission/);
   assert.match(source, /existingTeamGrant\?\.revokedAt\) body\.version = existingTeamGrant\.version/);
-  assert.match(source, /"PATCH", \{ grantId: grant\.id, version: grant\.version, action: "role", permission: event\.target\.value \}/);
+  assert.match(source, /"PATCH", \{ grantId: grant\.id, version: grant\.version, action: "role", permission \}/);
   assert.match(source, /"DELETE", \{ grantId: grant\.id, version: grant\.version \}/);
   assert.match(source, /setRouteState\(route\.key, \{ status: "ready", value, error: "" \}\)/);
   assert.match(source, /teamMutationRef\.current = true;[\s\S]{0,180}routeGenerationRef\.current\[route\.key\]/);

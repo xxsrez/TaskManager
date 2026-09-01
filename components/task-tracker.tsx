@@ -282,6 +282,7 @@ import type {
   TeamDetail,
   TeamGrantList,
   TeamGrantPermission,
+  TeamGrantRecord,
   TeamGrantResourceType,
   TeamList,
   TeamMembershipRecord,
@@ -360,6 +361,7 @@ type ShareTeamOption = {
 
 type SharePrincipalOption = SharePersonOption | ShareTeamOption;
 type TeamGrantMutationState = { routeKey: string; key: string } | null;
+type TeamGrantAlert = { routeKey: string; routePublicId: string; message: string } | null;
 
 type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | "teamCreate" | "teamRename" | "teamMemberAdd" | "teamMemberDelete" | null;
 export type AsyncValue<T> =
@@ -419,6 +421,11 @@ export function teamGrantConflictReadbackMessage(latestLoaded: boolean) {
   return latestLoaded
     ? "Team access changed in another session. The latest routes were loaded; review them and try again."
     : "Team access changed, but the latest routes could not be loaded. Retry.";
+}
+
+export function teamShareRouteIdentity(routes: readonly TeamShareRoute[]) {
+  return routes.map((route) =>
+    `${route.key}:${route.resourceType}:${route.publicId}:${route.accessRole}`).join("|");
 }
 
 export function teamRequestIsCurrent(
@@ -8614,14 +8621,18 @@ function emptyAsyncValue<T>(): AsyncValue<T> {
   return { status: "idle", value: null, error: "" };
 }
 
-function teamRouteRoles(route: TeamShareRoute): TeamGrantPermission[] {
+export function teamRouteRoles(route: TeamShareRoute): TeamGrantPermission[] {
   return (["manager", "editor", "viewer"] as const).filter((permission) => {
     if (permission === "manager" && route.resourceType !== "project") return false;
-    const policyType = route.resourceType === "task" && route.accessRole === "manager"
-      ? "project"
-      : route.resourceType;
-    return canAssignRole(route.accessRole, policyType, permission);
+    return canAssignRole(route.accessRole, route.resourceType, permission);
   });
+}
+
+export function canManageTeamRouteGrant(
+  route: TeamShareRoute,
+  permission: TeamGrantPermission,
+) {
+  return canManageGrant(route.accessRole, route.resourceType, permission);
 }
 
 function validShareEmail(value: string) {
@@ -8663,6 +8674,22 @@ function sharePersonOptions({ query, directTarget, directGrants, ownerEmail, cur
     left.email.localeCompare(right.email));
 }
 
+export function TeamGrantAccessRow({ route, grant, catalogEntry, busy, routeReady, onRoleChange, onRevoke }: {
+  route: TeamShareRoute;
+  grant: TeamGrantRecord;
+  catalogEntry?: TeamList["teams"][number];
+  busy: boolean;
+  routeReady: boolean;
+  onRoleChange: (permission: TeamGrantPermission) => void;
+  onRevoke: () => void;
+}) {
+  const roles = teamRouteRoles(route);
+  const active = grant.revokedAt === null;
+  const manageable = canManageTeamRouteGrant(route, grant.permission);
+  const availableRoles = manageable ? roles : [grant.permission];
+  return <div className={`access-row team-grant-row ${active ? "" : "revoked"}`}><span className="team-option-icon"><UsersRound size={15} /></span><span><b>{grant.teamName}</b><small>{catalogEntry ? `${catalogEntry.activeMemberCount} active · Your role: ${catalogEntry.currentMembership.role}` : active ? "Team route" : "Revoked Team route"}</small></span><span className="team-route-root">{active ? route.label : "Revoked"}</span><select aria-label={`Role for Team ${grant.teamName}`} value={grant.permission} disabled={busy || !active || !manageable || !routeReady || Boolean(grant.teamArchivedAt)} onChange={(event) => { if (manageable) onRoleChange(event.target.value as TeamGrantPermission); }}>{availableRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{active && manageable && <button type="button" disabled={busy || !routeReady} onClick={onRevoke}>Revoke</button>}</div></div>;
+}
+
 export function ShareDialog({ context, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { context: ShareContext; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
   const [query, setQuery] = useState("");
   const [comboOpen, setComboOpen] = useState(false);
@@ -8671,7 +8698,7 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
   const [selectedPermission, setSelectedPermission] = useState<TeamGrantPermission | "">("");
   const [selectedRouteKey, setSelectedRouteKey] = useState("");
   const [directError, setDirectError] = useState("");
-  const [teamAlert, setTeamAlert] = useState("");
+  const [teamAlert, setTeamAlert] = useState<TeamGrantAlert>(null);
   const [teamMutation, setTeamMutation] = useState<TeamGrantMutationState>(null);
   const [teamCatalog, setTeamCatalog] = useState<AsyncValue<TeamList>>(() => emptyAsyncValue<TeamList>());
   const teamCatalogRef = useRef(teamCatalog);
@@ -8685,7 +8712,7 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
   const mountedRef = useRef(true);
   const teamMutationRef = useRef(false);
   const listboxId = useId();
-  const routeIdentity = context.teamRoutes.map((route) => `${route.key}:${route.publicId}`).join("|");
+  const routeIdentity = teamShareRouteIdentity(context.teamRoutes);
   const routesRef = useRef(context.teamRoutes);
 
   const setCatalogState = useCallback((next: AsyncValue<TeamList>) => {
@@ -8786,6 +8813,18 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
   }, []);
 
   useEffect(() => {
+    const nextRoutes = context.teamRoutes;
+    const nextRouteIdentities = new Set(nextRoutes.map((route) => `${route.key}:${route.publicId}`));
+    for (const previousRoute of routesRef.current) {
+      if (nextRouteIdentities.has(`${previousRoute.key}:${previousRoute.publicId}`)) continue;
+      routeGenerationRef.current[previousRoute.key] =
+        (routeGenerationRef.current[previousRoute.key] ?? 0) + 1;
+    }
+    routesRef.current = nextRoutes;
+    contextKeyRef.current = context.key;
+  }, [context.key, context.teamRoutes]);
+
+  useEffect(() => {
     if (!routesRef.current.length) return;
     const catalogController = new AbortController();
     const routeControllers = routesRef.current.map(() => new AbortController());
@@ -8827,10 +8866,11 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
   const activeOptionIndex = principalOptions.length
     ? Math.min(highlighted, principalOptions.length - 1)
     : -1;
+  const selectableTeamRoutes = context.teamRoutes.filter((route) => teamRouteRoles(route).length > 0);
   const selectedRoute = selectedPrincipal?.kind === "team"
-    ? context.teamRoutes.find((route) =>
+    ? selectableTeamRoutes.find((route) =>
         route.key === (context.teamRoutes.length === 1
-          ? context.teamRoutes[0]?.key
+          ? selectableTeamRoutes[0]?.key
           : selectedRouteKey)) ?? null
     : null;
   const selectedRouteState = selectedRoute ? routeStates[selectedRoute.key] : null;
@@ -8856,13 +8896,13 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
     setSelectedPrincipal(option);
     setSelectedPermission("");
     setSelectedRouteKey(option.kind === "team" && context.teamRoutes.length === 1
-      ? context.teamRoutes[0]?.key ?? ""
+      ? selectableTeamRoutes[0]?.key ?? ""
       : "");
     setQuery(option.kind === "person" ? option.email : option.entry.team.name);
     setComboOpen(false);
     setHighlighted(0);
     setDirectError("");
-    setTeamAlert("");
+    setTeamAlert(null);
   }
 
   async function mutateTeamGrantRoute(
@@ -8875,39 +8915,52 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
     teamMutationRef.current = true;
     routeGenerationRef.current[route.key] = (routeGenerationRef.current[route.key] ?? 0) + 1;
     setTeamMutation({ routeKey: route.key, key: mutationKey });
-    setTeamAlert("");
+    setTeamAlert(null);
+    const routeIsCurrent = () => routesRef.current.some((currentRoute) =>
+      currentRoute.key === route.key &&
+      currentRoute.resourceType === route.resourceType &&
+      currentRoute.publicId === route.publicId);
     try {
       const value = await requestTeamApi<TeamGrantList>("/api/shares/teams", {
         method,
         body: JSON.stringify(body),
       });
-      if (!mountedRef.current || contextKeyRef.current !== context.key) return false;
+      if (!mountedRef.current || contextKeyRef.current !== context.key || !routeIsCurrent()) return false;
       if (!teamGrantResponseMatchesRoute(route, value)) {
         throw new Error("Team access response did not match this route");
       }
       setRouteState(route.key, { status: "ready", value, error: "" });
       return true;
     } catch (requestError) {
-      if (!mountedRef.current || contextKeyRef.current !== context.key) return false;
+      if (!mountedRef.current || contextKeyRef.current !== context.key || !routeIsCurrent()) return false;
       if (requestError instanceof TeamRequestError && requestError.status === 409) {
         const latest = await loadTeamGrantRoute(route);
-        if (!mountedRef.current || contextKeyRef.current !== context.key) return false;
-        setTeamAlert(teamGrantConflictReadbackMessage(latest !== null));
+        if (!mountedRef.current || contextKeyRef.current !== context.key || !routeIsCurrent()) return false;
+        setTeamAlert({
+          routeKey: route.key,
+          routePublicId: route.publicId,
+          message: teamGrantConflictReadbackMessage(latest !== null),
+        });
         return false;
       }
       const retained = routeStatesRef.current[route.key]?.value ?? null;
-      const unavailable = requestError instanceof TeamRequestError &&
-        (requestError.status === 403 || requestError.status === 404);
+      const forbidden = requestError instanceof TeamRequestError && requestError.status === 403;
       setRouteState(route.key, {
         status: "error",
-        value: unavailable ? null : retained,
-        error: unavailable
-          ? "Team access unavailable"
+        value: retained,
+        error: forbidden
+          ? "Your role cannot manage this Team grant"
           : requestError instanceof Error
             ? requestError.message
             : "Team access could not be updated",
       });
-      setTeamAlert(unavailable ? "" : "Team access may have changed. Reload this route before trying again.");
+      setTeamAlert({
+        routeKey: route.key,
+        routePublicId: route.publicId,
+        message: forbidden
+          ? "Your role cannot change or revoke this Team grant. Reload the route if your access changed."
+          : "Team access may have changed. Reload this route before trying again.",
+      });
       return false;
     } finally {
       teamMutationRef.current = false;
@@ -8982,6 +9035,10 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
     : directTarget?.resourceType === "task"
       ? "Direct People access applies only to this standalone Task."
       : "A directly shared global View still shows only Tasks the person can already access.";
+  const visibleTeamAlert = teamAlert && context.teamRoutes.some((route) =>
+    route.key === teamAlert.routeKey && route.publicId === teamAlert.routePublicId)
+    ? teamAlert.message
+    : "";
 
   return <Modal onClose={onClose} className="share-dialog" ariaLabel={`Members & access · ${context.label}`}>
     <DialogHeader title={`Members & access · ${context.label}`} icon={<UsersRound size={17} />} onClose={onClose} />
@@ -9030,7 +9087,7 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
           </div>}
         </div>
 
-        {selectedPrincipal?.kind === "team" && context.teamRoutes.length > 1 && <fieldset className="team-route-choice"><legend>Choose where this Team gets access</legend>{context.teamRoutes.map((route, index) => {
+        {selectedPrincipal?.kind === "team" && context.teamRoutes.length > 1 && selectableTeamRoutes.length > 0 && <fieldset className="team-route-choice"><legend>Choose where this Team gets access</legend>{selectableTeamRoutes.map((route, index) => {
           const routeInputId = `${listboxId}-route-${index}`;
           return <label key={route.key} htmlFor={routeInputId} aria-label={`${route.label}: ${route.explanation}`}><input id={routeInputId} type="radio" name="teamRoute" value={route.key} checked={selectedRouteKey === route.key} disabled={busy || Boolean(teamMutation)} onChange={() => { setSelectedRouteKey(route.key); setSelectedPermission(""); }} /><span><b>{route.label}</b><small>{route.explanation}</small></span></label>;
         })}</fieldset>}
@@ -9040,7 +9097,7 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
         {selectedPrincipal?.kind === "team" && existingTeamGrant?.revokedAt === null && <p className="share-selection-note" role="status">This Team already has active access through the selected route.</p>}
       </form>
 
-      {(directError || teamAlert) && <div className="team-local-alert" role="alert">{directError || teamAlert}</div>}
+      {(directError || visibleTeamAlert) && <div className="team-local-alert" role="alert">{directError || visibleTeamAlert}</div>}
       <p className="share-route-caveat" role="note"><b>Strongest route wins.</b> Direct People access, Project inheritance, explicit Task routes, and other Teams can preserve access after one route is changed or revoked.</p>
 
       {directTarget && <section className="share-access-section" aria-labelledby={`${listboxId}-people-heading`}><header><div><h3 id={`${listboxId}-people-heading`}>People</h3><p>{inheritanceCopy}</p></div><span className="count-pill">{directGrants.length + 1}</span></header><div className="access-list people-access-list"><div className="access-row"><span className="avatar">{initials(ownerName)}</span><span><b>{ownerName}</b><small>{owner?.email ?? "Current resource owner"}</small></span><em>Owner</em></div>{directGrants.map((grant) => {
@@ -9053,9 +9110,7 @@ export function ShareDialog({ context, currentUser, users, collaborators, onClos
         const grants = state.value?.grants ?? [];
         return <article className="team-route-panel" key={route.key} aria-busy={state.status === "idle" || state.status === "loading" || undefined}><header><div><h4>{route.label}</h4><p>{route.explanation}</p></div>{state.value && <span className="count-pill">{grants.filter((grant) => grant.revokedAt === null).length}</span>}</header>{(state.status === "idle" || state.status === "loading") && !state.value && <div className="team-route-state" aria-live="polite">Loading Team access…</div>}{state.status === "error" && <div className="team-local-alert" role="alert"><span>{state.error}</span><button type="button" className="button ghost compact" disabled={busy || Boolean(teamMutation)} onClick={() => void loadTeamGrantRoute(route)}>Retry</button></div>}{state.status === "ready" && grants.length === 0 && <div className="team-route-state">No Team access through this route.</div>}{grants.length > 0 && <div className="access-list team-grant-list">{grants.map((grant) => {
           const catalogEntry = teamCatalog.value?.teams.find((entry) => entry.team.id === grant.teamId);
-          const roles = teamRouteRoles(route);
-          const active = grant.revokedAt === null;
-          return <div className={`access-row team-grant-row ${active ? "" : "revoked"}`} key={grant.id}><span className="team-option-icon"><UsersRound size={15} /></span><span><b>{grant.teamName}</b><small>{catalogEntry ? `${catalogEntry.activeMemberCount} active · Your role: ${catalogEntry.currentMembership.role}` : active ? "Team route" : "Revoked Team route"}</small></span><span className="team-route-root">{active ? route.label : "Revoked"}</span><select aria-label={`Role for Team ${grant.teamName}`} value={grant.permission} disabled={busy || !active || Boolean(teamMutation) || state.status !== "ready" || Boolean(grant.teamArchivedAt)} onChange={(event) => void mutateTeamGrantRoute(route, "PATCH", { grantId: grant.id, version: grant.version, action: "role", permission: event.target.value }, `role:${grant.id}`)}>{roles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{active && <button type="button" disabled={busy || Boolean(teamMutation) || state.status !== "ready"} onClick={() => void mutateTeamGrantRoute(route, "DELETE", { grantId: grant.id, version: grant.version }, `revoke:${grant.id}`)}>Revoke</button>}</div></div>;
+          return <TeamGrantAccessRow key={grant.id} route={route} grant={grant} catalogEntry={catalogEntry} busy={busy || Boolean(teamMutation)} routeReady={state.status === "ready"} onRoleChange={(permission) => void mutateTeamGrantRoute(route, "PATCH", { grantId: grant.id, version: grant.version, action: "role", permission }, `role:${grant.id}`)} onRevoke={() => void mutateTeamGrantRoute(route, "DELETE", { grantId: grant.id, version: grant.version }, `revoke:${grant.id}`)} />;
         })}</div>}</article>;
       })}</section>
     </div>
