@@ -287,7 +287,8 @@ Project Owner имеет implicit highest access и не представлен 
 
 | Поле | Семантика |
 |---|---|
-| `id`, `public_id` | Internal primary key и стабильный opaque ref server contract |
+| `id` | Внутренний primary key |
+| `public_id` | Стабильная непрозрачная ссылка server contract |
 | `owner_user_id` | Current owner самой Team; ссылка на существующего User |
 | `name` | Непустое отображаемое имя длиной не более 100 символов |
 | `archived_at` | Nullable archive lifecycle без изменения membership/grants |

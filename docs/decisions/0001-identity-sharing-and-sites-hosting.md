@@ -12,6 +12,10 @@ content-free, но тот же server-gated administrator получает от�
 Решения 6–8 о единственном `full_access`, inheritance и неизменяемом owner
 заменены [ADR-0005](0005-project-roles-and-ownership-transfer.md).
 
+Дополнение 2026-09-01: ADR-0017 расширяет sharing отдельным Team-принципалом.
+Verified email остаётся обязательным для direct User grant и добавления
+зарегистрированного User в Team, но сам Team grant не материализует User grants.
+
 ## Контекст
 
 Продукту нужны реальные пользователи, раздельные данные и простая совместная

@@ -206,22 +206,27 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - `Viewer` читает Project и его subtree, но не меняет их. `Editor` дополнительно
   создаёт и изменяет Tasks, Releases и project-scoped SavedViews, двигает Tasks
   по workflow, назначает доступные labels, архивирует и восстанавливает records.
-- `Manager` дополнительно приглашает Users и назначает/изменяет только роли
+- `Manager` дополнительно управляет direct User и Team grants только с ролями
   `Editor` и `Viewer`. `Owner` может назначать вплоть до `Manager`, отзывать
-  grants и передать ownership уже добавленному участнику.
+  grants и передать ownership уже добавленному User.
 - Ownership transfer не требует подтверждения получателя: target немедленно
   становится Owner, прежний Owner — Manager. Owner grant не хранится, поэтому
   Owner всегда ровно один.
-- Пользователь может выдать grant только уже зарегистрированному User,
+- Direct User grant можно выдать только уже зарегистрированному User,
   однозначно найденному по verified email. Email invitation не отправляется.
+  Team grant требует active membership actor в выбранной Team и достаточную
+  роль actor на целевом resource.
 - Project role распространяется на Project, его Tasks, Releases и SavedViews с
-  явным `scope_project_id`. Release и project child отдельно не шарятся.
+  явным `scope_project_id`. Release и project-scoped SavedView отдельно не
+  шарятся; отдельный Team Task-only route является единственным исключением
+  для Project child.
 - Для project child effective access определяется текущим Project owner/grant,
   а не историческим `owner_user_id`. Передача ownership не меняет immutable
   task identifiers и provenance/catalog scope дочерних records. Явный перенос
   Task меняет identifier только по отдельному атомарному move contract.
 - Global SavedView можно расшарить напрямую с ролью `Editor` или `Viewer`.
-  Каждая Task наследует доступ только от своего Project.
+  Direct User access к Task наследуется только от её Project; Team Task-only
+  route открывает одну Task и не открывает Project или sibling Tasks.
 - Global SavedView не расширяет доступ к попавшим в query Tasks. Получатель
   видит пересечение view с уже доступными ему данными.
 - Resources, которыми поделились с User, доступны в `Shared with me`. Revoke

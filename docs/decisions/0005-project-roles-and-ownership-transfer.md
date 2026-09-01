@@ -10,6 +10,11 @@
 [ADR-0004](0004-system-backup-and-restore.md) остаётся отдельной server-side
 capability и не является ролью проекта.
 
+Дополнение 2026-09-01: [ADR-0017](0017-functional-teams-as-acl-principal.md)
+добавляет Team как отдельный ACL-маршрут. Direct User grants и ownership
+transfer сохраняют этот ADR без изменений; verified email относится к User и
+membership ingress, а не к Team grant.
+
 ## Контекст
 
 Один уровень `full_access` не позволяет безопасно дать человеку только чтение,
