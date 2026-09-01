@@ -203,19 +203,14 @@ export function teamAccessFingerprintSql(): string {
     WHERE root_visible = 1 AND route_owner_user_id IS NOT NULL
       AND resource_type IN ('project', 'saved_view')
   ), label_catalog_rows AS MATERIALIZED (
+    -- Archived Labels are immutable until a versioned restore. Archive removes
+    -- a row from this active aggregate and restore adds it back, so every
+    -- supported transition remains visible without an unindexed archive scan.
     SELECT label.owner_user_id, label.id, label.version, label.updated_at
     FROM catalog_owner_ids owner
     JOIN labels label INDEXED BY idx_labels_owner_name_active
       ON label.owner_user_id = owner.owner_user_id
     WHERE label.archived_at IS NULL
-    UNION ALL
-    -- There is no non-partial owner index for archived Labels. Keep this
-    -- fallback separate so the common active path is owner-indexed; adding the
-    -- missing index would require the schema change forbidden by TM-334.
-    SELECT label.owner_user_id, label.id, label.version, label.updated_at
-    FROM labels label
-    JOIN catalog_owner_ids owner ON owner.owner_user_id = label.owner_user_id
-    WHERE label.archived_at IS NOT NULL
   ), label_catalog_state AS MATERIALIZED (
     SELECT label.owner_user_id,
       COUNT(label.id) AS label_count,
@@ -368,20 +363,20 @@ export function teamAccessFingerprintSql(): string {
       END AS resource_id
     FROM resolved_owner_events event
     CROSS JOIN event_route_slots slot
-  ), routed_resource_events AS MATERIALIZED (
-    SELECT audience_user_id, sequence, resource_type, resource_id
+  ), routed_resource_event_max AS MATERIALIZED (
+    SELECT audience_user_id, resource_type, resource_id,
+      MAX(sequence) AS marker_sequence
     FROM event_route_candidates
     WHERE resource_type IS NOT NULL AND resource_id IS NOT NULL
-  ), resource_event_max AS MATERIALIZED (
-    SELECT route.resource_type, route.resource_id,
-      MAX(event.sequence) AS marker_sequence
-    FROM routed_resource_events event
-    JOIN resource_roots route
-      ON route.root_visible = 1
+    GROUP BY audience_user_id, resource_type, resource_id
+  ), route_event_max AS MATERIALIZED (
+    SELECT route.grant_id, event.marker_sequence
+    FROM routed_resource_event_max event
+    CROSS JOIN resource_routes route
+    WHERE route.root_visible = 1
       AND route.route_owner_user_id = event.audience_user_id
       AND route.resource_type = event.resource_type
       AND route.resource_id = event.resource_id
-    GROUP BY route.resource_type, route.resource_id
   )
   SELECT route.team_id, route.team_version,
     route.membership_id, route.membership_version,
@@ -393,9 +388,7 @@ export function teamAccessFingerprintSql(): string {
   JOIN resource_state state
     ON state.resource_type = route.resource_type
     AND state.resource_id = route.resource_id
-  LEFT JOIN resource_event_max events
-    ON events.resource_type = route.resource_type
-    AND events.resource_id = route.resource_id
+  LEFT JOIN route_event_max events ON events.grant_id = route.grant_id
   ORDER BY route.team_id, route.membership_id, route.grant_id`;
 }
 

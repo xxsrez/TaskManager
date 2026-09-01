@@ -3418,8 +3418,10 @@ function touchProjectSyncMarker(
   // ordinary Project UPDATE publishes the existing Project event and gives
   // that exact route a marker. Deliberately do not bump version: a
   // composition-only marker must not invalidate compatible Project edit CAS.
+  // MAX preserves a Project edit that committed with a later request time;
+  // SQLite still runs the Project UPDATE trigger when the value stays equal.
   return db.prepare(
-    `UPDATE projects SET updated_at = ?
+    `UPDATE projects SET updated_at = MAX(updated_at, ?)
      WHERE id = ? AND deleted_at IS NULL`,
   ).bind(touchedAt, projectId);
 }

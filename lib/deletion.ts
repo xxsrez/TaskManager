@@ -903,9 +903,11 @@ function projectSyncTouchAfterPreviousChange(
   // an owner journal event. Tie this ordinary Project UPDATE to the winning
   // child DELETE via changes(); the existing Project trigger then publishes an
   // exact route marker. No Project version bump means child purge does not
-  // invalidate an otherwise compatible Project edit CAS value.
+  // invalidate an otherwise compatible Project edit CAS value. MAX preserves
+  // a Project edit that committed with a later request time while the UPDATE
+  // trigger still emits the route marker.
   return db.prepare(
-    `UPDATE projects SET updated_at = ?
+    `UPDATE projects SET updated_at = MAX(updated_at, ?)
      WHERE id = ? AND deleted_at IS NULL AND changes() > 0`,
   ).bind(touchedAt, projectId);
 }

@@ -756,6 +756,12 @@ test("public Task and scoped View moves invalidate old and new Project routes", 
     permission: "viewer",
   });
 
+  let sourceOneConcurrent = await simulateConcurrentProjectEdit(
+    owner,
+    sourceOne.id,
+    "Move source one concurrent single",
+    "2099-01-01T00:00:01.000Z",
+  );
   const oldBeforeSingle = await getSnapshot(oldMember);
   const newBeforeSingle = await getSnapshot(newMember);
   const movedSingle = await moveTask(owner, single.id, {
@@ -772,7 +778,25 @@ test("public Task and scoped View moves invalidate old and new Project routes", 
     (await getSnapshot(newMember)).tasks.find((item) => item.id === single.id)?.projectId,
     target.id,
   );
+  let sourceAfterTouch = (await getSnapshot(owner)).projects.find(
+    (item) => item.id === sourceOne.id,
+  )!;
+  assert.equal(sourceAfterTouch.name, sourceOneConcurrent.name);
+  assert.equal(sourceAfterTouch.version, sourceOneConcurrent.version);
+  assert.equal(sourceAfterTouch.updatedAt, sourceOneConcurrent.updatedAt);
 
+  sourceOneConcurrent = await simulateConcurrentProjectEdit(
+    owner,
+    sourceOne.id,
+    "Move source one concurrent bulk",
+    "2099-01-01T00:00:02.000Z",
+  );
+  const sourceTwoConcurrent = await simulateConcurrentProjectEdit(
+    owner,
+    sourceTwo.id,
+    "Move source two concurrent bulk",
+    "2099-01-01T00:00:03.000Z",
+  );
   const oldBeforeBulk = await getSnapshot(oldMember);
   const newBeforeBulk = await getSnapshot(newMember);
   const movedBulk = await bulkMoveTasks(owner, {
@@ -803,7 +827,20 @@ test("public Task and scoped View moves invalidate old and new Project routes", 
   const newAfterBulk = await getSnapshot(newMember);
   assert.ok(newAfterBulk.tasks.some((item) => item.id === bulkOne.id));
   assert.ok(newAfterBulk.tasks.some((item) => item.id === bulkTwo.id));
+  const sourcesAfterBulk = (await getSnapshot(owner)).projects;
+  for (const expected of [sourceOneConcurrent, sourceTwoConcurrent]) {
+    const actual = sourcesAfterBulk.find((item) => item.id === expected.id)!;
+    assert.equal(actual.name, expected.name);
+    assert.equal(actual.version, expected.version);
+    assert.equal(actual.updatedAt, expected.updatedAt);
+  }
 
+  sourceOneConcurrent = await simulateConcurrentProjectEdit(
+    owner,
+    sourceOne.id,
+    "Move source one concurrent view",
+    "2099-01-01T00:00:04.000Z",
+  );
   const oldBeforeViewMove = await getSnapshot(oldMember);
   const newBeforeViewMove = await getSnapshot(newMember);
   const movedView = await updateSavedView(owner, scopedView.id, {
@@ -827,15 +864,21 @@ test("public Task and scoped View moves invalidate old and new Project routes", 
       ?.scopeProjectId,
     target.id,
   );
+  sourceAfterTouch = (await getSnapshot(owner)).projects.find(
+    (item) => item.id === sourceOne.id,
+  )!;
+  assert.equal(sourceAfterTouch.name, sourceOneConcurrent.name);
+  assert.equal(sourceAfterTouch.version, sourceOneConcurrent.version);
+  assert.equal(sourceAfterTouch.updatedAt, sourceOneConcurrent.updatedAt);
 
   const sourceAfterMoves = (await getSnapshot(owner)).projects;
   assert.equal(
     sourceAfterMoves.find((item) => item.id === sourceOne.id)?.version,
-    sourceOne.version,
+    sourceOneConcurrent.version,
   );
   assert.equal(
     sourceAfterMoves.find((item) => item.id === sourceTwo.id)?.version,
-    sourceTwo.version,
+    sourceTwoConcurrent.version,
   );
 });
 
@@ -868,6 +911,12 @@ test("immediate child purges invalidate a Team Project route without changing Pr
     permission: "viewer",
   });
 
+  let concurrentProject = await simulateConcurrentProjectEdit(
+    owner,
+    project.id,
+    "Purge marker concurrent Task",
+    "2099-02-01T00:00:01.000Z",
+  );
   let cursor = (await getSnapshot(member)).syncCursor!;
   const deletedTask = await deleteEntity(owner, "task", task.id, task.version);
   await purgeEntity(
@@ -879,7 +928,20 @@ test("immediate child purges invalidate a Team Project route without changing Pr
   );
   cursor = await expectOneTeamFingerprintReset(member, cursor);
   assert.ok(!(await getSnapshot(member)).tasks.some((item) => item.id === task.id));
+  let projectAfterPurge = (await getSnapshot(owner)).projects.find(
+    (item) => item.id === project.id,
+  )!;
+  assert.equal(projectAfterPurge.name, concurrentProject.name);
+  assert.equal(projectAfterPurge.version, concurrentProject.version);
+  assert.equal(projectAfterPurge.updatedAt, concurrentProject.updatedAt);
 
+  concurrentProject = await simulateConcurrentProjectEdit(
+    owner,
+    project.id,
+    "Purge marker concurrent Release",
+    "2099-02-01T00:00:02.000Z",
+  );
+  cursor = (await getSnapshot(member)).syncCursor!;
   const deletedRelease = await deleteEntity(
     owner,
     "release",
@@ -895,7 +957,20 @@ test("immediate child purges invalidate a Team Project route without changing Pr
   );
   cursor = await expectOneTeamFingerprintReset(member, cursor);
   assert.ok(!(await getSnapshot(member)).releases.some((item) => item.id === release.id));
+  projectAfterPurge = (await getSnapshot(owner)).projects.find(
+    (item) => item.id === project.id,
+  )!;
+  assert.equal(projectAfterPurge.name, concurrentProject.name);
+  assert.equal(projectAfterPurge.version, concurrentProject.version);
+  assert.equal(projectAfterPurge.updatedAt, concurrentProject.updatedAt);
 
+  concurrentProject = await simulateConcurrentProjectEdit(
+    owner,
+    project.id,
+    "Purge marker concurrent View",
+    "2099-02-01T00:00:03.000Z",
+  );
+  cursor = (await getSnapshot(member)).syncCursor!;
   const deletedView = await deleteEntity(owner, "saved_view", view.id, view.version);
   await purgeEntity(
     owner,
@@ -906,10 +981,12 @@ test("immediate child purges invalidate a Team Project route without changing Pr
   );
   await expectOneTeamFingerprintReset(member, cursor);
   assert.ok(!(await getSnapshot(member)).views.some((item) => item.id === view.id));
-  assert.equal(
-    (await getSnapshot(owner)).projects.find((item) => item.id === project.id)?.version,
-    project.version,
-  );
+  projectAfterPurge = (await getSnapshot(owner)).projects.find(
+    (item) => item.id === project.id,
+  )!;
+  assert.equal(projectAfterPurge.name, concurrentProject.name);
+  assert.equal(projectAfterPurge.version, concurrentProject.version);
+  assert.equal(projectAfterPurge.updatedAt, concurrentProject.updatedAt);
 });
 
 test("a Project Team route tracks the visible workflow catalog but not another owner's statuses", async () => {
@@ -1041,7 +1118,16 @@ test("a global View Team route tracks its selectable owner's Label catalog only"
     action: "archive",
     version: label.version,
   });
-  assert.ok(labels.find((item) => item.id === label.id)?.archivedAt);
+  label = labels.find((item) => item.id === label.id)!;
+  assert.ok(label.archivedAt);
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  labels = await updateLabel(owner, label.id, {
+    action: "restore",
+    version: label.version,
+  });
+  label = labels.find((item) => item.id === label.id)!;
+  assert.equal(label.archivedAt, null);
   cursor = await expectOneTeamFingerprintReset(member, cursor);
 
   await createLabel(privateOwner, {
@@ -1334,7 +1420,17 @@ test("a large Project fingerprint stays route-sized and uses event-first entity 
   assert.doesNotMatch(details, /CORRELATED/i);
   assert.doesNotMatch(details, /SCAN (?:event_task|event_release|event_view)/i);
   assert.match(details, /idx_labels_owner_name_active/i);
-  assert.match(details, /MATERIALIZE routed_resource_events/i);
+  assert.match(details, /MATERIALIZE routed_resource_event_max/i);
+  assert.match(details, /MATERIALIZE route_event_max/i);
+  const routeMarkerPlan = details.slice(
+    details.indexOf("MATERIALIZE route_event_max"),
+    details.indexOf("SCAN state"),
+  );
+  assert.ok(routeMarkerPlan.lastIndexOf("SCAN event") >= 0);
+  assert.ok(
+    routeMarkerPlan.lastIndexOf("SCAN event") <
+      routeMarkerPlan.indexOf("idx_team_grants_resource_active"),
+  );
   assert.doesNotMatch(fingerprintSql, /group_concat|OVER\s*\(/i);
   assert.doesNotMatch(fingerprintSql, /project_tasks|route_tasks|visible_task_ids/i);
   assert.match(fingerprintSql, /route\.resource_type = event\.resource_type/);
@@ -1351,13 +1447,14 @@ test("Team runtime and Team grant CRUD never write the workspace sync journal", 
     1,
   );
   assert.match(fingerprintSql, /route_owner_events AS MATERIALIZED/);
-  assert.match(fingerprintSql, /routed_resource_events AS MATERIALIZED/);
-  assert.match(fingerprintSql, /resource_event_max AS MATERIALIZED/);
+  assert.match(fingerprintSql, /routed_resource_event_max AS MATERIALIZED/);
+  assert.match(fingerprintSql, /route_event_max AS MATERIALIZED/);
   assert.match(fingerprintSql, /catalog_owner_ids AS MATERIALIZED/);
   assert.equal(
     fingerprintSql.match(/catalog_owner_ids owner/g)?.length,
-    3,
+    2,
   );
+  assert.equal(fingerprintSql.match(/JOIN labels label/g)?.length, 1);
   assert.match(fingerprintSql, /label_catalog_state AS MATERIALIZED/);
   assert.doesNotMatch(fingerprintSql, /project_tasks|route_tasks|visible_task_ids/);
   assert.doesNotMatch(fingerprintSql, /group_concat/);
@@ -1377,6 +1474,23 @@ async function teamWithMember(
     teamVersion: detail.team.version,
   });
   return detail;
+}
+
+async function simulateConcurrentProjectEdit(
+  owner: UserRecord,
+  projectId: string,
+  name: string,
+  updatedAt: string,
+) {
+  assert.ok(harness);
+  // Public writes never accept caller timestamps. This raw D1 update models a
+  // Project edit that committed after a scope-changing request captured its
+  // timestamp, without adding a production-only test hook.
+  await harness.database.prepare(
+    `UPDATE projects SET name = ?, version = version + 1, updated_at = ?
+     WHERE id = ?`,
+  ).bind(name, updatedAt, projectId).run();
+  return (await getSnapshot(owner)).projects.find((item) => item.id === projectId)!;
 }
 
 async function expectOneTeamFingerprintReset(user: UserRecord, cursor: string) {
