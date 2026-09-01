@@ -9,6 +9,7 @@ import {
 } from "../app/api/shares/teams/route";
 import { configureActorResolverForTests, type Actor } from "../lib/auth";
 import { updateAgentTask } from "../lib/agent-api-repository";
+import { createComment } from "../lib/comments";
 import { NotFoundError, PermissionError } from "../lib/domain";
 import {
   addTeamMember,
@@ -26,6 +27,8 @@ import {
   getTask,
   grantAccess,
   queryTaskSummaries,
+  updateProject,
+  updateSavedView,
   updateTask,
 } from "../lib/repository";
 import {
@@ -576,6 +579,116 @@ test("Team archive and unarchive cannot ABA an active-route sync fingerprint", a
   );
 });
 
+test("Team route content markers converge shared mutations without observing private owner activity", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  await createProject(owner, { name: "Marker shared Project", taskCode: "MKS" });
+  await createProject(owner, { name: "Marker private Project", taskCode: "MKP" });
+  const ownerSnapshot = await getSnapshot(owner);
+  let sharedProject = ownerSnapshot.projects.find(
+    (item) => item.name === "Marker shared Project",
+  )!;
+  const privateProject = ownerSnapshot.projects.find(
+    (item) => item.name === "Marker private Project",
+  )!;
+  await createTask(owner, { title: "Marker shared Task", projectId: sharedProject.id });
+  await createTask(owner, { title: "Marker private Task", projectId: privateProject.id });
+  const tasks = (await getSnapshot(owner)).tasks;
+  let sharedTask = tasks.find((item) => item.title === "Marker shared Task")!;
+  let privateTask = tasks.find((item) => item.title === "Marker private Task")!;
+  let globalView = await createSavedView(owner, {
+    name: "Marker global View",
+    query: {},
+  });
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "project",
+    resourceId: sharedProject.id,
+    permission: "viewer",
+  });
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "saved_view",
+    resourceId: globalView.id,
+    permission: "viewer",
+  });
+  let cursor = (await getSnapshot(member)).syncCursor!;
+
+  sharedTask = await updateTask(owner, sharedTask.id, {
+    version: sharedTask.version,
+    title: "Marker shared Task changed",
+  });
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  await createComment(owner, sharedTask.id, {
+    body: "Detail invalidation visible through the Team route",
+    idempotencyKey: "team-route-marker-comment",
+  });
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  sharedProject = await updateProject(owner, sharedProject.id, {
+    version: sharedProject.version,
+    name: "Marker shared Project changed",
+  });
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  globalView = await updateSavedView(owner, globalView.id, {
+    version: globalView.version,
+    name: "Marker global View changed",
+  });
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  privateTask = await updateTask(owner, privateTask.id, {
+    version: privateTask.version,
+    title: "Unrelated private mutation",
+  });
+  assert.equal(privateTask.title, "Unrelated private mutation");
+  const privatePoll = await getWorkspaceSync(member, cursor);
+  assert.equal(privatePoll.resetRequired, false);
+  assert.equal(privatePoll.cursor, cursor);
+});
+
+test("an explicit Task route observes the Task but not its inaccessible Project version", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  await createProject(owner, { name: "Task marker parent", taskCode: "TMP" });
+  let project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Task marker parent",
+  )!;
+  await createTask(owner, { title: "Task marker exact", projectId: project.id });
+  let task = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Task marker exact",
+  )!;
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "task",
+    resourceId: task.id,
+    permission: "viewer",
+  });
+  const baseline = await getSnapshot(member);
+  assert.ok(baseline.tasks.some((item) => item.id === task.id));
+  assert.ok(!baseline.projects.some((item) => item.id === project.id));
+
+  project = await updateProject(owner, project.id, {
+    version: project.version,
+    name: "Task marker parent changed",
+  });
+  assert.equal(project.name, "Task marker parent changed");
+  const parentPoll = await getWorkspaceSync(member, baseline.syncCursor!);
+  assert.equal(parentPoll.resetRequired, false);
+
+  task = await updateTask(owner, task.id, {
+    version: task.version,
+    title: "Task marker exact changed",
+  });
+  assert.equal(task.title, "Task marker exact changed");
+  await expectOneTeamFingerprintReset(member, parentPoll.cursor);
+});
+
 test("Team runtime and Team grant CRUD never write the workspace sync journal", () => {
   for (const file of ["../lib/teams.ts", "../lib/team-grants.ts"]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -595,6 +708,15 @@ async function teamWithMember(
     teamVersion: detail.team.version,
   });
   return detail;
+}
+
+async function expectOneTeamFingerprintReset(user: UserRecord, cursor: string) {
+  const reset = await getWorkspaceSync(user, cursor);
+  assert.equal(reset.resetRequired, true);
+  const converged = await getWorkspaceSync(user, reset.cursor);
+  assert.equal(converged.resetRequired, false);
+  assert.equal(converged.cursor, reset.cursor);
+  return converged.cursor;
 }
 
 function actor(key: string, displayName: string): Actor {
