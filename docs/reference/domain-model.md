@@ -287,7 +287,7 @@ Project Owner имеет implicit highest access и не представлен 
 
 | Поле | Семантика |
 |---|---|
-| `id`, `public_id` | Internal primary key и стабильный opaque ref для будущего server contract |
+| `id`, `public_id` | Internal primary key и стабильный opaque ref server contract |
 | `owner_user_id` | Current owner самой Team; ссылка на существующего User |
 | `name` | Непустое отображаемое имя длиной не более 100 символов |
 | `archived_at` | Nullable archive lifecycle без изменения membership/grants |
@@ -328,8 +328,8 @@ list Team и поиск active Teams пользователя.
 | `version` | Optimistic concurrency grant lifecycle |
 | `created_at`, `updated_at` | Timestamps Team grant record |
 
-Одна row уникальна по `(team_id, resource_type, resource_id)` и может быть
-отозвана или повторно активирована server contract. D1 проверяет
+Одна row уникальна по `(team_id, resource_type, resource_id)`; server contract
+может отозвать её или повторно активировать. D1 проверяет
 resource/permission domain и Team/User foreign keys. Существование и ACL самого
 полиморфного resource должны проверяться сервером до чтения или mutation;
 наличие row само по себе доступа не даёт: нужны active membership,

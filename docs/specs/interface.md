@@ -817,17 +817,18 @@ Linear, но они обязаны использовать тот же visual l
 
 ### 12.2 People & Teams
 
-- Trigger `Share` находится в header Project и global SavedView. Для Task,
-  Release и project-scoped SavedView он открывает
-  access surface родительского Project либо не дублируется.
+- Trigger `Share` находится в header Project, Task и global SavedView. Для
+  Release и project-scoped SavedView он открывает access surface родительского
+  Project либо не дублируется. В Task dialog прямой User grant доступен только
+  через Project route; для Team можно выбрать Project route либо Task-only.
 - Compact dialog `People & Teams` содержит поиск People и active Teams текущего
   пользователя, явный выбор principal, role picker, Owner отдельной первой
   строкой и раздельные списки direct User grants и Team grants.
 - До ввода запроса предлагаются собственные Teams. Team result показывает имя,
   число active members и роль текущего пользователя; выбор результата сам по
   себе доступа не выдаёт.
-- Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView —
-  `Editor`, `Viewer`. Copy рядом с email явно говорит, что
+- Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView и
+  Team Task-only route — `Editor`, `Viewer`. Copy рядом с email явно говорит, что
   User должен уже войти и письмо не отправляется.
 - Manager видит и изменяет только Editor/Viewer. Owner может назначать Manager,
   Editor, Viewer и получает action `Transfer ownership` только для уже
@@ -1080,8 +1081,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 | Surface/паттерн Linear | Task Manager | Статус MVP | Осознанное отличие |
 |---|---|---|---|
-| Left application sidebar | My tasks, Shared, Views, Projects, Releases | Берём | Без teams/inbox/initiatives |
-| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace без teams, initiatives и cross-user analytics |
+| Left application sidebar | My tasks, Shared, Views, Projects, Releases, Teams | Берём | Без inbox/initiatives |
+| Workspace overview | User-scoped work, projects, releases, views, Teams и shared summaries | Адаптируем | Одна personal workspace; Team — ACL-принципал, а не отдельный workspace; без initiatives и cross-user analytics |
 | Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
 | Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
 | Filters | Searchable property formula | Берём ядро | Только `AND` |
