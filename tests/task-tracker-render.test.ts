@@ -56,6 +56,13 @@ import {
   TASK_MANAGER_MARKETPLACE_URL,
   TaskMoveDialog,
   TaskTracker,
+  TeamDetailSurface,
+  TeamMemberDeleteDialog,
+  TeamMemberDialog,
+  TeamNameDialog,
+  TeamsSurface,
+  filterTeamList,
+  teamRequestIsCurrent,
   SettingsSurface,
   ViewDialog,
   viewDialogDraftIsDirty,
@@ -63,7 +70,7 @@ import {
   viewDisplayDependencies,
 } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
-import type { AppSnapshot } from "../lib/types";
+import type { AppSnapshot, TeamDetail, TeamList, TeamMembershipRecord } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
 const snapshot: AppSnapshot = {
@@ -149,6 +156,201 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+const teamOwnerMembership: TeamMembershipRecord = {
+  id: "membership-owner",
+  teamId: "team-1",
+  userId: "user-1",
+  displayName: "Test User",
+  email: "test@example.com",
+  role: "owner",
+  status: "active",
+  deactivatedAt: null,
+  version: 1,
+  createdAt: now,
+  updatedAt: now,
+};
+const teamMemberMembership: TeamMembershipRecord = {
+  ...teamOwnerMembership,
+  id: "membership-member",
+  userId: "user-2",
+  displayName: "Member User",
+  email: "member@example.com",
+  role: "member",
+  version: 2,
+};
+const inactiveTeamMembership: TeamMembershipRecord = {
+  ...teamMemberMembership,
+  id: "membership-inactive",
+  userId: "user-3",
+  displayName: "Inactive User",
+  email: "inactive@example.com",
+  status: "inactive",
+  deactivatedAt: now,
+  version: 3,
+};
+const teamDetail: TeamDetail = {
+  team: {
+    id: "team-1",
+    publicId: "55555555-5555-4555-8555-555555555555",
+    ownerUserId: "user-1",
+    name: "Platform Team",
+    archivedAt: null,
+    version: 4,
+    createdAt: now,
+    updatedAt: now,
+  },
+  currentMembership: teamOwnerMembership,
+  members: [teamOwnerMembership, teamMemberMembership, inactiveTeamMembership],
+};
+const teamList: TeamList = {
+  teams: [{
+    team: teamDetail.team,
+    currentMembership: teamOwnerMembership,
+    activeMemberCount: 2,
+  }],
+};
+
+test("Team UI state distinguishes loading, empty, search, and native cards", () => {
+  const loading = renderToStaticMarkup(createElement(TeamsSurface, {
+    state: { status: "idle", value: null, error: "" },
+    query: "",
+    onRetry: () => undefined,
+    onCreate: () => undefined,
+    onOpen: () => undefined,
+  }));
+  assert.match(loading, /Loading Teams/);
+  assert.doesNotMatch(loading, /No Teams yet/);
+
+  const empty = renderToStaticMarkup(createElement(TeamsSurface, {
+    state: { status: "ready", value: { teams: [] }, error: "" },
+    query: "",
+    onRetry: () => undefined,
+    onCreate: () => undefined,
+    onOpen: () => undefined,
+  }));
+  assert.match(empty, /No Teams yet/);
+  assert.match(empty, /New Team/);
+
+  const cards = renderToStaticMarkup(createElement(TeamsSurface, {
+    state: { status: "ready", value: teamList, error: "" },
+    query: "platform",
+    onRetry: () => undefined,
+    onCreate: () => undefined,
+    onOpen: () => undefined,
+  }));
+  assert.match(cards, /<a[^>]*class="entity-card team-card"[^>]*href="\/teams\/55555555-5555-4555-8555-555555555555"/);
+  assert.match(cards, /Platform Team/);
+  assert.match(cards, /2 active members/);
+  assert.deepEqual(filterTeamList(teamList, "FORM").map((entry) => entry.team.id), ["team-1"]);
+  assert.deepEqual(filterTeamList(teamList, "missing"), []);
+  assert.equal(teamRequestIsCurrent(3, 3, false), true);
+  assert.equal(teamRequestIsCurrent(2, 3, false), false);
+  assert.equal(teamRequestIsCurrent(3, 3, true), false);
+});
+
+test("Team detail exposes lifecycle controls only to the owner membership", () => {
+  const ownerMarkup = renderToStaticMarkup(createElement(TeamDetailSurface, {
+    state: { status: "ready", value: teamDetail, error: "" },
+    alert: "",
+    mutation: null,
+    onRetry: () => undefined,
+    onMembershipAction: () => undefined,
+    onDelete: () => undefined,
+  }));
+  assert.match(ownerMarkup, /Active members/);
+  assert.match(ownerMarkup, /Inactive members/);
+  assert.match(ownerMarkup, /Your role/);
+  assert.match(ownerMarkup, /Deactivate/);
+  assert.match(ownerMarkup, /Reactivate/);
+  assert.match(ownerMarkup, /Delete/);
+
+  const ordinaryDetail: TeamDetail = {
+    ...teamDetail,
+    currentMembership: teamMemberMembership,
+  };
+  const memberMarkup = renderToStaticMarkup(createElement(TeamDetailSurface, {
+    state: { status: "ready", value: ordinaryDetail, error: "" },
+    alert: "",
+    mutation: null,
+    onRetry: () => undefined,
+    onMembershipAction: () => undefined,
+    onDelete: () => undefined,
+  }));
+  assert.match(memberMarkup, /Your role/);
+  assert.doesNotMatch(memberMarkup, />Deactivate</);
+  assert.doesNotMatch(memberMarkup, />Reactivate</);
+  assert.doesNotMatch(memberMarkup, />Delete</);
+});
+
+test("Team dialogs reuse the accessible Modal shell", () => {
+  const name = renderToStaticMarkup(createElement(TeamNameDialog, {
+    title: "Create Team",
+    submitLabel: "Create Team",
+    error: "",
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => true,
+  }));
+  const add = renderToStaticMarkup(createElement(TeamMemberDialog, {
+    error: "",
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => true,
+  }));
+  const remove = renderToStaticMarkup(createElement(TeamMemberDeleteDialog, {
+    membership: inactiveTeamMembership,
+    error: "",
+    busy: false,
+    onClose: () => undefined,
+    onConfirm: async () => true,
+  }));
+  assert.match(name, /role="dialog"/);
+  assert.match(name, /aria-modal="true"/);
+  assert.match(name, /maxLength="100"/);
+  assert.match(add, /type="email"/);
+  assert.match(remove, /Delete membership/);
+});
+
+test("TaskTracker exposes Teams routes without snapshot projection or false empty SSR", () => {
+  const listMarkup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: { surface: "teams", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+  assert.match(listMarkup, /aria-current="page"[^>]*aria-label="Teams"/);
+  assert.match(listMarkup, /aria-label="Search teams"/);
+  assert.match(listMarkup, /Loading Teams/);
+  assert.doesNotMatch(listMarkup, /No Teams yet/);
+
+  const detailMarkup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: {
+      surface: `team:${teamDetail.team.publicId}`,
+      layout: "list",
+      taskId: null,
+    },
+    signOutPath: "/sign-out",
+  }));
+  assert.match(detailMarkup, /href="\/teams"/);
+  assert.match(detailMarkup, /Loading Team/);
+  assert.doesNotMatch(detailMarkup, /aria-label="Layout"/);
+});
+
+test("Team mutations keep authoritative read-back and composition CAS contracts", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /teamListGenerationRef/);
+  assert.match(source, /teamDetailGenerationRef/);
+  assert.match(source, /controller\.abort\(\)/);
+  assert.match(source, /setTeamDetailState\(nextState\)[\s\S]{0,120}void loadTeamList\(\)/);
+  assert.match(source, /\{ name, version: detail\.team\.version \}/);
+  assert.match(source, /\{ email, teamVersion: detail\.team\.version \}/);
+  assert.match(source, /action,[\s\S]{0,120}teamVersion: detail\.team\.version,[\s\S]{0,120}version: membership\.version/);
+  assert.match(source, /method: "DELETE"|"DELETE",[\s\S]{0,160}teamVersion/);
+  assert.match(source, /requestError\.status === 409[\s\S]{0,220}await loadTeamDetail\(teamPublicId\)/);
+  assert.match(source, /The latest details were loaded; review them and try again/);
+  assert.doesNotMatch(source, /AppSnapshot[^\n]*(?:TeamList|TeamDetail)|(?:TeamList|TeamDetail)[^\n]*AppSnapshot/);
+});
 
 test("task ordering uses priority by default with rank and immutable id tie-breakers", () => {
   const base = snapshot.tasks[0]!;

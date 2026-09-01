@@ -17,6 +17,7 @@ const projectPublicId = "11111111-1111-4111-8111-111111111111";
 const releasePublicId = "22222222-2222-4222-8222-222222222222";
 const taskPublicId = "33333333-3333-4333-8333-333333333333";
 const viewPublicId = "44444444-4444-4444-8444-444444444444";
+const teamPublicId = "55555555-5555-4555-8555-555555555555";
 
 const snapshot = {
   projects: [{ id: "linear:project:homeostat", publicId: projectPublicId }],
@@ -66,6 +67,11 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(parseNavigationPath("/views"), { kind: "views" });
   assert.deepEqual(parseNavigationPath("/projects"), { kind: "projects" });
   assert.deepEqual(parseNavigationPath("/releases"), { kind: "releases" });
+  assert.deepEqual(parseNavigationPath("/teams"), { kind: "teams" });
+  assert.deepEqual(parseNavigationPath(`/teams/${teamPublicId}`), {
+    kind: "team",
+    id: teamPublicId,
+  });
   assert.deepEqual(parseNavigationPath("/settings"), {
     kind: "settings",
     section: "profile",
@@ -80,6 +86,41 @@ test("short REST paths cover issue, view, project, and release collections", () 
     parseNavigationPath(`/projects/${projectPublicId}/releases`),
     { kind: "projectReleases", projectId: projectPublicId },
   );
+});
+
+test("Team collection and opaque detail refs round-trip without snapshot projection", () => {
+  const collection = parseNavigationPath("/teams");
+  const detail = parseNavigationPath(`/teams/${teamPublicId}`);
+  assert.ok(collection);
+  assert.ok(detail);
+  assert.deepEqual(resolveNavigationTarget(collection, snapshot), {
+    surface: "teams",
+    layout: "list",
+    taskId: null,
+  });
+  assert.deepEqual(resolveNavigationTarget(detail, snapshot), {
+    surface: `team:${teamPublicId}`,
+    layout: "list",
+    taskId: null,
+  });
+  assert.equal(navigationPath({
+    surface: `team:${teamPublicId}`,
+    layout: "list",
+    taskId: null,
+  }, snapshot), `/teams/${teamPublicId}`);
+  assert.equal(parseNavigationPath(`/teams/${teamPublicId}/members`), null);
+  assert.equal(legacyRedirectPath(detail, snapshot), null);
+
+  const collectionMetadata = metadataForNavigation(
+    resolveNavigationTarget(collection, snapshot)!,
+    snapshot,
+  );
+  const detailMetadata = metadataForNavigation(
+    resolveNavigationTarget(detail, snapshot)!,
+    snapshot,
+  );
+  assert.equal(collectionMetadata.title, "Teams – Task Manager");
+  assert.equal(detailMetadata.title, "Team – Task Manager");
 });
 
 test("settings sections keep canonical direct URLs and reject unknown sections", () => {

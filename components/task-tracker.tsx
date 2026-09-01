@@ -279,6 +279,9 @@ import type {
   SavedViewRecord,
   StatusCategory,
   SystemBackupJobStatus,
+  TeamDetail,
+  TeamList,
+  TeamMembershipRecord,
   TaskRecord,
   TaskLabelAssignment,
   TaskDetailRecord,
@@ -321,7 +324,53 @@ type ShareTarget = {
   inherited: boolean;
 };
 
-type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | null;
+type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | "teamCreate" | "teamRename" | "teamMemberAdd" | "teamMemberDelete" | null;
+export type AsyncValue<T> =
+  | { status: "idle"; value: null; error: "" }
+  | { status: "loading"; value: T | null; error: "" }
+  | { status: "ready"; value: T; error: "" }
+  | { status: "error"; value: T | null; error: string };
+
+type TeamMutationKind = "create" | "rename" | "add" | "deactivate" | "reactivate" | "delete";
+type TeamMutationState = { kind: TeamMutationKind; key: string } | null;
+
+export function filterTeamList(value: TeamList, query: string): TeamList["teams"] {
+  const needle = query.trim().toLocaleLowerCase();
+  return value.teams.filter((entry) =>
+    !needle || entry.team.name.toLocaleLowerCase().includes(needle));
+}
+
+export function teamRequestIsCurrent(
+  requestedGeneration: number,
+  currentGeneration: number,
+  aborted: boolean,
+) {
+  return requestedGeneration === currentGeneration && !aborted;
+}
+
+class TeamRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+async function requestTeamApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    cache: "no-store",
+    ...init,
+    headers: init?.body ? { "content-type": "application/json" } : undefined,
+  });
+  const value = await response.json() as T | { error: string };
+  if (!response.ok || (value && typeof value === "object" && "error" in value)) {
+    throw new TeamRequestError(
+      value && typeof value === "object" && "error" in value
+        ? String(value.error)
+        : "Team request failed",
+      response.status,
+    );
+  }
+  return value as T;
+}
 export type CodexSetupMode = "desktop" | "cli";
 export type CodexSetupModeAction =
   | { type: "select"; mode: CodexSetupMode }
@@ -1242,6 +1291,22 @@ export function TaskTracker({
   const [taskQueryPaging, setTaskQueryPaging] = useState(false);
   const [taskDetail, setTaskDetail] = useState<TaskDetailRecord | null>(null);
   const [forcedTaskDetailId, setForcedTaskDetailId] = useState<string | null>(null);
+  const [teamListState, setTeamListState] = useState<AsyncValue<TeamList>>({
+    status: "idle",
+    value: null,
+    error: "",
+  });
+  const [teamDetailState, setTeamDetailState] = useState<AsyncValue<TeamDetail>>({
+    status: "idle",
+    value: null,
+    error: "",
+  });
+  const [teamMutation, setTeamMutation] = useState<TeamMutationState>(null);
+  const [teamAlert, setTeamAlert] = useState("");
+  const [teamMemberForDelete, setTeamMemberForDelete] = useState<TeamMembershipRecord | null>(null);
+  const teamListGenerationRef = useRef(0);
+  const teamDetailGenerationRef = useRef(0);
+  const teamDetailStateRef = useRef(teamDetailState);
   const [temporaryQuery, setTemporaryQuery] = useState<ViewQuery>(() => emptyViewQuery());
   const [dialog, setDialog] = useState<Dialog>(null);
   const [createDefaults, setCreateDefaults] = useState<TaskCreateDefaults>({});
@@ -1322,6 +1387,12 @@ export function TaskTracker({
     initialData.user.theme ?? "system",
   );
   const preferenceSaveQueueRef = useRef<ReturnType<typeof createUserPreferenceSaveQueue> | null>(null);
+  const activeTeamPublicId = surface.startsWith("team:")
+    ? surface.slice("team:".length)
+    : null;
+  const activeTeamPublicIdRef = useRef(activeTeamPublicId);
+  activeTeamPublicIdRef.current = activeTeamPublicId;
+  teamDetailStateRef.current = teamDetailState;
 
   const updateSystemExportStatus = useCallback((next: SystemBackupJobStatus | null) => {
     systemExportStatusRef.current = next;
@@ -1500,6 +1571,84 @@ export function TaskTracker({
       ),
     });
   }
+
+  const loadTeamList = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++teamListGenerationRef.current;
+    setTeamListState((current) => ({
+      status: "loading",
+      value: current.value,
+      error: "",
+    }));
+    try {
+      const value = await requestTeamApi<TeamList>("/api/teams", { signal });
+      if (!teamRequestIsCurrent(
+        generation,
+        teamListGenerationRef.current,
+        signal?.aborted ?? false,
+      )) return null;
+      setTeamListState({ status: "ready", value, error: "" });
+      return value;
+    } catch (requestError) {
+      if (signal?.aborted || !teamRequestIsCurrent(
+        generation,
+        teamListGenerationRef.current,
+        false,
+      )) return null;
+      setTeamListState((current) => ({
+        status: "error",
+        value: current.value,
+        error: requestError instanceof Error
+          ? requestError.message
+          : "Teams could not be loaded",
+      }));
+      return null;
+    }
+  }, []);
+
+  const loadTeamDetail = useCallback(async (
+    teamPublicId: string,
+    signal?: AbortSignal,
+  ) => {
+    const generation = ++teamDetailGenerationRef.current;
+    const retained = teamDetailStateRef.current.value?.team.publicId === teamPublicId
+      ? teamDetailStateRef.current.value
+      : null;
+    setTeamDetailState({ status: "loading", value: retained, error: "" });
+    try {
+      const value = await requestTeamApi<TeamDetail>(
+        `/api/teams/${encodeURIComponent(teamPublicId)}`,
+        { signal },
+      );
+      if (
+        activeTeamPublicIdRef.current !== teamPublicId ||
+        !teamRequestIsCurrent(
+          generation,
+          teamDetailGenerationRef.current,
+          signal?.aborted ?? false,
+        )
+      ) return null;
+      setTeamDetailState({ status: "ready", value, error: "" });
+      return value;
+    } catch (requestError) {
+      if (
+        signal?.aborted ||
+        activeTeamPublicIdRef.current !== teamPublicId ||
+        !teamRequestIsCurrent(generation, teamDetailGenerationRef.current, false)
+      ) return null;
+      const unavailable = requestError instanceof TeamRequestError &&
+        (requestError.status === 403 || requestError.status === 404);
+      setTeamDetailState({
+        status: "error",
+        value: unavailable ? null : retained,
+        error: unavailable
+          ? "Team unavailable"
+          : requestError instanceof Error
+            ? requestError.message
+            : "Team could not be loaded",
+      });
+      return null;
+    }
+  }, []);
 
   const captureSyncCheckpoint = useCallback((): WorkspaceSyncCheckpoint => ({
     taskIds: new Set(dataRef.current.tasks.map((task) => task.id)),
@@ -1795,6 +1944,25 @@ export function TaskTracker({
   useEffect(() => {
     taskSearchRef.current = taskSearch;
   }, [taskSearch]);
+
+  useEffect(() => {
+    if (surface !== "teams") return;
+    const controller = new AbortController();
+    void loadTeamList(controller.signal);
+    return () => controller.abort();
+  }, [loadTeamList, surface]);
+
+  useEffect(() => {
+    if (!activeTeamPublicId) return;
+    if (
+      teamDetailStateRef.current.status === "ready" &&
+      teamDetailStateRef.current.value.team.publicId === activeTeamPublicId
+    ) return;
+    const controller = new AbortController();
+    setTeamAlert("");
+    void loadTeamDetail(activeTeamPublicId, controller.signal);
+    return () => controller.abort();
+  }, [activeTeamPublicId, loadTeamDetail]);
 
   useEffect(() => {
     if (surface !== "shared") return;
@@ -2590,7 +2758,16 @@ export function TaskTracker({
         : null
     : null;
 
-  const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
+  const activeTeamDetail = activeTeamPublicId &&
+    teamDetailState.value?.team.publicId === activeTeamPublicId
+    ? teamDetailState.value
+    : null;
+  const breadcrumbs = surfaceBreadcrumbs(
+    surface,
+    data,
+    activeSavedView,
+    activeTeamDetail?.team.name,
+  );
   const activeTaskSummary = taskPool.find((task) => task.id === activeTaskId);
   const activeTask = taskDetail?.task.id === activeTaskId
     ? activeTaskSummary
@@ -2699,6 +2876,10 @@ export function TaskTracker({
       ? catalogPages.projects?.total ?? data.navigationCollections?.projects.total ?? data.projects.length
     : surface === "releases"
       ? catalogPages.releases?.total ?? data.navigationCollections?.releases.total ?? data.releases.length
+    : surface === "teams"
+      ? teamListState.value?.teams.length ?? ""
+    : activeTeamPublicId
+      ? activeTeamDetail?.members.filter((membership) => membership.status === "active").length ?? ""
     : surface === "admin" && data.admin
       ? data.admin.registeredUserCount
     : surface === "shared"
@@ -2816,6 +2997,8 @@ export function TaskTracker({
       ? "Search releases"
       : surface === "views"
         ? "Search views"
+      : surface === "teams"
+        ? "Search teams"
         : "Search tasks";
   const hasTemporaryFilters = Boolean(
     search.trim() || canonicalTemporaryQuery.conditions.length,
@@ -3427,6 +3610,156 @@ export function TaskTracker({
       layout: nextLayout ?? defaultLayoutForSurface(nextSurface, data),
       taskId: null,
     });
+  }
+
+  async function createTeam(name: string) {
+    if (teamMutation) return false;
+    setTeamMutation({ kind: "create", key: "new" });
+    setTeamAlert("");
+    try {
+      const detail = await requestTeamApi<TeamDetail>("/api/teams", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      const nextState: AsyncValue<TeamDetail> = {
+        status: "ready",
+        value: detail,
+        error: "",
+      };
+      teamDetailStateRef.current = nextState;
+      setTeamDetailState(nextState);
+      activeTeamPublicIdRef.current = detail.team.publicId;
+      setDialog(null);
+      applyNavigation({
+        surface: `team:${detail.team.publicId}`,
+        layout: "list",
+        taskId: null,
+      });
+      void loadTeamList();
+      return true;
+    } catch (requestError) {
+      setTeamAlert(requestError instanceof Error
+        ? requestError.message
+        : "Team could not be created");
+      return false;
+    } finally {
+      setTeamMutation(null);
+    }
+  }
+
+  async function mutateActiveTeam(
+    kind: Exclude<TeamMutationKind, "create">,
+    key: string,
+    path: string,
+    method: "PATCH" | "POST" | "DELETE",
+    body: Record<string, unknown>,
+  ) {
+    const teamPublicId = activeTeamPublicIdRef.current;
+    if (!teamPublicId || teamMutation) return false;
+    setTeamMutation({ kind, key });
+    setTeamAlert("");
+    try {
+      const detail = await requestTeamApi<TeamDetail>(path, {
+        method,
+        body: JSON.stringify(body),
+      });
+      if (activeTeamPublicIdRef.current !== teamPublicId) return false;
+      const nextState: AsyncValue<TeamDetail> = {
+        status: "ready",
+        value: detail,
+        error: "",
+      };
+      teamDetailStateRef.current = nextState;
+      setTeamDetailState(nextState);
+      void loadTeamList();
+      return true;
+    } catch (requestError) {
+      if (activeTeamPublicIdRef.current !== teamPublicId) return false;
+      if (requestError instanceof TeamRequestError && requestError.status === 409) {
+        await loadTeamDetail(teamPublicId);
+        if (activeTeamPublicIdRef.current === teamPublicId) {
+          if (dialog === "teamRename" || dialog === "teamMemberAdd" || dialog === "teamMemberDelete") {
+            setDialog(null);
+            setTeamMemberForDelete(null);
+          }
+          setTeamAlert("This Team changed in another session. The latest details were loaded; review them and try again.");
+        }
+        return false;
+      }
+      if (requestError instanceof TeamRequestError &&
+        (requestError.status === 403 || requestError.status === 404)) {
+        setTeamDetailState({
+          status: "error",
+          value: null,
+          error: "Team unavailable",
+        });
+        return false;
+      }
+      setTeamAlert(requestError instanceof Error
+        ? requestError.message
+        : "Team could not be updated");
+      return false;
+    } finally {
+      setTeamMutation(null);
+    }
+  }
+
+  async function renameTeam(name: string) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      "rename",
+      detail.team.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}`,
+      "PATCH",
+      { name, version: detail.team.version },
+    );
+  }
+
+  async function addTeamMember(email: string) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      "add",
+      detail.team.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}/members`,
+      "POST",
+      { email, teamVersion: detail.team.version },
+    );
+  }
+
+  async function changeTeamMembership(
+    membership: TeamMembershipRecord,
+    action: "deactivate" | "reactivate",
+  ) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      action,
+      membership.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}/members/${encodeURIComponent(membership.id)}`,
+      "PATCH",
+      {
+        action,
+        teamVersion: detail.team.version,
+        version: membership.version,
+      },
+    );
+  }
+
+  async function deleteTeamMembership(membership: TeamMembershipRecord) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      "delete",
+      membership.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}/members/${encodeURIComponent(membership.id)}`,
+      "DELETE",
+      {
+        teamVersion: detail.team.version,
+        version: membership.version,
+      },
+    );
   }
 
   function closeMobileSidebar() {
@@ -4100,7 +4433,6 @@ export function TaskTracker({
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHighlightedTaskId(null);
     setSelected(new Set());
     setPendingProjectMove(null);
@@ -4208,6 +4540,7 @@ export function TaskTracker({
           <NavItem compact={sidebarCompact} icon={<PanelsTopLeft size={15} />} label="Workspace" active={surface === "workspace"} href="/workspace" onNavigate={() => navigateSurface("workspace", "list")} />
           <NavItem compact={sidebarCompact} icon={<Inbox size={15} />} label="My tasks" active={surface === "mine"} href="/issues" onNavigate={() => navigateSurface("mine", "list")} count={taskCountForView("mine", data, statusMap)} />
           <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
+          <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Teams" active={surface === "teams" || surface.startsWith("team:")} href="/teams" onNavigate={() => navigateSurface("teams", "list")} />
           {!sidebarCompact && (
             <>
               <SidebarSection title="Views" action={() => void openDialogWithCatalog("view", ["projects"])}>
@@ -4344,6 +4677,9 @@ export function TaskTracker({
               </span>
             )}
             <div className="title-actions">
+              {surface === "teams" && <button className="button primary" type="button" disabled={Boolean(teamMutation)} aria-busy={teamMutation?.kind === "create" || undefined} onClick={() => { setTeamAlert(""); setDialog("teamCreate"); }}><Plus size={14} />New Team</button>}
+              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button ghost" type="button" disabled={Boolean(teamMutation)} onClick={() => { setTeamAlert(""); setDialog("teamRename"); }}><UsersRound size={14} />Rename Team</button>}
+              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button primary" type="button" disabled={Boolean(teamMutation)} onClick={() => { setTeamAlert(""); setDialog("teamMemberAdd"); }}><Plus size={14} />Add member</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
@@ -4448,6 +4784,18 @@ export function TaskTracker({
           )}
         </header>
 
+        {surface === "teams" && (
+          <div className="toolbar-row catalog-toolbar teams-toolbar" aria-label="Teams catalog controls">
+            <div className="toolbar-left">
+              <div className="search-control">
+                <Search size={13} />
+                <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search teams…" aria-label="Search teams" />
+                {search && <button type="button" aria-label="Clear Team search" onClick={() => setSearch("")}><X size={12} /></button>}
+              </div>
+            </div>
+          </div>
+        )}
+
         {(surface === "projects" || surface === "releases" || surface === "views") && (
           <div className="toolbar-row catalog-toolbar" aria-label={`${surface} catalog controls`}>
             <div className="toolbar-left">
@@ -4495,7 +4843,27 @@ export function TaskTracker({
 
         {surface.startsWith("project:") && contextProjectRecord && <ProjectOverview project={contextProjectRecord} lead={contextProjectRecord.leadUserId ? userMap.get(contextProjectRecord.leadUserId) : undefined} tasks={data.tasks.filter((task) => task.projectId === contextProjectRecord.id && !task.archivedAt)} statuses={statusMap} onEdit={canEditContent(contextProjectRecord.accessRole) ? () => setDialog("projectEdit") : undefined} />}
         {contextReleaseRecord && <ReleaseOverview release={contextReleaseRecord} project={projectMap.get(contextReleaseRecord.projectId)} tasks={data.tasks.filter((task) => task.releaseId === contextReleaseRecord.id && !task.archivedAt)} statuses={statusMap} onEdit={canEditContent(contextReleaseRecord.accessRole) ? () => setDialog("releaseEdit") : undefined} />}
-        {surface.startsWith("settings:") ? (
+        {surface === "teams" ? (
+          <TeamsSurface
+            state={teamListState}
+            query={search}
+            onRetry={() => void loadTeamList()}
+            onCreate={() => { setTeamAlert(""); setDialog("teamCreate"); }}
+            onOpen={(publicId) => navigateSurface(`team:${publicId}`, "list")}
+          />
+        ) : activeTeamPublicId ? (
+          <TeamDetailSurface
+            state={teamDetailState}
+            alert={teamAlert}
+            mutation={teamMutation}
+            onRetry={() => void loadTeamDetail(activeTeamPublicId)}
+            onMembershipAction={(membership, action) => void changeTeamMembership(membership, action)}
+            onDelete={(membership) => {
+              setTeamMemberForDelete(membership);
+              setDialog("teamMemberDelete");
+            }}
+          />
+        ) : surface.startsWith("settings:") ? (
           <SettingsSurface
             section={surface.slice("settings:".length)}
             data={data}
@@ -4654,6 +5022,10 @@ export function TaskTracker({
       {dialog === "labelGroupSettings" && <LabelGroupSettingsDialog initialGroups={(data.labelGroups ?? []).filter((group) => group.ownerUserId === data.user.id)} initialLabels={data.labels.filter((label) => label.ownerUserId === data.user.id)} onClose={() => setDialog(null)} onGroups={(labelGroups) => setData((current) => ({ ...current, labelGroups: [...(current.labelGroups ?? []).filter((group) => group.ownerUserId !== current.user.id), ...labelGroups] }))} onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))} />}
       {dialog === "bulkProject" && selectedTasks.length > 0 && <BulkProjectDialog data={data} tasks={selectedTasks} busy={busy} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "projectId", value: input.targetProjectId, clearRelease: input.clearRelease, clearAssignee: input.clearAssignee, confirmReleasedComposition: input.confirmReleasedComposition }); if (ok) { setDialog(null); setSelected(new Set()); } }} />}
       {dialog === "bulkRelease" && selectedTasks.length > 0 && <BulkReleaseDialog data={data} tasks={selectedTasks} busy={busy} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "releaseId", value: input.releaseId, confirmReleasedComposition: input.confirmReleasedComposition }); if (ok) { setDialog(null); setSelected(new Set()); } }} />}
+      {dialog === "teamCreate" && <TeamNameDialog title="Create Team" submitLabel="Create Team" error={teamAlert} busy={teamMutation?.kind === "create"} onClose={() => setDialog(null)} onSubmit={createTeam} />}
+      {dialog === "teamRename" && activeTeamDetail?.currentMembership.role === "owner" && <TeamNameDialog title="Rename Team" submitLabel="Save name" initialName={activeTeamDetail.team.name} error={teamAlert} busy={teamMutation?.kind === "rename"} onClose={() => setDialog(null)} onSubmit={async (name) => { const ok = await renameTeam(name); if (ok) setDialog(null); return ok; }} />}
+      {dialog === "teamMemberAdd" && activeTeamDetail?.currentMembership.role === "owner" && <TeamMemberDialog error={teamAlert} busy={teamMutation?.kind === "add"} onClose={() => setDialog(null)} onSubmit={async (email) => { const ok = await addTeamMember(email); if (ok) setDialog(null); return ok; }} />}
+      {dialog === "teamMemberDelete" && activeTeamDetail?.currentMembership.role === "owner" && teamMemberForDelete && <TeamMemberDeleteDialog membership={teamMemberForDelete} error={teamAlert} busy={teamMutation?.kind === "delete" && teamMutation.key === teamMemberForDelete.id} onClose={() => { setDialog(null); setTeamMemberForDelete(null); }} onConfirm={async () => { const ok = await deleteTeamMembership(teamMemberForDelete); if (ok) { setDialog(null); setTeamMemberForDelete(null); } return ok; }} />}
     </main>
   );
 }
@@ -9519,6 +9891,82 @@ export function ReleaseOverview({ release, project, tasks, statuses, onEdit }: {
   return <section className="project-overview release-overview" aria-label={`${fullName} release summary`}><div className="project-overview-heading"><span className="project-overview-icon release-overview-icon"><Rocket size={20} /></span><div><span className="project-code">Release</span><h2>{fullName}</h2><p>{release.description ? "Native release scope" : "No description yet"}</p></div><div className="project-overview-actions"><span className={`status-badge release-${release.status}`}>{projectStatusLabel(release.status)}</span>{onEdit && <button className="button ghost compact" onClick={onEdit}>Edit</button>}</div></div><div className="project-overview-metadata"><span><b>{tasks.length}</b> Tasks</span><span><b>{openTasks}</b> open</span><span><b>{progress}%</b> complete</span>{release.targetDate && <span>Target <b>{shortDate(release.targetDate)}</b></span>}{release.releasedAt && <span>Released <b>{shortDate(release.releasedAt.slice(0, 10))}</b></span>}</div>{release.description && <MarkdownBody body={release.description} className="project-description-markdown" />}{release.releaseNotes && <section className="release-notes"><h3>Release notes</h3><MarkdownBody body={release.releaseNotes} className="project-description-markdown" /></section>}</section>;
 }
 
+export function TeamsSurface({ state, query, onRetry, onCreate, onOpen }: {
+  state: AsyncValue<TeamList>;
+  query: string;
+  onRetry: () => void;
+  onCreate: () => void;
+  onOpen: (publicId: string) => void;
+}) {
+  if ((state.status === "idle" || state.status === "loading") && (!state.value || state.value.teams.length === 0)) {
+    return <TeamSurfaceState status="Loading Teams…" busy />;
+  }
+  if (state.status === "error" && (!state.value || state.value.teams.length === 0)) {
+    return <TeamSurfaceState status={state.error} onRetry={onRetry} />;
+  }
+
+  const visible = filterTeamList(state.value ?? { teams: [] }, query);
+  const empty = state.status === "ready" && state.value?.teams.length === 0;
+  const noMatch = state.status === "ready" && !empty && visible.length === 0;
+
+  return <div className="teams-surface" aria-busy={state.status === "loading" || undefined}>
+    <div className="team-live-region" role="status" aria-live="polite">{state.status === "loading" ? "Refreshing Teams…" : ""}</div>
+    {state.status === "error" && <div className="team-local-alert" role="alert"><span>{state.error}</span><button className="button ghost compact" type="button" onClick={onRetry}>Retry</button></div>}
+    {empty ? <section className="team-empty-state"><span className="empty-icon"><UsersRound size={20} /></span><h2>No Teams yet</h2><p>Create a Team to manage a reusable member list.</p><button className="button primary" type="button" onClick={onCreate}><Plus size={14} />New Team</button></section>
+      : noMatch ? <section className="team-empty-state"><Search size={20} /><h2>No Teams match “{query.trim()}”</h2><p>Try a different Team name.</p></section>
+      : <div className="entity-grid team-grid" aria-label="Teams">{visible.map(({ team, currentMembership, activeMemberCount }) => <a className="entity-card team-card" key={team.id} href={`/teams/${encodeURIComponent(team.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(team.publicId))}><div className="entity-icon team-icon"><UsersRound size={18} /></div><div className="entity-card-copy"><div><h2 title={team.name}>{team.name}</h2><span className="status-badge">{currentMembership.role}</span></div><p>{activeMemberCount} active member{activeMemberCount === 1 ? "" : "s"}</p><div className="progress-meta"><span>Your membership</span><span>{currentMembership.status}</span></div></div></a>)}</div>}
+  </div>;
+}
+
+function TeamSurfaceState({ status, busy = false, onRetry }: { status: string; busy?: boolean; onRetry?: () => void }) {
+  return <section className="team-surface-state" aria-busy={busy || undefined}>{busy ? <RotateCw size={20} className="spin" aria-hidden="true" /> : <UsersRound size={20} aria-hidden="true" />}<h2>{status}</h2>{onRetry && <button className="button ghost" type="button" onClick={onRetry}>Retry</button>}</section>;
+}
+
+export function TeamDetailSurface({ state, alert, mutation, onRetry, onMembershipAction, onDelete }: {
+  state: AsyncValue<TeamDetail>;
+  alert: string;
+  mutation: TeamMutationState;
+  onRetry: () => void;
+  onMembershipAction: (membership: TeamMembershipRecord, action: "deactivate" | "reactivate") => void;
+  onDelete: (membership: TeamMembershipRecord) => void;
+}) {
+  if ((state.status === "idle" || state.status === "loading") && !state.value) return <TeamSurfaceState status="Loading Team…" busy />;
+  if (state.status === "error" && !state.value) return <TeamSurfaceState status={state.error} onRetry={onRetry} />;
+  const detail = state.value;
+  if (!detail) return <TeamSurfaceState status="Team unavailable" onRetry={onRetry} />;
+
+  const isOwner = detail.currentMembership.role === "owner";
+  const activeMembers = detail.members.filter((membership) => membership.status === "active");
+  const inactiveMembers = detail.members.filter((membership) => membership.status === "inactive");
+  const memberRow = (membership: TeamMembershipRecord) => {
+    const isCurrent = membership.id === detail.currentMembership.id;
+    const mutable = isOwner && membership.role !== "owner";
+    const membershipBusy = mutation?.key === membership.id;
+    return <li className="team-member-row" key={membership.id} aria-busy={membershipBusy || undefined}><span className="avatar">{initials(membership.displayName)}</span><span className="team-member-identity"><span><b>{membership.displayName}</b>{isCurrent && <em>You</em>}</span><small>{membership.email}</small></span><span className="team-member-state"><span className="status-badge">{membership.role}</span><span className={`status-badge team-membership-${membership.status}`}>{membership.status}</span></span>{mutable && <span className="team-member-actions"><button className="button ghost compact" type="button" disabled={Boolean(mutation)} onClick={() => onMembershipAction(membership, membership.status === "active" ? "deactivate" : "reactivate")}>{membership.status === "active" ? "Deactivate" : "Reactivate"}</button><button className="button danger compact" type="button" disabled={Boolean(mutation)} onClick={() => onDelete(membership)}>Delete</button></span>}</li>;
+  };
+
+  return <div className="team-detail-surface" aria-busy={state.status === "loading" || undefined}>
+    <div className="team-live-region" role="status" aria-live="polite">{state.status === "loading" ? "Refreshing Team…" : ""}</div>
+    {alert && <div className="team-local-alert" role="alert">{alert}</div>}
+    {state.status === "error" && <div className="team-local-alert" role="alert"><span>{state.error}</span><button className="button ghost compact" type="button" onClick={onRetry}>Retry</button></div>}
+    <section className="team-overview" aria-labelledby="team-overview-heading"><span className="team-overview-icon"><UsersRound size={20} /></span><div><span className="project-code">Team</span><h2 id="team-overview-heading">{detail.team.name}</h2><p>{activeMembers.length} active member{activeMembers.length === 1 ? "" : "s"}</p></div><dl><div><dt>Your role</dt><dd>{detail.currentMembership.role}</dd></div><div><dt>Your state</dt><dd>{detail.currentMembership.status}</dd></div></dl></section>
+    <section className="team-members-section" aria-labelledby="active-team-members"><header><div><h2 id="active-team-members">Active members</h2><p>People currently included in this Team.</p></div><span className="count-pill">{activeMembers.length}</span></header><ul className="team-member-list">{activeMembers.map(memberRow)}</ul></section>
+    {inactiveMembers.length > 0 && <section className="team-members-section" aria-labelledby="inactive-team-members"><header><div><h2 id="inactive-team-members">Inactive members</h2><p>Reactivate or delete a previous membership.</p></div><span className="count-pill">{inactiveMembers.length}</span></header><ul className="team-member-list">{inactiveMembers.map(memberRow)}</ul></section>}
+  </div>;
+}
+
+export function TeamNameDialog({ title, submitLabel, initialName = "", error, busy, onClose, onSubmit }: { title: string; submitLabel: string; initialName?: string; error: string; busy: boolean; onClose: () => void; onSubmit: (name: string) => Promise<boolean> }) {
+  return <Modal onClose={onClose} className="team-dialog" ariaLabel={title}><DialogHeader title={title} icon={<UsersRound size={17} />} onClose={onClose} /><form className="form-stack team-dialog-form" aria-busy={busy || undefined} onSubmit={(event) => { event.preventDefault(); const input = new FormData(event.currentTarget); void onSubmit(String(input.get("name") ?? "")); }}><label><span>Name</span><input name="name" required maxLength={100} defaultValue={initialName} autoFocus /></label>{error && <div className="form-error" role="alert">{error}</div>}<div className="dialog-actions"><button className="button ghost" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}>{busy ? "Saving…" : submitLabel}</button></div></form></Modal>;
+}
+
+export function TeamMemberDialog({ error, busy, onClose, onSubmit }: { error: string; busy: boolean; onClose: () => void; onSubmit: (email: string) => Promise<boolean> }) {
+  return <Modal onClose={onClose} className="team-dialog" ariaLabel="Add Team member"><DialogHeader title="Add Team member" icon={<UserRound size={17} />} onClose={onClose} /><form className="form-stack team-dialog-form" aria-busy={busy || undefined} onSubmit={(event) => { event.preventDefault(); const input = new FormData(event.currentTarget); void onSubmit(String(input.get("email") ?? "")); }}><p className="dialog-copy">Add a registered user by verified email. They must have signed in once; no email is sent.</p><label><span>Email</span><input name="email" type="email" required autoComplete="off" placeholder="name@example.com" autoFocus /></label>{error && <div className="form-error" role="alert">{error}</div>}<div className="dialog-actions"><button className="button ghost" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}>{busy ? "Adding…" : "Add member"}</button></div></form></Modal>;
+}
+
+export function TeamMemberDeleteDialog({ membership, error, busy, onClose, onConfirm }: { membership: TeamMembershipRecord; error: string; busy: boolean; onClose: () => void; onConfirm: () => Promise<boolean> }) {
+  return <Modal onClose={onClose} className="team-dialog" ariaLabel="Delete Team membership"><DialogHeader title="Delete Team membership" icon={<Trash2 size={17} />} onClose={onClose} /><div className="team-delete-copy"><p>Delete the membership for <b>{membership.displayName}</b>?</p><small>{membership.email}</small><p>This removes the membership record. Use Deactivate when the membership may need to be restored later.</p></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="dialog-actions team-delete-actions"><button className="button ghost" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button danger" type="button" disabled={busy} aria-busy={busy || undefined} onClick={() => void onConfirm()}>{busy ? "Deleting…" : "Delete membership"}</button></div></Modal>;
+}
+
 function ProjectsSurface({ projects, tasks, statuses, users, onOpen, onContextActions, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; users: Map<string, UserRecord>; onOpen: (id: string) => void; onContextActions: (project: ProjectRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) {
   if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />;
   return <div className="entity-grid">{projects.map((project) => {
@@ -9866,6 +10314,7 @@ function surfaceBreadcrumbs(
   surface: string,
   data: AppSnapshot,
   view?: SavedViewRecord,
+  teamName?: string,
 ): BreadcrumbItem[] {
   const workspace: BreadcrumbItem = {
     label: "Workspace",
@@ -9890,6 +10339,8 @@ function surfaceBreadcrumbs(
   if (surface === "views") return [workspace, current("Views")];
   if (surface === "projects") return [workspace, current("Projects")];
   if (surface === "releases") return [workspace, current("Releases")];
+  if (surface === "teams") return [workspace, current("Teams")];
+  if (surface.startsWith("team:")) return [workspace, ancestor("Teams", "teams"), current(teamName ?? "Team")];
   if (surface === "shared") return [workspace, current("Shared with me")];
 
   if (surface.startsWith("view:")) {
@@ -9942,7 +10393,7 @@ function surfaceBreadcrumbs(
   const builtIn = builtInViews.find((item) => item.id === surface);
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
-function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
+function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface === "teams" || surface.startsWith("team:") || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
 function taskContextualEntity(task: TaskRecord): ContextualActionEntity {
   return { kind: "task", id: task.id, label: task.identifier, accessRole: task.accessRole, archivedAt: task.archivedAt, version: taskMutationVersion(task) };
 }

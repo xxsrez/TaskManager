@@ -343,6 +343,27 @@ test("workspace overview collapses to one column without horizontal overflow", (
   );
 });
 
+test("Teams catalog and membership lifecycle stay focus-visible and phone-safe", () => {
+  assert.match(declarations(".teams-surface, .team-detail-surface"), /overflow-x:\s*hidden\s*;/);
+  assert.match(declarations(".team-card"), /min-width:\s*0\s*;/);
+  assert.match(declarations(".team-member-row"), /grid-template-columns:\s*32px\s+minmax\(0,\s*1fr\)\s+auto\s+auto\s*;/);
+  assert.match(taskTracker, /className="team-live-region" role="status" aria-live="polite"/);
+  assert.match(taskTracker, /className="team-local-alert" role="alert"/);
+  assert.match(taskTracker, /href=\{`\/teams\/\$\{encodeURIComponent\(team\.publicId\)\}`\}/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.team-member-row\s*\{[^}]*grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)\s+auto\s*;[^}]*overflow:\s*hidden\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.team-member-actions \.button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.team-dialog-form input,\s*\.team-dialog \.dialog-actions \.button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+});
+
 test("Codex setup hands mobile users to Desktop or CLI without horizontal overflow", () => {
   assert.match(declarations(".codex-setup-body"), /overflow-x:\s*hidden\s*;/);
   assert.match(declarations(".codex-mobile-handoff"), /display:\s*none\s*;/);
