@@ -15,6 +15,7 @@ import {
   decodeWorkspaceSyncCursorState,
   EMPTY_TEAM_ACCESS_FINGERPRINT,
   encodeWorkspaceSyncCursor,
+  workspaceSyncCursorGeneration,
 } from "./workspace-sync-cursor";
 
 type ChangeRow = {
@@ -53,7 +54,14 @@ export async function getWorkspaceSync(
     return resetResponse(lastSequence, teamAccessFingerprint);
   }
   const cursorState = decodeWorkspaceSyncCursorState(cursorValue);
-  if (cursorState === null || cursorState.sequence > lastSequence) {
+  const currentCursorGeneration = workspaceSyncCursorGeneration();
+  // v1/v2 cursors have no retention generation. Stale and future generations
+  // use the same one-reset recovery path, then remain stable inside the bucket.
+  if (
+    cursorState === null ||
+    cursorState.sequence > lastSequence ||
+    cursorState.issuedGeneration !== currentCursorGeneration
+  ) {
     return resetResponse(lastSequence, teamAccessFingerprint);
   }
   if (

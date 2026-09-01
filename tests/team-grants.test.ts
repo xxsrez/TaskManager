@@ -43,9 +43,13 @@ import {
 import { createTaskRelation } from "../lib/task-relations";
 import { getWorkspaceSync } from "../lib/workspace-sync";
 import {
+  decodeWorkspaceSyncCursorState,
   decodeWorkspaceSyncCursor,
+  encodeVersionTwoWorkspaceSyncCursor,
+  encodeWorkspaceSyncCursor,
   encodeLegacyWorkspaceSyncCursor,
   teamAccessFingerprintSql,
+  WORKSPACE_SYNC_CURSOR_GENERATION_MS,
 } from "../lib/workspace-sync-cursor";
 import {
   archiveWorkflowStatus,
@@ -527,18 +531,45 @@ test("a non-owner active Team member can select it, while resource authority alo
   )?.revokedAt);
 });
 
-test("a legacy v1 cursor with no Team routes upgrades without a reset", async () => {
+test("legacy, expired, and future cursors reset once into the safe generation", async () => {
   harness = await createD1TestHarness();
   const outsider = await getOrCreateUser(outsiderActor);
   await createTeam(outsider, { name: "Membership without grants" });
   const snapshot = await getSnapshot(outsider);
+  const snapshotState = decodeWorkspaceSyncCursorState(snapshot.syncCursor!)!;
   const legacy = encodeLegacyWorkspaceSyncCursor(
-    decodeWorkspaceSyncCursor(snapshot.syncCursor!)!,
+    snapshotState.sequence,
   );
-  const response = await getWorkspaceSync(outsider, legacy);
-  assert.equal(response.resetRequired, false);
-  assert.notEqual(response.cursor, legacy);
-  assert.equal((await getWorkspaceSync(outsider, response.cursor)).resetRequired, false);
+  const legacyReset = await getWorkspaceSync(outsider, legacy);
+  assert.equal(legacyReset.resetRequired, true);
+  assert.notEqual(legacyReset.cursor, legacy);
+  assert.equal(
+    (await getWorkspaceSync(outsider, legacyReset.cursor)).resetRequired,
+    false,
+  );
+
+  const versionTwo = encodeVersionTwoWorkspaceSyncCursor(
+    snapshotState.sequence,
+    snapshotState.teamAccessFingerprint!,
+  );
+  const versionTwoReset = await getWorkspaceSync(outsider, versionTwo);
+  assert.equal(versionTwoReset.resetRequired, true);
+  assert.equal(
+    (await getWorkspaceSync(outsider, versionTwoReset.cursor)).resetRequired,
+    false,
+  );
+
+  const future = encodeWorkspaceSyncCursor(
+    snapshotState.sequence,
+    snapshotState.teamAccessFingerprint!,
+    Date.now() + (WORKSPACE_SYNC_CURSOR_GENERATION_MS * 2),
+  );
+  const futureReset = await getWorkspaceSync(outsider, future);
+  assert.equal(futureReset.resetRequired, true);
+  assert.equal(
+    (await getWorkspaceSync(outsider, futureReset.cursor)).resetRequired,
+    false,
+  );
 });
 
 test("Team archive and unarchive cannot ABA an active-route sync fingerprint", async () => {
@@ -808,7 +839,7 @@ test("a global View Team route tracks its selectable owner's Label catalog only"
   assert.equal(privatePoll.cursor, cursor);
 });
 
-test("a current Task marker survives owner journal retention pruning", async () => {
+test("an expired Team cursor resets safely after owner journal retention pruning", async () => {
   harness = await createD1TestHarness();
   const owner = await getOrCreateUser(ownerActor);
   const member = await getOrCreateUser(memberActor);
@@ -832,12 +863,12 @@ test("a current Task marker survives owner journal retention pruning", async () 
      WHERE audience_user_id = ? AND entity_id = ?`,
   ).bind(owner.id, task.id).run();
   const baseline = await getSnapshot(member);
-  const fingerprintRows = await harness.database
-    .prepare(teamAccessFingerprintSql())
-    .bind(member.id)
-    .all<{ marker_sequence: number }>();
-  assert.equal(fingerprintRows.results.length, 1);
-  assert.equal(Number(fingerprintRows.results[0]?.marker_sequence), 0);
+  const baselineState = decodeWorkspaceSyncCursorState(baseline.syncCursor!)!;
+  const expiredCursor = encodeWorkspaceSyncCursor(
+    baselineState.sequence,
+    baselineState.teamAccessFingerprint!,
+    Date.now() - (WORKSPACE_SYNC_CURSOR_GENERATION_MS * 2),
+  );
 
   await createComment(owner, task.id, {
     body: "This durable detail outlives its retained journal marker",
@@ -854,7 +885,7 @@ test("a current Task marker survives owner journal retention pruning", async () 
      ON CONFLICT(key) DO UPDATE SET last_run_at = excluded.last_run_at`,
   ).run();
 
-  await expectOneTeamFingerprintReset(member, baseline.syncCursor!);
+  await expectOneTeamFingerprintReset(member, expiredCursor);
   const retained = await harness.database.prepare(
     `SELECT COUNT(*) AS count FROM workspace_change_events
      WHERE audience_user_id = ? AND entity_id = ?`,
@@ -926,6 +957,61 @@ test("an explicit Task route observes the Task but not its inaccessible Project 
   await expectOneTeamFingerprintReset(member, parentPoll.cursor);
 });
 
+test("a large Project fingerprint stays route-sized and uses event-first entity lookups", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  await createProject(owner, { name: "Bounded fingerprint Project", taskCode: "BFP" });
+  const ownerSnapshot = await getSnapshot(owner);
+  const project = ownerSnapshot.projects.find(
+    (item) => item.name === "Bounded fingerprint Project",
+  )!;
+  const status = ownerSnapshot.statuses.find(
+    (item) => item.ownerUserId === owner.id && item.name === "Todo",
+  )!;
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "viewer",
+  });
+
+  await harness.database.prepare(
+    `WITH RECURSIVE generated(value) AS (
+       VALUES (1)
+       UNION ALL SELECT value + 1 FROM generated WHERE value < 2000
+     )
+     INSERT INTO tasks
+       (id, public_id, owner_user_id, creator_user_id, identifier,
+        sequence_number, title, description, status_id, priority, project_id,
+        rank, comment_count, version, created_at, updated_at)
+     SELECT 'bounded-task-' || value, 'T-bounded-' || value, ?, ?,
+       'BFP-' || (10000 + value), 10000 + value,
+       'Bounded Task ' || value, '', ?, 'none', ?, value, 0, 1,
+       '2026-09-01T06:00:00.000Z', '2026-09-01T06:00:00.000Z'
+     FROM generated`,
+  ).bind(owner.id, owner.id, status.id, project.id).run();
+
+  const fingerprintSql = teamAccessFingerprintSql();
+  const rows = await harness.database.prepare(fingerprintSql)
+    .bind(member.id)
+    .all<{ current_state: string; marker_sequence: number }>();
+  assert.equal(rows.results.length, 1);
+  assert.ok((rows.results[0]?.current_state.length ?? Infinity) < 1_000);
+  assert.ok(Number(rows.results[0]?.marker_sequence) > 0);
+
+  const plan = await harness.database
+    .prepare(`EXPLAIN QUERY PLAN ${fingerprintSql}`)
+    .bind(member.id)
+    .all<{ detail: string }>();
+  const details = plan.results.map((row) => String(row.detail)).join("\n");
+  assert.doesNotMatch(details, /CORRELATED/i);
+  assert.doesNotMatch(details, /SCAN (?:event_task|event_release|event_view)/i);
+  assert.doesNotMatch(fingerprintSql, /group_concat|OVER\s*\(/i);
+  assert.doesNotMatch(fingerprintSql, /project_tasks|route_tasks|visible_task_ids/i);
+});
+
 test("Team runtime and Team grant CRUD never write the workspace sync journal", () => {
   for (const file of ["../lib/teams.ts", "../lib/team-grants.ts"]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
@@ -937,7 +1023,10 @@ test("Team runtime and Team grant CRUD never write the workspace sync journal", 
     1,
   );
   assert.match(fingerprintSql, /route_owner_events AS MATERIALIZED/);
-  assert.match(fingerprintSql, /resource_marker_ordered AS MATERIALIZED/);
+  assert.match(fingerprintSql, /resource_event_max AS MATERIALIZED/);
+  assert.match(fingerprintSql, /label_catalog_state AS MATERIALIZED/);
+  assert.doesNotMatch(fingerprintSql, /project_tasks|route_tasks|visible_task_ids/);
+  assert.doesNotMatch(fingerprintSql, /group_concat/);
   assert.doesNotMatch(fingerprintSql, /OVER\s*\(/);
   assert.doesNotMatch(fingerprintSql, /metadata_json|source_url|payload_json|comment\.body/);
 });
