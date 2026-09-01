@@ -846,33 +846,13 @@ export async function getSnapshot(
               OR EXISTS (
                 SELECT 1 FROM projects p
                 WHERE p.deleted_at IS NULL
-                  AND p.owner_user_id = s.owner_user_id AND (
-                  p.owner_user_id = ? OR EXISTS (
-                    SELECT 1 FROM access_grants ag
-                    WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                      AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                  )
-                )
+                  AND p.owner_user_id = s.owner_user_id
+                  AND ${projectAccessRoleSql("p")} IS NOT NULL
               )) AND ${workspacePredicate("s.owner_user_id", workspaceScope).sql})
              OR EXISTS (
                 SELECT 1 FROM tasks t
                 LEFT JOIN projects p ON p.id = t.project_id
-                WHERE t.status_id = s.id AND (
-                  (t.project_id IS NOT NULL AND (
-                    p.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'project'
-                        AND ag.resource_id = t.project_id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  )) OR (t.project_id IS NULL AND (
-                    t.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  ))
-                )
+                WHERE t.status_id = s.id AND ${accessibleTaskWhere("t")}
                 AND t.deleted_at IS NULL
                 AND (t.project_id IS NULL OR p.deleted_at IS NULL)
                 AND ${workspacePredicate(

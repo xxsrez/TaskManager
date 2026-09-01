@@ -578,6 +578,18 @@ export type TeamCatalog = {
   teams: TeamRecord[];
 };
 
+export type TeamGrantRecord = {
+  id: string;
+  teamId: string;
+  teamName: string;
+  resourceType: "project" | "task" | "saved_view";
+  resourceId: string;
+  permission: GrantRole;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AdminUserActivityRecord = {
   id: string;
   displayName: string;
