@@ -44,6 +44,7 @@ Desktop-first shell повторяет композицию Linear:
 │ product/user switcher   search   create  │ breadcrumb / title / actions │
 │ My tasks                                 ├──────────────────────────────│
 │ Shared with me                           │ tabs / filters / display     │
+│ Teams                                    │                              │
 │ Views                                    ├──────────────────────────────│
 │ Projects                                 │ list | board | details       │
 │ Releases                                 │                              │
@@ -60,7 +61,7 @@ Desktop-first shell повторяет композицию Linear:
   ссылкой на workspace root без chevron или другого ложного menu affordance;
   dropdown появляется только вместе с реально реализованным workspace menu.
 - Основная навигация начинается с `Workspace`, затем следуют `My tasks`,
-  `Shared with me`, `Views`, `Projects`, `Releases`. `Workspace` ведёт на тот
+  `Shared with me`, `Teams`, `Views`, `Projects`, `Releases`. `Workspace` ведёт на тот
   же canonical `/workspace`, что product mark/name, и имеет собственный active
   state. Исключённые функции Linear не показываются даже disabled.
 - `Views`, `Projects` и `Releases` всегда начинаются с канонической collection
@@ -815,13 +816,16 @@ Linear, но они обязаны использовать тот же visual l
 - Loading, provider error и retry показаны внутри panel; identity никогда не
   запрашивается произвольным email/password form.
 
-### 12.2 Share dialog
+### 12.2 People & Teams
 
 - Trigger `Share` находится в header Project и global SavedView. Для Task,
   Release и project-scoped SavedView он открывает
   access surface родительского Project либо не дублируется.
-- Compact dialog `Members & access` содержит verified-email input, role picker,
-  Owner отдельной первой строкой и список active grants с inline role picker.
+- Compact dialog `People & Teams` разделяет direct User grants и Team routes.
+  Person picker поддерживает search/autocomplete с явным выбором точного
+  registered email; Team picker перечисляет только active Teams пользователя.
+  Owner остаётся первой direct-строкой, а каждый grant показывает provenance
+  маршрута и inline role picker.
 - Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView —
   `Editor`, `Viewer`. Copy рядом с email явно говорит, что
   User должен уже войти и письмо не отправляется.
@@ -835,6 +839,9 @@ Linear, но они обязаны использовать тот же visual l
 - Project dialog объясняет inheritance к Tasks, Releases и project-scoped
   SavedViews; global SavedView dialog — что view не расширяет доступ к
   underlying data.
+- На Project Task Team-режим явно предлагает `This Task only` и `Parent Project`.
+  Первый создаёт Task-level route и не открывает Project/соседние Tasks, второй
+  создаёт наследуемый Project route. Release отдельно не шарится.
 - Revoke требует подтверждения только когда последствия могут оборвать текущую
   работу; результат обновляется после server response.
 
@@ -842,6 +849,10 @@ Linear, но они обязаны использовать тот же visual l
 
 - `Shared with me` — grouped list Projects и SavedViews с
   owner avatar/name и обычными entity controls.
+- `/teams` — отдельный catalog active memberships; `/teams/<public-ref>`
+  показывает active/inactive members. Team owner может добавить registered User,
+  деактивировать, реактивировать или удалить membership; обычный member видит
+  read-only список без mutation controls.
 - Settings — отдельная responsive surface с общей left settings navigation.
   На mobile navigation становится горизонтальной scrollable section bar без
   horizontal overflow content. Канонические разделы: `Profile`, `Appearance`,
@@ -1066,8 +1077,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 | Surface/паттерн Linear | Task Manager | Статус MVP | Осознанное отличие |
 |---|---|---|---|
-| Left application sidebar | My tasks, Shared, Views, Projects, Releases | Берём | Без teams/inbox/initiatives |
-| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace без teams, initiatives и cross-user analytics |
+| Left application sidebar | My tasks, Shared, Teams, Views, Projects, Releases | Берём | Без inbox/initiatives |
+| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace; Teams — ACL-группы, не workspace/tenant |
 | Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
 | Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
 | Filters | Searchable property formula | Берём ядро | Только `AND` |

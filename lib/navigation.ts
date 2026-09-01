@@ -19,6 +19,8 @@ export type NavigationTarget =
   | { kind: "admin" }
   | { kind: "settings"; section: SettingsSection; canonical: boolean }
   | { kind: "shared" }
+  | { kind: "teams" }
+  | { kind: "team"; id: string }
   | { kind: "issues"; filter: IssueFilter; layout: Layout }
   | { kind: "issue"; id: string }
   | { kind: "legacyTask"; id: string }
@@ -76,6 +78,10 @@ export function parseNavigationSegments(
   if (segments.length === 1 && segments[0] === "shared") {
     return { kind: "shared" };
   }
+  if (segments.length === 1 && segments[0] === "teams") return { kind: "teams" };
+  if (segments.length === 2 && segments[0] === "teams" && segments[1]) {
+    return { kind: "team", id: segments[1] };
+  }
   if (segments[0] === "issues") return parseIssueSegments(segments);
   if (segments[0] === "views") return parseViewSegments(segments);
   if (segments[0] === "projects") return parseProjectSegments(segments);
@@ -116,6 +122,12 @@ export function resolveNavigationTarget(
   }
   if (target.kind === "shared") {
     return { surface: "shared", layout: "list", taskId: null };
+  }
+  if (target.kind === "teams") {
+    return { surface: "teams", layout: "list", taskId: null };
+  }
+  if (target.kind === "team") {
+    return { surface: `team:${target.id}`, layout: "list", taskId: null };
   }
   if (target.kind === "issues" || target.kind === "legacyBuiltInView") {
     return {
@@ -217,6 +229,10 @@ export function navigationPath(
     return `/${surface}`;
   }
   if (surface === "shared") return "/shared";
+  if (surface === "teams") return "/teams";
+  if (surface.startsWith("team:")) {
+    return `/teams/${encodeURIComponent(surface.slice("team:".length))}`;
+  }
   if (surface.startsWith("view:")) {
     const view = data.views.find(
       (item) => item.id === surface.slice(5) && !item.archivedAt,

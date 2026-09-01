@@ -623,6 +623,18 @@ test("workspace overview is a distinct linked surface", () => {
   assert.doesNotMatch(markup, /Search tasks…/);
 });
 
+test("Teams has a canonical sidebar and dedicated lazy catalog surface", () => {
+  const markup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: { surface: "teams", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+  assert.match(markup, /href="\/teams"[^>]*aria-current="page"/);
+  assert.match(markup, /title="Teams">Teams<\/h1>/);
+  assert.match(markup, /Loading Teams/);
+  assert.doesNotMatch(markup, /Search tasks…/);
+});
+
 test("global search renders an accessible overlay without replacing local task search", () => {
   const overlay = renderToStaticMarkup(createElement(GlobalSearchOverlay, {
     onClose: () => undefined,

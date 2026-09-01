@@ -42,10 +42,9 @@ MVP должен позволить вести задачи от backlog до п
 - **Owner workspace scope** — UI-проекция доступных records по владельцу,
   применяемая только как дополнительное сужение уже вычисленного ACL; это не
   entity, tenant, grant или источник authorization.
-- **Dormant Teams schema baseline** — заранее применённая пустая D1-структура
-  `teams`, `team_memberships` и `team_grants`. Пока отдельный функциональный
-  срез не подключён, она не является пользовательской возможностью, не меняет
-  authorization и не создаёт UI/API surface.
+- **Team** — поддерживаемая группа зарегистрированных Users. Runtime использует
+  заранее применённые `teams`, `team_memberships` и `team_grants`, не создаёт
+  Team-owned resources и не превращает Team в tenant или owner доменных records.
 
 ### 2.1 Интерфейсный принцип
 
@@ -225,6 +224,14 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   Каждая Task наследует доступ только от своего Project.
 - Global SavedView не расширяет доступ к попавшим в query Tasks. Получатель
   видит пересечение view с уже доступными ему данными.
+- Active Team membership образует дополнительный ACL-маршрут только через
+  active Team grant. Project Team grant наследуется его subtree; Task Team
+  grant открывает только указанную Task, не Project и не соседние Tasks;
+  global SavedView Team grant не расширяет underlying ACL intersection.
+- Effective role — самый сильный результат owner, direct grant, Project
+  inheritance и всех active Team routes. Inactive membership, archived Team
+  и revoked Team grant не дают доступ; изменение одного маршрута не переписывает
+  direct `access_grants` и остальные Team routes.
 - Resources, которыми поделились с User, доступны в `Shared with me`. Revoke
   прекращает новые чтения и mutations немедленно после завершения транзакции.
 - `Shared with me` перечисляет только top-level Projects с явным Project grant
@@ -274,18 +281,20 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   relations/Comments/Activity/Attachments после R2 cleanup и не возвращает
   identifier sequence в allocator.
 
-### 4.1 Dormant Teams schema baseline
+### 4.1 Teams runtime поверх фиксированной schema baseline
 
-- До сравнительной реализации Teams одна versioned migration создаёт пустые
+- До функциональной реализации одна versioned migration создала пустые
   `teams`, `team_memberships` и `team_grants` согласно
   [ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md).
-- Этот шаг не добавляет Team catalog, membership commands, Team-derived access,
-  autocomplete, sharing controls или navigation. Все существующие queries и
-  mutations продолжают использовать прежний owner/direct-grant contract.
-- Последующие функциональные задачи используют готовую структуру без schema
-  changes. Между прогонами migration и migration journal сохраняются, а reset
-  может удалять только синтетические строки новых таблиц.
-- Dormant Team rows намеренно не входят в system/Project backup format текущего
+- Функциональный срез добавляет `/teams`, атомарное создание Team с active owner
+  membership, versioned add/deactivate/reactivate/remove membership и отдельные
+  versioned Team grants для Project, Task и global SavedView.
+- Team catalog показывает только Teams, где current User имеет active
+  membership. Управление membership выполняет Team owner; inaccessible и
+  отсутствующая Team одинаково отвечают `not found`.
+- Runtime использует готовую структуру без schema changes. Migration и migration
+  journal сохраняются; request path не выполняет DDL.
+- Team rows намеренно не входят в system/Project backup format текущего
   экспериментального среза. Backup/export/import/restore не являются его
   guardrail или acceptance и требуют отдельной прямой команды пользователя.
 
@@ -1228,3 +1237,6 @@ created/updated/started/completed/canceled dates и archived state.
     `team_memberships` и `team_grants` с constraints/indexes, без runtime, ACL,
     API, UI или portability behavior; структура сохраняется между пятью
     функциональными прогонами.
+27. Teams runtime и sharing: active membership catalog, owner-managed lifecycle,
+    strongest-role Team ACL для Project/Task/global SavedView, `/teams` и единый
+    `People & Teams`, без schema/migration изменений и без Team ownership.

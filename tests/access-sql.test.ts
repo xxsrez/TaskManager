@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  accessibleProjectWhere,
+  accessibleSavedViewWhere,
   accessibleTaskWhere,
+  editableProjectWhere,
+  editableSavedViewWhere,
   editableTaskWhere,
   projectAccessRoleSql,
   savedViewAccessRoleSql,
@@ -14,6 +18,10 @@ test("ACL SQL fragments preserve their principal placeholder contracts", () => {
   assert.equal(placeholders(taskAccessRoleSql("task_row", "project_row")), 4);
   assert.equal(placeholders(projectAccessRoleSql("project_row")), 2);
   assert.equal(placeholders(savedViewAccessRoleSql("view_row", "project_row")), 4);
+  assert.equal(placeholders(accessibleProjectWhere("project_row")), 2);
+  assert.equal(placeholders(editableProjectWhere("project_row")), 2);
+  assert.equal(placeholders(editableSavedViewWhere("view_row", "project_row")), 4);
+  assert.equal(placeholders(accessibleSavedViewWhere("view_row", "project_row")), 4);
 });
 
 test("ACL SQL fragments accept identifiers only as aliases", () => {
@@ -23,9 +31,12 @@ test("ACL SQL fragments accept identifiers only as aliases", () => {
 });
 
 test("legacy full_access grants normalize to the current effective roles", () => {
-  assert.match(taskAccessRoleSql("task_row", "project_row"), /WHEN 'full_access' THEN 'manager'/);
-  assert.match(savedViewAccessRoleSql("view_row", "project_row"), /WHEN 'full_access' THEN 'editor'/);
-  assert.match(editableTaskWhere("task_row"), /'editor', 'manager', 'full_access'/);
+  assert.match(taskAccessRoleSql("task_row", "project_row"), /WHEN 'full_access' THEN 3/);
+  assert.match(savedViewAccessRoleSql("view_row", "project_row"), /WHEN 'full_access' THEN 2/);
+  assert.match(editableTaskWhere("task_row"), /WHEN 'editor' THEN 2/);
+  assert.match(projectAccessRoleSql("project_row"), /team_memberships/);
+  assert.match(taskAccessRoleSql("task_row", "project_row"), /resource_type = 'task'/);
+  assert.match(savedViewAccessRoleSql("view_row", "project_row"), /MAX\(candidate\.role_rank\)/);
 });
 
 function placeholders(value: string): number {

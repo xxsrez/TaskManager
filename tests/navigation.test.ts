@@ -66,6 +66,11 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(parseNavigationPath("/views"), { kind: "views" });
   assert.deepEqual(parseNavigationPath("/projects"), { kind: "projects" });
   assert.deepEqual(parseNavigationPath("/releases"), { kind: "releases" });
+  assert.deepEqual(parseNavigationPath("/teams"), { kind: "teams" });
+  assert.deepEqual(parseNavigationPath("/teams/team-public-id"), {
+    kind: "team",
+    id: "team-public-id",
+  });
   assert.deepEqual(parseNavigationPath("/settings"), {
     kind: "settings",
     section: "profile",
@@ -80,6 +85,16 @@ test("short REST paths cover issue, view, project, and release collections", () 
     parseNavigationPath(`/projects/${projectPublicId}/releases`),
     { kind: "projectReleases", projectId: projectPublicId },
   );
+});
+
+test("Team catalog and detail paths remain canonical without exposing internal rows", () => {
+  const catalog = resolveNavigationTarget(parseNavigationPath("/teams")!, snapshot)!;
+  const detail = resolveNavigationTarget(parseNavigationPath("/teams/team-public-id")!, snapshot)!;
+  assert.deepEqual(catalog, { surface: "teams", layout: "list", taskId: null });
+  assert.deepEqual(detail, { surface: "team:team-public-id", layout: "list", taskId: null });
+  assert.equal(navigationPath(catalog, snapshot), "/teams");
+  assert.equal(navigationPath(detail, snapshot), "/teams/team-public-id");
+  assert.equal(metadataForNavigation(catalog, snapshot).title, "Teams – Task Manager");
 });
 
 test("settings sections keep canonical direct URLs and reject unknown sections", () => {

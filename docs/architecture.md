@@ -760,12 +760,13 @@ optional/standalone Task semantics из ранних решений: кажда�
   повторяют UI, backup validators, OpenAPI projection и D1 insert/update guards;
 - `task_identifier_aliases` с нормализованным lookup index для прежних
   identifiers;
-- dormant Teams baseline из
+- Teams persistence baseline из
   [ADR-0016](decisions/0016-dormant-teams-schema-baseline.md): `teams` со stable
   public ref и owner catalog indexes, `team_memberships` с unique Team–User
   pair, role/status lifecycle и lookup по Team/User, `team_grants` с type-aware
-  permission check и active lookup по Team/resource. Request runtime пока не
-  импортирует эти таблицы и не включает их в authorization, API, sync или UI;
+  permission check и active lookup по Team/resource. Request runtime использует
+  эти таблицы для active-membership catalog, versioned membership/grant API и
+  strongest-role authorization, не выполняя DDL и не создавая Team ownership;
 - индексы по owner/status/archive/deletion, `purge_after`, project/release и
   updated time;
 - expression indexes по нормализованным task title/identifier, project
@@ -1038,6 +1039,6 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
 5. Server-side idempotency task create, bulk command contract, OAuth/API rate
    limits, retention audit events и критерии перехода на managed IdP перед
    публичным каталогом.
-6. После пяти сравнительных прогонов выбрать функциональную реализацию Teams и
-   отдельно решить её production lifecycle, sync и portability contract; до
-   этого dormant tables остаются исключены из system/Project backup.
+6. Отдельно решить production lifecycle, sync-event projection и portability
+   contract Teams; в текущем функциональном срезе три Team tables остаются
+   исключены из system/Project backup и не являются Team-owned workspace data.

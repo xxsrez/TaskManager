@@ -1,5 +1,6 @@
 import { getD1 } from "@/db";
 import { canEditContent } from "./access";
+import { editableTaskWhere } from "./access-sql";
 import {
   ConflictError,
   NotFoundError,
@@ -105,7 +106,11 @@ export async function createTaskRelation(
       semantic.sourceTaskId,
       currentUser.id,
       currentUser.id,
+      currentUser.id,
+      currentUser.id,
       semantic.targetTaskId,
+      currentUser.id,
+      currentUser.id,
       currentUser.id,
       currentUser.id,
       ...(semantic.type === "duplicate_of"
@@ -252,7 +257,11 @@ export async function updateTaskRelation(
       semantic.sourceTaskId,
       currentUser.id,
       currentUser.id,
+      currentUser.id,
+      currentUser.id,
       semantic.targetTaskId,
+      currentUser.id,
+      currentUser.id,
       currentUser.id,
       currentUser.id,
       ...(semantic.type === "duplicate_of"
@@ -378,7 +387,11 @@ export async function deleteTaskRelation(
       relation.sourceTaskId,
       currentUser.id,
       currentUser.id,
+      currentUser.id,
+      currentUser.id,
       relation.targetTaskId,
+      currentUser.id,
+      currentUser.id,
       currentUser.id,
       currentUser.id,
       ),
@@ -561,6 +574,8 @@ function duplicateStatusUpdate(
       expectedVersion,
       currentUserId,
       currentUserId,
+      currentUserId,
+      currentUserId,
     );
 }
 
@@ -583,22 +598,7 @@ function sameProjectParticipants() {
 }
 
 function editableProjectTask(alias: string) {
-  return `(
-    ${alias}.project_id IS NOT NULL AND (
-      EXISTS (
-        SELECT 1 FROM projects editable_project
-        WHERE editable_project.id = ${alias}.project_id
-          AND editable_project.owner_user_id = ?
-      ) OR EXISTS (
-        SELECT 1 FROM access_grants editable_grant
-        WHERE editable_grant.resource_type = 'project'
-          AND editable_grant.resource_id = ${alias}.project_id
-          AND editable_grant.grantee_user_id = ?
-          AND editable_grant.revoked_at IS NULL
-          AND editable_grant.permission IN ('editor', 'manager', 'full_access')
-      )
-    )
-  )`;
+  return `(${alias}.project_id IS NOT NULL AND ${editableTaskWhere(alias)})`;
 }
 
 function assertEditableProjectTasks(...tasks: TaskRecord[]) {

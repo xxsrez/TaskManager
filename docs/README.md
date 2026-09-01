@@ -49,8 +49,8 @@
 20. [ADR-0015: production canary для file-first release gate](decisions/0015-production-file-first-release-canary.md)
     — exact production candidate, bounded fixture, hash/read-back и cleanup.
 21. [ADR-0016: dormant Teams schema baseline](decisions/0016-dormant-teams-schema-baseline.md)
-    — постоянные пустые Team tables до пяти функциональных прогонов, без
-    runtime/API/UI и без schema rollback.
+    — историческое решение о неизменяемых Team tables; runtime/API/UI release
+    0.4 использует baseline без schema rollback или DDL.
 22. [Runbook релизов Sites](operations/sites-release.md) — exact-SHA workflow,
     environment bindings, проверки и recovery.
 23. [Runbook вложений](operations/attachments.md) — bindings, limits, smoke,
@@ -149,10 +149,11 @@ ADR-0014 сохранён как superseded incident history. ADR-0015 опре�
 release gate: обычный UAT остаётся private, а fresh local-path proof после
 отдельного production approval выполняется bounded production canary без
 Keychain, Sites bypass, публичного machine edge или hosted Codex.
-ADR-0016 добавляет только постоянную dormant schema baseline для будущих Teams:
-три пустые D1-таблицы с constraints/indexes и без runtime, authorization, API,
-UI, sync или portability behavior. Функциональные benchmark-задачи не могут
-менять эту схему; между пятью прогонами сохраняются migration и journal.
+ADR-0016 зафиксировал постоянную schema baseline Teams: три D1-таблицы с
+constraints/indexes. Release 0.4 подключает к этой неизменённой baseline
+runtime, membership API, Team-derived ACL, `/teams` и `People & Teams`, но не
+добавляет Team ownership, DDL или portability behavior; migration и journal
+между сравнительными прогонами сохраняются.
 
 ## Категории
 

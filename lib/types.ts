@@ -39,6 +39,57 @@ export type UserProfile = {
   identities: UserIdentityRecord[];
 };
 
+export type TeamMembershipRole = "owner" | "member";
+export type TeamMembershipStatus = "active" | "inactive";
+
+export type TeamRecord = {
+  id: string;
+  publicId: string;
+  ownerUserId: string;
+  name: string;
+  archivedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  activeMemberCount: number;
+  currentMembership: TeamMembershipRecord;
+  canManageMembers: boolean;
+};
+
+export type TeamMembershipRecord = {
+  id: string;
+  teamId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: TeamMembershipRole;
+  status: TeamMembershipStatus;
+  deactivatedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamDetailRecord = TeamRecord & {
+  members: TeamMembershipRecord[];
+};
+
+export type TeamGrantResourceType = "project" | "task" | "saved_view";
+
+export type TeamGrantRecord = {
+  id: string;
+  teamId: string;
+  teamPublicId: string;
+  teamName: string;
+  resourceType: TeamGrantResourceType;
+  resourceId: string;
+  permission: GrantRole;
+  revokedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type WorkflowStatusRecord = {
   id: string;
   ownerUserId: string;

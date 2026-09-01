@@ -77,6 +77,12 @@ export function metadataForNavigation(
   } else if (navigation.surface === "shared") {
     title = "Shared with me – Task Manager";
     description = "Task Manager resources shared with the current user.";
+  } else if (navigation.surface === "teams") {
+    title = "Teams – Task Manager";
+    description = "Teams you actively belong to and can use for sharing.";
+  } else if (navigation.surface.startsWith("team:")) {
+    title = "Team members – Task Manager";
+    description = "Team membership and active access state in Task Manager.";
   } else if (navigation.surface === "admin") {
     title = "Administration – Task Manager";
     description = "Registration and activity overview for Task Manager administrators.";
