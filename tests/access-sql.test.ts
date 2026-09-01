@@ -96,7 +96,7 @@ test("legacy standalone Task owner and direct grants remain queryable and mutabl
   ).get("standalone", ...collaborator), undefined);
 });
 
-test("repository and Agent catalogs preserve the standalone owner fallback", () => {
+test("repository fallback and Agent catalogs preserve ACL-scoped Tasks", () => {
   const repository = readFileSync(new URL("../lib/repository.ts", import.meta.url), "utf8");
   const agent = readFileSync(
     new URL("../lib/agent-api-repository.ts", import.meta.url),
@@ -106,7 +106,19 @@ test("repository and Agent catalogs preserve the standalone owner fallback", () 
   assert.match(repository, /FROM tasks t\s+LEFT JOIN projects p ON p\.id = t\.project_id\s+LEFT JOIN releases r/);
   assert.match(repository, /LEFT JOIN projects catalog_task_project\s+ON catalog_task_project\.id = catalog_task\.project_id/);
   assert.match(agent, /SELECT 1 FROM tasks t\s+LEFT JOIN projects p ON p\.id = t\.project_id\s+WHERE t\.status_id = s\.id/);
-  assert.match(agent, /CASE WHEN t\.project_id IS NOT NULL THEN p\.owner_user_id\s+ELSE t\.owner_user_id END = l\.owner_user_id/);
+  const catalogScopeStart = agent.indexOf("const agentCatalogScopeCte = `");
+  const catalogScopeEnd = agent.indexOf("`;", catalogScopeStart);
+  assert.ok(catalogScopeStart >= 0 && catalogScopeEnd > catalogScopeStart);
+  const catalogScope = agent.slice(catalogScopeStart, catalogScopeEnd);
+  assert.match(catalogScope, /visible_catalog_tasks\(id\) AS MATERIALIZED/);
+  assert.match(
+    catalogScope,
+    /FROM tasks t\s+LEFT JOIN projects p ON p\.id = t\.project_id\s+CROSS JOIN agent_actor/,
+  );
+  assert.match(
+    catalogScope,
+    /\$\{taskEffectiveRoleRankSql\("t", "p", "agent_actor\.id"\)\} > 0/,
+  );
 });
 
 function placeholders(value: string): number {
