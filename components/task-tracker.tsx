@@ -279,6 +279,10 @@ import type {
   SavedViewRecord,
   StatusCategory,
   SystemBackupJobStatus,
+  TeamGrantRecord,
+  TeamMembershipRecord,
+  TeamRecord,
+  TeamsCatalog,
   TaskRecord,
   TaskLabelAssignment,
   TaskDetailRecord,
@@ -319,6 +323,10 @@ type ShareTarget = {
   accessRole: AccessRole;
   ownerUserId: string;
   inherited: boolean;
+  teamResourceType: "project" | "task" | "saved_view";
+  teamResourceId: string;
+  teamInherited: boolean;
+  teamLabel: string;
 };
 
 type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | null;
@@ -2701,6 +2709,8 @@ export function TaskTracker({
       ? catalogPages.releases?.total ?? data.navigationCollections?.releases.total ?? data.releases.length
     : surface === "admin" && data.admin
       ? data.admin.registeredUserCount
+    : surface === "teams"
+      ? ""
     : surface === "shared"
       ? sharedWithMeRoots(data).projects.length + sharedWithMeRoots(data).views.length
     : surface.startsWith("settings:")
@@ -2816,6 +2826,8 @@ export function TaskTracker({
       ? "Search releases"
       : surface === "views"
         ? "Search views"
+        : surface === "teams"
+          ? "Search teams"
         : "Search tasks";
   const hasTemporaryFilters = Boolean(
     search.trim() || canonicalTemporaryQuery.conditions.length,
@@ -4208,6 +4220,7 @@ export function TaskTracker({
           <NavItem compact={sidebarCompact} icon={<PanelsTopLeft size={15} />} label="Workspace" active={surface === "workspace"} href="/workspace" onNavigate={() => navigateSurface("workspace", "list")} />
           <NavItem compact={sidebarCompact} icon={<Inbox size={15} />} label="My tasks" active={surface === "mine"} href="/issues" onNavigate={() => navigateSurface("mine", "list")} count={taskCountForView("mine", data, statusMap)} />
           <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
+          <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Teams" active={surface === "teams"} href="/teams" onNavigate={() => navigateSurface("teams", "list")} />
           {!sidebarCompact && (
             <>
               <SidebarSection title="Views" action={() => void openDialogWithCatalog("view", ["projects"])}>
@@ -4349,7 +4362,7 @@ export function TaskTracker({
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
               {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => void openDialogWithCatalog("viewEdit", ["projects", "releases"])}><Zap size={14} />Edit view</button>}
               {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
-              {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
+              {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />People &amp; Teams</button>}
               {surfaceContextualEntity && canEditContent(surfaceContextualEntity.accessRole) && <button className="icon-button" type="button" aria-label={`Open contextual actions for ${surfaceContextualEntity.label}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openContextualActions({ entities: [surfaceContextualEntity] }, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>
@@ -4541,6 +4554,8 @@ export function TaskTracker({
               focus,
             )}
           />
+        ) : surface === "teams" ? (
+          <TeamsSurface currentUserId={data.user.id} />
         ) : surface === "admin" && data.admin ? (
           <AdminSurface
             overview={data.admin}
@@ -8136,7 +8151,179 @@ export function ViewDialog({ view, editing, query, display, data, initialScopePr
   </Modal>;
 }
 
+function TeamsSurface({ currentUserId }: { currentUserId: string }) {
+  const [catalog, setCatalog] = useState<TeamsCatalog | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      setCatalog(await teamsRequest("/api/teams"));
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not load Teams");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    queueMicrotask(() => void load());
+  }, [load]);
+
+  const mutateTeam = async (
+    path: string,
+    method: "POST" | "PATCH" | "DELETE",
+    body: Record<string, unknown>,
+  ) => {
+    setBusy(true);
+    setError("");
+    try {
+      setCatalog(await teamsRequest(path, method, body));
+      return true;
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Could not update Team");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) return <div className="teams-state" role="status"><RotateCw size={18} className="spin" /><b>Loading Teams…</b></div>;
+  if (!catalog && error) return <div className="teams-state" role="alert"><UsersRound size={22} /><b>Teams could not be loaded</b><span>{error}</span><button className="button ghost" type="button" onClick={() => void load()}>Try again</button></div>;
+  const teams = catalog?.teams ?? [];
+  const memberships = catalog?.memberships ?? [];
+  const teamCard = (team: TeamRecord) => {
+    const teamMemberships = memberships.filter((row) => row.teamId === team.id);
+    const ownMembership = teamMemberships.find((row) => row.userId === currentUserId);
+    const canManage = team.ownerUserId === currentUserId;
+    return <article className="team-card" key={team.id}>
+      <header><span className="team-mark"><UsersRound size={16} /></span><div><h3>{team.name}</h3><p>{team.activeMemberCount} active · {ownMembership?.role === "owner" ? "Owner" : "Member"}</p></div><span className={`membership-state ${ownMembership?.status ?? "active"}`}>{ownMembership?.status ?? "active"}</span></header>
+      <div className="team-member-list" aria-label={`Members of ${team.name}`}>
+        {teamMemberships.map((membership) => <TeamMemberRow
+          key={membership.id}
+          membership={membership}
+          team={team}
+          canManage={canManage}
+          busy={busy}
+          onStatus={(status) => mutateTeam(
+            `/api/teams/${encodeURIComponent(team.id)}/members/${encodeURIComponent(membership.id)}`,
+            "PATCH",
+            { teamVersion: team.version, membershipVersion: membership.version, status },
+          )}
+          onDelete={() => mutateTeam(
+            `/api/teams/${encodeURIComponent(team.id)}/members/${encodeURIComponent(membership.id)}`,
+            "DELETE",
+            { teamVersion: team.version, membershipVersion: membership.version },
+          )}
+        />)}
+      </div>
+      {canManage && <form className="team-add-member" onSubmit={async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const email = String(new FormData(form).get("email") ?? "");
+        if (await mutateTeam(
+          `/api/teams/${encodeURIComponent(team.id)}/members`,
+          "POST",
+          { teamVersion: team.version, email },
+        )) form.reset();
+      }}><input name="email" required type="email" placeholder="Registered user email" aria-label={`Add member to ${team.name}`} /><button className="button ghost" disabled={busy}>Add member</button></form>}
+    </article>;
+  };
+  const teamGroups = [
+    { label: "Your Teams", teams: teams.filter((team) => team.ownerUserId === currentUserId) },
+    { label: "Joined Teams", teams: teams.filter((team) => team.ownerUserId !== currentUserId) },
+  ].filter((group) => group.teams.length > 0);
+
+  return <div className="teams-surface">
+    <header className="teams-intro">
+      <div><h2>Teams</h2><p>Group access without changing resource ownership or direct people access.</p></div>
+      <form onSubmit={async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const name = String(new FormData(form).get("name") ?? "");
+        if (await mutateTeam("/api/teams", "POST", { name })) form.reset();
+      }}>
+        <input name="name" required maxLength={100} placeholder="Team name" aria-label="Team name" />
+        <button className="button primary" disabled={busy}><Plus size={14} />Create Team</button>
+      </form>
+    </header>
+    {error && <div className="teams-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError("")}><X size={13} /></button></div>}
+    {teams.length === 0 ? <div className="teams-state empty"><UsersRound size={24} /><b>No Teams yet</b><span>Create a Team to manage an explicit group of registered users.</span></div> : <div className="team-catalog-groups">{teamGroups.map((group) => <section key={group.label}><header><h3>{group.label}</h3><span>{group.teams.length}</span></header><div className="team-card-grid">{group.teams.map(teamCard)}</div></section>)}</div>}
+  </div>;
+}
+
+function TeamMemberRow({ membership, team, canManage, busy, onStatus, onDelete }: {
+  membership: TeamMembershipRecord;
+  team: TeamRecord;
+  canManage: boolean;
+  busy: boolean;
+  onStatus: (status: "active" | "inactive") => Promise<boolean>;
+  onDelete: () => Promise<boolean>;
+}) {
+  const owner = membership.role === "owner";
+  return <div className={`team-member-row ${membership.status}`}>
+    <span className="avatar">{initials(membership.displayName)}</span>
+    <span><b>{membership.displayName}</b><small>{membership.email}</small></span>
+    <span className="role-badge">{owner ? "Owner" : membership.status === "active" ? "Member" : "Inactive"}</span>
+    {canManage && !owner && <div className="team-member-actions">
+      <button type="button" disabled={busy} onClick={() => void onStatus(membership.status === "active" ? "inactive" : "active")}>{membership.status === "active" ? "Deactivate" : "Reactivate"}</button>
+      <button type="button" className="danger" disabled={busy} onClick={() => { if (window.confirm(`Remove ${membership.displayName} from ${team.name}?`)) void onDelete(); }}>Remove</button>
+    </div>}
+  </div>;
+}
+
+async function teamsRequest(
+  path: string,
+  method: "GET" | "POST" | "PATCH" | "DELETE" = "GET",
+  body?: Record<string, unknown>,
+): Promise<TeamsCatalog> {
+  const response = await fetch(path, {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const value = await response.json() as TeamsCatalog & { error?: string };
+  if (!response.ok) throw new Error(value.error ?? "Could not update Team");
+  return value;
+}
+
 function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
+  const [teamContext, setTeamContext] = useState<{
+    teams: TeamRecord[];
+    grants: TeamGrantRecord[];
+    actorRole: AccessRole;
+  } | null>(null);
+  const [teamBusy, setTeamBusy] = useState(false);
+  const [teamError, setTeamError] = useState("");
+
+  useEffect(() => {
+    if (!target) return;
+    const controller = new AbortController();
+    const parameters = new URLSearchParams({
+      resource_type: target.teamResourceType,
+      resource_id: target.teamResourceId,
+    });
+    void fetch(`/api/team-grants?${parameters}`, { signal: controller.signal })
+      .then(async (response) => {
+        const value = await response.json() as {
+          teams: TeamRecord[];
+          grants: TeamGrantRecord[];
+          actorRole: AccessRole;
+          error?: string;
+        };
+        if (!response.ok) throw new Error(value.error ?? "Could not load Team access");
+        setTeamContext(value);
+      })
+      .catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === "AbortError") return;
+        setTeamError(requestError instanceof Error ? requestError.message : "Could not load Team access");
+      });
+    return () => controller.abort();
+  }, [target]);
+
   if (!target) return null;
   const grants = collaborators.filter((grant) => grant.resourceType === target.resourceType && grant.resourceId === target.resourceId);
   const assignableRoles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
@@ -8149,22 +8336,90 @@ function ShareDialog({ target, currentUser, users, collaborators, onClose, onSha
     : target.resourceType === "task"
       ? "Access applies only to this standalone task."
       : "A shared view still shows only tasks the person can already access.";
+  const teamRoles = teamContext
+    ? (["manager", "editor", "viewer"] as const).filter((role) =>
+        canAssignRole(teamContext.actorRole, target.teamResourceType, role))
+    : [];
+  const grantedTeamIds = new Set(teamContext?.grants.map((grant) => grant.teamId));
+  const availableTeams = teamContext?.teams.filter((team) => !grantedTeamIds.has(team.id)) ?? [];
+  const teamCopy = target.teamResourceType === "project"
+    ? "Team access is inherited by this Project's tasks, releases, and project-scoped views."
+    : target.teamResourceType === "task" && target.resourceType === "project"
+      ? `This creates a direct route to ${target.teamLabel} only. Project-wide Team access is managed separately on the Project.`
+      : target.teamResourceType === "task"
+        ? "This Team route opens only this task."
+        : "The Team can open this global view, but the view still evaluates only accessible tasks.";
 
-  return <Modal onClose={onClose}><form onSubmit={async (event) => {
-    event.preventDefault();
-    const values = new FormData(event.currentTarget);
-    const ok = await onShare({
-      resourceType: target.resourceType,
-      resourceId: target.resourceId,
-      email: String(values.get("email") ?? ""),
-      permission: String(values.get("permission") ?? "viewer"),
-    });
-    if (ok) event.currentTarget.reset();
-  }}><DialogHeader title={`Members & access · ${target.label}`} icon={<UsersRound size={17} />} onClose={onClose} /><p className="dialog-copy">Add a registered user by verified email. They must have signed in once; no email is sent. {inheritanceCopy}</p><div className="role-guide">{target.resourceType === "project" && <><span><b>Owner</b> has full control and can transfer ownership.</span><span><b>Manager</b> edits work and manages Editors/Viewers.</span></>}<span><b>Editor</b> creates, changes, moves, archives, and restores work.</span><span><b>Viewer</b> can only read.</span></div><div className="share-input"><input name="email" type="email" required placeholder="name@example.com" autoFocus /><select name="permission" defaultValue={assignableRoles.includes("editor") ? "editor" : assignableRoles[0]} aria-label="Role">{assignableRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><button className="button primary" disabled={busy || assignableRoles.length === 0}>{busy ? "Adding…" : "Add"}</button></div><div className="access-list"><div className="access-row"><span className="avatar">{initials(ownerName)}</span><span><b>{ownerName}</b><small>{owner?.email ?? "Current project owner"}</small></span><em>Owner</em></div>{grants.map((grant) => {
-    const manageable = canManageGrant(target.accessRole, target.resourceType, grant.permission);
-    const roles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
-    return <div className="access-row" key={grant.grantId}><span className="avatar">{initials(grant.displayName)}</span><span><b>{grant.displayName}</b><small>{grant.email}</small></span><select aria-label={`Role for ${grant.displayName}`} value={grant.permission} disabled={busy || !manageable} onChange={(event) => void onRoleChange(grant.grantId, event.target.value as "manager" | "editor" | "viewer")}><option value={grant.permission}>{roleLabel(grant.permission)}</option>{roles.filter((role) => role !== grant.permission).map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{target.resourceType === "project" && target.accessRole === "owner" && <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Transfer ownership of ${target.label} to ${grant.displayName}? You will become Manager.`)) void onTransfer(target.resourceId, grant.userId); }}>Make owner</button>}{manageable && <button type="button" disabled={busy} onClick={() => void onRevoke(grant.grantId)}>Remove</button>}</div></div>;
-  })}</div></form></Modal>;
+  const mutateTeamGrant = async (method: "POST" | "DELETE", body: Record<string, unknown>) => {
+    setTeamBusy(true);
+    setTeamError("");
+    try {
+      const response = await fetch("/api/team-grants", {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          resourceType: target.teamResourceType,
+          resourceId: target.teamResourceId,
+          ...body,
+        }),
+      });
+      const value = await response.json() as typeof teamContext & { error?: string };
+      if (!response.ok) throw new Error(value?.error ?? "Could not update Team access");
+      setTeamContext(value);
+      return true;
+    } catch (requestError) {
+      setTeamError(requestError instanceof Error ? requestError.message : "Could not update Team access");
+      return false;
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  return <Modal onClose={onClose}><div className="people-teams-dialog">
+    <DialogHeader title={`People & Teams · ${target.label}`} icon={<UsersRound size={17} />} onClose={onClose} />
+    <section className="access-channel">
+      <header><div><h3>People</h3><p>Direct access for one registered user. {inheritanceCopy}</p></div></header>
+      <div className="role-guide">{target.resourceType === "project" && <><span><b>Owner</b> has full control and can transfer ownership.</span><span><b>Manager</b> edits work and manages Editors/Viewers.</span></>}<span><b>Editor</b> can change work.</span><span><b>Viewer</b> can only read.</span></div>
+      <form className="share-input" onSubmit={async (event) => {
+        event.preventDefault();
+        const form = event.currentTarget;
+        const values = new FormData(form);
+        const ok = await onShare({
+          resourceType: target.resourceType,
+          resourceId: target.resourceId,
+          email: String(values.get("email") ?? ""),
+          permission: String(values.get("permission") ?? "viewer"),
+        });
+        if (ok) form.reset();
+      }}><input name="email" type="email" required placeholder="name@example.com" autoFocus /><select name="permission" defaultValue={assignableRoles.includes("editor") ? "editor" : assignableRoles[0]} aria-label="People role">{assignableRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><button className="button primary" disabled={busy || assignableRoles.length === 0}>{busy ? "Adding…" : "Add person"}</button></form>
+      <div className="access-list"><div className="access-row"><span className="avatar">{initials(ownerName)}</span><span><b>{ownerName}</b><small>{owner?.email ?? "Current project owner"}</small></span><em>Owner</em></div>{grants.map((grant) => {
+        const manageable = canManageGrant(target.accessRole, target.resourceType, grant.permission);
+        const roles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
+        return <div className="access-row" key={grant.grantId}><span className="avatar">{initials(grant.displayName)}</span><span><b>{grant.displayName}</b><small>{grant.email}</small></span><select aria-label={`Role for ${grant.displayName}`} value={grant.permission} disabled={busy || !manageable} onChange={(event) => void onRoleChange(grant.grantId, event.target.value as "manager" | "editor" | "viewer")}><option value={grant.permission}>{roleLabel(grant.permission)}</option>{roles.filter((role) => role !== grant.permission).map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{target.resourceType === "project" && target.accessRole === "owner" && <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Transfer ownership of ${target.label} to ${grant.displayName}? You will become Manager.`)) void onTransfer(target.resourceId, grant.userId); }}>Make owner</button>}{manageable && <button type="button" disabled={busy} onClick={() => void onRevoke(grant.grantId)}>Remove</button>}</div></div>;
+      })}</div>
+    </section>
+    <section className="access-channel team-channel">
+      <header><div><h3>Teams{target.teamLabel !== target.label ? ` · ${target.teamLabel}` : ""}</h3><p>{teamCopy}</p></div><span className="channel-badge">Separate route</span></header>
+      {teamError && <div className="dialog-error" role="alert">{teamError}</div>}
+      {!teamContext ? <div className="team-grants-state" role="status">Loading Team access…</div> : <>
+        {teamRoles.length > 0 && availableTeams.length > 0 && <form className="share-input team-grant-input" onSubmit={async (event) => {
+          event.preventDefault();
+          const form = event.currentTarget;
+          const values = new FormData(form);
+          if (await mutateTeamGrant("POST", {
+            teamId: String(values.get("teamId") ?? ""),
+            permission: String(values.get("permission") ?? "viewer"),
+          })) form.reset();
+        }}><select name="teamId" required aria-label="Select Team" defaultValue=""><option value="" disabled>Select a Team</option>{availableTeams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select><select name="permission" defaultValue={teamRoles.includes("editor") ? "editor" : teamRoles[0]} aria-label="Team role">{teamRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><button className="button primary" disabled={teamBusy}>Grant Team</button></form>}
+        {teamRoles.length === 0 && <div className="team-grants-state">Only the owner can add a direct Team route here. Project Managers can manage Project-level Team access.</div>}
+        {teamRoles.length > 0 && availableTeams.length === 0 && teamContext.teams.length === 0 && <div className="team-grants-state">Create or join a Team before granting group access.</div>}
+        <div className="access-list team-grant-list">{teamContext.grants.length === 0 ? <div className="team-grants-state">No Team route has been added.</div> : teamContext.grants.map((grant) => {
+          const manageable = canManageGrant(teamContext.actorRole, target.teamResourceType, grant.permission);
+          return <div className="access-row" key={grant.grantId}><span className="team-mark"><UsersRound size={14} /></span><span><b>{grant.teamName}</b><small>{target.teamInherited ? "Inherited through Project" : "Direct Team route"}</small></span><select aria-label={`Role for ${grant.teamName}`} value={grant.permission} disabled={teamBusy || !manageable} onChange={(event) => void mutateTeamGrant("POST", { teamId: grant.teamId, version: grant.version, permission: event.target.value })}>{!teamRoles.includes(grant.permission) && <option value={grant.permission}>{roleLabel(grant.permission)}</option>}{teamRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions"><button type="button" disabled={teamBusy || !manageable} onClick={() => void mutateTeamGrant("DELETE", { teamId: grant.teamId, version: grant.version })}>Remove</button></div></div>;
+        })}</div>
+      </>}
+    </section>
+  </div></Modal>;
 }
 
 function roleLabel(role: "owner" | "manager" | "editor" | "viewer") {
@@ -9891,6 +10146,7 @@ function surfaceBreadcrumbs(
   if (surface === "projects") return [workspace, current("Projects")];
   if (surface === "releases") return [workspace, current("Releases")];
   if (surface === "shared") return [workspace, current("Shared with me")];
+  if (surface === "teams") return [workspace, current("Teams")];
 
   if (surface.startsWith("view:")) {
     return [
@@ -9942,7 +10198,7 @@ function surfaceBreadcrumbs(
   const builtIn = builtInViews.find((item) => item.id === surface);
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
-function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
+function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "teams" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
 function taskContextualEntity(task: TaskRecord): ContextualActionEntity {
   return { kind: "task", id: task.id, label: task.identifier, accessRole: task.accessRole, archivedAt: task.archivedAt, version: taskMutationVersion(task) };
 }
@@ -9965,12 +10221,23 @@ function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSn
       accessRole: project.accessRole,
       ownerUserId: project.ownerUserId,
       inherited: true,
+      teamResourceType: "project",
+      teamResourceId: project.id,
+      teamInherited: true,
+      teamLabel: project.name,
     };
   };
 
   if (activeTask) {
     if (activeTask.projectId) {
-      return projectTarget(data.projects.find((item) => item.id === activeTask.projectId));
+      const target = projectTarget(data.projects.find((item) => item.id === activeTask.projectId));
+      return target ? {
+        ...target,
+        teamResourceType: "task",
+        teamResourceId: activeTask.id,
+        teamInherited: false,
+        teamLabel: activeTask.identifier,
+      } : null;
     }
     return activeTask.accessRole === "owner"
       ? {
@@ -9980,6 +10247,10 @@ function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSn
           accessRole: activeTask.accessRole,
           ownerUserId: activeTask.ownerUserId,
           inherited: false,
+          teamResourceType: "task",
+          teamResourceId: activeTask.id,
+          teamInherited: false,
+          teamLabel: activeTask.identifier,
         }
       : null;
   }
@@ -10007,6 +10278,10 @@ function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSn
           accessRole: view.accessRole,
           ownerUserId: view.ownerUserId,
           inherited: false,
+          teamResourceType: "saved_view",
+          teamResourceId: view.id,
+          teamInherited: false,
+          teamLabel: view.name,
         }
       : null;
   }

@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-31
+Последнее обновление: 2026-09-01
 
 Архитектура реализована первым вертикальным срезом на TypeScript, React 19,
 Vinext/Vite, Sites Worker runtime и D1. Выбор и границы authentication
@@ -131,14 +131,16 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 ### Авторизованный доступ к данным
 
 1. Identity middleware устанавливает current User из server-verified session.
-2. Access вычисляет effective role: для Project и его subtree, включая каждую
-   Task, — через current Project owner/active Project grant; для global
-   SavedView — через собственный owner/active direct grant.
+2. Access вычисляет strongest effective role среди ownership, active direct
+   User grants, Project inheritance и всех Team grants с active membership.
+   Project Team grant наследуется subtree; direct Task Team grant добавляет
+   route только к одной Task; global SavedView допускает direct User и Team
+   routes, а project-scoped SavedView использует Project routes.
 3. Repository применяет predicate внутри SQL/query до pagination, aggregation,
    grouping или full-text search.
 4. Mutation дополнительно требует minimum role (`editor` для content,
-   `manager`/`owner` для разрешённого member management), inheritance и domain
-   invariants в одной транзакции.
+   `manager`/`owner` для управления grants; только Team Owner для membership),
+   inheritance, optimistic version и domain invariants в одной транзакции.
 5. Unauthorized lookup возвращает ответ, не подтверждающий существование
    чужого resource.
 6. Browser UI может передать opaque owner workspace scope. Repository сначала
@@ -154,17 +156,23 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 
 ### Share и revoke
 
-1. Grantor находит уже зарегистрированного User по verified email.
-2. Access проверяет role actor, допустимый shareable root и ceiling: Owner
-   назначает Manager/Editor/Viewer, Manager — только Editor/Viewer.
-3. Active grant с выбранной role создаётся или обновляется идемпотентно с
-   provenance grantor/timestamp. Verified email обязан разрешаться однозначно.
-4. Revoke атомарно закрывает grant. Следующий query/mutation grantee больше не
-   включает resource subtree.
+1. People route находит уже зарегистрированного User по verified email; Team
+   route разрешает только Team, которой actor владеет или где имеет active
+   membership.
+2. Access проверяет actor role, допустимый target и ceiling: Owner назначает
+   Manager/Editor/Viewer, Manager — только Editor/Viewer; Task и global
+   SavedView Team routes допускают только Editor/Viewer.
+3. Active direct User grant или Team grant создаётся/обновляется отдельно с
+   server-verified grantor, timestamp и optimistic version. Один канал не
+   переписывает другой.
+4. Revoke атомарно закрывает только выбранный route. Следующий query/mutation
+   пересчитывает strongest role по оставшимся direct, inherited и Team routes.
 5. Project grant наследуется Tasks/Releases/project-scoped SavedViews. Direct
-   Task/global SavedView grant поддерживает только Editor/Viewer.
-6. Ownership transfer одним batch обновляет Project owner, отзывает grant нового
-   owner и создаёт прежнему owner grant Manager.
+   Task Team grant не открывает Project или соседние Tasks; Release отдельно не
+   шарится.
+6. Ownership transfer одним batch обновляет Project owner, отзывает direct grant
+   нового owner и создаёт прежнему owner direct grant Manager. Team никогда не
+   становится owner.
 
 ### Открытие view
 
@@ -760,12 +768,13 @@ optional/standalone Task semantics из ранних решений: кажда�
   повторяют UI, backup validators, OpenAPI projection и D1 insert/update guards;
 - `task_identifier_aliases` с нормализованным lookup index для прежних
   identifiers;
-- dormant Teams baseline из
+- неизменяемая Teams baseline из
   [ADR-0016](decisions/0016-dormant-teams-schema-baseline.md): `teams` со stable
   public ref и owner catalog indexes, `team_memberships` с unique Team–User
   pair, role/status lifecycle и lookup по Team/User, `team_grants` с type-aware
-  permission check и active lookup по Team/resource. Request runtime пока не
-  импортирует эти таблицы и не включает их в authorization, API, sync или UI;
+  permission check и active lookup по Team/resource. Request runtime использует
+  эти таблицы для `/teams`, membership commands, Team grants и ACL joins, но не
+  выполняет DDL или compatibility backfill;
 - индексы по owner/status/archive/deletion, `purge_after`, project/release и
   updated time;
 - expression indexes по нормализованным task title/identifier, project
@@ -944,6 +953,9 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
 - Access tests покрывают role hierarchy/ceiling, viewer mutation denial,
   project inheritance к Task/Release/scoped View, global View intersection,
   revoke и atomic ownership transfer.
+- Teams tests покрывают owner-only versioned membership, no-existence-leak,
+  несколько Team routes, strongest-role fallback, direct User/Team coexistence,
+  direct Task isolation, SavedView boundaries и Agent/search parity.
 - Admin tests покрывают allowlist normalization, отказ обычному User и
   registration/activity aggregates при изменении source counts.
 - Backup tests покрывают format/domain validation, identity continuity,
@@ -1039,5 +1051,5 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
    limits, retention audit events и критерии перехода на managed IdP перед
    публичным каталогом.
 6. После пяти сравнительных прогонов выбрать функциональную реализацию Teams и
-   отдельно решить её production lifecycle, sync и portability contract; до
-   этого dormant tables остаются исключены из system/Project backup.
+   отдельно решить её production lifecycle, push-sync и portability contract;
+   до этого Team rows остаются исключены из system/Project backup.

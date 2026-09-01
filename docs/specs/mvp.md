@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-31
+Последнее обновление: 2026-09-01
 
 ## 1. Цель
 
@@ -42,10 +42,12 @@ MVP должен позволить вести задачи от backlog до п
 - **Owner workspace scope** — UI-проекция доступных records по владельцу,
   применяемая только как дополнительное сужение уже вычисленного ACL; это не
   entity, tenant, grant или источник authorization.
-- **Dormant Teams schema baseline** — заранее применённая пустая D1-структура
-  `teams`, `team_memberships` и `team_grants`. Пока отдельный функциональный
-  срез не подключён, она не является пользовательской возможностью, не меняет
-  authorization и не создаёт UI/API surface.
+- **Team** — изолированная группа зарегистрированных Users для группового
+  sharing. Её единственный Owner управляет membership, но Team не владеет
+  Projects, Tasks, Releases или SavedViews и не создаёт отдельный workspace.
+- **Teams schema baseline** — заранее применённая D1-структура `teams`,
+  `team_memberships` и `team_grants`, которую функциональный срез использует
+  без изменений schema или migration journal.
 
 ### 2.1 Интерфейсный принцип
 
@@ -215,21 +217,36 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   Owner всегда ровно один.
 - Пользователь может выдать grant только уже зарегистрированному User,
   однозначно найденному по verified email. Email invitation не отправляется.
-- Project role распространяется на Project, его Tasks, Releases и SavedViews с
-  явным `scope_project_id`. Release и project child отдельно не шарятся.
+- Team создаётся атомарно с active owner membership. Только Team Owner может
+  добавлять уже зарегистрированных Users по verified email, деактивировать,
+  реактивировать и удалять member membership. Team и membership mutations
+  требуют актуальных optimistic versions; Team Owner нельзя деактивировать или
+  удалить из собственной Team.
+- Project role, полученная через direct User grant или active Team grant,
+  распространяется на Project, его Tasks, Releases и SavedViews с явным
+  `scope_project_id`. Release отдельно не шарится.
 - Для project child effective access определяется текущим Project owner/grant,
   а не историческим `owner_user_id`. Передача ownership не меняет immutable
   task identifiers и provenance/catalog scope дочерних records. Явный перенос
   Task меняет identifier только по отдельному атомарному move contract.
-- Global SavedView можно расшарить напрямую с ролью `Editor` или `Viewer`.
-  Каждая Task наследует доступ только от своего Project.
+- Global SavedView можно расшарить прямым User grant или Team grant с ролью
+  `Editor`/`Viewer`. Project-scoped SavedView по-прежнему использует только
+  access route своего Project.
+- Task наследует Project routes, но дополнительно допускает Team grant
+  `Editor`/`Viewer` к самой Task. Такой route не открывает Project, Release,
+  соседние Tasks или project-scoped SavedViews.
+- Effective role — сильнейшая активная роль среди ownership, direct User grant,
+  Project inheritance и всех Team routes. Неактивное membership не даёт Team
+  access; отзыв одного route не меняет остальные direct, inherited или Team
+  routes.
 - Global SavedView не расширяет доступ к попавшим в query Tasks. Получатель
   видит пересечение view с уже доступными ему данными.
 - Resources, которыми поделились с User, доступны в `Shared with me`. Revoke
   прекращает новые чтения и mutations немедленно после завершения транзакции.
-- `Shared with me` перечисляет только top-level Projects с явным Project grant
-  и напрямую расшаренные global SavedViews. Унаследованные Tasks, Releases и
-  project-scoped SavedViews не становятся отдельными строками этой surface.
+- `Shared with me` перечисляет только top-level Projects и global SavedViews,
+  доступные через direct User или active Team grant. Унаследованные и прямо
+  расшаренные через Team Tasks, Releases и project-scoped SavedViews не
+  становятся отдельными строками этой surface.
   Открытие этой специальной collection использует `All accessible` и полные
   server-paginated Project/View catalogs, а не bounded snapshot `Your work`.
 - Доступность Viewer/Editor/Manager/Owner controls определяется только
@@ -274,18 +291,23 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   relations/Comments/Activity/Attachments после R2 cleanup и не возвращает
   identifier sequence в allocator.
 
-### 4.1 Dormant Teams schema baseline
+### 4.1 Teams runtime поверх неизменяемой baseline
 
-- До сравнительной реализации Teams одна versioned migration создаёт пустые
-  `teams`, `team_memberships` и `team_grants` согласно
-  [ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md).
-- Этот шаг не добавляет Team catalog, membership commands, Team-derived access,
-  autocomplete, sharing controls или navigation. Все существующие queries и
-  mutations продолжают использовать прежний owner/direct-grant contract.
-- Последующие функциональные задачи используют готовую структуру без schema
-  changes. Между прогонами migration и migration journal сохраняются, а reset
-  может удалять только синтетические строки новых таблиц.
-- Dormant Team rows намеренно не входят в system/Project backup format текущего
+- Versioned migration из
+  [ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md) заранее создаёт
+  `teams`, `team_memberships` и `team_grants`. Функциональный срез не меняет
+  `db/schema.ts`, SQL migrations, indexes, constraints или migration journal и
+  не выполняет DDL в request runtime.
+- `/teams` лениво показывает только Teams, которыми User владеет или где имеет
+  active membership, и их member list. Владелец управляет membership; участник
+  без ownership видит каталог без mutation controls.
+- `People & Teams` хранит direct User grants и Team grants как независимые
+  каналы. Team picker показывает только доступные actor Teams, а сервер повторно
+  проверяет actor role, role ceiling, target ACL и optimistic version.
+- Dedicated Teams-state хранится только в трёх baseline-таблицах. Team не
+  меняет ownership, workflow, identifiers или Project membership базовых
+  ресурсов; обычные mutations ресурсов продолжают использовать их таблицы.
+- Team rows намеренно не входят в system/Project backup format текущего
   экспериментального среза. Backup/export/import/restore не являются его
   guardrail или acceptance и требуют отдельной прямой команды пользователя.
 
@@ -1228,3 +1250,7 @@ created/updated/started/completed/canceled dates и archived state.
     `team_memberships` и `team_grants` с constraints/indexes, без runtime, ACL,
     API, UI или portability behavior; структура сохраняется между пятью
     функциональными прогонами.
+27. Функциональный Teams-срез поверх той же baseline: versioned membership,
+    отдельный Team grant channel, strongest effective role, изолированный
+    `/teams` catalog и `People & Teams` без schema/migration diff и без
+    включения Team rows в backup/import/export/restore.

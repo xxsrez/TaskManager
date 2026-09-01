@@ -66,6 +66,7 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(parseNavigationPath("/views"), { kind: "views" });
   assert.deepEqual(parseNavigationPath("/projects"), { kind: "projects" });
   assert.deepEqual(parseNavigationPath("/releases"), { kind: "releases" });
+  assert.deepEqual(parseNavigationPath("/teams"), { kind: "teams" });
   assert.deepEqual(parseNavigationPath("/settings"), {
     kind: "settings",
     section: "profile",

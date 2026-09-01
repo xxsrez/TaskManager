@@ -74,6 +74,8 @@ import {
 import { getD1 } from "@/db";
 import {
   accessibleTaskWhere,
+  editableProjectWhere,
+  editableSavedViewWhere,
   editableTaskWhere,
   projectAccessRoleSql,
   savedViewAccessRoleSql,
@@ -138,6 +140,8 @@ const defaultStatuses: Array<[
 ];
 
 const editableTaskPredicate = editableTaskWhere("tasks");
+const editableProjectPredicate = editableProjectWhere("projects");
+const editableSavedViewPredicate = editableSavedViewWhere("saved_views");
 
 type WorkspaceOwnerCandidate = { id: string; displayName: string };
 
@@ -331,26 +335,50 @@ function accessibleWorkspaceOwnersStatement(db: D1Database, userId: string) {
        UNION
        SELECT p.owner_user_id FROM projects p
        WHERE p.deleted_at IS NULL AND (p.owner_user_id = ? OR EXISTS (
-         SELECT 1 FROM access_grants ag
-         WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-           AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+         SELECT 1 FROM users access_actor WHERE access_actor.id = ? AND (
+           EXISTS (SELECT 1 FROM access_grants ag
+             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
+               AND ag.grantee_user_id = access_actor.id AND ag.revoked_at IS NULL)
+           OR EXISTS (SELECT 1 FROM team_memberships membership
+             JOIN team_grants team_grant ON team_grant.team_id = membership.team_id
+             WHERE membership.user_id = access_actor.id
+               AND membership.status = 'active' AND membership.deactivated_at IS NULL
+               AND team_grant.resource_type = 'project' AND team_grant.resource_id = p.id
+               AND team_grant.revoked_at IS NULL)
+         )
        ))
        UNION
        SELECT t.owner_user_id FROM tasks t
        WHERE t.project_id IS NULL AND t.deleted_at IS NULL AND (
          t.owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+           SELECT 1 FROM users access_actor WHERE access_actor.id = ? AND (
+             EXISTS (SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
+                 AND ag.grantee_user_id = access_actor.id AND ag.revoked_at IS NULL)
+             OR EXISTS (SELECT 1 FROM team_memberships membership
+               JOIN team_grants team_grant ON team_grant.team_id = membership.team_id
+               WHERE membership.user_id = access_actor.id
+                 AND membership.status = 'active' AND membership.deactivated_at IS NULL
+                 AND team_grant.resource_type = 'task' AND team_grant.resource_id = t.id
+                 AND team_grant.revoked_at IS NULL)
+           )
          )
        )
        UNION
        SELECT v.owner_user_id FROM saved_views v
        WHERE v.scope_project_id IS NULL AND v.deleted_at IS NULL AND (
          v.owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
+           SELECT 1 FROM users access_actor WHERE access_actor.id = ? AND (
+             EXISTS (SELECT 1 FROM access_grants ag
+               WHERE ag.resource_type = 'saved_view' AND ag.resource_id = v.id
+                 AND ag.grantee_user_id = access_actor.id AND ag.revoked_at IS NULL)
+             OR EXISTS (SELECT 1 FROM team_memberships membership
+               JOIN team_grants team_grant ON team_grant.team_id = membership.team_id
+               WHERE membership.user_id = access_actor.id
+                 AND membership.status = 'active' AND membership.deactivated_at IS NULL
+                 AND team_grant.resource_type = 'saved_view' AND team_grant.resource_id = v.id
+                 AND team_grant.revoked_at IS NULL)
+           )
          )
        )
      )
@@ -382,11 +410,22 @@ function workspaceCatalogOwnerPredicate(
       WHERE catalog_project.deleted_at IS NULL
         AND catalog_project.owner_user_id = ${expression} AND (
         catalog_project.owner_user_id = ? OR EXISTS (
-          SELECT 1 FROM access_grants catalog_grant
-          WHERE catalog_grant.resource_type = 'project'
-            AND catalog_grant.resource_id = catalog_project.id
-            AND catalog_grant.grantee_user_id = ?
-            AND catalog_grant.revoked_at IS NULL
+          SELECT 1 FROM users catalog_actor WHERE catalog_actor.id = ? AND (
+            EXISTS (SELECT 1 FROM access_grants catalog_grant
+              WHERE catalog_grant.resource_type = 'project'
+                AND catalog_grant.resource_id = catalog_project.id
+                AND catalog_grant.grantee_user_id = catalog_actor.id
+                AND catalog_grant.revoked_at IS NULL)
+            OR EXISTS (SELECT 1 FROM team_memberships catalog_membership
+              JOIN team_grants catalog_team_grant
+                ON catalog_team_grant.team_id = catalog_membership.team_id
+              WHERE catalog_membership.user_id = catalog_actor.id
+                AND catalog_membership.status = 'active'
+                AND catalog_membership.deactivated_at IS NULL
+                AND catalog_team_grant.resource_type = 'project'
+                AND catalog_team_grant.resource_id = catalog_project.id
+                AND catalog_team_grant.revoked_at IS NULL)
+          )
         )
       )
     ) OR EXISTS (
@@ -395,11 +434,22 @@ function workspaceCatalogOwnerPredicate(
         AND catalog_task.deleted_at IS NULL
         AND catalog_task.owner_user_id = ${expression} AND (
           catalog_task.owner_user_id = ? OR EXISTS (
-            SELECT 1 FROM access_grants catalog_task_grant
-            WHERE catalog_task_grant.resource_type = 'task'
-              AND catalog_task_grant.resource_id = catalog_task.id
-              AND catalog_task_grant.grantee_user_id = ?
-              AND catalog_task_grant.revoked_at IS NULL
+            SELECT 1 FROM users catalog_actor WHERE catalog_actor.id = ? AND (
+              EXISTS (SELECT 1 FROM access_grants catalog_task_grant
+                WHERE catalog_task_grant.resource_type = 'task'
+                  AND catalog_task_grant.resource_id = catalog_task.id
+                  AND catalog_task_grant.grantee_user_id = catalog_actor.id
+                  AND catalog_task_grant.revoked_at IS NULL)
+              OR EXISTS (SELECT 1 FROM team_memberships catalog_membership
+                JOIN team_grants catalog_team_grant
+                  ON catalog_team_grant.team_id = catalog_membership.team_id
+                WHERE catalog_membership.user_id = catalog_actor.id
+                  AND catalog_membership.status = 'active'
+                  AND catalog_membership.deactivated_at IS NULL
+                  AND catalog_team_grant.resource_type = 'task'
+                  AND catalog_team_grant.resource_id = catalog_task.id
+                  AND catalog_team_grant.revoked_at IS NULL)
+            )
           )
         )
     ))`,
@@ -413,23 +463,9 @@ function snapshotTaskIdScopeCte(scope: ResolvedWorkspaceScope | null) {
   SELECT t.id, t.updated_at,
     CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
       ELSE t.owner_user_id END AS workspace_owner_user_id,
-    CASE
-      WHEN t.project_id IS NOT NULL AND p.owner_user_id = ? THEN 1
-      WHEN t.project_id IS NOT NULL THEN EXISTS (
-        SELECT 1 FROM access_grants ag
-        WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
-          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-      )
-      WHEN t.owner_user_id = ? THEN 1
-      ELSE EXISTS (
-        SELECT 1 FROM access_grants ag
-        WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-          AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-      )
-    END AS is_visible
+    1 AS is_visible
   FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-  WHERE t.deleted_at IS NULL
-    AND (t.project_id IS NULL OR p.deleted_at IS NULL)
+  WHERE ${accessibleTaskWhere("t")}
 ), visible_task_ids AS (
   SELECT id FROM scoped_task_ids WHERE is_visible = 1 AND ${predicate.sql}
   ORDER BY updated_at DESC, id DESC LIMIT ?
@@ -846,35 +882,13 @@ export async function getSnapshot(
               OR EXISTS (
                 SELECT 1 FROM projects p
                 WHERE p.deleted_at IS NULL
-                  AND p.owner_user_id = s.owner_user_id AND (
-                  p.owner_user_id = ? OR EXISTS (
-                    SELECT 1 FROM access_grants ag
-                    WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                      AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                  )
-                )
+                  AND p.owner_user_id = s.owner_user_id
+                  AND (${projectAccessRoleSql("p")}) IS NOT NULL
               )) AND ${workspacePredicate("s.owner_user_id", workspaceScope).sql})
              OR EXISTS (
                 SELECT 1 FROM tasks t
                 LEFT JOIN projects p ON p.id = t.project_id
-                WHERE t.status_id = s.id AND (
-                  (t.project_id IS NOT NULL AND (
-                    p.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'project'
-                        AND ag.resource_id = t.project_id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  )) OR (t.project_id IS NULL AND (
-                    t.owner_user_id = ? OR EXISTS (
-                      SELECT 1 FROM access_grants ag
-                      WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                        AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                    )
-                  ))
-                )
-                AND t.deleted_at IS NULL
-                AND (t.project_id IS NULL OR p.deleted_at IS NULL)
+                WHERE t.status_id = s.id AND ${accessibleTaskWhere("t")}
                 AND ${workspacePredicate(
                   "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
                   workspaceScope,
@@ -902,16 +916,28 @@ export async function getSnapshot(
                   u.theme, u.sidebar_preference, u.version
            FROM users u
            WHERE u.id = ? OR EXISTS (
+             SELECT 1 FROM projects visible_owner_project
+             WHERE visible_owner_project.owner_user_id = u.id
+               AND (${projectAccessRoleSql("visible_owner_project")}) IS NOT NULL
+           ) OR EXISTS (
+             SELECT 1 FROM tasks visible_owner_task
+             WHERE visible_owner_task.owner_user_id = u.id
+               AND ${accessibleTaskWhere("visible_owner_task")}
+           ) OR EXISTS (
+             SELECT 1 FROM team_memberships actor_membership
+             JOIN team_memberships peer_membership
+               ON peer_membership.team_id = actor_membership.team_id
+             WHERE actor_membership.user_id = ?
+               AND actor_membership.status = 'active'
+               AND actor_membership.deactivated_at IS NULL
+               AND peer_membership.user_id = u.id
+               AND peer_membership.status = 'active'
+               AND peer_membership.deactivated_at IS NULL
+           ) OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE p.deleted_at IS NULL AND (
-               p.owner_user_id = ? OR EXISTS (
-                 SELECT 1 FROM access_grants actor_grant
-                 WHERE actor_grant.resource_type = 'project'
-                   AND actor_grant.resource_id = p.id
-                   AND actor_grant.grantee_user_id = ?
-                   AND actor_grant.revoked_at IS NULL
-               )
-             ) AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql} AND (
+             WHERE p.deleted_at IS NULL
+               AND (${projectAccessRoleSql("p")}) IS NOT NULL
+               AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql} AND (
                p.owner_user_id = u.id OR EXISTS (
                  SELECT 1 FROM access_grants member_grant
                  WHERE member_grant.resource_type = 'project'
@@ -945,6 +971,13 @@ export async function getSnapshot(
           user.id,
           user.id,
           user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
+          user.id,
           ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
           user.id,
           user.id,
@@ -959,15 +992,9 @@ export async function getSnapshot(
            WHERE ag.revoked_at IS NULL AND (
              (ag.resource_type = 'project' AND EXISTS (
                SELECT 1 FROM projects p
-               WHERE p.id = ag.resource_id AND p.deleted_at IS NULL AND (
-                 p.owner_user_id = ? OR EXISTS (
-                   SELECT 1 FROM access_grants actor_grant
-                   WHERE actor_grant.resource_type = 'project'
-                     AND actor_grant.resource_id = p.id
-                     AND actor_grant.grantee_user_id = ?
-                     AND actor_grant.revoked_at IS NULL
-                 )
-               ) AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
+               WHERE p.id = ag.resource_id AND p.deleted_at IS NULL
+                 AND (${projectAccessRoleSql("p")}) IS NOT NULL
+                 AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
              )) OR
              (ag.resource_type = 'task' AND EXISTS (
                SELECT 1 FROM tasks t
@@ -1670,15 +1697,7 @@ export async function searchWorkspace(
        SELECT t.id, t.public_id, t.identifier, t.title, t.description, t.updated_at,
          p.name AS project_name, p.public_id AS project_public_id,
          r.name AS release_name,
-         CASE
-           WHEN p.owner_user_id = ? THEN 'owner'
-           ELSE (
-             SELECT ag.permission FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = t.project_id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             LIMIT 1
-           )
-         END AS access_role
+         ${taskAccessRoleSql("t", "p")} AS access_role
        FROM tasks t
        JOIN projects p ON p.id = t.project_id
        LEFT JOIN releases r ON r.id = t.release_id AND r.deleted_at IS NULL
@@ -1705,6 +1724,8 @@ export async function searchWorkspace(
      ) DESC, updated_at DESC, id DESC
      LIMIT ? OFFSET ?`,
   ).bind(
+    currentUser.id,
+    currentUser.id,
     currentUser.id,
     currentUser.id,
     query,
@@ -2233,14 +2254,7 @@ export async function createTask(
             FROM tasks WHERE project_id = projects.id)
          ),
          code_locked_at = COALESCE(code_locked_at, ?)
-       WHERE id = ? AND archived_at IS NULL AND deleted_at IS NULL AND (
-         owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.resource_type = 'project' AND ag.resource_id = projects.id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             AND ag.permission IN ('editor', 'manager', 'full_access')
-         )
-       )
+       WHERE id = ? AND archived_at IS NULL AND ${editableProjectPredicate}
        RETURNING task_sequence AS last_value, task_code`,
     )
     .bind(new Date().toISOString(), project.id, currentUser.id, currentUser.id)
@@ -2402,14 +2416,7 @@ export async function createSubtask(
                AND parent.version = ? AND parent.archived_at IS NULL
                AND parent.deleted_at IS NULL
            )
-           AND (
-             owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = projects.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 AND ag.permission IN ('editor', 'manager', 'full_access')
-             )
-           )`,
+           AND ${editableProjectPredicate}`,
       ).bind(
         now,
         now,
@@ -2435,14 +2442,7 @@ export async function createSubtask(
            AND parent.archived_at IS NULL AND p.archived_at IS NULL
            AND parent.deleted_at IS NULL AND p.deleted_at IS NULL
            AND p.status <> 'canceled'
-           AND (
-             p.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag
-               WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                 AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                 AND ag.permission IN ('editor', 'manager', 'full_access')
-             )
-           )`,
+           AND ${editableProjectWhere("p")}`,
       ).bind(
         taskId,
         publicId,
@@ -3018,6 +3018,18 @@ export async function reorderTask(
                        AND assignment_grant.resource_id = assignment_project.id
                        AND assignment_grant.grantee_user_id = assignee.id
                        AND assignment_grant.revoked_at IS NULL
+                   ) OR EXISTS (
+                     SELECT 1 FROM team_memberships assignment_membership
+                     JOIN team_grants assignment_team_grant
+                       ON assignment_team_grant.team_id = assignment_membership.team_id
+                     WHERE assignment_membership.user_id = assignee.id
+                       AND assignment_membership.status = 'active'
+                       AND assignment_membership.deactivated_at IS NULL
+                       AND assignment_team_grant.revoked_at IS NULL
+                       AND ((assignment_team_grant.resource_type = 'project'
+                         AND assignment_team_grant.resource_id = tasks.project_id)
+                         OR (assignment_team_grant.resource_type = 'task'
+                           AND assignment_team_grant.resource_id = tasks.id))
                    )
                  ))
              )
@@ -3254,26 +3266,8 @@ export async function moveTask(
       AND moving.deleted_at IS NULL
       AND source.deleted_at IS NULL AND target.deleted_at IS NULL
       AND target.archived_at IS NULL AND target.status <> 'canceled'
-      AND (
-        source.owner_user_id = ? OR EXISTS (
-          SELECT 1 FROM access_grants source_grant
-          WHERE source_grant.resource_type = 'project'
-            AND source_grant.resource_id = source.id
-            AND source_grant.grantee_user_id = ?
-            AND source_grant.revoked_at IS NULL
-            AND source_grant.permission IN ('editor', 'manager', 'full_access')
-        )
-      )
-      AND (
-        target.owner_user_id = ? OR EXISTS (
-          SELECT 1 FROM access_grants target_grant
-          WHERE target_grant.resource_type = 'project'
-            AND target_grant.resource_id = target.id
-            AND target_grant.grantee_user_id = ?
-            AND target_grant.revoked_at IS NULL
-            AND target_grant.permission IN ('editor', 'manager', 'full_access')
-        )
-      )
+      AND ${editableProjectWhere("source")}
+      AND ${editableProjectWhere("target")}
       AND moving.parent_task_id IS NULL
       AND NOT EXISTS (
         SELECT 1 FROM tasks child WHERE child.parent_task_id = moving.id
@@ -3302,6 +3296,18 @@ export async function moveTask(
                 AND assignee_grant.resource_id = target.id
                 AND assignee_grant.grantee_user_id = assignee.id
                 AND assignee_grant.revoked_at IS NULL
+            ) OR EXISTS (
+              SELECT 1 FROM team_memberships assignee_membership
+              JOIN team_grants assignee_team_grant
+                ON assignee_team_grant.team_id = assignee_membership.team_id
+              WHERE assignee_membership.user_id = assignee.id
+                AND assignee_membership.status = 'active'
+                AND assignee_membership.deactivated_at IS NULL
+                AND assignee_team_grant.revoked_at IS NULL
+                AND ((assignee_team_grant.resource_type = 'project'
+                  AND assignee_team_grant.resource_id = target.id)
+                  OR (assignee_team_grant.resource_type = 'task'
+                    AND assignee_team_grant.resource_id = moving.id))
             )
           )
         )
@@ -3612,16 +3618,7 @@ export async function bulkMoveTasks(
          version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND task_sequence = ?
          AND archived_at IS NULL AND deleted_at IS NULL
-         AND status <> 'canceled' AND (
-           owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants target_grant
-             WHERE target_grant.resource_type = 'project'
-               AND target_grant.resource_id = projects.id
-               AND target_grant.grantee_user_id = ?
-               AND target_grant.revoked_at IS NULL
-               AND target_grant.permission IN ('editor', 'manager', 'full_access')
-           )
-         )`,
+         AND status <> 'canceled' AND ${editableProjectPredicate}`,
     ).bind(
       nextSequence,
       now,
@@ -3677,26 +3674,31 @@ export async function bulkMoveTasks(
              SELECT 1 FROM projects target
              WHERE target.id = ? AND target.archived_at IS NULL
                AND target.deleted_at IS NULL AND target.status <> 'canceled'
-               AND (target.owner_user_id = ? OR EXISTS (
-                 SELECT 1 FROM access_grants target_grant
-                 WHERE target_grant.resource_type = 'project'
-                   AND target_grant.resource_id = target.id
-                   AND target_grant.grantee_user_id = ?
-                   AND target_grant.revoked_at IS NULL
-                   AND target_grant.permission IN ('editor', 'manager', 'full_access')
-               ))
+               AND ${editableProjectWhere("target")}
            )
            AND (? IS NULL OR EXISTS (
              SELECT 1 FROM users assignee WHERE assignee.id = ? AND EXISTS (
                SELECT 1 FROM projects target
                WHERE target.id = ? AND (
-                 target.owner_user_id = assignee.id OR EXISTS (
-                   SELECT 1 FROM access_grants assignee_grant
+                target.owner_user_id = assignee.id OR EXISTS (
+                  SELECT 1 FROM access_grants assignee_grant
                    WHERE assignee_grant.resource_type = 'project'
                      AND assignee_grant.resource_id = target.id
                      AND assignee_grant.grantee_user_id = assignee.id
-                     AND assignee_grant.revoked_at IS NULL
-                 )
+                    AND assignee_grant.revoked_at IS NULL
+                ) OR EXISTS (
+                  SELECT 1 FROM team_memberships assignee_membership
+                  JOIN team_grants assignee_team_grant
+                    ON assignee_team_grant.team_id = assignee_membership.team_id
+                  WHERE assignee_membership.user_id = assignee.id
+                    AND assignee_membership.status = 'active'
+                    AND assignee_membership.deactivated_at IS NULL
+                    AND assignee_team_grant.revoked_at IS NULL
+                    AND ((assignee_team_grant.resource_type = 'project'
+                      AND assignee_team_grant.resource_id = target.id)
+                      OR (assignee_team_grant.resource_type = 'task'
+                        AND assignee_team_grant.resource_id = tasks.id))
+                )
                )
              )
            ))
@@ -3929,13 +3931,25 @@ export async function bulkUpdateTasks(
                    (tasks.project_id IS NOT NULL AND EXISTS (
                      SELECT 1 FROM projects assignment_project
                      WHERE assignment_project.id = tasks.project_id AND (
-                       assignment_project.owner_user_id = assignee.id OR EXISTS (
-                         SELECT 1 FROM access_grants assignment_grant
+                         assignment_project.owner_user_id = assignee.id OR EXISTS (
+                           SELECT 1 FROM access_grants assignment_grant
                          WHERE assignment_grant.resource_type = 'project'
                            AND assignment_grant.resource_id = assignment_project.id
                            AND assignment_grant.grantee_user_id = assignee.id
-                           AND assignment_grant.revoked_at IS NULL
-                       )
+                             AND assignment_grant.revoked_at IS NULL
+                         ) OR EXISTS (
+                           SELECT 1 FROM team_memberships assignment_membership
+                           JOIN team_grants assignment_team_grant
+                             ON assignment_team_grant.team_id = assignment_membership.team_id
+                           WHERE assignment_membership.user_id = assignee.id
+                             AND assignment_membership.status = 'active'
+                             AND assignment_membership.deactivated_at IS NULL
+                             AND assignment_team_grant.revoked_at IS NULL
+                             AND ((assignment_team_grant.resource_type = 'project'
+                               AND assignment_team_grant.resource_id = tasks.project_id)
+                               OR (assignment_team_grant.resource_type = 'task'
+                                 AND assignment_team_grant.resource_id = tasks.id))
+                         )
                      )
                    )) OR
                    (tasks.project_id IS NULL AND (
@@ -3945,6 +3959,16 @@ export async function bulkUpdateTasks(
                          AND assignment_grant.resource_id = tasks.id
                          AND assignment_grant.grantee_user_id = assignee.id
                          AND assignment_grant.revoked_at IS NULL
+                     ) OR EXISTS (
+                       SELECT 1 FROM team_memberships assignment_membership
+                       JOIN team_grants assignment_team_grant
+                         ON assignment_team_grant.team_id = assignment_membership.team_id
+                       WHERE assignment_membership.user_id = assignee.id
+                         AND assignment_membership.status = 'active'
+                         AND assignment_membership.deactivated_at IS NULL
+                         AND assignment_team_grant.resource_type = 'task'
+                         AND assignment_team_grant.resource_id = tasks.id
+                         AND assignment_team_grant.revoked_at IS NULL
                      )
                    ))
                  )
@@ -5112,13 +5136,7 @@ export async function updateProject(
   if (leadUserId) {
     const accessibleLead = await getD1().prepare(
       `SELECT 1 FROM projects p
-       WHERE p.id = ? AND (
-         p.owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-         )
-       )`,
+       WHERE p.id = ? AND (${projectAccessRoleSql("p")}) IS NOT NULL`,
     ).bind(project.id, leadUserId, leadUserId).first();
     if (!accessibleLead) {
       throw new ValidationError("Project lead must have access to the Project");
@@ -5155,25 +5173,9 @@ export async function updateProject(
          name = ?, task_code = ?, summary = ?, description = ?, status = ?,
          lead_user_id = ?, start_date = ?, target_date = ?, icon = ?, color = ?,
          archived_at = ?, version = version + 1, updated_at = ?
-       WHERE id = ? AND version = ? AND deleted_at IS NULL
+       WHERE id = ? AND version = ? AND ${editableProjectPredicate}
          AND (
-           owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants actor_grant
-             WHERE actor_grant.resource_type = 'project'
-               AND actor_grant.resource_id = projects.id
-               AND actor_grant.grantee_user_id = ?
-               AND actor_grant.revoked_at IS NULL
-               AND actor_grant.permission IN ('editor', 'manager', 'full_access')
-           )
-         )
-         AND (
-           ? IS NULL OR owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants lead_grant
-             WHERE lead_grant.resource_type = 'project'
-               AND lead_grant.resource_id = projects.id
-               AND lead_grant.grantee_user_id = ?
-               AND lead_grant.revoked_at IS NULL
-           )
+           ? IS NULL OR (${projectAccessRoleSql("projects")}) IS NOT NULL
          )`,
     ).bind(
       name,
@@ -5315,14 +5317,7 @@ export async function updateRelease(
        )
        AND EXISTS (
          SELECT 1 FROM projects p WHERE p.id = releases.project_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               AND ag.permission IN ('editor', 'manager', 'full_access')
-           )
-         )
+           AND ${editableProjectWhere("p")}
        )`,
   ).bind(
     name,
@@ -5431,26 +5426,7 @@ export async function updateSavedView(
     `UPDATE saved_views SET
        owner_user_id = ?, name = ?, scope_project_id = ?, query_json = ?,
        display_json = ?, archived_at = ?, version = version + 1, updated_at = ?
-     WHERE id = ? AND version = ? AND deleted_at IS NULL AND (
-       (scope_project_id IS NOT NULL AND EXISTS (
-         SELECT 1 FROM projects p WHERE p.id = saved_views.scope_project_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               AND ag.permission IN ('editor', 'manager', 'full_access')
-           )
-         )
-       )) OR (scope_project_id IS NULL AND (
-         owner_user_id = ? OR EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.resource_type = 'saved_view' AND ag.resource_id = saved_views.id
-             AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             AND ag.permission IN ('editor', 'full_access')
-         )
-       ))
-     )`,
+     WHERE id = ? AND version = ? AND ${editableSavedViewPredicate}`,
   ).bind(
     ownerUserId,
     name,
@@ -5617,13 +5593,8 @@ async function validateTaskFilterReferences(
          WHERE s.id IN (${filterPlaceholders(statusIds.length)}) AND (
            s.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE p.deleted_at IS NULL AND p.owner_user_id = s.owner_user_id AND (
-               p.owner_user_id = ? OR EXISTS (
-                 SELECT 1 FROM access_grants ag
-                 WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               )
-             )
+             WHERE p.deleted_at IS NULL AND p.owner_user_id = s.owner_user_id
+               AND (${projectAccessRoleSql("p")}) IS NOT NULL
            )
          )`,
       ).bind(...statusIds, currentUser.id, currentUser.id, currentUser.id),
@@ -5638,19 +5609,25 @@ async function validateTaskFilterReferences(
          WHERE u.id IN (${filterPlaceholders(assigneeIds.length)}) AND (
            u.id = ? OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE p.deleted_at IS NULL AND (p.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants actor_grant
-               WHERE actor_grant.resource_type = 'project'
-                 AND actor_grant.resource_id = p.id
-                 AND actor_grant.grantee_user_id = ?
-                 AND actor_grant.revoked_at IS NULL
-             )) AND (p.owner_user_id = u.id OR EXISTS (
-               SELECT 1 FROM access_grants member_grant
-               WHERE member_grant.resource_type = 'project'
-                 AND member_grant.resource_id = p.id
-                 AND member_grant.grantee_user_id = u.id
-                 AND member_grant.revoked_at IS NULL
-             ))
+             WHERE p.deleted_at IS NULL
+               AND (${projectAccessRoleSql("p")}) IS NOT NULL
+               AND (p.owner_user_id = u.id OR EXISTS (
+                 SELECT 1 FROM access_grants member_grant
+                 WHERE member_grant.resource_type = 'project'
+                   AND member_grant.resource_id = p.id
+                   AND member_grant.grantee_user_id = u.id
+                   AND member_grant.revoked_at IS NULL
+               ) OR EXISTS (
+                 SELECT 1 FROM team_memberships member_membership
+                 JOIN team_grants member_team_grant
+                   ON member_team_grant.team_id = member_membership.team_id
+                 WHERE member_membership.user_id = u.id
+                   AND member_membership.status = 'active'
+                   AND member_membership.deactivated_at IS NULL
+                   AND member_team_grant.resource_type = 'project'
+                   AND member_team_grant.resource_id = p.id
+                   AND member_team_grant.revoked_at IS NULL
+               ))
            )
          )`,
       ).bind(...assigneeIds, currentUser.id, currentUser.id, currentUser.id),
@@ -5665,13 +5642,8 @@ async function validateTaskFilterReferences(
          WHERE l.id IN (${filterPlaceholders(labelIds.length)}) AND (
            l.owner_user_id = ? OR EXISTS (
              SELECT 1 FROM projects p
-             WHERE p.deleted_at IS NULL AND p.owner_user_id = l.owner_user_id AND (
-               p.owner_user_id = ? OR EXISTS (
-                 SELECT 1 FROM access_grants ag
-                 WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-                   AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-               )
-             )
+             WHERE p.deleted_at IS NULL AND p.owner_user_id = l.owner_user_id
+               AND (${projectAccessRoleSql("p")}) IS NOT NULL
            )
          )`,
       ).bind(...labelIds, currentUser.id, currentUser.id, currentUser.id),
@@ -5741,12 +5713,8 @@ async function validateAccessibleLabelGroupReferences(
       `SELECT g.id FROM label_groups g WHERE g.id IN (${sqlPlaceholders(refs.groupIds)}) AND (
          g.owner_user_id = ? OR EXISTS (
            SELECT 1 FROM projects p WHERE p.deleted_at IS NULL
-             AND p.owner_user_id = g.owner_user_id AND (
-             p.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
-                 AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           )
+             AND p.owner_user_id = g.owner_user_id
+             AND (${projectAccessRoleSql("p")}) IS NOT NULL
          )
        )`,
     ).bind(...refs.groupIds, currentUser.id, currentUser.id, currentUser.id).all<DbRow>();
@@ -5760,12 +5728,8 @@ async function validateAccessibleLabelGroupReferences(
        AND l.group_id IN (${sqlPlaceholders(refs.groupIds)}) AND (
          l.owner_user_id = ? OR EXISTS (
            SELECT 1 FROM projects p WHERE p.deleted_at IS NULL
-             AND p.owner_user_id = l.owner_user_id AND (
-             p.owner_user_id = ? OR EXISTS (
-               SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
-                 AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-             )
-           )
+             AND p.owner_user_id = l.owner_user_id
+             AND (${projectAccessRoleSql("p")}) IS NOT NULL
          )
        )`,
     ).bind(...refs.labelIds, ...refs.groupIds, currentUser.id, currentUser.id, currentUser.id).all<DbRow>();
@@ -6172,22 +6136,46 @@ async function assertTaskAssigneeAccess(
   if (assigneeUserId === null) return;
 
   let row: DbRow | null;
-  if (projectId) {
+  if (projectId && taskId) {
     row = await getD1()
       .prepare(
         `SELECT u.id FROM users u
-         JOIN projects p ON p.id = ?
          WHERE u.id = ? AND (
-           p.owner_user_id = u.id OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project'
-               AND ag.resource_id = p.id
-               AND ag.grantee_user_id = u.id
-               AND ag.revoked_at IS NULL
-           )
+           EXISTS (SELECT 1 FROM projects target_project
+             WHERE target_project.id = ?
+               AND (${projectAccessRoleSql("target_project")}) IS NOT NULL)
+           OR EXISTS (SELECT 1 FROM access_grants direct_task_grant
+             WHERE direct_task_grant.resource_type = 'task'
+               AND direct_task_grant.resource_id = ?
+               AND direct_task_grant.grantee_user_id = u.id
+               AND direct_task_grant.revoked_at IS NULL)
+           OR EXISTS (SELECT 1 FROM team_memberships direct_task_membership
+             JOIN team_grants direct_team_grant
+               ON direct_team_grant.team_id = direct_task_membership.team_id
+             WHERE direct_task_membership.user_id = u.id
+               AND direct_task_membership.status = 'active'
+               AND direct_task_membership.deactivated_at IS NULL
+               AND direct_team_grant.resource_type = 'task'
+               AND direct_team_grant.resource_id = ?
+               AND direct_team_grant.revoked_at IS NULL)
          )`,
       )
-      .bind(projectId, assigneeUserId)
+      .bind(
+        assigneeUserId,
+        projectId,
+        assigneeUserId,
+        assigneeUserId,
+        taskId,
+        taskId,
+      )
+      .first<DbRow>();
+  } else if (projectId) {
+    row = await getD1()
+      .prepare(
+        `SELECT u.id FROM users u JOIN projects p ON p.id = ?
+         WHERE u.id = ? AND (${projectAccessRoleSql("p")}) IS NOT NULL`,
+      )
+      .bind(projectId, assigneeUserId, assigneeUserId, assigneeUserId)
       .first<DbRow>();
   } else if (assigneeUserId === ownerUserId) {
     row = { id: assigneeUserId };
@@ -6195,15 +6183,18 @@ async function assertTaskAssigneeAccess(
     row = await getD1()
       .prepare(
         `SELECT u.id FROM users u
-         WHERE u.id = ? AND EXISTS (
-           SELECT 1 FROM access_grants ag
-           WHERE ag.resource_type = 'task'
-             AND ag.resource_id = ?
-             AND ag.grantee_user_id = u.id
-             AND ag.revoked_at IS NULL
-         )`,
+         JOIN tasks t ON t.id = ?
+         LEFT JOIN projects p ON p.id = t.project_id
+         WHERE u.id = ? AND (${taskAccessRoleSql("t", "p")}) IS NOT NULL`,
       )
-      .bind(assigneeUserId, taskId)
+      .bind(
+        taskId,
+        assigneeUserId,
+        assigneeUserId,
+        assigneeUserId,
+        assigneeUserId,
+        assigneeUserId,
+      )
       .first<DbRow>();
   } else {
     row = null;

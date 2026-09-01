@@ -23,9 +23,24 @@ test("ACL SQL fragments accept identifiers only as aliases", () => {
 });
 
 test("legacy full_access grants normalize to the current effective roles", () => {
-  assert.match(taskAccessRoleSql("task_row", "project_row"), /WHEN 'full_access' THEN 'manager'/);
-  assert.match(savedViewAccessRoleSql("view_row", "project_row"), /WHEN 'full_access' THEN 'editor'/);
+  assert.match(taskAccessRoleSql("task_row", "project_row"), /permission IN \('manager', 'full_access'\)/);
+  assert.match(savedViewAccessRoleSql("view_row", "project_row"), /permission IN \('editor', 'full_access'\)/);
   assert.match(editableTaskWhere("task_row"), /'editor', 'manager', 'full_access'/);
+});
+
+test("ACL SQL fragments include active Team routes without changing bind counts", () => {
+  for (const sql of [
+    accessibleTaskWhere("task_row"),
+    editableTaskWhere("task_row"),
+    taskAccessRoleSql("task_row", "project_row"),
+    projectAccessRoleSql("project_row"),
+    savedViewAccessRoleSql("view_row", "project_row"),
+  ]) {
+    assert.match(sql, /team_memberships/);
+    assert.match(sql, /team_grants/);
+    assert.match(sql, /status = 'active'/);
+    assert.match(sql, /revoked_at IS NULL/);
+  }
 });
 
 function placeholders(value: string): number {

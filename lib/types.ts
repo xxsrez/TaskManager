@@ -542,6 +542,48 @@ export type CollaboratorRecord = {
   permission: GrantRole;
 };
 
+export type TeamRecord = {
+  id: string;
+  publicId: string;
+  ownerUserId: string;
+  name: string;
+  archivedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  membershipRole: "owner" | "member";
+  activeMemberCount: number;
+};
+
+export type TeamMembershipRecord = {
+  id: string;
+  teamId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: "owner" | "member";
+  status: "active" | "inactive";
+  deactivatedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamGrantRecord = {
+  grantId: string;
+  teamId: string;
+  teamName: string;
+  resourceType: "project" | "task" | "saved_view";
+  resourceId: string;
+  permission: GrantRole;
+  version: number;
+};
+
+export type TeamsCatalog = {
+  teams: TeamRecord[];
+  memberships: TeamMembershipRecord[];
+};
+
 export type AdminUserActivityRecord = {
   id: string;
   displayName: string;

@@ -149,10 +149,10 @@ ADR-0014 сохранён как superseded incident history. ADR-0015 опре�
 release gate: обычный UAT остаётся private, а fresh local-path proof после
 отдельного production approval выполняется bounded production canary без
 Keychain, Sites bypass, публичного machine edge или hosted Codex.
-ADR-0016 добавляет только постоянную dormant schema baseline для будущих Teams:
-три пустые D1-таблицы с constraints/indexes и без runtime, authorization, API,
-UI, sync или portability behavior. Функциональные benchmark-задачи не могут
-менять эту схему; между пятью прогонами сохраняются migration и journal.
+ADR-0016 добавляет постоянную dormant schema baseline для Teams: три D1-таблицы
+с constraints/indexes без runtime behavior на момент решения. Release 0.4
+подключает к этой неизменяемой структуре membership, ACL, API и UI; schema,
+migration journal и исключение из portability при этом не меняются.
 
 ## Категории
 

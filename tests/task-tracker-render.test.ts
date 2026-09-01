@@ -2631,6 +2631,28 @@ test("the account identity is not the sign-out target", () => {
   assert.equal(markup.match(/href="\/sign-out"/g)?.length, 1);
 });
 
+test("Teams navigation renders an isolated loading surface with bounded membership controls", () => {
+  const markup = renderToStaticMarkup(
+    createElement(TaskTracker, {
+      initialData: snapshot,
+      initialNavigation: { surface: "teams", layout: "list", taskId: null },
+      signOutPath: "/sign-out",
+    }),
+  );
+  assert.match(markup, /href="\/teams"[^>]*aria-current="page"/);
+  assert.match(markup, /Loading Teams/);
+  assert.doesNotMatch(markup, /New task/);
+
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /No Teams yet/);
+  assert.match(source, /team\.ownerUserId === currentUserId/);
+  assert.match(source, /Add member/);
+  assert.match(source, /Deactivate/);
+  assert.match(source, /Reactivate/);
+  assert.match(source, /People & Teams/);
+  assert.match(source, /Direct Team route/);
+});
+
 test("sidebar keeps collection links and at most three recent records with active injection", () => {
   const projects = Array.from({ length: 100 }, (_, index) => ({
     ...snapshot.projects[0]!,

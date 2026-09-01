@@ -12,6 +12,10 @@ surface действуют те же Linear-like composition и interaction rule
 assets. Comment attachments, mentions, notifications и общий activity feed
 остаются исключены.
 
+Дополнение 2026-09-01: bounded Teams runtime, отдельный `/teams` catalog и
+`People & Teams` добавлены в MVP. Это не расширяет продукт до team-owned
+backlog, workflows, cycles, labels, templates, private teams или subteams.
+
 ## Контекст
 
 Task Manager переносит из Linear ограниченный набор продуктовых возможностей:
@@ -43,9 +47,9 @@ Linear, а не только использовать похожую домен�
    строки и карточки, muted metadata, единый line-icon language и короткие
    переходы.
 4. Это не полный клон Linear. Переносятся только controls для функций,
-   перечисленных в `docs/specs/mvp.md`. Teams, cycles, initiatives, inbox,
-   documents, analytics и другие исключённые возможности не должны появляться
-   в UI как неработающие пункты.
+   перечисленных в `docs/specs/mvp.md`. Bounded Teams catalog и sharing входят
+   в scope; cycles, initiatives, inbox, documents, analytics и другие
+   исключённые возможности не должны появляться в UI как неработающие пункты.
 5. Task Manager использует собственные название, логотип, тексты, illustration
    assets и product identity. Не копируются Linear trademark, logo, фирменные
    иллюстрации, исходный код или закрытые assets. Разрешено использовать
