@@ -129,31 +129,73 @@ export async function addTeamMember(
 ): Promise<TeamDetail> {
   const access = await loadAccessibleTeam(currentUser.id, teamRef);
   assertTeamOwner(access.team, currentUser.id);
+  const teamVersion = expectedVersion(input.teamVersion, "Team");
   const targetUserId = await resolveRegisteredUserId(input.email);
-  const db = getD1();
-  const now = new Date().toISOString();
-
-  await db.prepare(
-    `INSERT INTO team_memberships
-      (id, team_id, user_id, role, status, deactivated_at, version, created_at, updated_at)
-     VALUES (?, ?, ?, 'member', 'active', NULL, 1, ?, ?)
-     ON CONFLICT(team_id, user_id) DO NOTHING`,
-  ).bind(
-    `membership_${crypto.randomUUID()}`,
-    access.team.id,
-    targetUserId,
-    now,
-    now,
-  ).run();
-
-  const membership = await loadMembershipByUser(access.team.id, targetUserId);
-  if (!membership) {
-    throw new ConflictError("Team membership changed before it could be read back");
+  const existing = await loadMembershipByUser(access.team.id, targetUserId);
+  if (existing?.status === "active") {
+    return getTeamDetail(currentUser, access.team.id);
   }
-  if (membership.status === "inactive") {
+  if (existing?.status === "inactive") {
     throw new ConflictError("Inactive Team membership must be reactivated explicitly");
   }
-  return buildTeamDetail(access);
+  if (access.team.version !== teamVersion) throw staleTeam();
+
+  const db = getD1();
+  const now = new Date().toISOString();
+  const membershipId = `membership_${crypto.randomUUID()}`;
+  const results = await db.batch([
+    db.prepare(
+      `INSERT INTO team_memberships
+      (id, team_id, user_id, role, status, deactivated_at, version, created_at, updated_at)
+       SELECT ?, team.id, ?, 'member', 'active', NULL, 1, ?, ?
+       FROM teams team
+       WHERE team.id = ? AND team.owner_user_id = ?
+         AND team.version = ? AND team.archived_at IS NULL
+       ON CONFLICT(team_id, user_id) DO NOTHING`,
+    ).bind(
+      membershipId,
+      targetUserId,
+      now,
+      now,
+      access.team.id,
+      currentUser.id,
+      teamVersion,
+    ),
+    db.prepare(
+      `UPDATE teams
+       SET version = version + 1, updated_at = ?
+       WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM team_memberships membership
+           WHERE membership.id = ? AND membership.team_id = teams.id
+             AND membership.user_id = ? AND membership.role = 'member'
+             AND membership.status = 'active' AND membership.version = 1
+         )`,
+    ).bind(
+      now,
+      access.team.id,
+      currentUser.id,
+      teamVersion,
+      membershipId,
+      targetUserId,
+    ),
+  ]);
+  const insertChanges = results[0]?.meta.changes ?? 0;
+  const teamChanges = results[1]?.meta.changes ?? 0;
+  if (insertChanges === 1 && teamChanges === 1) {
+    return getTeamDetail(currentUser, access.team.id);
+  }
+  if (insertChanges !== 0 || teamChanges !== 0) {
+    throw new Error("Team membership insert and Team version changed inconsistently");
+  }
+  const concurrent = await loadMembershipByUser(access.team.id, targetUserId);
+  if (concurrent?.status === "active") {
+    return getTeamDetail(currentUser, access.team.id);
+  }
+  if (concurrent?.status === "inactive") {
+    throw new ConflictError("Inactive Team membership must be reactivated explicitly");
+  }
+  throw staleTeam();
 }
 
 export async function updateTeamMembership(
@@ -164,6 +206,8 @@ export async function updateTeamMembership(
 ): Promise<TeamDetail> {
   const access = await loadAccessibleTeam(currentUser.id, teamRef);
   assertTeamOwner(access.team, currentUser.id);
+  const teamVersion = expectedVersion(input.teamVersion, "Team");
+  if (access.team.version !== teamVersion) throw staleTeam();
   const membership = await loadMembership(access.team.id, membershipId);
   if (
     membership.role === "owner" ||
@@ -175,34 +219,106 @@ export async function updateTeamMembership(
   if (membership.version !== version) throw staleMembership();
   const now = new Date().toISOString();
   const action = input.action;
-  let result: D1Result<unknown>;
+  const db = getD1();
+  let membershipStatement: D1PreparedStatement;
+  let teamStatement: D1PreparedStatement;
 
   if (action === "deactivate") {
     if (membership.status !== "active") {
       throw new ConflictError("Team membership is already inactive");
     }
-    result = await getD1().prepare(
+    membershipStatement = db.prepare(
       `UPDATE team_memberships
        SET status = 'inactive', deactivated_at = ?, version = version + 1, updated_at = ?
        WHERE id = ? AND team_id = ? AND role <> 'owner'
-         AND status = 'active' AND version = ?`,
-    ).bind(now, now, membership.id, access.team.id, version).run();
+         AND status = 'active' AND version = ?
+         AND EXISTS (
+           SELECT 1 FROM teams team
+           WHERE team.id = team_memberships.team_id
+             AND team.owner_user_id = ? AND team.version = ?
+             AND team.archived_at IS NULL
+         )`,
+    ).bind(
+      now,
+      now,
+      membership.id,
+      access.team.id,
+      version,
+      currentUser.id,
+      teamVersion,
+    );
+    teamStatement = db.prepare(
+      `UPDATE teams
+       SET version = version + 1, updated_at = ?
+       WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM team_memberships membership
+           WHERE membership.id = ? AND membership.team_id = teams.id
+             AND membership.role <> 'owner' AND membership.status = 'inactive'
+             AND membership.deactivated_at = ? AND membership.version = ?
+         )`,
+    ).bind(
+      now,
+      access.team.id,
+      currentUser.id,
+      teamVersion,
+      membership.id,
+      now,
+      version + 1,
+    );
   } else if (action === "reactivate") {
     if (membership.status !== "inactive") {
       throw new ConflictError("Team membership is already active");
     }
-    result = await getD1().prepare(
+    membershipStatement = db.prepare(
       `UPDATE team_memberships
        SET status = 'active', deactivated_at = NULL, version = version + 1, updated_at = ?
        WHERE id = ? AND team_id = ? AND role <> 'owner'
-         AND status = 'inactive' AND version = ?`,
-    ).bind(now, membership.id, access.team.id, version).run();
+         AND status = 'inactive' AND version = ?
+         AND EXISTS (
+           SELECT 1 FROM teams team
+           WHERE team.id = team_memberships.team_id
+             AND team.owner_user_id = ? AND team.version = ?
+             AND team.archived_at IS NULL
+         )`,
+    ).bind(
+      now,
+      membership.id,
+      access.team.id,
+      version,
+      currentUser.id,
+      teamVersion,
+    );
+    teamStatement = db.prepare(
+      `UPDATE teams
+       SET version = version + 1, updated_at = ?
+       WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL
+         AND EXISTS (
+           SELECT 1 FROM team_memberships membership
+           WHERE membership.id = ? AND membership.team_id = teams.id
+             AND membership.role <> 'owner' AND membership.status = 'active'
+             AND membership.deactivated_at IS NULL AND membership.version = ?
+         )`,
+    ).bind(
+      now,
+      access.team.id,
+      currentUser.id,
+      teamVersion,
+      membership.id,
+      version + 1,
+    );
   } else {
     throw new ValidationError("Unsupported Team membership action");
   }
 
-  if ((result.meta.changes ?? 0) !== 1) throw staleMembership();
-  return buildTeamDetail(access);
+  const results = await db.batch([membershipStatement, teamStatement]);
+  if (
+    (results[0]?.meta.changes ?? 0) !== 1 ||
+    (results[1]?.meta.changes ?? 0) !== 1
+  ) {
+    throw new ConflictError("Team or membership was changed in another session");
+  }
+  return getTeamDetail(currentUser, access.team.id);
 }
 
 export async function deleteTeamMembership(
@@ -213,6 +329,8 @@ export async function deleteTeamMembership(
 ): Promise<TeamDetail> {
   const access = await loadAccessibleTeam(currentUser.id, teamRef);
   assertTeamOwner(access.team, currentUser.id);
+  const teamVersion = expectedVersion(input.teamVersion, "Team");
+  if (access.team.version !== teamVersion) throw staleTeam();
   const membership = await loadMembership(access.team.id, membershipId);
   if (
     membership.role === "owner" ||
@@ -222,12 +340,48 @@ export async function deleteTeamMembership(
   }
   const version = expectedVersion(input.version, "Team membership");
   if (membership.version !== version) throw staleMembership();
-  const result = await getD1().prepare(
-    `DELETE FROM team_memberships
-     WHERE id = ? AND team_id = ? AND role <> 'owner' AND version = ?`,
-  ).bind(membership.id, access.team.id, version).run();
-  if ((result.meta.changes ?? 0) !== 1) throw staleMembership();
-  return buildTeamDetail(access);
+  const db = getD1();
+  const now = new Date().toISOString();
+  const results = await db.batch([
+    db.prepare(
+      `DELETE FROM team_memberships
+       WHERE id = ? AND team_id = ? AND role <> 'owner' AND version = ?
+         AND EXISTS (
+           SELECT 1 FROM teams team
+           WHERE team.id = team_memberships.team_id
+             AND team.owner_user_id = ? AND team.version = ?
+             AND team.archived_at IS NULL
+         )`,
+    ).bind(
+      membership.id,
+      access.team.id,
+      version,
+      currentUser.id,
+      teamVersion,
+    ),
+    db.prepare(
+      `UPDATE teams
+       SET version = version + 1, updated_at = ?
+       WHERE id = ? AND owner_user_id = ? AND version = ? AND archived_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM team_memberships membership
+           WHERE membership.id = ? AND membership.team_id = teams.id
+         )`,
+    ).bind(
+      now,
+      access.team.id,
+      currentUser.id,
+      teamVersion,
+      membership.id,
+    ),
+  ]);
+  if (
+    (results[0]?.meta.changes ?? 0) !== 1 ||
+    (results[1]?.meta.changes ?? 0) !== 1
+  ) {
+    throw new ConflictError("Team or membership was changed in another session");
+  }
+  return getTeamDetail(currentUser, access.team.id);
 }
 
 async function buildTeamDetail(access: AccessibleTeam): Promise<TeamDetail> {

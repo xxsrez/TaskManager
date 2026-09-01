@@ -98,15 +98,28 @@ test("Teams routes create, list, read, rename, and commit membership lifecycle c
   assert.equal(detail.team.name, "Runtime Team");
   assert.equal(detail.team.version, 2);
 
+  const staleRenameResponse = await updateTeamRoute(
+    jsonRequest(`https://example.test/api/teams/${detail.team.id}`, "PATCH", {
+      name: "Stale rename",
+      version: detail.team.version - 1,
+    }),
+    teamContext(detail.team.id),
+  );
+  assert.equal(staleRenameResponse.status, 409);
+  assert.equal(await rawTeamVersion(detail.team.id), detail.team.version);
+
+  const initialAddTeamVersion = detail.team.version;
   const firstAddResponse = await addMemberRoute(
     jsonRequest(`https://example.test/api/teams/${detail.team.id}/members`, "POST", {
       email: "  MEMBER@TEAMS.EXAMPLE.TEST ",
+      teamVersion: initialAddTeamVersion,
     }),
     teamContext(detail.team.id),
   );
   assert.equal(firstAddResponse.status, 200);
   detail = await json<TeamDetail>(firstAddResponse);
   let membership = detail.members.find((item) => item.userId === member.id)!;
+  assert.equal(detail.team.version, initialAddTeamVersion + 1);
   assert.equal(membership.role, "member");
   assert.equal(membership.status, "active");
   assert.equal(membership.version, 1);
@@ -114,6 +127,7 @@ test("Teams routes create, list, read, rename, and commit membership lifecycle c
   const duplicateAddResponse = await addMemberRoute(
     jsonRequest(`https://example.test/api/teams/${detail.team.publicId}/members`, "POST", {
       email: memberActor.email,
+      teamVersion: initialAddTeamVersion,
     }),
     teamContext(detail.team.publicId),
   );
@@ -123,6 +137,8 @@ test("Teams routes create, list, read, rename, and commit membership lifecycle c
     duplicateDetail.members.find((item) => item.userId === member.id)?.id,
     membership.id,
   );
+  assert.equal(duplicateDetail.team.version, detail.team.version);
+  assert.equal(await rawTeamVersion(detail.team.id), detail.team.version);
   assert.equal(await membershipCount(detail.team.id, member.id), 1);
 
   const membersResponse = await getMembersRoute(
@@ -136,7 +152,11 @@ test("Teams routes create, list, read, rename, and commit membership lifecycle c
     jsonRequest(
       `https://example.test/api/teams/${detail.team.id}/members/${membership.id}`,
       "PATCH",
-      { action: "deactivate", version: membership.version },
+      {
+        action: "deactivate",
+        teamVersion: detail.team.version,
+        version: membership.version,
+      },
     ),
     membershipContext(detail.team.id, membership.id),
   );
@@ -164,6 +184,7 @@ test("Teams routes create, list, read, rename, and commit membership lifecycle c
   const implicitReactivation = await addMemberRoute(
     jsonRequest(`https://example.test/api/teams/${detail.team.id}/members`, "POST", {
       email: memberActor.email,
+      teamVersion: detail.team.version,
     }),
     teamContext(detail.team.id),
   );
@@ -173,7 +194,11 @@ test("Teams routes create, list, read, rename, and commit membership lifecycle c
     jsonRequest(
       `https://example.test/api/teams/${detail.team.id}/members/${membership.id}`,
       "PATCH",
-      { action: "reactivate", version: membership.version },
+      {
+        action: "reactivate",
+        teamVersion: detail.team.version,
+        version: membership.version,
+      },
     ),
     membershipContext(detail.team.id, membership.id),
   );
@@ -196,11 +221,23 @@ test("Teams routes create, list, read, rename, and commit membership lifecycle c
   )).status, 200);
 
   configureActorResolverForTests(async () => ownerActor);
+  const staleDeleteResponse = await deleteMembershipRoute(
+    jsonRequest(
+      `https://example.test/api/teams/${detail.team.id}/members/${membership.id}`,
+      "DELETE",
+      { teamVersion: detail.team.version - 1, version: membership.version },
+    ),
+    membershipContext(detail.team.id, membership.id),
+  );
+  assert.equal(staleDeleteResponse.status, 409);
+  assert.equal(await membershipCount(detail.team.id, member.id), 1);
+  assert.equal(await rawTeamVersion(detail.team.id), detail.team.version);
+
   const deletedResponse = await deleteMembershipRoute(
     jsonRequest(
       `https://example.test/api/teams/${detail.team.id}/members/${membership.id}`,
       "DELETE",
-      { version: membership.version },
+      { teamVersion: detail.team.version, version: membership.version },
     ),
     membershipContext(detail.team.id, membership.id),
   );
@@ -226,6 +263,7 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
   const missingUserResponse = await addMemberRoute(
     jsonRequest(`https://example.test/api/teams/${detail.team.id}/members`, "POST", {
       email: "never-registered@example.test",
+      teamVersion: detail.team.version,
     }),
     teamContext(detail.team.id),
   );
@@ -235,12 +273,14 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
     ["PATCH", () => updateMembershipRoute(
       jsonRequest("https://example.test/owner", "PATCH", {
         action: "deactivate",
+        teamVersion: detail.team.version,
         version: ownerMembership.version,
       }),
       membershipContext(detail.team.id, ownerMembership.id),
     )],
     ["DELETE", () => deleteMembershipRoute(
       jsonRequest("https://example.test/owner", "DELETE", {
+        teamVersion: detail.team.version,
         version: ownerMembership.version,
       }),
       membershipContext(detail.team.id, ownerMembership.id),
@@ -253,6 +293,7 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
   detail = await json<TeamDetail>(await addMemberRoute(
     jsonRequest(`https://example.test/api/teams/${detail.team.id}/members`, "POST", {
       email: memberActor.email,
+      teamVersion: detail.team.version,
     }),
     teamContext(detail.team.id),
   ));
@@ -260,6 +301,7 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
   detail = await json<TeamDetail>(await updateMembershipRoute(
     jsonRequest("https://example.test/membership", "PATCH", {
       action: "deactivate",
+      teamVersion: detail.team.version,
       version: membership.version,
     }),
     membershipContext(detail.team.id, membership.id),
@@ -268,6 +310,7 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
   const staleResponse = await updateMembershipRoute(
     jsonRequest("https://example.test/membership", "PATCH", {
       action: "reactivate",
+      teamVersion: detail.team.version,
       version: membership.version - 1,
     }),
     membershipContext(detail.team.id, membership.id),
@@ -282,6 +325,7 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
   detail = await json<TeamDetail>(await updateMembershipRoute(
     jsonRequest("https://example.test/membership", "PATCH", {
       action: "reactivate",
+      teamVersion: detail.team.version,
       version: membership.version,
     }),
     membershipContext(detail.team.id, membership.id),
@@ -303,7 +347,10 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
   );
   assert.equal(memberRename.status, 403);
   const memberComposition = await addMemberRoute(
-    jsonRequest("https://example.test/members", "POST", { email: outsiderActor.email }),
+    jsonRequest("https://example.test/members", "POST", {
+      email: outsiderActor.email,
+      teamVersion: detail.team.version,
+    }),
     teamContext(detail.team.id),
   );
   assert.equal(memberComposition.status, 403);
@@ -333,6 +380,7 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
   const outsiderComposition = await updateMembershipRoute(
     jsonRequest("https://example.test/membership", "PATCH", {
       action: "deactivate",
+      teamVersion: detail.team.version,
       version: membership.version,
     }),
     membershipContext(detail.team.id, membership.id),
@@ -342,6 +390,131 @@ test("Teams routes protect the owner, reject stale writes, and conceal Teams fro
     new Request("https://example.test/members"),
     teamContext(detail.team.id),
   )).status, 404);
+});
+
+test("Team composition CAS prevents concurrent partial writes and delayed-add ABA", async () => {
+  harness = await createD1TestHarness();
+  const member = await getOrCreateUser(memberActor);
+  const outsider = await getOrCreateUser(outsiderActor);
+  configureActorResolverForTests(async () => ownerActor);
+
+  let detail = await json<TeamDetail>(await createTeamRoute(jsonRequest(
+    "https://example.test/api/teams",
+    "POST",
+    { name: "CAS Team" },
+  )));
+  const originalTeamVersion = detail.team.version;
+  const concurrentResponses = await Promise.all([
+    addMemberRoute(
+      jsonRequest("https://example.test/member", "POST", {
+        email: memberActor.email,
+        teamVersion: originalTeamVersion,
+      }),
+      teamContext(detail.team.id),
+    ),
+    addMemberRoute(
+      jsonRequest("https://example.test/outsider", "POST", {
+        email: outsiderActor.email,
+        teamVersion: originalTeamVersion,
+      }),
+      teamContext(detail.team.id),
+    ),
+  ]);
+  assert.deepEqual(
+    concurrentResponses.map((response) => response.status).sort(),
+    [200, 409],
+  );
+
+  detail = await json<TeamDetail>(await getTeamRoute(
+    new Request("https://example.test/team"),
+    teamContext(detail.team.id),
+  ));
+  assert.equal(detail.team.version, originalTeamVersion + 1);
+  const candidates = detail.members.filter((item) => item.role === "member");
+  assert.equal(candidates.length, 1);
+  const winner = candidates[0]!;
+  const winnerActor = winner.userId === member.id ? memberActor : outsiderActor;
+  const loser = winner.userId === member.id ? outsider : member;
+  const loserActor = winner.userId === member.id ? outsiderActor : memberActor;
+  assert.equal(await membershipCount(detail.team.id, loser.id), 0);
+
+  const staleLoserAdd = await addMemberRoute(
+    jsonRequest("https://example.test/stale-loser", "POST", {
+      email: loserActor.email,
+      teamVersion: originalTeamVersion,
+    }),
+    teamContext(detail.team.id),
+  );
+  assert.equal(staleLoserAdd.status, 409);
+  assert.equal(await membershipCount(detail.team.id, loser.id), 0);
+  assert.equal(await rawTeamVersion(detail.team.id), detail.team.version);
+
+  detail = await json<TeamDetail>(await deleteMembershipRoute(
+    jsonRequest("https://example.test/delete-winner", "DELETE", {
+      teamVersion: detail.team.version,
+      version: winner.version,
+    }),
+    membershipContext(detail.team.id, winner.id),
+  ));
+  assert.equal(await membershipCount(detail.team.id, winner.userId), 0);
+  const afterDeleteVersion = detail.team.version;
+
+  const delayedOriginalAdd = await addMemberRoute(
+    jsonRequest("https://example.test/delayed-original-add", "POST", {
+      email: winnerActor.email,
+      teamVersion: originalTeamVersion,
+    }),
+    teamContext(detail.team.id),
+  );
+  assert.equal(delayedOriginalAdd.status, 409);
+  assert.equal(await membershipCount(detail.team.id, winner.userId), 0);
+  assert.equal(await rawTeamVersion(detail.team.id), afterDeleteVersion);
+
+  detail = await json<TeamDetail>(await addMemberRoute(
+    jsonRequest("https://example.test/add-loser", "POST", {
+      email: loserActor.email,
+      teamVersion: detail.team.version,
+    }),
+    teamContext(detail.team.id),
+  ));
+  let loserMembership = detail.members.find((item) => item.userId === loser.id)!;
+  const beforeStaleLifecycleVersion = detail.team.version;
+  const staleLifecycle = await updateMembershipRoute(
+    jsonRequest("https://example.test/stale-lifecycle", "PATCH", {
+      action: "deactivate",
+      teamVersion: beforeStaleLifecycleVersion - 1,
+      version: loserMembership.version,
+    }),
+    membershipContext(detail.team.id, loserMembership.id),
+  );
+  assert.equal(staleLifecycle.status, 409);
+  assert.equal(await rawTeamVersion(detail.team.id), beforeStaleLifecycleVersion);
+  assert.equal((await rawMembership(loserMembership.id))?.status, "active");
+
+  detail = await json<TeamDetail>(await updateMembershipRoute(
+    jsonRequest("https://example.test/deactivate-loser", "PATCH", {
+      action: "deactivate",
+      teamVersion: detail.team.version,
+      version: loserMembership.version,
+    }),
+    membershipContext(detail.team.id, loserMembership.id),
+  ));
+  loserMembership = detail.members.find((item) => item.id === loserMembership.id)!;
+  const beforeStaleDeleteVersion = detail.team.version;
+  const staleMembershipDelete = await deleteMembershipRoute(
+    jsonRequest("https://example.test/stale-delete", "DELETE", {
+      teamVersion: beforeStaleDeleteVersion,
+      version: loserMembership.version - 1,
+    }),
+    membershipContext(detail.team.id, loserMembership.id),
+  );
+  assert.equal(staleMembershipDelete.status, 409);
+  assert.equal(await rawTeamVersion(detail.team.id), beforeStaleDeleteVersion);
+  assert.deepEqual(await rawMembership(loserMembership.id), {
+    status: "inactive",
+    deactivated_at: loserMembership.deactivatedAt,
+    version: loserMembership.version,
+  });
 });
 
 function jsonRequest(url: string, method: string, body: unknown) {
@@ -384,4 +557,11 @@ async function rawMembership(membershipId: string) {
     deactivated_at: string | null;
     version: number;
   }>();
+}
+
+async function rawTeamVersion(teamId: string) {
+  const row = await harness!.database.prepare(
+    "SELECT version FROM teams WHERE id = ?",
+  ).bind(teamId).first<{ version: number }>();
+  return Number(row?.version ?? 0);
 }
