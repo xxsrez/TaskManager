@@ -10,6 +10,11 @@ import {
 import { configureActorResolverForTests, type Actor } from "../lib/auth";
 import { updateAgentTask } from "../lib/agent-api-repository";
 import { createComment } from "../lib/comments";
+import {
+  deleteEntity,
+  PERMANENT_DELETE_CONFIRMATION,
+  purgeEntity,
+} from "../lib/deletion";
 import { NotFoundError, PermissionError } from "../lib/domain";
 import {
   addTeamMember,
@@ -24,10 +29,12 @@ import {
   createRelease,
   createSavedView,
   createTask,
+  bulkMoveTasks,
   getOrCreateUser,
   getSnapshot,
   getTask,
   grantAccess,
+  moveTask,
   queryTaskSummaries,
   updateProject,
   updateLabel,
@@ -698,6 +705,212 @@ test("Team route content markers converge shared mutations without observing pri
   assert.equal(privatePoll.cursor, cursor);
 });
 
+test("public Task and scoped View moves invalidate old and new Project routes", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const oldMember = await getOrCreateUser(memberActor);
+  const newMember = await getOrCreateUser(isolatedActor);
+  await createProject(owner, { name: "Move source one", taskCode: "MSO" });
+  await createProject(owner, { name: "Move source two", taskCode: "MST" });
+  await createProject(owner, { name: "Move target", taskCode: "MTG" });
+  const projects = (await getSnapshot(owner)).projects;
+  const sourceOne = projects.find((item) => item.name === "Move source one")!;
+  const sourceTwo = projects.find((item) => item.name === "Move source two")!;
+  const target = projects.find((item) => item.name === "Move target")!;
+  await createTask(owner, { title: "Single move marker", projectId: sourceOne.id });
+  await createTask(owner, { title: "Bulk move marker one", projectId: sourceOne.id });
+  await createTask(owner, { title: "Bulk move marker two", projectId: sourceTwo.id });
+  await createSavedView(owner, {
+    name: "Scoped move marker",
+    query: {},
+    scopeProjectId: sourceOne.id,
+  });
+  const moveOwnerSnapshot = await getSnapshot(owner);
+  const tasks = moveOwnerSnapshot.tasks;
+  const single = tasks.find((item) => item.title === "Single move marker")!;
+  const bulkOne = tasks.find((item) => item.title === "Bulk move marker one")!;
+  const bulkTwo = tasks.find((item) => item.title === "Bulk move marker two")!;
+  const scopedView = moveOwnerSnapshot.views.find(
+    (item) => item.name === "Scoped move marker",
+  )!;
+
+  const oldTeam = await teamWithMember(owner, oldMember);
+  await createTeamGrant(owner, {
+    teamId: oldTeam.team.id,
+    resourceType: "project",
+    resourceId: sourceOne.id,
+    permission: "viewer",
+  });
+  await createTeamGrant(owner, {
+    teamId: oldTeam.team.id,
+    resourceType: "project",
+    resourceId: sourceTwo.id,
+    permission: "viewer",
+  });
+  const newTeam = await teamWithMember(owner, newMember);
+  await createTeamGrant(owner, {
+    teamId: newTeam.team.id,
+    resourceType: "project",
+    resourceId: target.id,
+    permission: "viewer",
+  });
+
+  const oldBeforeSingle = await getSnapshot(oldMember);
+  const newBeforeSingle = await getSnapshot(newMember);
+  const movedSingle = await moveTask(owner, single.id, {
+    version: single.version,
+    targetProjectId: target.id,
+  });
+  assert.equal(movedSingle.projectId, target.id);
+  const oldAfterSingle = await getWorkspaceSync(oldMember, oldBeforeSingle.syncCursor!);
+  const newAfterSingle = await getWorkspaceSync(newMember, newBeforeSingle.syncCursor!);
+  assert.equal(oldAfterSingle.resetRequired, true);
+  assert.equal(newAfterSingle.resetRequired, true);
+  assert.ok(!(await getSnapshot(oldMember)).tasks.some((item) => item.id === single.id));
+  assert.equal(
+    (await getSnapshot(newMember)).tasks.find((item) => item.id === single.id)?.projectId,
+    target.id,
+  );
+
+  const oldBeforeBulk = await getSnapshot(oldMember);
+  const newBeforeBulk = await getSnapshot(newMember);
+  const movedBulk = await bulkMoveTasks(owner, {
+    ids: [bulkOne.id, bulkTwo.id],
+    versions: {
+      [bulkOne.id]: bulkOne.version,
+      [bulkTwo.id]: bulkTwo.version,
+    },
+    targetProjectId: target.id,
+  });
+  assert.deepEqual(
+    movedBulk.filter((item) => item.id === bulkOne.id || item.id === bulkTwo.id)
+      .map((item) => item.projectId),
+    [target.id, target.id],
+  );
+  assert.equal(
+    (await getWorkspaceSync(oldMember, oldBeforeBulk.syncCursor!)).resetRequired,
+    true,
+  );
+  assert.equal(
+    (await getWorkspaceSync(newMember, newBeforeBulk.syncCursor!)).resetRequired,
+    true,
+  );
+  const oldAfterBulk = await getSnapshot(oldMember);
+  assert.ok(!oldAfterBulk.tasks.some(
+    (item) => item.id === bulkOne.id || item.id === bulkTwo.id,
+  ));
+  const newAfterBulk = await getSnapshot(newMember);
+  assert.ok(newAfterBulk.tasks.some((item) => item.id === bulkOne.id));
+  assert.ok(newAfterBulk.tasks.some((item) => item.id === bulkTwo.id));
+
+  const oldBeforeViewMove = await getSnapshot(oldMember);
+  const newBeforeViewMove = await getSnapshot(newMember);
+  const movedView = await updateSavedView(owner, scopedView.id, {
+    version: scopedView.version,
+    scopeProjectId: target.id,
+  });
+  assert.equal(movedView.scopeProjectId, target.id);
+  assert.equal(
+    (await getWorkspaceSync(oldMember, oldBeforeViewMove.syncCursor!)).resetRequired,
+    true,
+  );
+  assert.equal(
+    (await getWorkspaceSync(newMember, newBeforeViewMove.syncCursor!)).resetRequired,
+    true,
+  );
+  assert.ok(!(await getSnapshot(oldMember)).views.some(
+    (item) => item.id === scopedView.id,
+  ));
+  assert.equal(
+    (await getSnapshot(newMember)).views.find((item) => item.id === scopedView.id)
+      ?.scopeProjectId,
+    target.id,
+  );
+
+  const sourceAfterMoves = (await getSnapshot(owner)).projects;
+  assert.equal(
+    sourceAfterMoves.find((item) => item.id === sourceOne.id)?.version,
+    sourceOne.version,
+  );
+  assert.equal(
+    sourceAfterMoves.find((item) => item.id === sourceTwo.id)?.version,
+    sourceTwo.version,
+  );
+});
+
+test("immediate child purges invalidate a Team Project route without changing Project CAS", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  await createProject(owner, { name: "Purge marker Project", taskCode: "PMP" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Purge marker Project",
+  )!;
+  await createTask(owner, { title: "Purge marker Task", projectId: project.id });
+  await createRelease(owner, { name: "Purge marker Release", projectId: project.id });
+  await createSavedView(owner, {
+    name: "Purge marker View",
+    query: {},
+    scopeProjectId: project.id,
+  });
+  const ownerSnapshot = await getSnapshot(owner);
+  const task = ownerSnapshot.tasks.find((item) => item.title === "Purge marker Task")!;
+  const release = ownerSnapshot.releases.find(
+    (item) => item.name === "Purge marker Release",
+  )!;
+  const view = ownerSnapshot.views.find((item) => item.name === "Purge marker View")!;
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "viewer",
+  });
+
+  let cursor = (await getSnapshot(member)).syncCursor!;
+  const deletedTask = await deleteEntity(owner, "task", task.id, task.version);
+  await purgeEntity(
+    owner,
+    "task",
+    task.id,
+    deletedTask.version,
+    PERMANENT_DELETE_CONFIRMATION,
+  );
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+  assert.ok(!(await getSnapshot(member)).tasks.some((item) => item.id === task.id));
+
+  const deletedRelease = await deleteEntity(
+    owner,
+    "release",
+    release.id,
+    release.version,
+  );
+  await purgeEntity(
+    owner,
+    "release",
+    release.id,
+    deletedRelease.version,
+    PERMANENT_DELETE_CONFIRMATION,
+  );
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+  assert.ok(!(await getSnapshot(member)).releases.some((item) => item.id === release.id));
+
+  const deletedView = await deleteEntity(owner, "saved_view", view.id, view.version);
+  await purgeEntity(
+    owner,
+    "saved_view",
+    view.id,
+    deletedView.version,
+    PERMANENT_DELETE_CONFIRMATION,
+  );
+  await expectOneTeamFingerprintReset(member, cursor);
+  assert.ok(!(await getSnapshot(member)).views.some((item) => item.id === view.id));
+  assert.equal(
+    (await getSnapshot(owner)).projects.find((item) => item.id === project.id)?.version,
+    project.version,
+  );
+});
+
 test("a Project Team route tracks the visible workflow catalog but not another owner's statuses", async () => {
   harness = await createD1TestHarness();
   const owner = await getOrCreateUser(ownerActor);
@@ -962,6 +1175,12 @@ test("a large Project fingerprint stays route-sized and uses event-first entity 
   const owner = await getOrCreateUser(ownerActor);
   const member = await getOrCreateUser(memberActor);
   await createProject(owner, { name: "Bounded fingerprint Project", taskCode: "BFP" });
+  for (let index = 0; index < 5; index += 1) {
+    await createProject(owner, {
+      name: `Bounded route ${index}`,
+      taskCode: `B${String.fromCharCode(65 + index)}X`,
+    });
+  }
   const ownerSnapshot = await getSnapshot(owner);
   const project = ownerSnapshot.projects.find(
     (item) => item.name === "Bounded fingerprint Project",
@@ -970,12 +1189,17 @@ test("a large Project fingerprint stays route-sized and uses event-first entity 
     (item) => item.ownerUserId === owner.id && item.name === "Todo",
   )!;
   const team = await teamWithMember(owner, member);
-  await createTeamGrant(owner, {
-    teamId: team.team.id,
-    resourceType: "project",
-    resourceId: project.id,
-    permission: "viewer",
-  });
+  const routeProjects = ownerSnapshot.projects.filter(
+    (item) => item.id === project.id || item.name.startsWith("Bounded route "),
+  );
+  for (const routeProject of routeProjects) {
+    await createTeamGrant(owner, {
+      teamId: team.team.id,
+      resourceType: "project",
+      resourceId: routeProject.id,
+      permission: "viewer",
+    });
+  }
 
   await harness.database.prepare(
     `WITH RECURSIVE generated(value) AS (
@@ -997,9 +1221,9 @@ test("a large Project fingerprint stays route-sized and uses event-first entity 
   const rows = await harness.database.prepare(fingerprintSql)
     .bind(member.id)
     .all<{ current_state: string; marker_sequence: number }>();
-  assert.equal(rows.results.length, 1);
-  assert.ok((rows.results[0]?.current_state.length ?? Infinity) < 1_000);
-  assert.ok(Number(rows.results[0]?.marker_sequence) > 0);
+  assert.equal(rows.results.length, routeProjects.length);
+  assert.ok(rows.results.every((row) => row.current_state.length < 1_000));
+  assert.ok(rows.results.every((row) => Number(row.marker_sequence) > 0));
 
   const plan = await harness.database
     .prepare(`EXPLAIN QUERY PLAN ${fingerprintSql}`)
@@ -1008,8 +1232,11 @@ test("a large Project fingerprint stays route-sized and uses event-first entity 
   const details = plan.results.map((row) => String(row.detail)).join("\n");
   assert.doesNotMatch(details, /CORRELATED/i);
   assert.doesNotMatch(details, /SCAN (?:event_task|event_release|event_view)/i);
+  assert.match(details, /idx_labels_owner_name_active/i);
+  assert.match(details, /MATERIALIZE routed_resource_events/i);
   assert.doesNotMatch(fingerprintSql, /group_concat|OVER\s*\(/i);
   assert.doesNotMatch(fingerprintSql, /project_tasks|route_tasks|visible_task_ids/i);
+  assert.match(fingerprintSql, /route\.resource_type = event\.resource_type/);
 });
 
 test("Team runtime and Team grant CRUD never write the workspace sync journal", () => {
@@ -1023,6 +1250,7 @@ test("Team runtime and Team grant CRUD never write the workspace sync journal", 
     1,
   );
   assert.match(fingerprintSql, /route_owner_events AS MATERIALIZED/);
+  assert.match(fingerprintSql, /routed_resource_events AS MATERIALIZED/);
   assert.match(fingerprintSql, /resource_event_max AS MATERIALIZED/);
   assert.match(fingerprintSql, /label_catalog_state AS MATERIALIZED/);
   assert.doesNotMatch(fingerprintSql, /project_tasks|route_tasks|visible_task_ids/);

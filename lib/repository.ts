@@ -3347,6 +3347,8 @@ export async function moveTask(
           expectedVersion,
         ),
       moveBatchAssertion(db, `${assertionId}_task`, "task"),
+      touchProjectSyncMarker(db, sourceProject.id, now),
+      moveBatchAssertion(db, `${assertionId}_source`, "source-project"),
       db
         .prepare(
           `INSERT OR IGNORE INTO task_identifier_aliases
@@ -3404,6 +3406,22 @@ function invalidateTaskRelationDetails(db: D1Database, taskId: string) {
        WHERE relation.source_task_id = ? OR relation.target_task_id = ?
      ) affected`,
   ).bind(taskId, taskId, taskId, taskId);
+}
+
+function touchProjectSyncMarker(
+  db: D1Database,
+  projectId: string,
+  touchedAt: string,
+) {
+  // Scope-changing child triggers carry only the child id, so the owner's
+  // journal cannot reconstruct an old Project after the row changes scope. An
+  // ordinary Project UPDATE publishes the existing Project event and gives
+  // that exact route a marker. Deliberately do not bump version: a
+  // composition-only marker must not invalidate compatible Project edit CAS.
+  return db.prepare(
+    `UPDATE projects SET updated_at = ?
+     WHERE id = ? AND deleted_at IS NULL`,
+  ).bind(touchedAt, projectId);
 }
 
 function isConstraintError(error: unknown) {
@@ -3671,6 +3689,18 @@ export async function bulkMoveTasks(
       invalidateTaskRelationDetails(db, task.id),
     );
   });
+  for (const sourceProjectId of new Set(
+    movingTasks.map((task) => task.projectId),
+  )) {
+    statements.push(
+      touchProjectSyncMarker(db, sourceProjectId, now),
+      moveBatchAssertion(
+        db,
+        `bulk_move_source_${crypto.randomUUID()}`,
+        "source-project",
+      ),
+    );
+  }
 
   let results: D1Result<unknown>[];
   try {
@@ -5327,7 +5357,8 @@ export async function updateSavedView(
   const ownerUserId = nextScopeProject?.ownerUserId ??
     (scopeChanged && !nextScopeProject ? currentUser.id : view.ownerUserId);
   const now = new Date().toISOString();
-  const result = await getD1().prepare(
+  const db = getD1();
+  const update = db.prepare(
     `UPDATE saved_views SET
        owner_user_id = ?, name = ?, scope_project_id = ?, query_json = ?,
        display_json = ?, archived_at = ?, version = version + 1, updated_at = ?
@@ -5353,7 +5384,28 @@ export async function updateSavedView(
     view.id,
     expectedVersion,
     currentUser.id,
-  ).run();
+  );
+  let result: D1Result<unknown>;
+  if (scopeChanged && view.scopeProjectId) {
+    const assertionId = `view_move_assert_${crypto.randomUUID()}`;
+    try {
+      [result] = await db.batch([
+        update,
+        moveBatchAssertion(db, assertionId, "saved-view"),
+        touchProjectSyncMarker(db, view.scopeProjectId, now),
+        moveBatchAssertion(db, `${assertionId}_source`, "source-project"),
+      ]);
+    } catch (error) {
+      if (isConstraintError(error)) {
+        throw new ConflictError(
+          "Saved View access, scope, or version changed before the update committed",
+        );
+      }
+      throw error;
+    }
+  } else {
+    result = await update.run();
+  }
   if ((result.meta.changes ?? 0) < 1) {
     throw new ConflictError("Saved View access, scope, or version changed before the update committed");
   }

@@ -760,7 +760,8 @@ async function loadLifecycleRow(
     ).bind(userId, userId, reference, reference).first<DbRow>();
   } else {
     row = await db.prepare(
-      `SELECT v.*, p.deleted_at AS project_deleted_at,
+      `SELECT v.*, v.scope_project_id AS project_id,
+         p.deleted_at AS project_deleted_at,
          ${savedViewAccessRoleSql("v", "p", true)} AS access_role
        FROM saved_views v LEFT JOIN projects p ON p.id = v.scope_project_id
        WHERE v.id = ? OR v.public_id = ? LIMIT 1`,
@@ -822,10 +823,12 @@ async function purgeTask(
            AND p.deleted_at IS NULL)
        RETURNING id`,
     ).bind(current.id, current.version, actorUserId),
+    projectSyncTouchAfterPreviousChange(db, current.projectId!, completedAt),
+    activityBatchAssertion(db, `assert:${newActivityId()}`, completedAt),
     purgeReceiptCompletionStatement(db, actorUserId, "task", current, completedAt),
   ];
   const results = await db.batch<DbRow>(statements);
-  assertPhysicalDelete(results.at(-2), "Task");
+  assertPhysicalDelete(results.at(-4), "Task");
   assertPurgeReceipt(results.at(-1), "Task");
 }
 
@@ -848,9 +851,11 @@ async function purgeRelease(
            AND p.deleted_at IS NULL)
        RETURNING id`,
     ).bind(current.id, current.version, actorUserId),
+    projectSyncTouchAfterPreviousChange(db, current.projectId!, completedAt),
+    activityBatchAssertion(db, `assert:${newActivityId()}`, completedAt),
     purgeReceiptCompletionStatement(db, actorUserId, "release", current, completedAt),
   ]);
-  assertPhysicalDelete(results.at(-2), "Release");
+  assertPhysicalDelete(results.at(-4), "Release");
   assertPurgeReceipt(results.at(-1), "Release");
 }
 
@@ -870,6 +875,16 @@ async function purgeSavedView(
            AND p.deleted_at IS NULL
        )) RETURNING id`,
     ).bind(current.id, current.version, actorUserId, actorUserId),
+    ...(current.projectId
+      ? [
+          projectSyncTouchAfterPreviousChange(
+            db,
+            current.projectId,
+            completedAt,
+          ),
+          activityBatchAssertion(db, `assert:${newActivityId()}`, completedAt),
+        ]
+      : []),
     // Keep grants until after the entity DELETE trigger captures its complete
     // audience; the grant trigger then publishes an additional safe reset.
     db.prepare("DELETE FROM access_grants WHERE resource_type = 'saved_view' AND resource_id = ?").bind(current.id),
@@ -877,6 +892,22 @@ async function purgeSavedView(
   ]);
   assertPhysicalDelete(results[1], "Saved View");
   assertPurgeReceipt(results.at(-1), "Saved View");
+}
+
+function projectSyncTouchAfterPreviousChange(
+  db: D1Database,
+  projectId: string,
+  touchedAt: string,
+) {
+  // A hard-deleted child can no longer be joined back to its old Project from
+  // an owner journal event. Tie this ordinary Project UPDATE to the winning
+  // child DELETE via changes(); the existing Project trigger then publishes an
+  // exact route marker. No Project version bump means child purge does not
+  // invalidate an otherwise compatible Project edit CAS value.
+  return db.prepare(
+    `UPDATE projects SET updated_at = ?
+     WHERE id = ? AND deleted_at IS NULL AND changes() > 0`,
+  ).bind(touchedAt, projectId);
 }
 
 async function purgeProject(

@@ -194,19 +194,32 @@ export function teamAccessFingerprintSql(): string {
     SELECT DISTINCT route_owner_user_id AS owner_user_id
     FROM resource_roots
     WHERE root_visible = 1 AND route_owner_user_id IS NOT NULL
+  ), label_catalog_rows AS MATERIALIZED (
+    SELECT label.owner_user_id, label.id, label.version, label.updated_at
+    FROM route_owner_ids owner
+    JOIN labels label INDEXED BY idx_labels_owner_name_active
+      ON label.owner_user_id = owner.owner_user_id
+    WHERE label.archived_at IS NULL
+    UNION ALL
+    -- There is no non-partial owner index for archived Labels. Keep this
+    -- fallback separate so the common active path is owner-indexed; adding the
+    -- missing index would require the schema change forbidden by TM-334.
+    SELECT label.owner_user_id, label.id, label.version, label.updated_at
+    FROM labels label
+    JOIN route_owner_ids owner ON owner.owner_user_id = label.owner_user_id
+    WHERE label.archived_at IS NOT NULL
   ), label_catalog_state AS MATERIALIZED (
-    SELECT owner.owner_user_id,
+    SELECT label.owner_user_id,
       COUNT(label.id) AS label_count,
       COALESCE(SUM(label.version), 0) AS label_version_sum,
       MAX(label.updated_at) AS label_updated_at,
       MIN(label.id) AS label_min_id,
       MAX(label.id) AS label_max_id,
       COALESCE(SUM(length(label.id)), 0) AS label_id_length_sum
-    FROM route_owner_ids owner
-    LEFT JOIN labels label ON label.owner_user_id = owner.owner_user_id
-    GROUP BY owner.owner_user_id
+    FROM label_catalog_rows label
+    GROUP BY label.owner_user_id
   ), label_group_catalog_state AS MATERIALIZED (
-    SELECT owner.owner_user_id,
+    SELECT label_group.owner_user_id,
       COUNT(label_group.id) AS label_group_count,
       COALESCE(SUM(label_group.version), 0) AS label_group_version_sum,
       MAX(label_group.updated_at) AS label_group_updated_at,
@@ -214,16 +227,16 @@ export function teamAccessFingerprintSql(): string {
       MAX(label_group.id) AS label_group_max_id,
       COALESCE(SUM(length(label_group.id)), 0) AS label_group_id_length_sum
     FROM route_owner_ids owner
-    LEFT JOIN label_groups label_group
+    JOIN label_groups label_group INDEXED BY idx_label_groups_owner_position
       ON label_group.owner_user_id = owner.owner_user_id
-    GROUP BY owner.owner_user_id
+    GROUP BY label_group.owner_user_id
   ), project_owner_ids AS MATERIALIZED (
     SELECT DISTINCT route_owner_user_id AS owner_user_id
     FROM resource_roots
     WHERE resource_type = 'project' AND root_visible = 1
       AND route_owner_user_id IS NOT NULL
   ), status_catalog_state AS MATERIALIZED (
-    SELECT owner.owner_user_id,
+    SELECT status.owner_user_id,
       COUNT(status.id) AS status_count,
       COALESCE(SUM(status.version), 0) AS status_version_sum,
       MAX(status.updated_at) AS status_updated_at,
@@ -231,9 +244,9 @@ export function teamAccessFingerprintSql(): string {
       MAX(status.id) AS status_max_id,
       COALESCE(SUM(length(status.id)), 0) AS status_id_length_sum
     FROM project_owner_ids owner
-    LEFT JOIN workflow_statuses status
+    JOIN workflow_statuses status INDEXED BY idx_workflow_statuses_owner_name
       ON status.owner_user_id = owner.owner_user_id
-    GROUP BY owner.owner_user_id
+    GROUP BY status.owner_user_id
   ), resource_state AS MATERIALIZED (
     SELECT route.resource_type, route.resource_id,
       printf(
@@ -288,15 +301,20 @@ export function teamAccessFingerprintSql(): string {
     WHERE event.entity_type IN (
       'project', 'task', 'task_detail', 'task_comments', 'task_activity',
       'task_attachments', 'task_external_source', 'release', 'saved_view',
-      'label_group', 'workspace'
+      'workspace'
     )
-  ), resource_event_max AS MATERIALIZED (
-    SELECT route.resource_type, route.resource_id,
-      MAX(event.sequence) AS marker_sequence
+  ), resolved_owner_events AS MATERIALIZED (
+    SELECT event.audience_user_id, event.sequence,
+      event_project.id AS event_project_id,
+      event_task.id AS event_task_id,
+      event_task.project_id AS task_project_id,
+      event_release.project_id AS release_project_id,
+      event_view.id AS event_view_id,
+      event_view.scope_project_id AS view_project_id
     FROM route_owner_events event
-    JOIN resource_roots route
-      ON route.root_visible = 1
-      AND route.route_owner_user_id = event.audience_user_id
+    LEFT JOIN projects event_project
+      ON event.entity_id = event_project.id
+      AND event.entity_type IN ('project', 'workspace')
     LEFT JOIN tasks event_task
       ON event.entity_id = event_task.id
       AND event.entity_type IN (
@@ -309,46 +327,50 @@ export function teamAccessFingerprintSql(): string {
     LEFT JOIN saved_views event_view
       ON event.entity_id = event_view.id
       AND event.entity_type IN ('saved_view', 'workspace')
-    LEFT JOIN workflow_statuses event_status
-      ON event.entity_id = event_status.id
-      AND event.entity_type = 'workspace'
-    WHERE (
-      route.resource_type = 'project' AND (
-        (event.entity_type IN ('project', 'workspace')
-          AND event.entity_id = route.resource_id)
-        OR (event.entity_type IN (
-            'task', 'task_detail', 'task_comments', 'task_activity',
-            'task_attachments', 'task_external_source', 'workspace'
-          ) AND event_task.project_id = route.resource_id)
-        OR (event.entity_type IN ('release', 'workspace')
-          AND event_release.project_id = route.resource_id)
-        OR (event.entity_type IN ('saved_view', 'workspace')
-          AND event_view.scope_project_id = route.resource_id)
-        OR event.entity_type = 'label_group'
-        OR (event.entity_type = 'workspace' AND (
-          event_status.owner_user_id = route.route_owner_user_id
-          OR substr(event.entity_id, 1,
-            length('status:' || route.route_owner_user_id || ':')) =
-            'status:' || route.route_owner_user_id || ':'
-        ))
-      )
-    ) OR (
-      route.resource_type = 'task' AND (
-        (event.entity_type IN (
-            'task', 'task_detail', 'task_comments', 'task_activity',
-            'task_attachments', 'task_external_source', 'workspace'
-          ) AND event.entity_id = route.resource_id)
-        OR event.entity_type = 'label_group'
-        OR (event.entity_type = 'workspace'
-          AND event.entity_id = route.task_status_id)
-      )
-    ) OR (
-      route.resource_type = 'saved_view' AND (
-        (event.entity_type IN ('saved_view', 'workspace')
-          AND event.entity_id = route.resource_id)
-        OR event.entity_type = 'label_group'
-      )
-    )
+  ), event_route_slots(slot) AS (
+    VALUES (0), (1)
+  ), event_route_candidates AS MATERIALIZED (
+    SELECT event.audience_user_id, event.sequence,
+      CASE slot.slot
+        WHEN 0 THEN CASE
+          WHEN event.event_project_id IS NOT NULL THEN 'project'
+          WHEN event.event_task_id IS NOT NULL THEN 'task'
+          WHEN event.event_view_id IS NOT NULL
+            AND event.view_project_id IS NULL THEN 'saved_view'
+        END
+        WHEN 1 THEN CASE
+          WHEN event.task_project_id IS NOT NULL THEN 'project'
+          WHEN event.release_project_id IS NOT NULL THEN 'project'
+          WHEN event.view_project_id IS NOT NULL THEN 'project'
+        END
+      END AS resource_type,
+      CASE slot.slot
+        WHEN 0 THEN COALESCE(
+          event.event_project_id,
+          event.event_task_id,
+          CASE WHEN event.view_project_id IS NULL THEN event.event_view_id END
+        )
+        WHEN 1 THEN COALESCE(
+          event.task_project_id,
+          event.release_project_id,
+          event.view_project_id
+        )
+      END AS resource_id
+    FROM resolved_owner_events event
+    CROSS JOIN event_route_slots slot
+  ), routed_resource_events AS MATERIALIZED (
+    SELECT audience_user_id, sequence, resource_type, resource_id
+    FROM event_route_candidates
+    WHERE resource_type IS NOT NULL AND resource_id IS NOT NULL
+  ), resource_event_max AS MATERIALIZED (
+    SELECT route.resource_type, route.resource_id,
+      MAX(event.sequence) AS marker_sequence
+    FROM routed_resource_events event
+    JOIN resource_roots route
+      ON route.root_visible = 1
+      AND route.route_owner_user_id = event.audience_user_id
+      AND route.resource_type = event.resource_type
+      AND route.resource_id = event.resource_id
     GROUP BY route.resource_type, route.resource_id
   )
   SELECT route.team_id, route.team_version,
