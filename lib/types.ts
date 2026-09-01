@@ -39,6 +39,48 @@ export type UserProfile = {
   identities: UserIdentityRecord[];
 };
 
+export type TeamMembershipRole = "owner" | "member";
+export type TeamMembershipStatus = "active" | "inactive";
+
+export type TeamRecord = {
+  id: string;
+  publicId: string;
+  ownerUserId: string;
+  name: string;
+  archivedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamMembershipRecord = {
+  id: string;
+  teamId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: TeamMembershipRole;
+  status: TeamMembershipStatus;
+  deactivatedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamList = {
+  teams: Array<{
+    team: TeamRecord;
+    currentMembership: TeamMembershipRecord;
+    activeMemberCount: number;
+  }>;
+};
+
+export type TeamDetail = {
+  team: TeamRecord;
+  currentMembership: TeamMembershipRecord;
+  members: TeamMembershipRecord[];
+};
+
 export type WorkflowStatusRecord = {
   id: string;
   ownerUserId: string;
