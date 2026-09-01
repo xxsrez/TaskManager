@@ -19,6 +19,8 @@ import {
 } from "../lib/teams";
 import {
   createProject,
+  createLabel,
+  createLabelGroup,
   createRelease,
   createSavedView,
   createTask,
@@ -28,6 +30,8 @@ import {
   grantAccess,
   queryTaskSummaries,
   updateProject,
+  updateLabel,
+  updateLabelGroup,
   updateSavedView,
   updateTask,
 } from "../lib/repository";
@@ -41,7 +45,15 @@ import { getWorkspaceSync } from "../lib/workspace-sync";
 import {
   decodeWorkspaceSyncCursor,
   encodeLegacyWorkspaceSyncCursor,
+  teamAccessFingerprintSql,
 } from "../lib/workspace-sync-cursor";
+import {
+  archiveWorkflowStatus,
+  createWorkflowStatus,
+  moveWorkflowStatus,
+  updateWorkflowStatus,
+} from "../lib/workflow-statuses";
+import { opaqueWorkspaceOwnerToken } from "../lib/workspace-scope";
 import type {
   TeamDetail,
   TeamGrantList,
@@ -614,6 +626,11 @@ test("Team route content markers converge shared mutations without observing pri
     resourceId: globalView.id,
     permission: "viewer",
   });
+  const compactRows = await harness.database
+    .prepare(teamAccessFingerprintSql())
+    .bind(member.id)
+    .all();
+  assert.equal(compactRows.results.length, 2);
   let cursor = (await getSnapshot(member)).syncCursor!;
 
   sharedTask = await updateTask(owner, sharedTask.id, {
@@ -650,6 +667,201 @@ test("Team route content markers converge shared mutations without observing pri
   assert.equal(privatePoll.cursor, cursor);
 });
 
+test("a Project Team route tracks the visible workflow catalog but not another owner's statuses", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  const privateOwner = await getOrCreateUser(outsiderActor);
+  await createProject(owner, { name: "Status marker Project", taskCode: "SMP" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Status marker Project",
+  )!;
+  await createTask(owner, { title: "Status marker Task", projectId: project.id });
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "viewer",
+  });
+  let cursor = (await getSnapshot(member)).syncCursor!;
+
+  let statuses = (await getSnapshot(owner)).statuses.filter(
+    (status) => status.ownerUserId === owner.id,
+  );
+  let assigned = statuses.find((status) => status.name === "Todo")!;
+  statuses = await updateWorkflowStatus(owner, assigned.id, {
+    version: assigned.version,
+    name: "Todo shared",
+    color: "#334455",
+  });
+  assigned = statuses.find((status) => status.id === assigned.id)!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  statuses = await createWorkflowStatus(owner, {
+    name: "Team queued",
+    category: "unstarted",
+    color: "#556677",
+  });
+  let custom = statuses.find((status) => status.name === "Team queued")!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  const peer = statuses
+    .filter((status) =>
+      status.category === custom.category &&
+      !status.archivedAt &&
+      status.position < custom.position
+    )
+    .sort((left, right) => right.position - left.position)[0]!;
+  statuses = await moveWorkflowStatus(owner, custom.id, {
+    direction: "up",
+    version: custom.version,
+    peerVersion: peer.version,
+  });
+  custom = statuses.find((status) => status.id === custom.id)!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  statuses = await archiveWorkflowStatus(owner, custom.id, {
+    version: custom.version,
+  });
+  assert.ok(statuses.find((status) => status.id === custom.id)?.archivedAt);
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  const privateTodo = (await getSnapshot(privateOwner)).statuses.find(
+    (status) => status.ownerUserId === privateOwner.id && status.name === "Todo",
+  )!;
+  await updateWorkflowStatus(privateOwner, privateTodo.id, {
+    version: privateTodo.version,
+    name: "Private Todo changed",
+  });
+  const privatePoll = await getWorkspaceSync(member, cursor);
+  assert.equal(privatePoll.resetRequired, false);
+  assert.equal(privatePoll.cursor, cursor);
+});
+
+test("a global View Team route tracks its selectable owner's Label catalog only", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  const privateOwner = await getOrCreateUser(outsiderActor);
+  const view = await createSavedView(owner, {
+    name: "Label catalog View",
+    query: {},
+  });
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "saved_view",
+    resourceId: view.id,
+    permission: "viewer",
+  });
+  let cursor = (await getSnapshot(member)).syncCursor!;
+
+  let groups = await createLabelGroup(owner, {
+    name: "Team catalog Group",
+    position: 40,
+  });
+  let group = groups.find((item) => item.name === "Team catalog Group")!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  groups = await updateLabelGroup(owner, group.id, {
+    version: group.version,
+    name: "Team catalog Group moved",
+    position: 2,
+  });
+  group = groups.find((item) => item.id === group.id)!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  let labels = await createLabel(owner, {
+    name: "Team catalog Label",
+    color: "#778899",
+    groupId: group.id,
+  });
+  let label = labels.find((item) => item.name === "Team catalog Label")!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  const ownerScope = await opaqueWorkspaceOwnerToken(owner.id);
+  const scoped = await getSnapshot(member, { workspaceScope: ownerScope });
+  assert.ok(scoped.labels.some((item) => item.id === label.id));
+  assert.ok(scoped.labelGroups?.some((item) => item.id === group.id));
+
+  labels = await updateLabel(owner, label.id, {
+    version: label.version,
+    name: "Team catalog Label renamed",
+  });
+  label = labels.find((item) => item.id === label.id)!;
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  labels = await updateLabel(owner, label.id, {
+    action: "archive",
+    version: label.version,
+  });
+  assert.ok(labels.find((item) => item.id === label.id)?.archivedAt);
+  cursor = await expectOneTeamFingerprintReset(member, cursor);
+
+  await createLabel(privateOwner, {
+    name: "Unrelated private Label",
+    color: "#112233",
+  });
+  const privatePoll = await getWorkspaceSync(member, cursor);
+  assert.equal(privatePoll.resetRequired, false);
+  assert.equal(privatePoll.cursor, cursor);
+});
+
+test("a current Task marker survives owner journal retention pruning", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  await createProject(owner, { name: "Pruned marker Project", taskCode: "PMP" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Pruned marker Project",
+  )!;
+  await createTask(owner, { title: "Pruned marker Task", projectId: project.id });
+  const task = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Pruned marker Task",
+  )!;
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "task",
+    resourceId: task.id,
+    permission: "viewer",
+  });
+  await harness.database.prepare(
+    `DELETE FROM workspace_change_events
+     WHERE audience_user_id = ? AND entity_id = ?`,
+  ).bind(owner.id, task.id).run();
+  const baseline = await getSnapshot(member);
+  const fingerprintRows = await harness.database
+    .prepare(teamAccessFingerprintSql())
+    .bind(member.id)
+    .all<{ marker_sequence: number }>();
+  assert.equal(fingerprintRows.results.length, 1);
+  assert.equal(Number(fingerprintRows.results[0]?.marker_sequence), 0);
+
+  await createComment(owner, task.id, {
+    body: "This durable detail outlives its retained journal marker",
+    idempotencyKey: "team-pruned-marker-comment",
+  });
+  await harness.database.prepare(
+    `UPDATE workspace_change_events
+     SET created_at = datetime('now', '-31 days')
+     WHERE audience_user_id = ? AND entity_id = ?`,
+  ).bind(owner.id, task.id).run();
+  await harness.database.prepare(
+    `INSERT INTO workspace_sync_maintenance (key, last_run_at)
+     VALUES ('event-retention', datetime('now', '-25 hours'))
+     ON CONFLICT(key) DO UPDATE SET last_run_at = excluded.last_run_at`,
+  ).run();
+
+  await expectOneTeamFingerprintReset(member, baseline.syncCursor!);
+  const retained = await harness.database.prepare(
+    `SELECT COUNT(*) AS count FROM workspace_change_events
+     WHERE audience_user_id = ? AND entity_id = ?`,
+  ).bind(owner.id, task.id).first<{ count: number }>();
+  assert.equal(Number(retained?.count), 0);
+});
+
 test("an explicit Task route observes the Task but not its inaccessible Project version", async () => {
   harness = await createD1TestHarness();
   const owner = await getOrCreateUser(ownerActor);
@@ -673,12 +885,37 @@ test("an explicit Task route observes the Task but not its inaccessible Project 
   assert.ok(baseline.tasks.some((item) => item.id === task.id));
   assert.ok(!baseline.projects.some((item) => item.id === project.id));
 
+  const ownerStatuses = (await getSnapshot(owner)).statuses.filter(
+    (status) => status.ownerUserId === owner.id,
+  );
+  const assignedStatus = ownerStatuses.find(
+    (status) => status.id === task.statusId,
+  )!;
+  const unrelatedStatus = ownerStatuses.find(
+    (status) => status.id !== task.statusId && !status.archivedAt,
+  )!;
+  await updateWorkflowStatus(owner, unrelatedStatus.id, {
+    version: unrelatedStatus.version,
+    color: "#246810",
+  });
+  const unrelatedStatusPoll = await getWorkspaceSync(member, baseline.syncCursor!);
+  assert.equal(unrelatedStatusPoll.resetRequired, false);
+
+  await updateWorkflowStatus(owner, assignedStatus.id, {
+    version: assignedStatus.version,
+    color: "#135790",
+  });
+  const afterAssignedStatus = await expectOneTeamFingerprintReset(
+    member,
+    unrelatedStatusPoll.cursor,
+  );
+
   project = await updateProject(owner, project.id, {
     version: project.version,
     name: "Task marker parent changed",
   });
   assert.equal(project.name, "Task marker parent changed");
-  const parentPoll = await getWorkspaceSync(member, baseline.syncCursor!);
+  const parentPoll = await getWorkspaceSync(member, afterAssignedStatus);
   assert.equal(parentPoll.resetRequired, false);
 
   task = await updateTask(owner, task.id, {
@@ -694,6 +931,15 @@ test("Team runtime and Team grant CRUD never write the workspace sync journal", 
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
     assert.doesNotMatch(source, /workspace_sync_sequences|workspace_change_events/);
   }
+  const fingerprintSql = teamAccessFingerprintSql();
+  assert.equal(
+    fingerprintSql.match(/FROM workspace_change_events/g)?.length,
+    1,
+  );
+  assert.match(fingerprintSql, /route_owner_events AS MATERIALIZED/);
+  assert.match(fingerprintSql, /resource_marker_ordered AS MATERIALIZED/);
+  assert.doesNotMatch(fingerprintSql, /OVER\s*\(/);
+  assert.doesNotMatch(fingerprintSql, /metadata_json|source_url|payload_json|comment\.body/);
 });
 
 async function teamWithMember(
