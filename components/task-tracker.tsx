@@ -348,6 +348,16 @@ export function teamRequestIsCurrent(
   return requestedGeneration === currentGeneration && !aborted;
 }
 
+export function teamConflictReadbackMessage(
+  latestLoaded: boolean,
+  unavailable: boolean,
+) {
+  if (unavailable) return "";
+  return latestLoaded
+    ? "This Team changed in another session. The latest details were loaded; review them and try again."
+    : "This Team changed, but the latest details could not be loaded. Retry.";
+}
+
 class TeamRequestError extends Error {
   constructor(message: string, readonly status: number) {
     super(message);
@@ -1613,7 +1623,13 @@ export function TaskTracker({
     const retained = teamDetailStateRef.current.value?.team.publicId === teamPublicId
       ? teamDetailStateRef.current.value
       : null;
-    setTeamDetailState({ status: "loading", value: retained, error: "" });
+    const loadingState: AsyncValue<TeamDetail> = {
+      status: "loading",
+      value: retained,
+      error: "",
+    };
+    teamDetailStateRef.current = loadingState;
+    setTeamDetailState(loadingState);
     try {
       const value = await requestTeamApi<TeamDetail>(
         `/api/teams/${encodeURIComponent(teamPublicId)}`,
@@ -1627,7 +1643,13 @@ export function TaskTracker({
           signal?.aborted ?? false,
         )
       ) return null;
-      setTeamDetailState({ status: "ready", value, error: "" });
+      const readyState: AsyncValue<TeamDetail> = {
+        status: "ready",
+        value,
+        error: "",
+      };
+      teamDetailStateRef.current = readyState;
+      setTeamDetailState(readyState);
       return value;
     } catch (requestError) {
       if (
@@ -1637,7 +1659,7 @@ export function TaskTracker({
       ) return null;
       const unavailable = requestError instanceof TeamRequestError &&
         (requestError.status === 403 || requestError.status === 404);
-      setTeamDetailState({
+      const errorState: AsyncValue<TeamDetail> = {
         status: "error",
         value: unavailable ? null : retained,
         error: unavailable
@@ -1645,7 +1667,9 @@ export function TaskTracker({
           : requestError instanceof Error
             ? requestError.message
             : "Team could not be loaded",
-      });
+      };
+      teamDetailStateRef.current = errorState;
+      setTeamDetailState(errorState);
       return null;
     }
   }, []);
@@ -1954,10 +1978,6 @@ export function TaskTracker({
 
   useEffect(() => {
     if (!activeTeamPublicId) return;
-    if (
-      teamDetailStateRef.current.status === "ready" &&
-      teamDetailStateRef.current.value.team.publicId === activeTeamPublicId
-    ) return;
     const controller = new AbortController();
     setTeamAlert("");
     void loadTeamDetail(activeTeamPublicId, controller.signal);
@@ -3663,7 +3683,8 @@ export function TaskTracker({
         method,
         body: JSON.stringify(body),
       });
-      if (activeTeamPublicIdRef.current !== teamPublicId) return false;
+      void loadTeamList();
+      if (activeTeamPublicIdRef.current !== teamPublicId) return true;
       const nextState: AsyncValue<TeamDetail> = {
         status: "ready",
         value: detail,
@@ -3671,19 +3692,19 @@ export function TaskTracker({
       };
       teamDetailStateRef.current = nextState;
       setTeamDetailState(nextState);
-      void loadTeamList();
       return true;
     } catch (requestError) {
       if (activeTeamPublicIdRef.current !== teamPublicId) return false;
       if (requestError instanceof TeamRequestError && requestError.status === 409) {
-        await loadTeamDetail(teamPublicId);
-        if (activeTeamPublicIdRef.current === teamPublicId) {
-          if (dialog === "teamRename" || dialog === "teamMemberAdd" || dialog === "teamMemberDelete") {
-            setDialog(null);
-            setTeamMemberForDelete(null);
-          }
-          setTeamAlert("This Team changed in another session. The latest details were loaded; review them and try again.");
+        const latest = await loadTeamDetail(teamPublicId);
+        if (activeTeamPublicIdRef.current !== teamPublicId) return false;
+        if (dialog === "teamRename" || dialog === "teamMemberAdd" || dialog === "teamMemberDelete") {
+          setDialog(null);
+          setTeamMemberForDelete(null);
         }
+        const unavailable = teamDetailStateRef.current.status === "error" &&
+          teamDetailStateRef.current.error === "Team unavailable";
+        setTeamAlert(teamConflictReadbackMessage(latest !== null, unavailable));
         return false;
       }
       if (requestError instanceof TeamRequestError &&
@@ -4433,6 +4454,7 @@ export function TaskTracker({
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHighlightedTaskId(null);
     setSelected(new Set());
     setPendingProjectMove(null);
@@ -4678,8 +4700,8 @@ export function TaskTracker({
             )}
             <div className="title-actions">
               {surface === "teams" && <button className="button primary" type="button" disabled={Boolean(teamMutation)} aria-busy={teamMutation?.kind === "create" || undefined} onClick={() => { setTeamAlert(""); setDialog("teamCreate"); }}><Plus size={14} />New Team</button>}
-              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button ghost" type="button" disabled={Boolean(teamMutation)} onClick={() => { setTeamAlert(""); setDialog("teamRename"); }}><UsersRound size={14} />Rename Team</button>}
-              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button primary" type="button" disabled={Boolean(teamMutation)} onClick={() => { setTeamAlert(""); setDialog("teamMemberAdd"); }}><Plus size={14} />Add member</button>}
+              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button ghost" type="button" disabled={Boolean(teamMutation) || teamDetailState.status !== "ready"} onClick={() => { setTeamAlert(""); setDialog("teamRename"); }}><UsersRound size={14} />Rename Team</button>}
+              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button primary" type="button" disabled={Boolean(teamMutation) || teamDetailState.status !== "ready"} onClick={() => { setTeamAlert(""); setDialog("teamMemberAdd"); }}><Plus size={14} />Add member</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
@@ -9931,7 +9953,7 @@ export function TeamDetailSurface({ state, alert, mutation, onRetry, onMembershi
   onDelete: (membership: TeamMembershipRecord) => void;
 }) {
   if ((state.status === "idle" || state.status === "loading") && !state.value) return <TeamSurfaceState status="Loading Team…" busy />;
-  if (state.status === "error" && !state.value) return <TeamSurfaceState status={state.error} onRetry={onRetry} />;
+  if (state.status === "error" && !state.value) return <TeamSurfaceState status={state.error === "Team unavailable" ? state.error : alert || state.error} onRetry={onRetry} />;
   const detail = state.value;
   if (!detail) return <TeamSurfaceState status="Team unavailable" onRetry={onRetry} />;
 
@@ -9942,7 +9964,7 @@ export function TeamDetailSurface({ state, alert, mutation, onRetry, onMembershi
     const isCurrent = membership.id === detail.currentMembership.id;
     const mutable = isOwner && membership.role !== "owner";
     const membershipBusy = mutation?.key === membership.id;
-    return <li className="team-member-row" key={membership.id} aria-busy={membershipBusy || undefined}><span className="avatar">{initials(membership.displayName)}</span><span className="team-member-identity"><span><b>{membership.displayName}</b>{isCurrent && <em>You</em>}</span><small>{membership.email}</small></span><span className="team-member-state"><span className="status-badge">{membership.role}</span><span className={`status-badge team-membership-${membership.status}`}>{membership.status}</span></span>{mutable && <span className="team-member-actions"><button className="button ghost compact" type="button" disabled={Boolean(mutation)} onClick={() => onMembershipAction(membership, membership.status === "active" ? "deactivate" : "reactivate")}>{membership.status === "active" ? "Deactivate" : "Reactivate"}</button><button className="button danger compact" type="button" disabled={Boolean(mutation)} onClick={() => onDelete(membership)}>Delete</button></span>}</li>;
+    return <li className="team-member-row" key={membership.id} aria-busy={membershipBusy || undefined}><span className="avatar">{initials(membership.displayName)}</span><span className="team-member-identity"><span><b>{membership.displayName}</b>{isCurrent && <em>You</em>}</span><small>{membership.email}</small></span><span className="team-member-state"><span className="status-badge">{membership.role}</span><span className={`status-badge team-membership-${membership.status}`}>{membership.status}</span></span>{mutable && <span className="team-member-actions"><button className="button ghost compact" type="button" disabled={Boolean(mutation) || state.status !== "ready"} onClick={() => onMembershipAction(membership, membership.status === "active" ? "deactivate" : "reactivate")}>{membership.status === "active" ? "Deactivate" : "Reactivate"}</button><button className="button danger compact" type="button" disabled={Boolean(mutation) || state.status !== "ready"} onClick={() => onDelete(membership)}>Delete</button></span>}</li>;
   };
 
   return <div className="team-detail-surface" aria-busy={state.status === "loading" || undefined}>

@@ -62,6 +62,7 @@ import {
   TeamNameDialog,
   TeamsSurface,
   filterTeamList,
+  teamConflictReadbackMessage,
   teamRequestIsCurrent,
   SettingsSurface,
   ViewDialog,
@@ -342,14 +343,53 @@ test("Team mutations keep authoritative read-back and composition CAS contracts"
   assert.match(source, /teamListGenerationRef/);
   assert.match(source, /teamDetailGenerationRef/);
   assert.match(source, /controller\.abort\(\)/);
-  assert.match(source, /setTeamDetailState\(nextState\)[\s\S]{0,120}void loadTeamList\(\)/);
+  assert.match(source, /setTeamDetailState\(nextState\)/);
+  assert.match(source, /void loadTeamList\(\)/);
   assert.match(source, /\{ name, version: detail\.team\.version \}/);
   assert.match(source, /\{ email, teamVersion: detail\.team\.version \}/);
   assert.match(source, /action,[\s\S]{0,120}teamVersion: detail\.team\.version,[\s\S]{0,120}version: membership\.version/);
   assert.match(source, /method: "DELETE"|"DELETE",[\s\S]{0,160}teamVersion/);
-  assert.match(source, /requestError\.status === 409[\s\S]{0,220}await loadTeamDetail\(teamPublicId\)/);
+  assert.match(source, /requestError\.status === 409[\s\S]{0,220}const latest = await loadTeamDetail\(teamPublicId\)/);
   assert.match(source, /The latest details were loaded; review them and try again/);
+  assert.match(source, /latest details could not be loaded\. Retry/);
   assert.doesNotMatch(source, /AppSnapshot[^\n]*(?:TeamList|TeamDetail)|(?:TeamList|TeamDetail)[^\n]*AppSnapshot/);
+});
+
+test("Team re-entry and concurrent navigation retain authoritative convergence", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const reentryStart = source.indexOf("useEffect(() => {\n    if (!activeTeamPublicId) return;");
+  const reentryEnd = source.indexOf(
+    "}, [activeTeamPublicId, loadTeamDetail]);",
+    reentryStart,
+  );
+  assert.ok(reentryStart > 0 && reentryEnd > reentryStart);
+  const reentryEffect = source.slice(reentryStart, reentryEnd);
+  assert.match(reentryEffect, /loadTeamDetail\(activeTeamPublicId, controller\.signal\)/);
+  assert.doesNotMatch(reentryEffect, /status === "ready"/);
+
+  const mutationStart = source.indexOf("async function mutateActiveTeam(");
+  const mutationCatch = source.indexOf("} catch (requestError) {", mutationStart);
+  const mutationSuccess = source.slice(mutationStart, mutationCatch);
+  assert.ok(mutationSuccess.indexOf("void loadTeamList();") >= 0);
+  assert.ok(
+    mutationSuccess.indexOf("void loadTeamList();") <
+      mutationSuccess.indexOf("activeTeamPublicIdRef.current !== teamPublicId"),
+  );
+  assert.match(mutationSuccess, /activeTeamPublicIdRef\.current !== teamPublicId\) return true/);
+  assert.match(source, /const latest = await loadTeamDetail\(teamPublicId\)[\s\S]{0,420}teamConflictReadbackMessage\(latest !== null, unavailable\)/);
+  assert.match(source, /disabled=\{Boolean\(teamMutation\) \|\| teamDetailState\.status !== "ready"\}/);
+  assert.match(source, /disabled=\{Boolean\(mutation\) \|\| state\.status !== "ready"\}/);
+  assert.match(source, /eslint-disable-next-line react-hooks\/set-state-in-effect[\s\S]{0,80}setHighlightedTaskId\(null\)/);
+
+  assert.equal(
+    teamConflictReadbackMessage(true, false),
+    "This Team changed in another session. The latest details were loaded; review them and try again.",
+  );
+  assert.equal(
+    teamConflictReadbackMessage(false, false),
+    "This Team changed, but the latest details could not be loaded. Retry.",
+  );
+  assert.equal(teamConflictReadbackMessage(false, true), "");
 });
 
 test("task ordering uses priority by default with rank and immutable id tie-breakers", () => {
