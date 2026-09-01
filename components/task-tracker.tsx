@@ -4454,7 +4454,6 @@ export function TaskTracker({
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHighlightedTaskId(null);
     setSelected(new Set());
     setPendingProjectMove(null);

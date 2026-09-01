@@ -379,7 +379,6 @@ test("Team re-entry and concurrent navigation retain authoritative convergence",
   assert.match(source, /const latest = await loadTeamDetail\(teamPublicId\)[\s\S]{0,420}teamConflictReadbackMessage\(latest !== null, unavailable\)/);
   assert.match(source, /disabled=\{Boolean\(teamMutation\) \|\| teamDetailState\.status !== "ready"\}/);
   assert.match(source, /disabled=\{Boolean\(mutation\) \|\| state\.status !== "ready"\}/);
-  assert.match(source, /eslint-disable-next-line react-hooks\/set-state-in-effect[\s\S]{0,80}setHighlightedTaskId\(null\)/);
 
   assert.equal(
     teamConflictReadbackMessage(true, false),
