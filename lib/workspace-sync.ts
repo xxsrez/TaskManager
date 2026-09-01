@@ -48,6 +48,14 @@ export async function getWorkspaceSync(
     .first<{ last_sequence: number }>();
   const lastSequence = Number(state?.last_sequence ?? 0);
   if (workspaceScope?.fallback) return resetResponse(lastSequence);
+  if (await requiresTeamBootstrap(db, user.id)) {
+    // Team-derived audiences are not expanded into the legacy direct-grant
+    // trigger fanout. The bounded Team/membership index probe intentionally
+    // trades incremental polling for a full bootstrap while a principal is
+    // related to any active Team. This is the no-DDL compatibility boundary;
+    // a future durable audience journal can replace it without changing ACL.
+    return resetResponse(lastSequence);
+  }
   const cursor = decodeWorkspaceSyncCursor(cursorValue);
   if (cursor === null || cursor > lastSequence) {
     return resetResponse(lastSequence);
@@ -148,6 +156,27 @@ export async function getWorkspaceSync(
     changes: buildChanges(projection, touched),
     ...(workspaceMetrics ? { workspaceMetrics } : {}),
   };
+}
+
+async function requiresTeamBootstrap(
+  db: D1Database,
+  userId: string,
+): Promise<boolean> {
+  const row = await db.prepare(
+    `SELECT EXISTS (
+       SELECT 1 FROM teams team
+       WHERE team.archived_at IS NULL AND (
+         team.owner_user_id = ? OR EXISTS (
+           SELECT 1 FROM team_memberships membership
+           WHERE membership.team_id = team.id
+             AND membership.user_id = ?
+             AND membership.status = 'active'
+             AND membership.deactivated_at IS NULL
+         )
+       )
+     ) AS required`,
+  ).bind(userId, userId).first<{ required: number }>();
+  return Number(row?.required ?? 0) === 1;
 }
 
 function hasContinuousSequence(rows: ChangeRow[], cursor: number): boolean {

@@ -2,8 +2,10 @@ import { getD1 } from "@/db";
 import { canEditContent } from "./access";
 import {
   projectAccessRoleSql,
+  projectEffectiveRoleRankSql,
   savedViewAccessRoleSql,
   taskAccessRoleSql,
+  taskEffectiveRoleRankSql,
 } from "./access-sql";
 import {
   AgentApiError,
@@ -542,33 +544,24 @@ export async function getAgentWorkspace(
     getD1()
       .prepare(
         `SELECT DISTINCT s.* FROM workflow_statuses s
-         WHERE s.archived_at IS NULL AND (s.owner_user_id = ?
+         CROSS JOIN (SELECT ? AS id) agent_actor
+         WHERE s.archived_at IS NULL AND ((s.owner_user_id = agent_actor.id
             OR EXISTS (
               SELECT 1 FROM projects p
               WHERE p.owner_user_id = s.owner_user_id
-                AND p.deleted_at IS NULL AND (
-                p.owner_user_id = ? OR EXISTS (
-                  SELECT 1 FROM access_grants ag
-                  WHERE ag.resource_type = 'project'
-                    AND ag.resource_id = p.id
-                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                )
-              )
+                AND p.deleted_at IS NULL
+                AND ${projectEffectiveRoleRankSql("p", "agent_actor.id")} > 0
             ))
             OR EXISTS (
               SELECT 1 FROM tasks t
-              WHERE t.status_id = s.id AND t.project_id IS NULL
-                AND t.deleted_at IS NULL AND (
-                t.owner_user_id = ? OR EXISTS (
-                  SELECT 1 FROM access_grants ag
-                  WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                )
-              )
-            )
-         ORDER BY s.owner_user_id = ? DESC, s.position, s.name`,
+              JOIN projects p ON p.id = t.project_id
+              WHERE t.status_id = s.id
+                AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+                AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
+            ))
+         ORDER BY s.owner_user_id = agent_actor.id DESC, s.position, s.name`,
       )
-      .bind(user.id, user.id, user.id, user.id, user.id, user.id)
+      .bind(user.id)
       .all<DbRow>(),
   ]);
 
@@ -836,28 +829,26 @@ export async function listAgentLabels(
   const rows = await getD1().prepare(
     `SELECT DISTINCT l.*, g.name AS group_name FROM labels l
      LEFT JOIN label_groups g ON g.id = l.group_id
+     CROSS JOIN (SELECT ? AS id) agent_actor
      WHERE (? = 1 OR l.archived_at IS NULL) AND (
-       l.owner_user_id = ? OR EXISTS (
+       l.owner_user_id = agent_actor.id OR EXISTS (
          SELECT 1 FROM projects p
          WHERE p.owner_user_id = l.owner_user_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           )
-         )
+           AND p.deleted_at IS NULL
+           AND ${projectEffectiveRoleRankSql("p", "agent_actor.id")} > 0
+       ) OR EXISTS (
+         SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id
+         WHERE p.owner_user_id = l.owner_user_id
+           AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+           AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
        )
      )
-     ORDER BY l.owner_user_id = ? DESC, l.archived_at IS NOT NULL,
+     ORDER BY l.owner_user_id = agent_actor.id DESC, l.archived_at IS NOT NULL,
        lower(l.name), l.id
      LIMIT 201`,
   ).bind(
+    currentUser.id,
     includeArchived ? 1 : 0,
-    currentUser.id,
-    currentUser.id,
-    currentUser.id,
-    currentUser.id,
   ).all<DbRow>();
   const visible = rows.results.slice(0, 200);
   return {
@@ -884,18 +875,21 @@ export async function listAgentLabelGroups(currentUser: UserRecord, includeArchi
        (SELECT COUNT(*) FROM labels l WHERE l.group_id = g.id) AS label_count,
        (SELECT COUNT(DISTINCT value.task_id) FROM task_label_group_values value WHERE value.group_id = g.id) AS task_count
      FROM label_groups g
+     CROSS JOIN (SELECT ? AS id) agent_actor
      WHERE (? = 1 OR g.archived_at IS NULL) AND (
-       g.owner_user_id = ? OR EXISTS (
+       g.owner_user_id = agent_actor.id OR EXISTS (
          SELECT 1 FROM projects p WHERE p.owner_user_id = g.owner_user_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
-               AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           )
-         )
+           AND p.deleted_at IS NULL
+           AND ${projectEffectiveRoleRankSql("p", "agent_actor.id")} > 0
+       ) OR EXISTS (
+         SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id
+         WHERE p.owner_user_id = g.owner_user_id
+           AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+           AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
        )
-     ) ORDER BY g.owner_user_id = ? DESC, g.archived_at IS NOT NULL, g.position, lower(g.name), g.id LIMIT 201`,
-  ).bind(includeArchived ? 1 : 0, currentUser.id, currentUser.id, currentUser.id, currentUser.id).all<DbRow>();
+     ) ORDER BY g.owner_user_id = agent_actor.id DESC, g.archived_at IS NOT NULL,
+       g.position, lower(g.name), g.id LIMIT 201`,
+  ).bind(currentUser.id, includeArchived ? 1 : 0).all<DbRow>();
   return {
     items: await Promise.all(rows.results.slice(0, 200).map(async (row) => ({
       ref: await catalogReference("label-group", String(row.id)),

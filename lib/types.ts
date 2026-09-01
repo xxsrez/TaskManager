@@ -81,6 +81,36 @@ export type TeamDetail = {
   members: TeamMembershipRecord[];
 };
 
+export type TeamGrantResourceType = "project" | "task" | "saved_view";
+export type TeamGrantPermission = "manager" | "editor" | "viewer";
+
+export type TeamGrantRecord = {
+  id: string;
+  teamId: string;
+  teamPublicId: string;
+  teamName: string;
+  teamArchivedAt: string | null;
+  resourceType: TeamGrantResourceType;
+  resourceId: string;
+  permission: TeamGrantPermission;
+  grantedByUserId: string;
+  revokedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamGrantList = {
+  target: {
+    resourceType: TeamGrantResourceType;
+    resourceId: string;
+    publicId: string;
+    name: string;
+    accessRole: AccessRole;
+  };
+  grants: TeamGrantRecord[];
+};
+
 export type WorkflowStatusRecord = {
   id: string;
   ownerUserId: string;
