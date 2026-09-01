@@ -29,8 +29,6 @@ export type TaskManagerRuntimeEnvironment = {
   TASK_MANAGER_STORED_FILE_MAX_BYTES?: string;
   TASK_MANAGER_STORED_FILE_READY_TTL_SECONDS?: string;
   TASK_MANAGER_ATTACHMENT_MIGRATION_HOSTS?: string;
-  TASK_MANAGER_BENCHMARK_TEAM_RESET_ENABLED?: string;
-  TASK_MANAGER_BENCHMARK_TEAM_RESET_TOKEN?: string;
 };
 
 let runtimeEnvironment: TaskManagerRuntimeEnvironment | null = null;

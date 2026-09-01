@@ -61,19 +61,16 @@
     bounded inventory/apply, allowlist, outcomes, cutover и rollback.
 26. [Runbook Task Activity](operations/task-activity.md) — atomic events,
     Linear status-history reconciliation, retention, backup и UAT smoke.
-27. [Временный reset Teams для benchmark](operations/benchmark-team-reset.md) —
-    UAT-only канал, последовательная очистка и обязательное удаление после пяти
-    прогонов.
-28. [Начальная архитектура](architecture.md) — логические компоненты и решения,
+27. [Начальная архитектура](architecture.md) — логические компоненты и решения,
     которые ещё предстоит принять.
-29. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
+28. [Исследование Linear](reports/2026-08-13-linear-product-study.md) — источник
     продуктовых заимствований и осознанных упрощений.
-30. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
+29. [Миграция Linear](reports/2026-08-14-linear-migration.md) — production
     mapping, reconciliation, release evidence и осознанные границы переноса.
-31. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
+30. [Миграция Project task codes](reports/2026-08-18-project-task-code-migration.md)
     — UAT mapping, backup, reconciliation, smoke и recovery boundary для
     обязательных Project и Project-scoped identifiers.
-32. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
+31. [Runtime cutover от Linear](reports/2026-08-18-linear-runtime-cutover.md)
     — environment inventory, удалённые public surfaces, сохранённое migration
     evidence и отдельная production authority boundary.
 
