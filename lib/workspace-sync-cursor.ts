@@ -9,6 +9,7 @@ export type WorkspaceSyncCursorState = {
 
 export type TeamAccessFingerprintRow = {
   team_id: string;
+  team_version: number;
   membership_id: string;
   membership_version: number;
   grant_id: string;
@@ -77,6 +78,7 @@ export async function currentTeamAccessFingerprint(
 
 export function teamAccessFingerprintSql(): string {
   return `SELECT team.id AS team_id,
+       team.version AS team_version,
        membership.id AS membership_id,
        membership.version AS membership_version,
        grant.id AS grant_id,
@@ -100,6 +102,7 @@ export async function teamAccessFingerprintFromRows(
   if (rows.length === 0) return EMPTY_TEAM_ACCESS_FINGERPRINT;
   const canonical = rows.map((row) => [
     row.team_id,
+    Number(row.team_version),
     row.membership_id,
     Number(row.membership_version),
     row.grant_id,

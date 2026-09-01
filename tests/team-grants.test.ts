@@ -526,6 +526,56 @@ test("a legacy v1 cursor with no Team routes upgrades without a reset", async ()
   assert.equal((await getWorkspaceSync(outsider, response.cursor)).resetRequired, false);
 });
 
+test("Team archive and unarchive cannot ABA an active-route sync fingerprint", async () => {
+  harness = await createD1TestHarness();
+  const owner = await getOrCreateUser(ownerActor);
+  const member = await getOrCreateUser(memberActor);
+  await createProject(owner, { name: "Team fingerprint ABA", taskCode: "ABA" });
+  const project = (await getSnapshot(owner)).projects.find(
+    (item) => item.name === "Team fingerprint ABA",
+  )!;
+  await createTask(owner, { title: "Before hidden mutation", projectId: project.id });
+  const task = (await getSnapshot(owner)).tasks.find(
+    (item) => item.title === "Before hidden mutation",
+  )!;
+  const team = await teamWithMember(owner, member);
+  await createTeamGrant(owner, {
+    teamId: team.team.id,
+    resourceType: "project",
+    resourceId: project.id,
+    permission: "viewer",
+  });
+  const baseline = await getSnapshot(member);
+  assert.ok(baseline.tasks.some((item) => item.id === task.id));
+
+  // There is no Team archive API yet. These versioned raw writes model the
+  // canonical server CAS contract; unversioned external D1 writes are unsupported.
+  const archivedAt = "2026-09-01T05:35:00.000Z";
+  const archived = await harness.database.prepare(
+    `UPDATE teams SET archived_at = ?, version = version + 1, updated_at = ?
+     WHERE id = ? AND version = ?`,
+  ).bind(archivedAt, archivedAt, team.team.id, team.team.version).run();
+  assert.equal(archived.meta.changes, 1);
+  await updateTask(owner, task.id, {
+    version: task.version,
+    title: "Changed while Team access was absent",
+  });
+  const unarchivedAt = "2026-09-01T05:36:00.000Z";
+  const unarchived = await harness.database.prepare(
+    `UPDATE teams SET archived_at = NULL, version = version + 1, updated_at = ?
+     WHERE id = ? AND version = ?`,
+  ).bind(unarchivedAt, team.team.id, team.team.version + 1).run();
+  assert.equal(unarchived.meta.changes, 1);
+
+  const reset = await getWorkspaceSync(member, baseline.syncCursor!);
+  assert.equal(reset.resetRequired, true);
+  assert.equal((await getWorkspaceSync(member, reset.cursor)).resetRequired, false);
+  assert.equal(
+    (await getSnapshot(member)).tasks.find((item) => item.id === task.id)?.title,
+    "Changed while Team access was absent",
+  );
+});
+
 test("Team runtime and Team grant CRUD never write the workspace sync journal", () => {
   for (const file of ["../lib/teams.ts", "../lib/team-grants.ts"]) {
     const source = readFileSync(new URL(file, import.meta.url), "utf8");
