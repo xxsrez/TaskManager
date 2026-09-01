@@ -760,12 +760,13 @@ optional/standalone Task semantics из ранних решений: кажда�
   повторяют UI, backup validators, OpenAPI projection и D1 insert/update guards;
 - `task_identifier_aliases` с нормализованным lookup index для прежних
   identifiers;
-- dormant Teams baseline из
+- Teams persistence baseline из
   [ADR-0016](decisions/0016-dormant-teams-schema-baseline.md): `teams` со stable
   public ref и owner catalog indexes, `team_memberships` с unique Team–User
   pair, role/status lifecycle и lookup по Team/User, `team_grants` с type-aware
-  permission check и active lookup по Team/resource. Request runtime пока не
-  импортирует эти таблицы и не включает их в authorization, API, sync или UI;
+  permission check и active lookup по Team/resource. Release 0.4 подключает
+  таблицы к repository, strongest-role authorization, HTTP API и UI, но не к
+  workspace sync либо system/Project portability registry;
 - индексы по owner/status/archive/deletion, `purge_after`, project/release и
   updated time;
 - expression indexes по нормализованным task title/identifier, project
@@ -1038,6 +1039,25 @@ resumable `.tmbak` поверх durable jobs, а не немедленный JSO
 5. Server-side idempotency task create, bulk command contract, OAuth/API rate
    limits, retention audit events и критерии перехода на managed IdP перед
    публичным каталогом.
-6. После пяти сравнительных прогонов выбрать функциональную реализацию Teams и
-   отдельно решить её production lifecycle, sync и portability contract; до
-   этого dormant tables остаются исключены из system/Project backup.
+6. После пяти сравнительных прогонов выбрать итоговую функциональную реализацию
+   Teams и отдельно решить её production lifecycle, sync и portability
+   contract; до этого Team tables остаются исключены из system/Project backup.
+
+## Teams runtime Release 0.4
+
+- `/api/teams` и вложенные membership routes применяют current-principal scope
+  до загрузки Team. Создание Team и owner membership выполняется одной D1
+  batch; lifecycle members и grants защищён optimistic version.
+- `/api/team-grants` отделён от direct `access_grants`: resource ACL
+  проверяется прежде показа Team catalog и до любой mutation. Для Project
+  допустимы Manager/Editor/Viewer, для конкретной project-bound Task и global
+  SavedView — Editor/Viewer.
+- Central ACL SQL вычисляет strongest role из owner, direct User grant,
+  Project inheritance и всех active Team routes. Прямой Task route входит в
+  lookup/search/mutation только для этой Task и не становится Project route.
+- `/teams` работает как каталог principals; `People & Teams` показывает direct
+  People grants и Team routes раздельно. Ни одна поверхность не создаёт Team
+  workspace, owner scope, workflow, backlog или Team-owned resource.
+- Этот runtime намеренно не добавляет schema/migration, sync events и
+  backup/export/import/restore semantics. Production deployment остаётся
+  отдельной release authority boundary.

@@ -71,3 +71,23 @@ Teams будут реализованы пять раз из одной и то�
   повторяемым функциональным результатом;
 - полный D1 backup/restore как reset эксперимента — выходит за согласованный
   scope и затрагивает несвязанные данные.
+
+## Функциональное продолжение в Release 0.4
+
+Release 0.4 активирует заранее подготовленную baseline в одном функциональном
+кандидате: Team catalog и membership lifecycle, HTTP API, `/teams`,
+`People & Teams` и Team-derived ACL для Project, конкретной project-bound Task
+и global SavedView. Это продолжение не меняет исходное решение о схеме:
+`db/schema.ts`, migrations, indexes, constraints и migration journal остаются
+неизменными.
+
+TeamGrant остаётся отдельным от direct `AccessGrant` route. Effective role
+выбирается как strongest из owner, direct User grant, Project inheritance и
+всех active Team routes. Task route открывает только указанную Task, а global
+SavedView не расширяет ACL underlying records. Team-owned resources, tenant,
+workflow, backlog, sync и portability в продолжение не входят.
+
+Исторические утверждения выше описывают состояние одноразового schema step до
+функциональных прогонов и не переписываются задним числом. Production lifecycle
+и включение Team rows в system/Project backup по-прежнему требуют отдельного
+решения и отдельной release authority.

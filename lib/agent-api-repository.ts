@@ -546,29 +546,27 @@ export async function getAgentWorkspace(
             OR EXISTS (
               SELECT 1 FROM projects p
               WHERE p.owner_user_id = s.owner_user_id
-                AND p.deleted_at IS NULL AND (
-                p.owner_user_id = ? OR EXISTS (
-                  SELECT 1 FROM access_grants ag
-                  WHERE ag.resource_type = 'project'
-                    AND ag.resource_id = p.id
-                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                )
-              )
+                AND p.deleted_at IS NULL
+                AND ${projectAccessRoleSql("p")} IS NOT NULL
             ))
             OR EXISTS (
-              SELECT 1 FROM tasks t
-              WHERE t.status_id = s.id AND t.project_id IS NULL
-                AND t.deleted_at IS NULL AND (
-                t.owner_user_id = ? OR EXISTS (
-                  SELECT 1 FROM access_grants ag
-                  WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                )
-              )
+              SELECT 1 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+              WHERE t.status_id = s.id AND t.deleted_at IS NULL
+                AND (p.id IS NULL OR p.deleted_at IS NULL)
+                AND ${taskAccessRoleSql("t", "p")} IS NOT NULL
             )
          ORDER BY s.owner_user_id = ? DESC, s.position, s.name`,
       )
-      .bind(user.id, user.id, user.id, user.id, user.id, user.id)
+      .bind(
+        user.id,
+        user.id,
+        user.id,
+        user.id,
+        user.id,
+        user.id,
+        user.id,
+        user.id,
+      )
       .all<DbRow>(),
   ]);
 
@@ -840,13 +838,8 @@ export async function listAgentLabels(
        l.owner_user_id = ? OR EXISTS (
          SELECT 1 FROM projects p
          WHERE p.owner_user_id = l.owner_user_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           )
-         )
+           AND p.deleted_at IS NULL
+           AND ${projectAccessRoleSql("p")} IS NOT NULL
        )
      )
      ORDER BY l.owner_user_id = ? DESC, l.archived_at IS NOT NULL,
@@ -887,12 +880,8 @@ export async function listAgentLabelGroups(currentUser: UserRecord, includeArchi
      WHERE (? = 1 OR g.archived_at IS NULL) AND (
        g.owner_user_id = ? OR EXISTS (
          SELECT 1 FROM projects p WHERE p.owner_user_id = g.owner_user_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
-               AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           )
-         )
+           AND p.deleted_at IS NULL
+           AND ${projectAccessRoleSql("p")} IS NOT NULL
        )
      ) ORDER BY g.owner_user_id = ? DESC, g.archived_at IS NOT NULL, g.position, lower(g.name), g.id LIMIT 201`,
   ).bind(includeArchived ? 1 : 0, currentUser.id, currentUser.id, currentUser.id, currentUser.id).all<DbRow>();

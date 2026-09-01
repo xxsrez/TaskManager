@@ -1,4 +1,5 @@
 import { getD1 } from "@/db";
+import { taskAccessRoleSql } from "./access-sql";
 import { ValidationError } from "./domain";
 import { getTask } from "./repository";
 import type { ActivityEventRecord, ActivityPage, UserRecord } from "./types";
@@ -15,7 +16,12 @@ export async function listTaskActivity(
   const limit = boundedLimit(input.limit);
   const before = input.cursor ? decodeCursor(input.cursor, task.id) : null;
   const predicates = ["event.task_id = ?", relationActivityVisibilitySql("event")];
-  const visibilityParameters = [currentUser.id, currentUser.id];
+  const visibilityParameters = [
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+    currentUser.id,
+  ];
   const parameters: unknown[] = [task.id, ...visibilityParameters];
   if (before) {
     predicates.push("(event.created_at < ? OR (event.created_at = ? AND event.id < ?))");
@@ -84,16 +90,7 @@ function relationActivityVisibilitySql(alias: string): string {
       WHERE activity_peer.id = (${peerTaskId})
         AND activity_peer.deleted_at IS NULL
         AND activity_peer_project.deleted_at IS NULL
-        AND (
-          activity_peer_project.owner_user_id = ?
-          OR EXISTS (
-            SELECT 1 FROM access_grants activity_peer_grant
-            WHERE activity_peer_grant.resource_type = 'project'
-              AND activity_peer_grant.resource_id = activity_peer_project.id
-              AND activity_peer_grant.grantee_user_id = ?
-              AND activity_peer_grant.revoked_at IS NULL
-          )
-        )
+        AND ${taskAccessRoleSql("activity_peer", "activity_peer_project")} IS NOT NULL
     )
   )`;
 }

@@ -808,6 +808,7 @@ async function purgeTask(
     db.prepare("DELETE FROM task_labels WHERE task_id = ?").bind(current.id),
     db.prepare("DELETE FROM task_identifier_aliases WHERE task_id = ?").bind(current.id),
     db.prepare("DELETE FROM external_records WHERE target_type = 'task' AND target_id = ?").bind(current.id),
+    db.prepare("DELETE FROM team_grants WHERE resource_type = 'task' AND resource_id = ?").bind(current.id),
     db.prepare("DELETE FROM attachments WHERE task_id = ?").bind(current.id),
     ...(storedFileIds.length
       ? [db.prepare(
@@ -862,6 +863,7 @@ async function purgeSavedView(
   const db = getD1();
   const results = await db.batch<DbRow>([
     db.prepare("DELETE FROM external_records WHERE target_type = 'saved_view' AND target_id = ?").bind(current.id),
+    db.prepare("DELETE FROM team_grants WHERE resource_type = 'saved_view' AND resource_id = ?").bind(current.id),
     db.prepare(
       `DELETE FROM saved_views WHERE id = ? AND version = ? AND deleted_at IS NOT NULL
        AND ((scope_project_id IS NULL AND owner_user_id = ?) OR EXISTS (
@@ -875,7 +877,7 @@ async function purgeSavedView(
     db.prepare("DELETE FROM access_grants WHERE resource_type = 'saved_view' AND resource_id = ?").bind(current.id),
     purgeReceiptCompletionStatement(db, actorUserId, "saved_view", current, completedAt),
   ]);
-  assertPhysicalDelete(results[1], "Saved View");
+  assertPhysicalDelete(results[2], "Saved View");
   assertPurgeReceipt(results.at(-1), "Saved View");
 }
 
@@ -939,6 +941,15 @@ async function purgeProject(
          SELECT id FROM saved_views WHERE scope_project_id = ?
        ))`,
     ).bind(current.id, current.id),
+    db.prepare(
+      `DELETE FROM team_grants WHERE
+       (resource_type = 'project' AND resource_id = ?) OR
+       (resource_type = 'task' AND resource_id IN (
+         SELECT id FROM tasks WHERE project_id = ?
+       )) OR (resource_type = 'saved_view' AND resource_id IN (
+         SELECT id FROM saved_views WHERE scope_project_id = ?
+       ))`,
+    ).bind(current.id, current.id, current.id),
     db.prepare("DELETE FROM tasks WHERE project_id = ?").bind(current.id),
     db.prepare("DELETE FROM releases WHERE project_id = ?").bind(current.id),
     db.prepare("DELETE FROM saved_views WHERE scope_project_id = ?").bind(current.id),

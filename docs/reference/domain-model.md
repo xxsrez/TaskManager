@@ -264,8 +264,9 @@ Project Owner имеет implicit highest access и не представлен 
 - Project grant распространяется на Project, его Tasks, Releases и SavedViews с
   явным `scope_project_id`.
 - Release не является самостоятельным share target.
-- Task не является самостоятельным share target и всегда наследует доступ от
-  своего Project.
+- Прямой User grant для Task не моделируется; User получает её через Project.
+  TeamGrant, в отличие от AccessGrant, может открыть одну project-bound Task,
+  не открывая Project и соседние Tasks.
 - Прямой SavedView grant разрешён только для global View без
   `scope_project_id`; query возвращает только records, отдельно доступные
   grantee.
@@ -275,27 +276,27 @@ Project Owner имеет implicit highest access и не представлен 
   ownership уже добавленному участнику. Target становится Owner, прежний Owner
   — Manager; подтверждение target не требуется.
 
-## Dormant Teams schema baseline
+## Teams и Team-derived access
 
-Три таблицы ниже являются заранее применённой persistence baseline из
-[ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md). До отдельного
-функционального среза они не подключены к repository, authorization, API, sync
-или UI и должны оставаться пустыми вне синтетической проверки.
+Три таблицы ниже были заранее применены как persistence baseline из
+[ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md). Release 0.4
+подключает их к repository, authorization, HTTP API и UI без изменения schema.
+Они по-прежнему не входят в sync и system/Project portability contract.
 
 ### Team
 
 | Поле | Семантика |
 |---|---|
-| `id`, `public_id` | Internal primary key и стабильный opaque ref для будущего server contract |
+| `id`, `public_id` | Internal primary key и стабильный opaque ref server contract |
 | `owner_user_id` | Current owner самой Team; ссылка на существующего User |
 | `name` | Непустое отображаемое имя длиной не более 100 символов |
 | `archived_at` | Nullable archive lifecycle без изменения membership/grants |
-| `version` | Optimistic concurrency будущих Team mutations |
+| `version` | Optimistic concurrency Team mutations |
 | `created_at`, `updated_at` | Timestamps Team record |
 
 `public_id` уникален. Owner catalog и case-insensitive name lookup имеют
-отдельные индексы. Создание owner membership остаётся будущей атомарной server
-операцией и не выполняется migration.
+отдельные индексы. Создание Team атомарно добавляет active owner membership;
+migration этого не делает.
 
 ### TeamMembership
 
@@ -319,7 +320,7 @@ list Team и поиск active Teams пользователя.
 | Поле | Семантика |
 |---|---|
 | `id` | Stable Team grant ID |
-| `team_id` | Team, участникам которой предназначен будущий access route |
+| `team_id` | Team, active участникам которой предназначен access route |
 | `resource_type`, `resource_id` | Полиморфный share target: `project`, `task` или `saved_view` |
 | `permission` | Project: `manager`, `editor`, `viewer`; Task/SavedView: `editor`, `viewer` |
 | `granted_by_user_id` | Server-verified User, выдавший или изменивший grant |
@@ -328,10 +329,26 @@ list Team и поиск active Teams пользователя.
 | `created_at`, `updated_at` | Timestamps Team grant record |
 
 Одна row уникальна по `(team_id, resource_type, resource_id)` и может быть
-отозвана или повторно активирована будущим server contract. D1 проверяет
-resource/permission domain и Team/User foreign keys. Существование и ACL самого
-полиморфного resource должны проверяться сервером до чтения или mutation;
-наличие dormant row само по себе доступа не даёт.
+отозвана или повторно активирована versioned server contract. D1 проверяет
+resource/permission domain и Team/User foreign keys. Сервер проверяет
+существование и ACL полиморфного resource до чтения каталога или mutation.
+Доступ даёт только active membership вместе с non-revoked TeamGrant.
+
+### Effective role и lifecycle
+
+- Effective role выбирается как strongest из implicit owner, direct
+  AccessGrant, Project inheritance и всех TeamGrants active Teams User.
+- Project TeamGrant наследуется его Tasks, Releases и project-scoped
+  SavedViews. Прямой Task TeamGrant действует только на указанную Task; Task
+  остаётся project-bound. SavedView TeamGrant допустим только для global View.
+- Inactive membership не является access route. Reactivation возвращает
+  сохранившиеся non-revoked routes; физическое удаление membership не меняет
+  TeamGrants и прямые AccessGrants.
+- Revoke TeamGrant не очищает assignee, Project lead, direct AccessGrant или
+  сам resource. Другие Team routes продолжают участвовать в strongest-role
+  расчёте.
+- Только Team owner управляет memberships; outsider не может отличить чужую
+  Team от отсутствующей. Team archive не меняет membership/grant topology.
 
 ## WorkspaceSyncSequence и WorkspaceChangeEvent
 
@@ -1059,7 +1076,7 @@ grants; Tasks, base query semantics и temporary URL layer не материал
     `15` сохраняет provenance внешних edges без peer Tasks и требует явного
     `not_restored` acknowledgement. Operational purge jobs не входят в
     backup/restore.
-31. Dormant Team name непустое и не длиннее 100 символов; `public_id` уникален,
+31. Team name непустое и не длиннее 100 символов; `public_id` уникален,
     owner ссылается на существующего User, а delete Team каскадно удаляет только
     её memberships и Team grants.
 32. TeamMembership уникален по Team–User. `role` принадлежит
@@ -1068,12 +1085,14 @@ grants; Tasks, base query semantics и temporary URL layer не материал
 33. TeamGrant уникален по Team/resource. Project допускает
     Manager/Editor/Viewer, Task и SavedView — только Editor/Viewer; revoke не
     меняет direct `AccessGrant` или сам resource.
-34. До функционального cutover новые таблицы не участвуют в effective role,
-    repository reads, search, sync, API или UI. Их наличие не является access
-    route и не расширяет SavedView result.
-35. Functional tasks TM-331–TM-335 используют schema baseline без migrations.
-    Между сравнительными прогонами сохраняются schema и migration journal, а
-    targeted reset удаляет только синтетические Team rows.
+34. Team-derived effective role требует одновременно active membership и
+    non-revoked TeamGrant. Strongest role выбирается независимо по каждому
+    resource; revoke/deactivation одного route не изменяют другие routes.
+35. Project TeamGrant наследуется project children. Прямой Task TeamGrant не
+    открывает Project или sibling Tasks. Global SavedView сохраняет
+    ACL-пересечение underlying records и не расширяет результат.
+36. Functional tasks TM-331–TM-335 используют schema baseline без migrations.
+    Team rows не входят в sync, system/Project backup, export/import/restore.
 
 ## Намеренно не моделируется
 
@@ -1081,6 +1100,5 @@ grants; Tasks, base query semantics и temporary URL layer не материал
 `Mention`, `Notification`, `Subscription`, `ReleasePipeline`, `Environment` и
 `Integration` не входят в начальную модель.
 
-Team описана только как dormant persistence baseline. Team-owned resources,
-tenant boundary, issue assignment, workflows, cycles, labels, templates,
-private teams и subteams по-прежнему не моделируются.
+Team-owned resources, tenant boundary, issue assignment, workflows, cycles,
+labels, templates, private teams и subteams по-прежнему не моделируются.

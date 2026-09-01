@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   accessibleTaskWhere,
+  editableProjectWhere,
   editableTaskWhere,
   projectAccessRoleSql,
   savedViewAccessRoleSql,
@@ -11,6 +12,7 @@ import {
 test("ACL SQL fragments preserve their principal placeholder contracts", () => {
   assert.equal(placeholders(accessibleTaskWhere("task_row")), 4);
   assert.equal(placeholders(editableTaskWhere("task_row")), 4);
+  assert.equal(placeholders(editableProjectWhere("project_row")), 2);
   assert.equal(placeholders(taskAccessRoleSql("task_row", "project_row")), 4);
   assert.equal(placeholders(projectAccessRoleSql("project_row")), 2);
   assert.equal(placeholders(savedViewAccessRoleSql("view_row", "project_row")), 4);
@@ -20,6 +22,7 @@ test("ACL SQL fragments accept identifiers only as aliases", () => {
   assert.match(accessibleTaskWhere("task_row"), /task_row\.project_id/);
   assert.throws(() => accessibleTaskWhere("tasks; DELETE FROM tasks"), /Invalid SQL alias/);
   assert.throws(() => taskAccessRoleSql("tasks", "projects p"), /Invalid SQL alias/);
+  assert.throws(() => editableProjectWhere("projects; DROP TABLE projects"), /Invalid SQL alias/);
 });
 
 test("legacy full_access grants normalize to the current effective roles", () => {

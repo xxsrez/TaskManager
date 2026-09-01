@@ -589,14 +589,26 @@ function editableProjectTask(alias: string) {
         SELECT 1 FROM projects editable_project
         WHERE editable_project.id = ${alias}.project_id
           AND editable_project.owner_user_id = ?
-      ) OR EXISTS (
-        SELECT 1 FROM access_grants editable_grant
-        WHERE editable_grant.resource_type = 'project'
-          AND editable_grant.resource_id = ${alias}.project_id
-          AND editable_grant.grantee_user_id = ?
-          AND editable_grant.revoked_at IS NULL
-          AND editable_grant.permission IN ('editor', 'manager', 'full_access')
-      )
+      ) OR EXISTS (SELECT 1 FROM (SELECT ? AS user_id) access_actor
+        WHERE EXISTS (
+          SELECT 1 FROM access_grants editable_grant
+          WHERE editable_grant.resource_type = 'project'
+            AND editable_grant.resource_id = ${alias}.project_id
+            AND editable_grant.grantee_user_id = access_actor.user_id
+            AND editable_grant.revoked_at IS NULL
+            AND editable_grant.permission IN ('editor', 'manager', 'full_access')
+        ) OR EXISTS (
+          SELECT 1 FROM team_memberships membership
+          JOIN team_grants team_grant ON team_grant.team_id = membership.team_id
+            AND team_grant.revoked_at IS NULL
+          WHERE membership.user_id = access_actor.user_id
+            AND membership.status = 'active'
+            AND team_grant.permission IN ('editor', 'manager')
+            AND ((team_grant.resource_type = 'project'
+                  AND team_grant.resource_id = ${alias}.project_id)
+              OR (team_grant.resource_type = 'task'
+                  AND team_grant.resource_id = ${alias}.id))
+        ))
     )
   )`;
 }

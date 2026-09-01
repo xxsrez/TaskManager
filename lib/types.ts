@@ -29,6 +29,75 @@ export type UserRecord = {
   sidebarPreference?: SidebarPreference;
 };
 
+export type TeamMembershipStatus = "active" | "inactive";
+export type TeamMembershipRole = "owner" | "member";
+
+export type TeamMembershipRecord = {
+  id: string;
+  teamId: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: TeamMembershipRole;
+  status: TeamMembershipStatus;
+  deactivatedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamRecord = {
+  id: string;
+  publicId: string;
+  ownerUserId: string;
+  name: string;
+  archivedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  currentMembership: TeamMembershipRecord;
+  members: TeamMembershipRecord[];
+  activeMemberCount: number;
+  canManageMembers: boolean;
+};
+
+export type TeamCatalog = {
+  teams: TeamRecord[];
+};
+
+export type TeamGrantRecord = {
+  id: string;
+  teamId: string;
+  teamName: string;
+  activeMemberCount: number;
+  resourceType: "project" | "task" | "saved_view";
+  resourceId: string;
+  permission: GrantRole;
+  route: "direct" | "project";
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TeamGrantCandidate = {
+  teamId: string;
+  teamName: string;
+  activeMemberCount: number;
+  currentMembershipRole: TeamMembershipRole;
+  existingGrantId: string | null;
+  existingGrantVersion: number | null;
+  existingGrantActive: boolean;
+};
+
+export type TeamGrantCatalog = {
+  resourceType: "project" | "task" | "saved_view";
+  resourceId: string;
+  accessRole: AccessRole;
+  grants: TeamGrantRecord[];
+  inheritedGrants: TeamGrantRecord[];
+  availableTeams: TeamGrantCandidate[];
+};
+
 export type UserIdentityRecord = {
   provider: "chatgpt" | "google";
   verifiedEmail: string;

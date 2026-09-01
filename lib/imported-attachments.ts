@@ -7,6 +7,7 @@ import {
   getTaskAttachment,
 } from "./attachments";
 import { canEditContent } from "./access";
+import { editableProjectWhere } from "./access-sql";
 import { PermissionError, ValidationError } from "./domain";
 import { getTask } from "./repository";
 import { getRuntimeEnvironment } from "./runtime-environment";
@@ -165,11 +166,8 @@ export async function reconcileImportedAttachments(
   const accessJoin = `FROM external_records er
     JOIN tasks t ON t.id = er.target_id
     JOIN projects p ON p.id = t.project_id
-    LEFT JOIN access_grants ag ON ag.resource_type = 'project'
-      AND ag.resource_id = p.id AND ag.grantee_user_id = ?
-      AND ag.revoked_at IS NULL
     WHERE er.source = 'linear' AND er.target_type = 'task'
-      AND (p.owner_user_id = ? OR ag.permission IN ('manager', 'editor', 'full_access'))`;
+      AND ${editableProjectWhere("p")}`;
   const sourceQuery = options.sourceRecordId
     ? db.prepare(`SELECT er.id, er.target_id, er.metadata_json ${accessJoin}
         AND er.id = ? LIMIT 1`)
