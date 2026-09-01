@@ -66,6 +66,7 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(parseNavigationPath("/views"), { kind: "views" });
   assert.deepEqual(parseNavigationPath("/projects"), { kind: "projects" });
   assert.deepEqual(parseNavigationPath("/releases"), { kind: "releases" });
+  assert.deepEqual(parseNavigationPath("/teams"), { kind: "teams" });
   assert.deepEqual(parseNavigationPath("/settings"), {
     kind: "settings",
     section: "profile",
@@ -79,6 +80,19 @@ test("short REST paths cover issue, view, project, and release collections", () 
   assert.deepEqual(
     parseNavigationPath(`/projects/${projectPublicId}/releases`),
     { kind: "projectReleases", projectId: projectPublicId },
+  );
+});
+
+test("Teams is a canonical collection surface", () => {
+  const target = parseNavigationPath("/teams");
+  assert.deepEqual(resolveNavigationTarget(target!, snapshot), {
+    surface: "teams",
+    layout: "list",
+    taskId: null,
+  });
+  assert.equal(
+    navigationPath({ surface: "teams", layout: "list", taskId: null }, snapshot),
+    "/teams",
   );
 });
 

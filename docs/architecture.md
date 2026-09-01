@@ -131,9 +131,11 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
 ### Авторизованный доступ к данным
 
 1. Identity middleware устанавливает current User из server-verified session.
-2. Access вычисляет effective role: для Project и его subtree, включая каждую
-   Task, — через current Project owner/active Project grant; для global
-   SavedView — через собственный owner/active direct grant.
+2. Access вычисляет strongest effective role из current owner, active direct
+   grant, Project inheritance и всех active Team routes. Project Team grant
+   наследуется subtree; прямой Team grant на Project Task открывает только эту
+   Task. Global SavedView использует собственные direct/Team grants, но её
+   результат остаётся ACL-пересечением доступных Tasks.
 3. Repository применяет predicate внутри SQL/query до pagination, aggregation,
    grouping или full-text search.
 4. Mutation дополнительно требует minimum role (`editor` для content,
@@ -165,6 +167,9 @@ Vinext/Vite, prepared D1 queries за repository boundary и Drizzle Kit для
    Task/global SavedView grant поддерживает только Editor/Viewer.
 6. Ownership transfer одним batch обновляет Project owner, отзывает grant нового
    owner и создаёт прежнему owner grant Manager.
+7. Team grant создаётся только для Team, в которой actor имеет active
+   membership, и не изменяет `access_grants`. Membership deactivate, Team grant
+   revoke и независимые маршруты вступают в силу на следующем repository query.
 
 ### Открытие view
 
@@ -760,12 +765,14 @@ optional/standalone Task semantics из ранних решений: кажда�
   повторяют UI, backup validators, OpenAPI projection и D1 insert/update guards;
 - `task_identifier_aliases` с нормализованным lookup index для прежних
   identifiers;
-- dormant Teams baseline из
+- Teams baseline из
   [ADR-0016](decisions/0016-dormant-teams-schema-baseline.md): `teams` со stable
   public ref и owner catalog indexes, `team_memberships` с unique Team–User
   pair, role/status lifecycle и lookup по Team/User, `team_grants` с type-aware
-  permission check и active lookup по Team/resource. Request runtime пока не
-  импортирует эти таблицы и не включает их в authorization, API, sync или UI;
+  permission check и active lookup по Team/resource. Request runtime создаёт и
+  читает Team catalog/membership, подключает active Team grants к общим ACL SQL
+  predicates и предоставляет `/teams` и `People & Teams`; Team-specific
+  persistent state остаётся только в этих трёх таблицах;
 - индексы по owner/status/archive/deletion, `purge_after`, project/release и
   updated time;
 - expression indexes по нормализованным task title/identifier, project

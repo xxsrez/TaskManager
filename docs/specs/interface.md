@@ -817,11 +817,14 @@ Linear, но они обязаны использовать тот же visual l
 
 ### 12.2 Share dialog
 
-- Trigger `Share` находится в header Project и global SavedView. Для Task,
-  Release и project-scoped SavedView он открывает
-  access surface родительского Project либо не дублируется.
-- Compact dialog `Members & access` содержит verified-email input, role picker,
-  Owner отдельной первой строкой и список active grants с inline role picker.
+- Trigger `Share` находится в header Project и global SavedView. Для Release и
+  project-scoped SavedView он открывает access surface родительского Project.
+  Для Project Task тот же dialog позволяет отдельно выбрать Team route на
+  Project либо прямой Team route только на эту Task.
+- Compact dialog `People & Teams` имеет две явные tabs. `People` сохраняет
+  verified-email input, role picker, Owner отдельной первой строкой и список
+  active direct grants. `Teams` добавляет поиск и явный выбор Team, role picker,
+  список Team grants и подпись `via Team` с различием direct/inherited.
 - Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView —
   `Editor`, `Viewer`. Copy рядом с email явно говорит, что
   User должен уже войти и письмо не отправляется.
@@ -834,7 +837,8 @@ Linear, но они обязаны использовать тот же visual l
   server повторно проверяет actor role и role ceiling.
 - Project dialog объясняет inheritance к Tasks, Releases и project-scoped
   SavedViews; global SavedView dialog — что view не расширяет доступ к
-  underlying data.
+  underlying data. Direct Team grant на Task объясняет, что Project и sibling
+  Tasks не открываются.
 - Revoke требует подтверждения только когда последствия могут оборвать текущую
   работу; результат обновляется после server response.
 
@@ -1066,8 +1070,9 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 | Surface/паттерн Linear | Task Manager | Статус MVP | Осознанное отличие |
 |---|---|---|---|
-| Left application sidebar | My tasks, Shared, Views, Projects, Releases | Берём | Без teams/inbox/initiatives |
-| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace без teams, initiatives и cross-user analytics |
+| Left application sidebar | My tasks, Shared, Teams, Views, Projects, Releases | Берём | Без inbox/initiatives |
+| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Teams вынесены в отдельный каталог; без initiatives и cross-user analytics |
+| Teams catalog | Searchable Team list и membership card | Адаптируем | Только owner/member lifecycle; без private Teams, subteams и Team settings |
 | Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
 | Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
 | Filters | Searchable property formula | Берём ядро | Только `AND` |
@@ -1080,7 +1085,7 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 | Project overview/sidebar | Overview, tasks, releases, properties | Берём ядро | Без docs/resources/graph |
 | Custom views | Saved task views | Берём ядро | Нет initiative/project-view product layers |
 | Themes | System/light/dark | Берём | Собственные tokens и branding |
-| Share controls | Linear-like compact members dialog | Адаптируем | Owner/Manager/Editor/Viewer и inheritance |
+| Share controls | Compact People & Teams dialog | Адаптируем | Direct grants сохранены; Team routes явно помечают inheritance/direct Task scope |
 | Login/profile | Та же visual system | Адаптируем | ChatGPT/Google identity model |
 | Administration | Compact metrics + dense user table | Адаптируем | Operational aggregates, не Linear analytics |
 | Project backup utility | Compact staged wizard | Адаптируем | Только current Project Owner |
@@ -1108,13 +1113,18 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 Базовый набор проверен 2026-08-18. `Issue relations` и `Edit issues` повторно
 проверены 2026-08-30: официальный picker различает relation types, а при move
-существующие relations сохраняются. Перед следующей крупной surface нужна новая
-сверка, потому что интерфейс Linear развивается.
+существующие relations сохраняются. `Teams`, `Members and roles` и default Team
+pages повторно проверены 2026-09-01; Task Manager переносит ожидаемые точки
+поиска и управления membership, но сохраняет собственную ACL-модель. Перед
+следующей крупной surface нужна новая сверка, потому что интерфейс Linear
+развивается.
 
 - [Board layout](https://linear.app/docs/board-layout)
 - [Display options](https://linear.app/docs/display-options)
 - [Select issues](https://linear.app/docs/select-issues)
 - [Members and roles](https://linear.app/docs/members-roles)
+- [Teams](https://linear.app/docs/teams)
+- [Default Team pages](https://linear.app/docs/default-team-pages)
 - [Custom Views](https://linear.app/docs/custom-views)
 - [Peek preview](https://linear.app/docs/peek)
 - [Create issues](https://linear.app/docs/creating-issues)

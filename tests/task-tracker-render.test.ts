@@ -41,6 +41,7 @@ import {
   resolveArchiveBulkAction,
   runSingleFlight,
   shouldTriggerPullRefresh,
+  shareTarget,
   StatusIcon,
   taskRowReorderDirection,
   sortTasks,
@@ -149,6 +150,27 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+test("Teams has a canonical catalog surface and Project Tasks expose an explicit direct Team route", () => {
+  const markup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: { surface: "teams", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+  assert.match(markup, /aria-current="page"[^>]*aria-label="Teams"/);
+  assert.match(markup, /aria-label="Teams catalog"/);
+  assert.match(markup, /New Team name/);
+  assert.match(markup, /Loading Teams/);
+
+  const target = shareTarget("project:project-1", snapshot.tasks[0]!, snapshot);
+  assert.equal(target?.resourceType, "project");
+  assert.equal(target?.inherited, true);
+  assert.deepEqual(target?.directTeamTask, {
+    resourceId: "task-1",
+    label: "TM-1",
+    accessRole: "owner",
+  });
+});
 
 test("task ordering uses priority by default with rank and immutable id tie-breakers", () => {
   const base = snapshot.tasks[0]!;

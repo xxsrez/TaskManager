@@ -42,10 +42,9 @@ MVP должен позволить вести задачи от backlog до п
 - **Owner workspace scope** — UI-проекция доступных records по владельцу,
   применяемая только как дополнительное сужение уже вычисленного ACL; это не
   entity, tenant, grant или источник authorization.
-- **Dormant Teams schema baseline** — заранее применённая пустая D1-структура
-  `teams`, `team_memberships` и `team_grants`. Пока отдельный функциональный
-  срез не подключён, она не является пользовательской возможностью, не меняет
-  authorization и не создаёт UI/API surface.
+- **Teams schema baseline** — заранее применённая D1-структура `teams`,
+  `team_memberships` и `team_grants`, которую ограниченный функциональный срез
+  использует без новых migrations и без Team ownership ресурсов.
 
 ### 2.1 Интерфейсный принцип
 
@@ -279,7 +278,7 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - До сравнительной реализации Teams одна versioned migration создаёт пустые
   `teams`, `team_memberships` и `team_grants` согласно
   [ADR-0016](../decisions/0016-dormant-teams-schema-baseline.md).
-- Этот шаг не добавляет Team catalog, membership commands, Team-derived access,
+- Сам migration-step не добавляет Team catalog, membership commands, Team-derived access,
   autocomplete, sharing controls или navigation. Все существующие queries и
   mutations продолжают использовать прежний owner/direct-grant contract.
 - Последующие функциональные задачи используют готовую структуру без schema
@@ -288,6 +287,30 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - Dormant Team rows намеренно не входят в system/Project backup format текущего
   экспериментального среза. Backup/export/import/restore не являются его
   guardrail или acceptance и требуют отдельной прямой команды пользователя.
+
+### 4.2 Ограниченный функциональный Teams-срез
+
+- Runtime создаёт Team и owner membership атомарно, показывает только Teams с
+  active membership и разрешает owner добавлять зарегистрированного User,
+  деактивировать, реактивировать и удалять member membership с optimistic
+  version. Недоступная Team не подтверждает своё существование.
+- Team grant является независимым ACL-маршрутом и не переписывает direct
+  `AccessGrant`. Поддерживаются Project (`manager|editor|viewer`), Task
+  (`editor|viewer`) и global SavedView (`editor|viewer`); Release отдельно не
+  шарится, project-scoped SavedView наследует Project.
+- Effective role — сильнейшая из owner, direct grant, Project inheritance и
+  всех active Team routes. Inactive membership и revoked grant перестают
+  участвовать сразу, а отзыв одного маршрута не закрывает остальные.
+- Project Team grant наследуется Tasks, Releases и project-scoped SavedViews.
+  Прямой Team grant на Task с обязательным `project_id` открывает только эту
+  Task, не открывая её Project или соседние Tasks. Global SavedView по-прежнему
+  возвращает пересечение с данными, уже доступными читателю.
+- `/teams` даёт отдельный каталог и карточку membership. Диалог `People &
+  Teams` сохраняет verified-email поток для direct grants и добавляет поиск и
+  явный выбор Team, role и области `Project inheritance` либо `this Task only`.
+- Persistent Team-specific state ограничен тремя baseline-таблицами. Срез не
+  добавляет Team-owned Tasks/Projects, tenant/workspace boundary, Team
+  assignment, Team workflows, private Teams, subteams или backup format.
 
 ## 5. Задачи
 
