@@ -83,7 +83,12 @@ import {
   taskEffectiveRoleRankSql,
 } from "./access-sql";
 import { getRuntimeEnvironment } from "./runtime-environment";
-import { encodeWorkspaceSyncCursor } from "./workspace-sync-cursor";
+import {
+  encodeWorkspaceSyncCursor,
+  teamAccessFingerprintFromRows,
+  teamAccessFingerprintSql,
+  type TeamAccessFingerprintRow,
+} from "./workspace-sync-cursor";
 import {
   decodeKeysetCursor,
   digestReference,
@@ -337,10 +342,12 @@ function accessibleWorkspaceOwnersStatement(db: D1Database, userId: string) {
        WHERE p.deleted_at IS NULL
          AND ${projectEffectiveRoleRankSql("p", "principal.id")} > 0
        UNION
-       SELECT p.owner_user_id FROM tasks t
-       JOIN projects p ON p.id = t.project_id
+       SELECT CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+         ELSE t.owner_user_id END FROM tasks t
+       LEFT JOIN projects p ON p.id = t.project_id
        JOIN principal
-       WHERE t.deleted_at IS NULL AND p.deleted_at IS NULL
+       WHERE t.deleted_at IS NULL
+         AND (t.project_id IS NULL OR p.deleted_at IS NULL)
          AND ${taskEffectiveRoleRankSql("t", "p", "principal.id")} > 0
        UNION
        SELECT v.owner_user_id FROM saved_views v
@@ -387,11 +394,14 @@ function workspaceCatalogOwnerPredicate(
         )} > 0
     ) OR EXISTS (
       SELECT 1 FROM tasks catalog_task
-      JOIN projects catalog_task_project
+      LEFT JOIN projects catalog_task_project
         ON catalog_task_project.id = catalog_task.project_id
       WHERE catalog_task.deleted_at IS NULL
-        AND catalog_task_project.deleted_at IS NULL
-        AND catalog_task_project.owner_user_id = ${expression}
+        AND (catalog_task.project_id IS NULL
+          OR catalog_task_project.deleted_at IS NULL)
+        AND CASE WHEN catalog_task.project_id IS NOT NULL
+          THEN catalog_task_project.owner_user_id
+          ELSE catalog_task.owner_user_id END = ${expression}
         AND ${taskEffectiveRoleRankSql(
           "catalog_task",
           "catalog_task_project",
@@ -662,6 +672,7 @@ export async function getSnapshot(
            WHERE audience_user_id = ?`,
         )
         .bind(user.id),
+      db.prepare(teamAccessFingerprintSql()).bind(user.id),
       db
         .prepare(
           `WITH scoped AS (
@@ -838,13 +849,13 @@ export async function getSnapshot(
               )) AND ${workspacePredicate("s.owner_user_id", workspaceScope).sql})
              OR EXISTS (
                 SELECT 1 FROM tasks t
-                JOIN projects p ON p.id = t.project_id
+                LEFT JOIN projects p ON p.id = t.project_id
                 WHERE t.status_id = s.id
                 AND ${taskEffectiveRoleRankSql("t", "p", "snapshot_actor.id")} > 0
                 AND t.deleted_at IS NULL
-                AND p.deleted_at IS NULL
+                AND (t.project_id IS NULL OR p.deleted_at IS NULL)
                 AND ${workspacePredicate(
-                  "p.owner_user_id",
+                  "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
                   workspaceScope,
                 ).sql}
               )
@@ -854,7 +865,7 @@ export async function getSnapshot(
           user.id,
           ...workspacePredicate("s.owner_user_id", workspaceScope).parameters,
           ...workspacePredicate(
-            "p.owner_user_id",
+            "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
             workspaceScope,
           ).parameters,
         ),
@@ -871,17 +882,24 @@ export async function getSnapshot(
                AND ${projectEffectiveRoleRankSql("p", "u.id")} > 0
            ) OR EXISTS (
              SELECT 1 FROM tasks t
-             JOIN projects p ON p.id = t.project_id
-             WHERE t.deleted_at IS NULL AND p.deleted_at IS NULL
+             LEFT JOIN projects p ON p.id = t.project_id
+             WHERE t.deleted_at IS NULL
+               AND (t.project_id IS NULL OR p.deleted_at IS NULL)
                AND ${taskEffectiveRoleRankSql("t", "p", "snapshot_actor.id")} > 0
-               AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
+               AND ${workspacePredicate(
+                 "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
+                 workspaceScope,
+               ).sql}
                AND ${taskEffectiveRoleRankSql("t", "p", "u.id")} > 0
            ) ORDER BY u.display_name, u.id`,
         )
         .bind(
           user.id,
           ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
-          ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
+          ...workspacePredicate(
+            "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
+            workspaceScope,
+          ).parameters,
         ),
       db
         .prepare(
@@ -899,11 +917,15 @@ export async function getSnapshot(
              )) OR
              (ag.resource_type = 'task' AND EXISTS (
                SELECT 1 FROM tasks t
-               JOIN projects p ON p.id = t.project_id
+               LEFT JOIN projects p ON p.id = t.project_id
                WHERE t.id = ag.resource_id
-                 AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+                 AND t.deleted_at IS NULL
+                 AND (t.project_id IS NULL OR p.deleted_at IS NULL)
                  AND ${taskEffectiveRoleRankSql("t", "p", "snapshot_actor.id")} > 0
-                 AND ${workspacePredicate("p.owner_user_id", workspaceScope).sql}
+                 AND ${workspacePredicate(
+                   "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
+                   workspaceScope,
+                 ).sql}
              )) OR
              (ag.resource_type = 'saved_view' AND EXISTS (
                SELECT 1 FROM saved_views v
@@ -923,7 +945,10 @@ export async function getSnapshot(
         .bind(
           user.id,
           ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
-          ...workspacePredicate("p.owner_user_id", workspaceScope).parameters,
+          ...workspacePredicate(
+            "CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id ELSE t.owner_user_id END",
+            workspaceScope,
+          ).parameters,
           ...workspacePredicate("v.owner_user_id", workspaceScope).parameters,
         ),
       db
@@ -1039,6 +1064,7 @@ export async function getSnapshot(
 
   const [
     syncState,
+    teamAccessRoutes,
     tasks,
     projects,
     releases,
@@ -1054,6 +1080,9 @@ export async function getSnapshot(
     workspaceOwners,
     workspaceMetrics,
   ] = snapshotResults;
+  const teamAccessFingerprint = await teamAccessFingerprintFromRows(
+    teamAccessRoutes.results as unknown as TeamAccessFingerprintRow[],
+  );
 
   const boundedTaskRows = tasks.results.slice(0, taskLimit);
   const boundedTaskIds = new Set(boundedTaskRows.map((row) => String(row.id)));
@@ -1133,6 +1162,7 @@ export async function getSnapshot(
     collaborators: collaborators.results.map(mapCollaborator),
     syncCursor: encodeWorkspaceSyncCursor(
       Number((syncState.results[0] as DbRow | undefined)?.last_sequence ?? 0),
+      teamAccessFingerprint,
     ),
   };
 }
@@ -1597,10 +1627,12 @@ export async function searchWorkspace(
          r.name AS release_name,
          ${taskAccessRoleSql("t", "p")} AS access_role
        FROM tasks t
-       JOIN projects p ON p.id = t.project_id
+       LEFT JOIN projects p ON p.id = t.project_id
        LEFT JOIN releases r ON r.id = t.release_id AND r.deleted_at IS NULL
-       WHERE t.archived_at IS NULL AND p.archived_at IS NULL
-         AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+       WHERE t.archived_at IS NULL
+         AND (t.project_id IS NULL OR p.archived_at IS NULL)
+         AND t.deleted_at IS NULL
+         AND (t.project_id IS NULL OR p.deleted_at IS NULL)
      ), visible AS MATERIALIZED (
        SELECT * FROM scoped WHERE access_role IS NOT NULL
      )
@@ -1743,7 +1775,7 @@ export async function searchWorkspace(
         publicId: String(row.public_id),
         identifier: String(row.identifier),
         title: String(row.title),
-        context: [String(row.project_name), nullableString(row.release_name)]
+        context: [nullableString(row.project_name), nullableString(row.release_name)]
           .filter(Boolean).join(" · "),
         href: `/issues/${encodeURIComponent(String(row.public_id))}`,
       })),
@@ -2922,7 +2954,7 @@ export async function reorderTask(
            )
            AND (? IS NULL OR EXISTS (
              SELECT 1 FROM users assignee
-             JOIN projects assignment_project
+             LEFT JOIN projects assignment_project
                ON assignment_project.id = tasks.project_id
              WHERE assignee.id = ?
                AND ${taskEffectiveRoleRankSql(
@@ -3826,7 +3858,7 @@ export async function bulkUpdateTasks(
              AND (
                ? IS NULL OR EXISTS (
                  SELECT 1 FROM users assignee
-                 JOIN projects assignment_project
+                 LEFT JOIN projects assignment_project
                    ON assignment_project.id = tasks.project_id
                  WHERE assignee.id = ?
                    AND ${taskEffectiveRoleRankSql(
@@ -5490,8 +5522,9 @@ async function validateTaskFilterReferences(
                AND ${projectEffectiveRoleRankSql("p", "filter_actor.id")} > 0
                AND ${projectEffectiveRoleRankSql("p", "u.id")} > 0
            ) OR EXISTS (
-             SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id
-             WHERE t.deleted_at IS NULL AND p.deleted_at IS NULL
+             SELECT 1 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+             WHERE t.deleted_at IS NULL
+               AND (t.project_id IS NULL OR p.deleted_at IS NULL)
                AND ${taskEffectiveRoleRankSql("t", "p", "filter_actor.id")} > 0
                AND ${taskEffectiveRoleRankSql("t", "p", "u.id")} > 0
            )
@@ -5550,11 +5583,14 @@ function catalogOwnerAccessibleSql(
       )} > 0
   ) OR EXISTS (
     SELECT 1 FROM tasks catalog_task
-    JOIN projects catalog_task_project
+    LEFT JOIN projects catalog_task_project
       ON catalog_task_project.id = catalog_task.project_id
-    WHERE catalog_task_project.owner_user_id = ${ownerExpression}
+    WHERE CASE WHEN catalog_task.project_id IS NOT NULL
+        THEN catalog_task_project.owner_user_id
+        ELSE catalog_task.owner_user_id END = ${ownerExpression}
       AND catalog_task.deleted_at IS NULL
-      AND catalog_task_project.deleted_at IS NULL
+      AND (catalog_task.project_id IS NULL
+        OR catalog_task_project.deleted_at IS NULL)
       AND ${taskEffectiveRoleRankSql(
         "catalog_task",
         "catalog_task_project",

@@ -311,21 +311,9 @@ export async function updateTeamMembership(
     throw new ValidationError("Unsupported Team membership action");
   }
 
-  const resetStatements = action === "deactivate"
-    ? membershipLossResetStatements(db, {
-        userId: membership.userId,
-        membershipId: membership.id,
-        teamId: access.team.id,
-        membershipVersion: version + 1,
-        teamVersion: teamVersion + 1,
-        now,
-        deleted: false,
-      })
-    : [];
   const results = await db.batch([
     membershipStatement,
     teamStatement,
-    ...resetStatements,
   ]);
   if (
     (results[0]?.meta.changes ?? 0) !== 1 ||
@@ -389,15 +377,6 @@ export async function deleteTeamMembership(
       teamVersion,
       membership.id,
     ),
-    ...membershipLossResetStatements(db, {
-      userId: membership.userId,
-      membershipId: membership.id,
-      teamId: access.team.id,
-      membershipVersion: version,
-      teamVersion: teamVersion + 1,
-      now,
-      deleted: true,
-    }),
   ]);
   if (
     (results[0]?.meta.changes ?? 0) !== 1 ||
@@ -406,72 +385,6 @@ export async function deleteTeamMembership(
     throw new ConflictError("Team or membership was changed in another session");
   }
   return getTeamDetail(currentUser, access.team.id);
-}
-
-type MembershipLossReset = {
-  userId: string;
-  membershipId: string;
-  teamId: string;
-  membershipVersion: number;
-  teamVersion: number;
-  now: string;
-  deleted: boolean;
-};
-
-function membershipLossResetStatements(
-  db: D1Database,
-  reset: MembershipLossReset,
-): D1PreparedStatement[] {
-  const committedLoss = reset.deleted
-    ? `EXISTS (
-         SELECT 1 FROM teams team
-         WHERE team.id = ? AND team.version = ? AND team.updated_at = ?
-           AND NOT EXISTS (
-             SELECT 1 FROM team_memberships membership
-             WHERE membership.id = ? AND membership.team_id = team.id
-           )
-       )`
-    : `EXISTS (
-         SELECT 1 FROM teams team
-         JOIN team_memberships membership ON membership.team_id = team.id
-         WHERE team.id = ? AND team.version = ? AND team.updated_at = ?
-           AND membership.id = ? AND membership.user_id = ?
-           AND membership.status = 'inactive'
-           AND membership.deactivated_at = ?
-           AND membership.version = ?
-       )`;
-  const conditionBindings = reset.deleted
-    ? [reset.teamId, reset.teamVersion, reset.now, reset.membershipId]
-    : [
-        reset.teamId,
-        reset.teamVersion,
-        reset.now,
-        reset.membershipId,
-        reset.userId,
-        reset.now,
-        reset.membershipVersion,
-      ];
-  return [
-    db.prepare(
-      `INSERT INTO workspace_sync_sequences (audience_user_id, last_sequence)
-       SELECT ?, 1 WHERE ${committedLoss}
-       ON CONFLICT(audience_user_id)
-       DO UPDATE SET last_sequence = last_sequence + 1`,
-    ).bind(reset.userId, ...conditionBindings),
-    db.prepare(
-      `INSERT INTO workspace_change_events
-        (audience_user_id, sequence, entity_type, entity_id, operation, created_at)
-       SELECT ?, sequence.last_sequence, 'workspace', ?, 'reset', ?
-       FROM workspace_sync_sequences sequence
-       WHERE sequence.audience_user_id = ? AND ${committedLoss}`,
-    ).bind(
-      reset.userId,
-      `team-membership:${reset.membershipId}`,
-      reset.now,
-      reset.userId,
-      ...conditionBindings,
-    ),
-  ];
 }
 
 async function buildTeamDetail(access: AccessibleTeam): Promise<TeamDetail> {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, test } from "node:test";
 import {
   DELETE as deleteTeamGrantRoute,
@@ -30,9 +31,14 @@ import {
 import {
   createTeamGrant,
   revokeTeamGrant,
+  updateTeamGrant,
 } from "../lib/team-grants";
 import { createTaskRelation } from "../lib/task-relations";
 import { getWorkspaceSync } from "../lib/workspace-sync";
+import {
+  decodeWorkspaceSyncCursor,
+  encodeLegacyWorkspaceSyncCursor,
+} from "../lib/workspace-sync-cursor";
 import type {
   TeamDetail,
   TeamGrantList,
@@ -194,7 +200,11 @@ test("strongest Team route, Project inheritance, explicit Task isolation, lifecy
   assert.equal(relation.type, "related");
 
   const activeCursor = isolatedSnapshot.syncCursor!;
-  assert.equal((await getWorkspaceSync(isolated, activeCursor)).resetRequired, true);
+  const firstReset = await getWorkspaceSync(isolated, activeCursor);
+  assert.equal(firstReset.resetRequired, true);
+  const convergedPoll = await getWorkspaceSync(isolated, firstReset.cursor);
+  assert.equal(convergedPoll.resetRequired, false);
+  assert.equal(convergedPoll.cursor, firstReset.cursor);
   const isolatedMembership = explicitTeam.members.find(
     (membership) => membership.userId === isolated.id,
   )!;
@@ -211,8 +221,12 @@ test("strongest Team route, Project inheritance, explicit Task isolation, lifecy
   isolatedSnapshot = await getSnapshot(isolated);
   assert.ok(!isolatedSnapshot.tasks.some((item) => item.id === explicitTask.id));
   assert.ok(!isolatedSnapshot.views.some((item) => item.id === globalView.id));
-  assert.equal(await membershipResetCount(isolated.id, isolatedMembership.id), 1);
-  assert.equal((await getWorkspaceSync(isolated, activeCursor)).resetRequired, true);
+  const deactivatedReset = await getWorkspaceSync(isolated, convergedPoll.cursor);
+  assert.equal(deactivatedReset.resetRequired, true);
+  assert.equal(
+    (await getWorkspaceSync(isolated, deactivatedReset.cursor)).resetRequired,
+    false,
+  );
 
   const inactiveMembership = explicitTeam.members.find(
     (membership) => membership.id === isolatedMembership.id,
@@ -226,6 +240,12 @@ test("strongest Team route, Project inheritance, explicit Task isolation, lifecy
       teamVersion: explicitTeam.team.version,
       version: inactiveMembership.version,
     },
+  );
+  const reactivatedReset = await getWorkspaceSync(isolated, deactivatedReset.cursor);
+  assert.equal(reactivatedReset.resetRequired, true);
+  assert.equal(
+    (await getWorkspaceSync(isolated, reactivatedReset.cursor)).resetRequired,
+    false,
   );
   await harness.database.prepare(
     "UPDATE teams SET archived_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -247,7 +267,9 @@ test("strongest Team route, Project inheritance, explicit Task isolation, lifecy
       version: activeMembership.version,
     },
   );
-  assert.equal(await membershipResetCount(isolated.id, isolatedMembership.id), 2);
+  const deletedReset = await getWorkspaceSync(isolated, reactivatedReset.cursor);
+  assert.equal(deletedReset.resetRequired, true);
+  assert.equal((await getWorkspaceSync(isolated, deletedReset.cursor)).resetRequired, false);
   assert.ok(!(await getSnapshot(isolated)).tasks.some(
     (item) => item.id === explicitTask.id,
   ));
@@ -380,7 +402,11 @@ test("Team grant API returns authoritative versioned read-back and leaks no raw 
   configureActorResolverForTests(async () => memberActor);
   assert.equal((await getTeamGrantsRoute(new Request(
     `https://example.test/api/shares/teams?resource_type=project&resource_id=${project.id}`,
-  ))).status, 403);
+  ))).status, 404);
+  assert.equal((await deleteTeamGrantRoute(jsonRequest("DELETE", {
+    grantId: secondGrant.id,
+    version: secondGrant.version,
+  }))).status, 404);
 
   configureActorResolverForTests(async () => outsiderActor);
   assert.equal((await getTeamGrantsRoute(new Request(
@@ -392,6 +418,119 @@ test("Team grant API returns authoritative versioned read-back and leaks no raw 
     action: "role",
     permission: "viewer",
   }))).status, 404);
+});
+
+test("a non-owner active Team member can select it, while resource authority alone can revoke a stale route", async () => {
+  harness = await createD1TestHarness();
+  const resourceOwner = await getOrCreateUser(ownerActor);
+  const teamOwner = await getOrCreateUser(outsiderActor);
+  const recipient = await getOrCreateUser(memberActor);
+  await createProject(resourceOwner, { name: "Foreign managed Team", taskCode: "FMT" });
+  const project = (await getSnapshot(resourceOwner)).projects.find(
+    (item) => item.name === "Foreign managed Team",
+  )!;
+
+  let team = await createTeam(teamOwner, { name: "Externally owned Team" });
+  team = await addTeamMember(teamOwner, team.team.id, {
+    email: resourceOwner.email,
+    teamVersion: team.team.version,
+  });
+  team = await addTeamMember(teamOwner, team.team.id, {
+    email: recipient.email,
+    teamVersion: team.team.version,
+  });
+  const recipientCursor = (await getSnapshot(recipient)).syncCursor!;
+
+  const list = await createTeamGrant(resourceOwner, {
+    teamId: team.team.publicId,
+    resourceType: "project",
+    resourceId: project.publicId,
+    permission: "viewer",
+  });
+  let grant = list.grants.find((item) => item.teamId === team.team.id)!;
+  assert.equal(
+    (await getSnapshot(recipient)).projects.find((item) => item.id === project.id)?.accessRole,
+    "viewer",
+  );
+  const reset = await getWorkspaceSync(recipient, recipientCursor);
+  assert.equal(reset.resetRequired, true);
+  assert.equal((await getWorkspaceSync(recipient, reset.cursor)).resetRequired, false);
+
+  const legacySequence = decodeWorkspaceSyncCursor(reset.cursor)!;
+  const legacyReset = await getWorkspaceSync(
+    recipient,
+    encodeLegacyWorkspaceSyncCursor(legacySequence),
+  );
+  assert.equal(legacyReset.resetRequired, true);
+  assert.equal((await getWorkspaceSync(recipient, legacyReset.cursor)).resetRequired, false);
+
+  const roleList = await updateTeamGrant(resourceOwner, {
+    grantId: grant.id,
+    version: grant.version,
+    action: "role",
+    permission: "editor",
+  });
+  grant = roleList.grants.find((item) => item.id === grant.id)!;
+  const roleReset = await getWorkspaceSync(recipient, legacyReset.cursor);
+  assert.equal(roleReset.resetRequired, true);
+  const roleConverged = await getWorkspaceSync(recipient, roleReset.cursor);
+  assert.equal(roleConverged.resetRequired, false);
+
+  configureActorResolverForTests(async () => ownerActor);
+  assert.equal((await deleteTeamGrantRoute(jsonRequest("DELETE", {
+    grantId: grant.id,
+    version: grant.version + 1,
+  }))).status, 409);
+  const afterStale = await getWorkspaceSync(recipient, roleConverged.cursor);
+  assert.equal(afterStale.resetRequired, false);
+  assert.equal(afterStale.cursor, roleConverged.cursor);
+
+  const ownerMembership = team.members.find(
+    (membership) => membership.userId === resourceOwner.id,
+  )!;
+  team = await updateTeamMembership(teamOwner, team.team.id, ownerMembership.id, {
+    action: "deactivate",
+    teamVersion: team.team.version,
+    version: ownerMembership.version,
+  });
+  await harness.database.prepare(
+    "UPDATE teams SET archived_at = CURRENT_TIMESTAMP WHERE id = ?",
+  ).bind(team.team.id).run();
+  assert.equal((await patchTeamGrantRoute(jsonRequest("PATCH", {
+    grantId: grant.id,
+    version: grant.version,
+    action: "role",
+    permission: "editor",
+  }))).status, 409);
+  const revoked = await deleteTeamGrantRoute(jsonRequest("DELETE", {
+    grantId: grant.id,
+    version: grant.version,
+  }));
+  assert.equal(revoked.status, 200);
+  assert.ok((await json<TeamGrantList>(revoked)).grants.find(
+    (item) => item.id === grant.id,
+  )?.revokedAt);
+});
+
+test("a legacy v1 cursor with no Team routes upgrades without a reset", async () => {
+  harness = await createD1TestHarness();
+  const outsider = await getOrCreateUser(outsiderActor);
+  await createTeam(outsider, { name: "Membership without grants" });
+  const snapshot = await getSnapshot(outsider);
+  const legacy = encodeLegacyWorkspaceSyncCursor(
+    decodeWorkspaceSyncCursor(snapshot.syncCursor!)!,
+  );
+  const response = await getWorkspaceSync(outsider, legacy);
+  assert.equal(response.resetRequired, false);
+  assert.notEqual(response.cursor, legacy);
+  assert.equal((await getWorkspaceSync(outsider, response.cursor)).resetRequired, false);
+});
+
+test("Team runtime and Team grant CRUD never write the workspace sync journal", () => {
+  for (const file of ["../lib/teams.ts", "../lib/team-grants.ts"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /workspace_sync_sequences|workspace_change_events/);
+  }
 });
 
 async function teamWithMember(
@@ -406,15 +545,6 @@ async function teamWithMember(
     teamVersion: detail.team.version,
   });
   return detail;
-}
-
-async function membershipResetCount(userId: string, membershipId: string) {
-  const row = await harness!.database.prepare(
-    `SELECT COUNT(*) AS count FROM workspace_change_events
-     WHERE audience_user_id = ? AND entity_type = 'workspace'
-       AND entity_id = ? AND operation = 'reset'`,
-  ).bind(userId, `team-membership:${membershipId}`).first<{ count: number }>();
-  return Number(row?.count ?? 0);
 }
 
 function actor(key: string, displayName: string): Actor {

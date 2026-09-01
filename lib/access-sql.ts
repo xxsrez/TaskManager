@@ -8,10 +8,12 @@
 
 export function accessibleTaskWhere(taskAlias: string): string {
   assertSqlAlias(taskAlias);
-  return `${taskAlias}.deleted_at IS NULL AND EXISTS (
-    SELECT 1 FROM projects visible_project
-    WHERE visible_project.id = ${taskAlias}.project_id
-      AND visible_project.deleted_at IS NULL
+  return `${taskAlias}.deleted_at IS NULL AND (
+    ${taskAlias}.project_id IS NULL OR EXISTS (
+      SELECT 1 FROM projects visible_project
+      WHERE visible_project.id = ${taskAlias}.project_id
+        AND visible_project.deleted_at IS NULL
+    )
   ) AND COALESCE((
     SELECT ${taskRoleRankSql(
       taskAlias,
@@ -23,16 +25,18 @@ export function accessibleTaskWhere(taskAlias: string): string {
     )}
     FROM (SELECT ? AS project_owner_user_id, ? AS project_grantee_user_id,
       ? AS task_owner_user_id, ? AS task_grantee_user_id) principal
-    JOIN projects visible_project ON visible_project.id = ${taskAlias}.project_id
+    LEFT JOIN projects visible_project ON visible_project.id = ${taskAlias}.project_id
   ), 0) > 0`;
 }
 
 export function editableTaskWhere(taskAlias: string): string {
   assertSqlAlias(taskAlias);
-  return `${taskAlias}.deleted_at IS NULL AND EXISTS (
-    SELECT 1 FROM projects editable_project
-    WHERE editable_project.id = ${taskAlias}.project_id
-      AND editable_project.deleted_at IS NULL
+  return `${taskAlias}.deleted_at IS NULL AND (
+    ${taskAlias}.project_id IS NULL OR EXISTS (
+      SELECT 1 FROM projects editable_project
+      WHERE editable_project.id = ${taskAlias}.project_id
+        AND editable_project.deleted_at IS NULL
+    )
   ) AND COALESCE((
     SELECT ${taskRoleRankSql(
       taskAlias,
@@ -44,7 +48,7 @@ export function editableTaskWhere(taskAlias: string): string {
     )}
     FROM (SELECT ? AS project_owner_user_id, ? AS project_grantee_user_id,
       ? AS task_owner_user_id, ? AS task_grantee_user_id) principal
-    JOIN projects editable_project ON editable_project.id = ${taskAlias}.project_id
+    LEFT JOIN projects editable_project ON editable_project.id = ${taskAlias}.project_id
   ), 0) >= 2`;
 }
 
@@ -56,7 +60,7 @@ export function taskAccessRoleSql(
   assertSqlAlias(taskAlias);
   assertSqlAlias(projectAlias);
   return `CASE
-    WHEN ${includeDeleted ? "0" : `${taskAlias}.deleted_at IS NOT NULL OR ${projectAlias}.deleted_at IS NOT NULL`} THEN NULL
+    WHEN ${includeDeleted ? "0" : `${taskAlias}.deleted_at IS NOT NULL OR (${taskAlias}.project_id IS NOT NULL AND ${projectAlias}.deleted_at IS NOT NULL)`} THEN NULL
     ELSE (
       SELECT ${roleFromRankSql(taskRoleRankSql(
         taskAlias,

@@ -56,7 +56,7 @@ export async function createTeamGrant(
   );
   const permission = grantPermission(target.resourceType, input.permission);
   assertCanAssign(target.accessRole, target.resourceType, permission);
-  const teamId = await loadOwnedTeamId(currentUser.id, resourceReference(input.teamId));
+  const teamId = await loadActiveTeamId(currentUser.id, resourceReference(input.teamId));
   const existing = await loadGrantByRoute(teamId, target.resourceType, target.resourceId);
   if (existing && existing.revokedAt === null) {
     throw new ConflictError("That Team already has active access");
@@ -64,16 +64,16 @@ export async function createTeamGrant(
 
   const db = getD1();
   const now = new Date().toISOString();
-  let result: D1Result<unknown>;
+  let mutation: D1PreparedStatement;
   if (existing) {
     const version = expectedVersion(input.version);
     if (version !== existing.version) throw staleGrant();
-    result = await db.prepare(
+    mutation = db.prepare(
       `UPDATE team_grants
        SET permission = ?, granted_by_user_id = ?, revoked_at = NULL,
          version = version + 1, updated_at = ?
        WHERE id = ? AND version = ? AND revoked_at IS NOT NULL
-         AND ${managementGuardSql(target.resourceType)}`,
+         AND ${createManagementGuardSql(target.resourceType)}`,
     ).bind(
       permission,
       currentUser.id,
@@ -83,18 +83,19 @@ export async function createTeamGrant(
       currentUser.id,
       teamId,
       target.resourceId,
-    ).run();
+    );
   } else {
-    result = await db.prepare(
+    const grantId = `team_grant_${crypto.randomUUID()}`;
+    mutation = db.prepare(
       `INSERT INTO team_grants
         (id, team_id, resource_type, resource_id, permission,
          granted_by_user_id, revoked_at, version, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?
        FROM (SELECT ? AS user_id) grant_actor
-       WHERE ${managementGuardBodySql(target.resourceType)}
+       WHERE ${createManagementGuardBodySql(target.resourceType)}
        ON CONFLICT(team_id, resource_type, resource_id) DO NOTHING`,
     ).bind(
-      `team_grant_${crypto.randomUUID()}`,
+      grantId,
       teamId,
       target.resourceType,
       target.resourceId,
@@ -105,8 +106,9 @@ export async function createTeamGrant(
       currentUser.id,
       teamId,
       target.resourceId,
-    ).run();
+    );
   }
+  const result = await mutation.run();
   if ((result.meta.changes ?? 0) !== 1) {
     throw new ConflictError("Team access or grant changed in another session");
   }
@@ -152,16 +154,18 @@ export async function updateTeamGrant(
     throw new ValidationError("Unsupported Team grant action");
   }
 
-  const result = await getD1().prepare(
+  const db = getD1();
+  const now = new Date().toISOString();
+  const result = await db.prepare(
     `UPDATE team_grants
      SET permission = ?, granted_by_user_id = ?, ${lifecycleUpdate}
        version = version + 1, updated_at = ?
      WHERE id = ? AND version = ? AND ${lifecyclePredicate}
-       AND ${managementGuardSql(grant.target.resourceType)}`,
+       AND ${activeTeamManagementGuardSql(grant.target.resourceType)}`,
   ).bind(
     permission,
     currentUser.id,
-    new Date().toISOString(),
+    now,
     grant.record.id,
     version,
     currentUser.id,
@@ -188,12 +192,13 @@ export async function revokeTeamGrant(
     grant.record.permission,
   );
   const now = new Date().toISOString();
-  const result = await getD1().prepare(
+  const db = getD1();
+  const result = await db.prepare(
     `UPDATE team_grants
      SET revoked_at = ?, granted_by_user_id = ?,
        version = version + 1, updated_at = ?
      WHERE id = ? AND version = ? AND revoked_at IS NULL
-       AND ${managementGuardSql(grant.target.resourceType)}`,
+       AND ${targetManagementGuardSql(grant.target.resourceType)}`,
   ).bind(
     now,
     currentUser.id,
@@ -201,7 +206,6 @@ export async function revokeTeamGrant(
     grant.record.id,
     version,
     currentUser.id,
-    grant.record.teamId,
     grant.target.resourceId,
   ).run();
   if ((result.meta.changes ?? 0) !== 1) throw staleGrant();
@@ -246,20 +250,19 @@ async function loadShareTarget(
   };
 }
 
-async function loadOwnedTeamId(userId: string, reference: string): Promise<string> {
+async function loadActiveTeamId(userId: string, reference: string): Promise<string> {
   const row = await getD1().prepare(
     `SELECT team.id
      FROM teams team
      JOIN team_memberships membership ON membership.team_id = team.id
        AND membership.user_id = ?
-       AND membership.role = 'owner'
        AND membership.status = 'active'
        AND membership.deactivated_at IS NULL
-     WHERE team.owner_user_id = ? AND team.archived_at IS NULL
+     WHERE team.archived_at IS NULL
        AND (team.id = ? OR team.public_id = ?)
      ORDER BY CASE WHEN team.id = ? THEN 0 ELSE 1 END
      LIMIT 1`,
-  ).bind(userId, userId, reference, reference, reference).first<{ id: string }>();
+  ).bind(userId, reference, reference, reference).first<{ id: string }>();
   if (!row) throw new NotFoundError("Team not found");
   return String(row.id);
 }
@@ -289,10 +292,6 @@ async function loadGrantForManagement(
     throw error;
   }
   assertTargetManager(target.accessRole);
-  const ownedTeamId = await loadOwnedTeamId(currentUser.id, record.teamId);
-  if (ownedTeamId !== record.teamId) {
-    throw new NotFoundError("Team grant not found");
-  }
   return { record, target };
 }
 
@@ -326,14 +325,31 @@ function teamGrantProjection(): string {
     FROM team_grants grant JOIN teams team ON team.id = grant.team_id`;
 }
 
-function managementGuardSql(type: TeamGrantResourceType): string {
+function createManagementGuardSql(type: TeamGrantResourceType): string {
   return `EXISTS (
     SELECT 1 FROM (SELECT ? AS user_id) grant_actor
-    WHERE ${managementGuardBodySql(type)}
+    WHERE ${createManagementGuardBodySql(type)}
   )`;
 }
 
-function managementGuardBodySql(type: TeamGrantResourceType): string {
+function activeTeamManagementGuardSql(type: TeamGrantResourceType): string {
+  return `EXISTS (
+    SELECT 1 FROM (SELECT ? AS user_id) grant_actor
+    WHERE EXISTS (
+      SELECT 1 FROM teams guarded_team
+      WHERE guarded_team.id = ? AND guarded_team.archived_at IS NULL
+    ) AND ${targetManagementGuardBodySql(type)}
+  )`;
+}
+
+function targetManagementGuardSql(type: TeamGrantResourceType): string {
+  return `EXISTS (
+    SELECT 1 FROM (SELECT ? AS user_id) grant_actor
+    WHERE ${targetManagementGuardBodySql(type)}
+  )`;
+}
+
+function targetManagementGuardBodySql(type: TeamGrantResourceType): string {
   const targetAuthority = type === "project"
     ? `EXISTS (
         SELECT 1 FROM projects guarded_project
@@ -367,18 +383,19 @@ function managementGuardBodySql(type: TeamGrantResourceType): string {
               "grant_actor.user_id",
             )} >= 3
         )`;
+  return targetAuthority;
+}
+
+function createManagementGuardBodySql(type: TeamGrantResourceType): string {
   return `EXISTS (
-      SELECT 1 FROM teams managed_team
-      JOIN team_memberships managed_membership
-        ON managed_membership.team_id = managed_team.id
-        AND managed_membership.user_id = grant_actor.user_id
-        AND managed_membership.role = 'owner'
-        AND managed_membership.status = 'active'
-        AND managed_membership.deactivated_at IS NULL
-      WHERE managed_team.id = ?
-        AND managed_team.owner_user_id = grant_actor.user_id
-        AND managed_team.archived_at IS NULL
-    ) AND ${targetAuthority}`;
+    SELECT 1 FROM teams selected_team
+    JOIN team_memberships selected_membership
+      ON selected_membership.team_id = selected_team.id
+      AND selected_membership.user_id = grant_actor.user_id
+      AND selected_membership.status = 'active'
+      AND selected_membership.deactivated_at IS NULL
+    WHERE selected_team.id = ? AND selected_team.archived_at IS NULL
+  ) AND ${targetManagementGuardBodySql(type)}`;
 }
 
 function mapTeamGrant(row: DbRow): TeamGrantRecord {
@@ -423,7 +440,7 @@ function grantPermission(
 
 function assertTargetManager(role: AccessRole): void {
   if (role !== "owner" && role !== "manager") {
-    throw new PermissionError("Manager access is required to manage Team sharing");
+    throw new NotFoundError("Team share target not found");
   }
 }
 

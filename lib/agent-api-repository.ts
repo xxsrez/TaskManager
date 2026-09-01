@@ -554,9 +554,10 @@ export async function getAgentWorkspace(
             ))
             OR EXISTS (
               SELECT 1 FROM tasks t
-              JOIN projects p ON p.id = t.project_id
+              LEFT JOIN projects p ON p.id = t.project_id
               WHERE t.status_id = s.id
-                AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+                AND t.deleted_at IS NULL
+                AND (t.project_id IS NULL OR p.deleted_at IS NULL)
                 AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
             ))
          ORDER BY s.owner_user_id = agent_actor.id DESC, s.position, s.name`,
@@ -837,9 +838,11 @@ export async function listAgentLabels(
            AND p.deleted_at IS NULL
            AND ${projectEffectiveRoleRankSql("p", "agent_actor.id")} > 0
        ) OR EXISTS (
-         SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id
-         WHERE p.owner_user_id = l.owner_user_id
-           AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+         SELECT 1 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         WHERE CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+             ELSE t.owner_user_id END = l.owner_user_id
+           AND t.deleted_at IS NULL
+           AND (t.project_id IS NULL OR p.deleted_at IS NULL)
            AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
        )
      )
@@ -882,9 +885,11 @@ export async function listAgentLabelGroups(currentUser: UserRecord, includeArchi
            AND p.deleted_at IS NULL
            AND ${projectEffectiveRoleRankSql("p", "agent_actor.id")} > 0
        ) OR EXISTS (
-         SELECT 1 FROM tasks t JOIN projects p ON p.id = t.project_id
-         WHERE p.owner_user_id = g.owner_user_id
-           AND t.deleted_at IS NULL AND p.deleted_at IS NULL
+         SELECT 1 FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+         WHERE CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
+             ELSE t.owner_user_id END = g.owner_user_id
+           AND t.deleted_at IS NULL
+           AND (t.project_id IS NULL OR p.deleted_at IS NULL)
            AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
        )
      ) ORDER BY g.owner_user_id = agent_actor.id DESC, g.archived_at IS NOT NULL,
