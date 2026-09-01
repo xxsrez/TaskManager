@@ -2,7 +2,7 @@
 
 Статус: `Proposed`
 
-Последнее обновление: 2026-08-16
+Последнее обновление: 2026-09-01
 
 ## Замысел
 
@@ -34,8 +34,9 @@ scope controls должны быть функционально и стилис�
 
 Пользователь входит через ChatGPT или Google. Его задачи, проекты, релизы,
 labels, workflow statuses и views по умолчанию отделены от данных других
-пользователей. Владелец может выдать зарегистрированному пользователю полный
-доступ к выбранному shareable resource и затем отозвать его.
+пользователей. Владелец может выдать зарегистрированному пользователю либо
+active Team подходящую роль на выбранный shareable resource и затем независимо
+отозвать этот маршрут.
 
 ## Продуктовые принципы
 
@@ -69,8 +70,11 @@ labels, workflow statuses и views по умолчанию отделены от
 - вход через ChatGPT либо Google и единый внутренний профиль пользователя;
 - полная изоляция пользовательских данных по умолчанию;
 - sharing проекта с ролями Manager/Editor/Viewer, ownership transfer,
-  Editor/Viewer для standalone task или global saved view, отзыв доступа и
-  экран `Shared with me`;
+  Editor/Viewer для global SavedView, прямые User grants, отдельные Team grants,
+  отзыв доступа и экран `Shared with me`;
+- каталог Teams, карточка участников и `People & Teams`; явный Team grant на
+  Task открывает только эту Task, а Project grant наследуется её дочерними
+  records;
 - создание, редактирование, архивирование и восстановление задач;
 - unified comments в карточке задачи: native discussions и immutable imported
   history, root threads, одноуровневые replies, reactions, resolve/reopen и
@@ -94,14 +98,15 @@ labels, workflow statuses и views по умолчанию отделены от
 
 Не входят в MVP:
 
-- teams, initiatives, cycles/sprints и roadmap/timeline;
+- Team-owned resources, workspace/team roles, initiatives, cycles/sprints и
+  roadmap/timeline;
 - project milestones как отдельная от release сущность;
 - inbox/triage, документы и вложения именно к comments;
 - mentions, уведомления, подписки и общий workspace activity feed;
 - Git/CI/CD, Slack, email и другие domain-specific integrations; first-party
   agent API из списка выше является отдельной surface продукта;
 - analytics, forecasting, AI-фильтры и генерация release notes;
-- public resource links, anonymous sharing и workspace/team roles;
+- public resource links, anonymous sharing и tenant/workspace boundary;
 - мобильные приложения, offline-first и real-time collaboration;
 - буквальное копирование Linear logo, brand copy, illustration assets или
   controls для исключённых из MVP функций.
@@ -115,8 +120,8 @@ labels, workflow statuses и views по умолчанию отделены от
 4. Открывает готовый либо сохранённый view.
 5. Работает в list или Kanban; фильтры определяют состав, display options —
    способ показа.
-6. Добавляет зарегистрированного пользователя в проект как Manager, Editor или
-   Viewer либо продолжает работать приватно.
+6. Добавляет зарегистрированного пользователя либо active Team как Manager,
+   Editor или Viewer либо продолжает работать приватно.
 7. Перемещает задачи по workflow и видит прогресс проекта и релиза.
 8. Завершает релиз отдельно от перевода отдельных задач в Done.
 

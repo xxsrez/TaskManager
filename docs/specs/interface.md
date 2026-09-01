@@ -815,13 +815,17 @@ Linear, но они обязаны использовать тот же visual l
 - Loading, provider error и retry показаны внутри panel; identity никогда не
   запрашивается произвольным email/password form.
 
-### 12.2 Share dialog
+### 12.2 People & Teams
 
 - Trigger `Share` находится в header Project и global SavedView. Для Task,
   Release и project-scoped SavedView он открывает
   access surface родительского Project либо не дублируется.
-- Compact dialog `Members & access` содержит verified-email input, role picker,
-  Owner отдельной первой строкой и список active grants с inline role picker.
+- Compact dialog `People & Teams` содержит поиск People и active Teams текущего
+  пользователя, явный выбор principal, role picker, Owner отдельной первой
+  строкой и раздельные списки direct User grants и Team grants.
+- До ввода запроса предлагаются собственные Teams. Team result показывает имя,
+  число active members и роль текущего пользователя; выбор результата сам по
+  себе доступа не выдаёт.
 - Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView —
   `Editor`, `Viewer`. Copy рядом с email явно говорит, что
   User должен уже войти и письмо не отправляется.
@@ -835,6 +839,16 @@ Linear, но они обязаны использовать тот же visual l
 - Project dialog объясняет inheritance к Tasks, Releases и project-scoped
   SavedViews; global SavedView dialog — что view не расширяет доступ к
   underlying data.
+- Для Task пользователь явно выбирает Project route либо Task-only route.
+  Project route меняет доступ ко всему Project; Task-only route сохраняет
+  обязательный Project задачи, но не открывает его, Releases или соседние
+  Tasks. Project-scoped SavedView направляет sharing к Project, а Release не
+  предлагает отдельный Team grant.
+- Несколько access routes показываются одновременно; copy не обещает полного
+  закрытия доступа после revoke одного Team или User route.
+- Loading, empty, error и version-conflict остаются внутри dialog. После 409
+  authoritative read-back заменяет grants только при успешном ответе; поздний
+  ответ предыдущего route или principal не может перезаписать текущий state.
 - Revoke требует подтверждения только когда последствия могут оборвать текущую
   работу; результат обновляется после server response.
 
