@@ -5,6 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   CodexSetupDialog,
+  canManageTeamRouteGrant,
   canStartPullRefresh,
   commentDraftStorageKey,
   fetchTaskSnapshot,
@@ -21,6 +22,7 @@ import {
   mergeDeferredSnapshot,
   nextTaskActivityInvalidationCursor,
   nextCodexSetupMode,
+  normalizedTeamSharePermission,
   mergeSearchTaskSummaries,
   pullRefreshDistance,
   reconcileTaskDetail,
@@ -37,6 +39,7 @@ import {
   relationSelectionAfterKindChange,
   ReleaseDialog,
   ReleaseOverview,
+  resolveShareContext,
   resolveGlobalSearchNavigation,
   resolveArchiveBulkAction,
   runSingleFlight,
@@ -56,14 +59,30 @@ import {
   TASK_MANAGER_MARKETPLACE_URL,
   TaskMoveDialog,
   TaskTracker,
+  TeamDetailSurface,
+  TeamGrantAccessRow,
+  TeamMemberDeleteDialog,
+  TeamMemberDialog,
+  TeamNameDialog,
+  TeamsSurface,
+  filterTeamList,
+  teamConflictReadbackMessage,
+  teamRequestIsCurrent,
   SettingsSurface,
+  ShareDialog,
   ViewDialog,
+  filterShareTeamOptions,
+  teamGrantConflictReadbackMessage,
+  teamGrantResponseMatchesRoute,
+  teamRouteRoles,
+  teamShareRouteIdentity,
+  teamShareRequestIsCurrent,
   viewDialogDraftIsDirty,
   viewDialogDraftQuery,
   viewDisplayDependencies,
 } from "../components/task-tracker";
 import { buildTaskGroups } from "../lib/task-groups";
-import type { AppSnapshot } from "../lib/types";
+import type { AppSnapshot, TeamDetail, TeamGrantList, TeamGrantRecord, TeamList, TeamMembershipRecord } from "../lib/types";
 
 const now = "2026-08-14T09:00:00.000Z";
 const snapshot: AppSnapshot = {
@@ -149,6 +168,628 @@ const snapshot: AppSnapshot = {
   views: [],
   collaborators: [],
 };
+
+const teamOwnerMembership: TeamMembershipRecord = {
+  id: "membership-owner",
+  teamId: "team-1",
+  userId: "user-1",
+  displayName: "Test User",
+  email: "test@example.com",
+  role: "owner",
+  status: "active",
+  deactivatedAt: null,
+  version: 1,
+  createdAt: now,
+  updatedAt: now,
+};
+const teamMemberMembership: TeamMembershipRecord = {
+  ...teamOwnerMembership,
+  id: "membership-member",
+  userId: "user-2",
+  displayName: "Member User",
+  email: "member@example.com",
+  role: "member",
+  version: 2,
+};
+const inactiveTeamMembership: TeamMembershipRecord = {
+  ...teamMemberMembership,
+  id: "membership-inactive",
+  userId: "user-3",
+  displayName: "Inactive User",
+  email: "inactive@example.com",
+  status: "inactive",
+  deactivatedAt: now,
+  version: 3,
+};
+const teamDetail: TeamDetail = {
+  team: {
+    id: "team-1",
+    publicId: "55555555-5555-4555-8555-555555555555",
+    ownerUserId: "user-1",
+    name: "Platform Team",
+    archivedAt: null,
+    version: 4,
+    createdAt: now,
+    updatedAt: now,
+  },
+  currentMembership: teamOwnerMembership,
+  members: [teamOwnerMembership, teamMemberMembership, inactiveTeamMembership],
+};
+const teamList: TeamList = {
+  teams: [{
+    team: teamDetail.team,
+    currentMembership: teamOwnerMembership,
+    activeMemberCount: 2,
+  }],
+};
+
+test("Team UI state distinguishes loading, empty, search, and native cards", () => {
+  const loading = renderToStaticMarkup(createElement(TeamsSurface, {
+    state: { status: "idle", value: null, error: "" },
+    query: "",
+    onRetry: () => undefined,
+    onCreate: () => undefined,
+    onOpen: () => undefined,
+  }));
+  assert.match(loading, /Loading Teams/);
+  assert.doesNotMatch(loading, /No Teams yet/);
+
+  const empty = renderToStaticMarkup(createElement(TeamsSurface, {
+    state: { status: "ready", value: { teams: [] }, error: "" },
+    query: "",
+    onRetry: () => undefined,
+    onCreate: () => undefined,
+    onOpen: () => undefined,
+  }));
+  assert.match(empty, /No Teams yet/);
+  assert.match(empty, /New Team/);
+
+  const cards = renderToStaticMarkup(createElement(TeamsSurface, {
+    state: { status: "ready", value: teamList, error: "" },
+    query: "platform",
+    onRetry: () => undefined,
+    onCreate: () => undefined,
+    onOpen: () => undefined,
+  }));
+  assert.match(cards, /<a[^>]*class="entity-card team-card"[^>]*href="\/teams\/55555555-5555-4555-8555-555555555555"/);
+  assert.match(cards, /Platform Team/);
+  assert.match(cards, /2 active members/);
+  assert.match(cards, /Owned by you/);
+
+  const grouped = renderToStaticMarkup(createElement(TeamsSurface, {
+    state: {
+      status: "ready",
+      value: {
+        teams: [
+          ...teamList.teams,
+          {
+            team: {
+              ...teamDetail.team,
+              id: "team-joined",
+              publicId: "66666666-6666-4666-8666-666666666666",
+              name: "Joined Team",
+            },
+            currentMembership: {
+              ...teamMemberMembership,
+              id: "membership-joined",
+              teamId: "team-joined",
+            },
+            activeMemberCount: 3,
+          },
+        ],
+      },
+      error: "",
+    },
+    query: "",
+    onRetry: () => undefined,
+    onCreate: () => undefined,
+    onOpen: () => undefined,
+  }));
+  assert.match(grouped, /Owned by you/);
+  assert.match(grouped, /Joined/);
+  assert.ok(grouped.indexOf("Platform Team") < grouped.indexOf("Joined Team"));
+  assert.deepEqual(filterTeamList(teamList, "FORM").map((entry) => entry.team.id), ["team-1"]);
+  assert.deepEqual(filterTeamList(teamList, "missing"), []);
+  assert.equal(teamRequestIsCurrent(3, 3, false), true);
+  assert.equal(teamRequestIsCurrent(2, 3, false), false);
+  assert.equal(teamRequestIsCurrent(3, 3, true), false);
+});
+
+test("Team detail exposes lifecycle controls only to the owner membership", () => {
+  const ownerMarkup = renderToStaticMarkup(createElement(TeamDetailSurface, {
+    state: { status: "ready", value: teamDetail, error: "" },
+    alert: "",
+    mutation: null,
+    onRetry: () => undefined,
+    onMembershipAction: () => undefined,
+    onDelete: () => undefined,
+  }));
+  assert.match(ownerMarkup, /Active members/);
+  assert.match(ownerMarkup, /Inactive members/);
+  assert.match(ownerMarkup, /Your role/);
+  assert.match(ownerMarkup, /Deactivate/);
+  assert.match(ownerMarkup, /Reactivate/);
+  assert.match(ownerMarkup, /Delete/);
+
+  const ordinaryDetail: TeamDetail = {
+    ...teamDetail,
+    currentMembership: teamMemberMembership,
+  };
+  const memberMarkup = renderToStaticMarkup(createElement(TeamDetailSurface, {
+    state: { status: "ready", value: ordinaryDetail, error: "" },
+    alert: "",
+    mutation: null,
+    onRetry: () => undefined,
+    onMembershipAction: () => undefined,
+    onDelete: () => undefined,
+  }));
+  assert.match(memberMarkup, /Your role/);
+  assert.doesNotMatch(memberMarkup, />Deactivate</);
+  assert.doesNotMatch(memberMarkup, />Reactivate</);
+  assert.doesNotMatch(memberMarkup, />Delete</);
+});
+
+test("Team dialogs reuse the accessible Modal shell", () => {
+  const name = renderToStaticMarkup(createElement(TeamNameDialog, {
+    title: "Create Team",
+    submitLabel: "Create Team",
+    error: "",
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => true,
+  }));
+  const add = renderToStaticMarkup(createElement(TeamMemberDialog, {
+    error: "",
+    busy: false,
+    onClose: () => undefined,
+    onSubmit: async () => true,
+  }));
+  const remove = renderToStaticMarkup(createElement(TeamMemberDeleteDialog, {
+    membership: inactiveTeamMembership,
+    error: "",
+    busy: false,
+    onClose: () => undefined,
+    onConfirm: async () => true,
+  }));
+  assert.match(name, /role="dialog"/);
+  assert.match(name, /aria-modal="true"/);
+  assert.match(name, /maxLength="100"/);
+  assert.match(add, /type="email"/);
+  assert.match(remove, /Delete membership/);
+});
+
+test("TaskTracker exposes Teams routes without snapshot projection or false empty SSR", () => {
+  const listMarkup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: { surface: "teams", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+  assert.match(listMarkup, /aria-current="page"[^>]*aria-label="Teams"/);
+  assert.match(listMarkup, /aria-label="Search teams"/);
+  assert.match(listMarkup, /Loading Teams/);
+  assert.doesNotMatch(listMarkup, /No Teams yet/);
+
+  const detailMarkup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: snapshot,
+    initialNavigation: {
+      surface: `team:${teamDetail.team.publicId}`,
+      layout: "list",
+      taskId: null,
+    },
+    signOutPath: "/sign-out",
+  }));
+  assert.match(detailMarkup, /href="\/teams"/);
+  assert.match(detailMarkup, /Loading Team/);
+  assert.doesNotMatch(detailMarkup, /aria-label="Layout"/);
+});
+
+test("Team mutations keep authoritative read-back and composition CAS contracts", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /teamListGenerationRef/);
+  assert.match(source, /teamDetailGenerationRef/);
+  assert.match(source, /controller\.abort\(\)/);
+  assert.match(source, /setTeamDetailState\(nextState\)/);
+  assert.match(source, /void loadTeamList\(\)/);
+  assert.match(source, /\{ name, version: detail\.team\.version \}/);
+  assert.match(source, /\{ email, teamVersion: detail\.team\.version \}/);
+  assert.match(source, /action,[\s\S]{0,120}teamVersion: detail\.team\.version,[\s\S]{0,120}version: membership\.version/);
+  assert.match(source, /method: "DELETE"|"DELETE",[\s\S]{0,160}teamVersion/);
+  assert.match(source, /requestError\.status === 409[\s\S]{0,220}const latest = await loadTeamDetail\(teamPublicId\)/);
+  assert.match(source, /The latest details were loaded; review them and try again/);
+  assert.match(source, /latest details could not be loaded\. Retry/);
+  assert.doesNotMatch(source, /AppSnapshot[^\n]*(?:TeamList|TeamDetail)|(?:TeamList|TeamDetail)[^\n]*AppSnapshot/);
+});
+
+test("Team re-entry and concurrent navigation retain authoritative convergence", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const reentryStart = source.indexOf("useEffect(() => {\n    if (!activeTeamPublicId) return;");
+  const reentryEnd = source.indexOf(
+    "}, [activeTeamPublicId, loadTeamDetail]);",
+    reentryStart,
+  );
+  assert.ok(reentryStart > 0 && reentryEnd > reentryStart);
+  const reentryEffect = source.slice(reentryStart, reentryEnd);
+  assert.match(reentryEffect, /loadTeamDetail\(activeTeamPublicId, controller\.signal\)/);
+  assert.doesNotMatch(reentryEffect, /status === "ready"/);
+
+  const mutationStart = source.indexOf("async function mutateActiveTeam(");
+  const mutationCatch = source.indexOf("} catch (requestError) {", mutationStart);
+  const mutationSuccess = source.slice(mutationStart, mutationCatch);
+  assert.ok(mutationSuccess.indexOf("void loadTeamList();") >= 0);
+  assert.ok(
+    mutationSuccess.indexOf("void loadTeamList();") <
+      mutationSuccess.indexOf("activeTeamPublicIdRef.current !== teamPublicId"),
+  );
+  assert.match(mutationSuccess, /activeTeamPublicIdRef\.current !== teamPublicId\) return true/);
+  assert.match(source, /const latest = await loadTeamDetail\(teamPublicId\)[\s\S]{0,420}teamConflictReadbackMessage\(latest !== null, unavailable\)/);
+  assert.match(source, /disabled=\{Boolean\(teamMutation\) \|\| teamDetailState\.status !== "ready"\}/);
+  assert.match(source, /disabled=\{Boolean\(mutation\) \|\| state\.status !== "ready"\}/);
+
+  assert.equal(
+    teamConflictReadbackMessage(true, false),
+    "This Team changed in another session. The latest details were loaded; review them and try again.",
+  );
+  assert.equal(
+    teamConflictReadbackMessage(false, false),
+    "This Team changed, but the latest details could not be loaded. Retry.",
+  );
+  assert.equal(teamConflictReadbackMessage(false, true), "");
+});
+
+test("People and Teams sharing maps Project, Task, View, and Release routes explicitly", () => {
+  const project = snapshot.projects[0]!;
+  const task = snapshot.tasks[0]!;
+  const taskContext = resolveShareContext("all", task, snapshot);
+  assert.ok(taskContext);
+  assert.equal(taskContext.directTarget?.resourceType, "project");
+  assert.deepEqual(taskContext.teamRoutes.map((route) => route.resourceType), ["project", "task"]);
+  assert.deepEqual(taskContext.teamRoutes.map((route) => route.label), ["Project access", "This Task only"]);
+  assert.match(taskContext.teamRoutes[0]!.explanation, /Every Task, Release, and Project-scoped View inherits/);
+  assert.match(taskContext.teamRoutes[1]!.explanation, /does not expose the Project, sibling Tasks, or Releases/);
+
+  const scopedView = {
+    id: "view-scoped",
+    publicId: "77777777-7777-4777-8777-777777777777",
+    ownerUserId: snapshot.user.id,
+    name: "Scoped delivery",
+    scopeProjectId: project.id,
+    query: {},
+    display: {
+      layout: "list" as const,
+      groupBy: "status" as const,
+      orderBy: "manual" as const,
+      direction: "asc" as const,
+      showEmptyGroups: true,
+      visibleFields: [],
+    },
+    version: 1,
+    accessRole: "owner" as const,
+  };
+  const scopedContext = resolveShareContext(
+    `view:${scopedView.id}`,
+    null,
+    { ...snapshot, views: [scopedView] },
+  );
+  assert.equal(scopedContext?.directTarget?.resourceType, "project");
+  assert.deepEqual(scopedContext?.teamRoutes.map((route) => route.resourceType), ["project"]);
+
+  const globalView = { ...scopedView, id: "view-global", name: "Global delivery", scopeProjectId: null };
+  const globalContext = resolveShareContext(
+    `view:${globalView.id}`,
+    null,
+    { ...snapshot, views: [globalView] },
+  );
+  assert.equal(globalContext?.directTarget?.resourceType, "saved_view");
+  assert.deepEqual(globalContext?.teamRoutes.map((route) => route.resourceType), ["saved_view"]);
+
+  const release = {
+    id: "release-1",
+    publicId: "88888888-8888-4888-8888-888888888888",
+    projectId: project.id,
+    ownerUserId: snapshot.user.id,
+    creatorUserId: snapshot.user.id,
+    name: "September",
+    description: "",
+    status: "active" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const releaseContext = resolveShareContext(
+    `release:${release.id}`,
+    null,
+    { ...snapshot, releases: [release] },
+  );
+  assert.equal(releaseContext?.directTarget?.resourceType, "project");
+  assert.deepEqual(releaseContext?.teamRoutes, []);
+  assert.match(releaseContext?.teamUnavailableCopy ?? "", /Releases do not have a Team grant route/);
+});
+
+test("People and Teams sharing keeps own active Teams first and fences route responses", () => {
+  const memberTeam = {
+    team: {
+      ...teamDetail.team,
+      id: "team-member",
+      publicId: "99999999-9999-4999-8999-999999999999",
+      name: "Alpha members",
+    },
+    currentMembership: {
+      ...teamMemberMembership,
+      id: "membership-current-member",
+      teamId: "team-member",
+      userId: snapshot.user.id,
+      status: "active" as const,
+    },
+    activeMemberCount: 7,
+  };
+  const inactiveTeam = {
+    ...memberTeam,
+    team: { ...memberTeam.team, id: "team-inactive", publicId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", name: "Hidden Team" },
+    currentMembership: { ...memberTeam.currentMembership, teamId: "team-inactive", status: "inactive" as const },
+  };
+  const ordered = filterShareTeamOptions({ teams: [memberTeam, inactiveTeam, teamList.teams[0]!] }, "");
+  assert.deepEqual(ordered.map((entry) => entry.team.id), ["team-1", "team-member"]);
+  assert.deepEqual(filterShareTeamOptions({ teams: ordered }, "alpha").map((entry) => entry.team.id), ["team-member"]);
+
+  const route = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[0]!;
+  const response: TeamGrantList = {
+    target: {
+      resourceType: route.resourceType,
+      resourceId: route.resourceId,
+      publicId: route.publicId,
+      name: route.label,
+      accessRole: route.accessRole,
+    },
+    grants: [],
+  };
+  assert.equal(teamGrantResponseMatchesRoute(route, response), true);
+  assert.equal(teamGrantResponseMatchesRoute(route, {
+    ...response,
+    target: { ...response.target, publicId: "wrong-route" },
+  }), false);
+  assert.equal(teamShareRequestIsCurrent(4, 4, "task:1", "task:1", false), true);
+  assert.equal(teamShareRequestIsCurrent(3, 4, "task:1", "task:1", false), false);
+  assert.equal(teamShareRequestIsCurrent(4, 4, "task:1", "project:1", false), false);
+  assert.equal(teamShareRequestIsCurrent(4, 4, "task:1", "task:1", true), false);
+  assert.match(teamGrantConflictReadbackMessage(true), /latest routes were loaded/);
+  assert.match(teamGrantConflictReadbackMessage(false), /latest routes could not be loaded\. Retry/);
+});
+
+test("People and Teams sharing reloads a changed Project route for the same Task dialog", () => {
+  const secondProject = {
+    ...snapshot.projects[0]!,
+    id: "project-2",
+    publicId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    name: "Moved Project",
+    taskCode: "MOVE",
+  };
+  const task = snapshot.tasks[0]!;
+  const beforeMove = resolveShareContext("all", task, {
+    ...snapshot,
+    projects: [...snapshot.projects, secondProject],
+  })!;
+  const afterMove = resolveShareContext("all", { ...task, projectId: secondProject.id }, {
+    ...snapshot,
+    projects: [...snapshot.projects, secondProject],
+  })!;
+  assert.equal(beforeMove.key, afterMove.key);
+  assert.equal(beforeMove.teamRoutes[0]?.publicId, snapshot.projects[0]!.publicId);
+  assert.equal(afterMove.teamRoutes[0]?.publicId, secondProject.publicId);
+  assert.notEqual(
+    teamShareRouteIdentity(beforeMove.teamRoutes),
+    teamShareRouteIdentity(afterMove.teamRoutes),
+  );
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const syncIndex = source.indexOf("const nextRoutes = context.teamRoutes");
+  const loadIndex = source.indexOf("if (!routesRef.current.length) return", syncIndex);
+  assert.ok(syncIndex >= 0 && loadIndex > syncIndex);
+  assert.match(source, /previousRoute[\s\S]{0,300}routeGenerationRef\.current\[previousRoute\.key\][\s\S]{0,120}\+ 1/);
+  assert.match(source, /routeControllers\.forEach\(\(controller\) => controller\.abort\(\)\)/);
+});
+
+test("Team grant rows apply the actor role ceiling without hiding stronger grants", () => {
+  const ownerRoute = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[0]!;
+  const managerRoute = { ...ownerRoute, accessRole: "manager" as const };
+  const managerGrant: TeamGrantRecord = {
+    id: "team-grant-manager",
+    teamId: teamDetail.team.id,
+    teamPublicId: teamDetail.team.publicId,
+    teamName: "Core Team",
+    teamArchivedAt: null,
+    resourceType: "project",
+    resourceId: snapshot.projects[0]!.id,
+    permission: "manager",
+    grantedByUserId: snapshot.user.id,
+    revokedAt: null,
+    version: 4,
+    createdAt: now,
+    updatedAt: now,
+  };
+  const renderRow = (route: typeof ownerRoute, grant: TeamGrantRecord) => renderToStaticMarkup(createElement(TeamGrantAccessRow, {
+    route,
+    grant,
+    busy: false,
+    routeReady: true,
+    onRoleChange: () => undefined,
+    onRevoke: () => undefined,
+  }));
+
+  assert.equal(canManageTeamRouteGrant(managerRoute, "manager"), false);
+  assert.equal(canManageTeamRouteGrant(managerRoute, "editor"), true);
+  assert.equal(canManageTeamRouteGrant(managerRoute, "viewer"), true);
+  assert.equal(canManageTeamRouteGrant(ownerRoute, "manager"), true);
+
+  const managerMarkup = renderRow(managerRoute, managerGrant);
+  assert.match(managerMarkup, /Core Team/);
+  assert.match(managerMarkup, /<select[^>]*disabled=""[^>]*><option value="manager" selected="">Manager<\/option><\/select>/);
+  assert.doesNotMatch(managerMarkup, />Revoke<\/button>/);
+
+  const ownerMarkup = renderRow(ownerRoute, managerGrant);
+  assert.doesNotMatch(ownerMarkup, /<select[^>]*disabled=""/);
+  assert.match(ownerMarkup, />Revoke<\/button>/);
+
+  const editorMarkup = renderRow(managerRoute, { ...managerGrant, permission: "editor" });
+  assert.doesNotMatch(editorMarkup, /<select[^>]*disabled=""/);
+  assert.match(editorMarkup, />Revoke<\/button>/);
+});
+
+test("Project managers cannot create or manage an explicit Task-only Team grant", () => {
+  const taskRoute = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[1]!;
+  const managerTaskRoute = { ...taskRoute, accessRole: "manager" as const };
+  const editorGrant: TeamGrantRecord = {
+    id: "task-team-grant-editor",
+    teamId: teamDetail.team.id,
+    teamPublicId: teamDetail.team.publicId,
+    teamName: "Task Team",
+    teamArchivedAt: null,
+    resourceType: "task",
+    resourceId: snapshot.tasks[0]!.id,
+    permission: "editor",
+    grantedByUserId: snapshot.user.id,
+    revokedAt: null,
+    version: 2,
+    createdAt: now,
+    updatedAt: now,
+  };
+  assert.deepEqual(teamRouteRoles(managerTaskRoute), []);
+  assert.equal(canManageTeamRouteGrant(managerTaskRoute, "editor"), false);
+  const markup = renderToStaticMarkup(createElement(TeamGrantAccessRow, {
+    route: managerTaskRoute,
+    grant: editorGrant,
+    busy: false,
+    routeReady: true,
+    onRoleChange: () => undefined,
+    onRevoke: () => undefined,
+  }));
+  assert.match(markup, /Task Team/);
+  assert.match(markup, /<select[^>]*disabled=""/);
+  assert.doesNotMatch(markup, />Revoke<\/button>/);
+
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /route\.resourceType === "task" && route\.accessRole === "manager"/);
+  assert.match(source, /selectableTeamRoutes = context\.teamRoutes\.filter\(\(route\) => teamRouteRoles\(route\)\.length > 0\)/);
+});
+
+test("a stale Manager selection is reset and blocked after authority drops to manager", () => {
+  const ownerRoute = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!.teamRoutes[0]!;
+  const managerRoute = { ...ownerRoute, accessRole: "manager" as const };
+  const ownerRoles = teamRouteRoles(ownerRoute);
+  const managerRoles = teamRouteRoles(managerRoute);
+  assert.equal(normalizedTeamSharePermission("manager", ownerRoles), "manager");
+  assert.equal(normalizedTeamSharePermission("manager", managerRoles), "");
+  assert.equal(normalizedTeamSharePermission("editor", managerRoles), "editor");
+  assert.equal(normalizedTeamSharePermission("viewer", managerRoles), "viewer");
+
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /selectedPermissionValue = normalizedTeamSharePermission\(selectedPermission, selectedRoles\)/);
+  assert.match(source, /const addDisabled =[^;]*!selectedPermissionAllowed/);
+  assert.match(source, /if \(addDisabled \|\| !selectedPrincipal \|\| !selectedPermission \|\| !selectedPermissionAllowed\) return/);
+  assert.match(source, /aria-label="Role" value=\{selectedPermissionValue\}/);
+});
+
+test("a forbidden Team mutation retains the authoritative route for review", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /const forbidden = requestError instanceof TeamRequestError && requestError\.status === 403;[\s\S]{0,180}value: retained/);
+  assert.match(source, /Your role cannot change or revoke this Team grant/);
+});
+
+test("People and Teams dialog separates routes and requires principal, role, and Task route", () => {
+  const taskContext = resolveShareContext("all", snapshot.tasks[0]!, snapshot)!;
+  const markup = renderToStaticMarkup(createElement(ShareDialog, {
+    context: taskContext,
+    currentUser: snapshot.user,
+    users: snapshot.users,
+    collaborators: snapshot.collaborators,
+    onClose: () => undefined,
+    onShare: async () => true,
+    onRoleChange: async () => true,
+    onRevoke: async () => true,
+    onTransfer: async () => true,
+    busy: false,
+  }));
+  assert.match(markup, /aria-label="Members &amp; access · TM-1"/);
+  assert.match(markup, /role="combobox" aria-expanded="false" aria-autocomplete="list"/);
+  assert.match(markup, /People &amp; Teams/);
+  assert.match(markup, />People</);
+  assert.match(markup, />Teams</);
+  assert.match(markup, /Choose role/);
+  assert.match(markup, /<button[^>]*class="button primary share-add-button"[^>]*disabled=""/);
+  assert.match(markup, /Loading Team access/);
+  assert.match(markup, /Strongest route wins/);
+
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /role="listbox" aria-label=\{hasTeamRoutes \? "People and Teams" : "People"\}/);
+  assert.match(source, /role="group" aria-label="People"/);
+  assert.match(source, /role="group" aria-label="Teams"/);
+  assert.match(source, /event\.key === "Escape" && comboOpen[\s\S]{0,160}event\.stopPropagation\(\)/);
+  assert.match(source, /event\.key === "ArrowDown" \|\| event\.key === "ArrowUp"/);
+  assert.match(source, /event\.key === "Enter" && comboOpen/);
+  assert.match(source, /Choose where this Team gets access/);
+  assert.match(source, /!selectedPrincipal \|\| !selectedPermission/);
+  assert.match(source, /context\.teamRoutes\.length === 1[\s\S]{0,160}selectedRouteKey/);
+});
+
+test("Team sharing uses exact CAS payloads and authoritative route replacement", () => {
+  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  assert.match(source, /requestTeamApi<TeamList>\("\/api\/teams"/);
+  assert.match(source, /resource_type: route\.resourceType,[\s\S]{0,100}resource_id: route\.publicId/);
+  assert.match(source, /requestTeamApi<TeamGrantList>\(`\/api\/shares\/teams\?\$\{parameters\}`/);
+  assert.match(source, /teamId: selectedPrincipal\.entry\.team\.publicId,[\s\S]{0,180}resourceId: selectedRoute\.publicId,[\s\S]{0,100}permission: selectedPermission/);
+  assert.match(source, /existingTeamGrant\?\.revokedAt\) body\.version = existingTeamGrant\.version/);
+  assert.match(source, /"PATCH", \{ grantId: grant\.id, version: grant\.version, action: "role", permission \}/);
+  assert.match(source, /"DELETE", \{ grantId: grant\.id, version: grant\.version \}/);
+  assert.match(source, /setRouteState\(route\.key, \{ status: "ready", value, error: "" \}\)/);
+  assert.match(source, /teamMutationRef\.current = true;[\s\S]{0,180}routeGenerationRef\.current\[route\.key\]/);
+  assert.match(source, /requestError\.status === 409[\s\S]{0,180}const latest = await loadTeamGrantRoute\(route\)/);
+  assert.match(source, /teamGrantConflictReadbackMessage\(latest !== null\)/);
+  assert.match(source, /new AbortController\(\)[\s\S]{0,500}controller\.abort\(\)/);
+  assert.match(source, /teamGrantResponseMatchesRoute\(route, value\)/);
+  assert.match(source, /key=\{currentShareContext\.key\}/);
+  assert.doesNotMatch(source, /resourceType:\s*"release"/);
+});
+
+test("Release sharing keeps direct People access but exposes no Team mutation", () => {
+  const release = {
+    id: "release-share",
+    publicId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    projectId: snapshot.projects[0]!.id,
+    ownerUserId: snapshot.user.id,
+    creatorUserId: snapshot.user.id,
+    name: "No direct Team route",
+    description: "",
+    status: "active" as const,
+    targetDate: null,
+    releasedAt: null,
+    releaseNotes: "",
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    accessRole: "owner" as const,
+  };
+  const context = resolveShareContext(`release:${release.id}`, null, {
+    ...snapshot,
+    releases: [release],
+  })!;
+  const markup = renderToStaticMarkup(createElement(ShareDialog, {
+    context,
+    currentUser: snapshot.user,
+    users: snapshot.users,
+    collaborators: snapshot.collaborators,
+    onClose: () => undefined,
+    onShare: async () => true,
+    onRoleChange: async () => true,
+    onRevoke: async () => true,
+    onTransfer: async () => true,
+    busy: false,
+  }));
+  assert.match(markup, />People</);
+  assert.match(markup, /Releases do not have a Team grant route/);
+  assert.doesNotMatch(markup, /Loading your Teams|Loading Team access|Choose where this Team gets access/);
+});
 
 test("task ordering uses priority by default with rank and immutable id tie-breakers", () => {
   const base = snapshot.tasks[0]!;

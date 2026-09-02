@@ -279,6 +279,13 @@ import type {
   SavedViewRecord,
   StatusCategory,
   SystemBackupJobStatus,
+  TeamDetail,
+  TeamGrantList,
+  TeamGrantPermission,
+  TeamGrantRecord,
+  TeamGrantResourceType,
+  TeamList,
+  TeamMembershipRecord,
   TaskRecord,
   TaskLabelAssignment,
   TaskDetailRecord,
@@ -321,7 +328,147 @@ type ShareTarget = {
   inherited: boolean;
 };
 
-type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | null;
+export type TeamShareRoute = {
+  key: string;
+  resourceType: TeamGrantResourceType;
+  resourceId: string;
+  publicId: string;
+  label: string;
+  explanation: string;
+  accessRole: AccessRole;
+};
+
+export type ShareContext = {
+  key: string;
+  label: string;
+  directTarget: ShareTarget | null;
+  teamRoutes: TeamShareRoute[];
+  teamUnavailableCopy: string | null;
+};
+
+type SharePersonOption = {
+  kind: "person";
+  key: string;
+  displayName: string;
+  email: string;
+};
+
+type ShareTeamOption = {
+  kind: "team";
+  key: string;
+  entry: TeamList["teams"][number];
+};
+
+type SharePrincipalOption = SharePersonOption | ShareTeamOption;
+type TeamGrantMutationState = { routeKey: string; key: string } | null;
+type TeamGrantAlert = { routeKey: string; routePublicId: string; message: string } | null;
+
+type Dialog = "task" | "project" | "projectEdit" | "release" | "releaseEdit" | "view" | "viewEdit" | "share" | "systemExport" | "systemImport" | "codexSetup" | "workflowSettings" | "labelSettings" | "labelGroupSettings" | "bulkProject" | "bulkRelease" | "teamCreate" | "teamRename" | "teamMemberAdd" | "teamMemberDelete" | null;
+export type AsyncValue<T> =
+  | { status: "idle"; value: null; error: "" }
+  | { status: "loading"; value: T | null; error: "" }
+  | { status: "ready"; value: T; error: "" }
+  | { status: "error"; value: T | null; error: string };
+
+type TeamMutationKind = "create" | "rename" | "add" | "deactivate" | "reactivate" | "delete";
+type TeamMutationState = { kind: TeamMutationKind; key: string } | null;
+
+export function filterTeamList(value: TeamList, query: string): TeamList["teams"] {
+  const needle = query.trim().toLocaleLowerCase();
+  return value.teams.filter((entry) =>
+    !needle || entry.team.name.toLocaleLowerCase().includes(needle));
+}
+
+export function filterShareTeamOptions(
+  value: TeamList,
+  query: string,
+): TeamList["teams"] {
+  const needle = query.trim().toLocaleLowerCase();
+  return value.teams
+    .filter(({ team, currentMembership }) =>
+      !team.archivedAt &&
+      currentMembership.status === "active" &&
+      (!needle || team.name.toLocaleLowerCase().includes(needle)))
+    .sort((left, right) =>
+      Number(right.currentMembership.role === "owner") -
+        Number(left.currentMembership.role === "owner") ||
+      left.team.name.localeCompare(right.team.name, undefined, { sensitivity: "base" }) ||
+      left.team.publicId.localeCompare(right.team.publicId));
+}
+
+export function teamShareRequestIsCurrent(
+  requestedGeneration: number,
+  currentGeneration: number,
+  requestedRouteKey: string,
+  currentRouteKey: string,
+  aborted: boolean,
+) {
+  return requestedGeneration === currentGeneration &&
+    requestedRouteKey === currentRouteKey &&
+    !aborted;
+}
+
+export function teamGrantResponseMatchesRoute(
+  route: TeamShareRoute,
+  value: TeamGrantList,
+) {
+  return value.target.resourceType === route.resourceType &&
+    value.target.resourceId === route.resourceId &&
+    value.target.publicId === route.publicId;
+}
+
+export function teamGrantConflictReadbackMessage(latestLoaded: boolean) {
+  return latestLoaded
+    ? "Team access changed in another session. The latest routes were loaded; review them and try again."
+    : "Team access changed, but the latest routes could not be loaded. Retry.";
+}
+
+export function teamShareRouteIdentity(routes: readonly TeamShareRoute[]) {
+  return routes.map((route) =>
+    `${route.key}:${route.resourceType}:${route.publicId}:${route.accessRole}`).join("|");
+}
+
+export function teamRequestIsCurrent(
+  requestedGeneration: number,
+  currentGeneration: number,
+  aborted: boolean,
+) {
+  return requestedGeneration === currentGeneration && !aborted;
+}
+
+export function teamConflictReadbackMessage(
+  latestLoaded: boolean,
+  unavailable: boolean,
+) {
+  if (unavailable) return "";
+  return latestLoaded
+    ? "This Team changed in another session. The latest details were loaded; review them and try again."
+    : "This Team changed, but the latest details could not be loaded. Retry.";
+}
+
+class TeamRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+async function requestTeamApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
+    cache: "no-store",
+    ...init,
+    headers: init?.body ? { "content-type": "application/json" } : undefined,
+  });
+  const value = await response.json() as T | { error: string };
+  if (!response.ok || (value && typeof value === "object" && "error" in value)) {
+    throw new TeamRequestError(
+      value && typeof value === "object" && "error" in value
+        ? String(value.error)
+        : "Team request failed",
+      response.status,
+    );
+  }
+  return value as T;
+}
 export type CodexSetupMode = "desktop" | "cli";
 export type CodexSetupModeAction =
   | { type: "select"; mode: CodexSetupMode }
@@ -1242,6 +1389,22 @@ export function TaskTracker({
   const [taskQueryPaging, setTaskQueryPaging] = useState(false);
   const [taskDetail, setTaskDetail] = useState<TaskDetailRecord | null>(null);
   const [forcedTaskDetailId, setForcedTaskDetailId] = useState<string | null>(null);
+  const [teamListState, setTeamListState] = useState<AsyncValue<TeamList>>({
+    status: "idle",
+    value: null,
+    error: "",
+  });
+  const [teamDetailState, setTeamDetailState] = useState<AsyncValue<TeamDetail>>({
+    status: "idle",
+    value: null,
+    error: "",
+  });
+  const [teamMutation, setTeamMutation] = useState<TeamMutationState>(null);
+  const [teamAlert, setTeamAlert] = useState("");
+  const [teamMemberForDelete, setTeamMemberForDelete] = useState<TeamMembershipRecord | null>(null);
+  const teamListGenerationRef = useRef(0);
+  const teamDetailGenerationRef = useRef(0);
+  const teamDetailStateRef = useRef(teamDetailState);
   const [temporaryQuery, setTemporaryQuery] = useState<ViewQuery>(() => emptyViewQuery());
   const [dialog, setDialog] = useState<Dialog>(null);
   const [createDefaults, setCreateDefaults] = useState<TaskCreateDefaults>({});
@@ -1322,6 +1485,12 @@ export function TaskTracker({
     initialData.user.theme ?? "system",
   );
   const preferenceSaveQueueRef = useRef<ReturnType<typeof createUserPreferenceSaveQueue> | null>(null);
+  const activeTeamPublicId = surface.startsWith("team:")
+    ? surface.slice("team:".length)
+    : null;
+  const activeTeamPublicIdRef = useRef(activeTeamPublicId);
+  activeTeamPublicIdRef.current = activeTeamPublicId;
+  teamDetailStateRef.current = teamDetailState;
 
   const updateSystemExportStatus = useCallback((next: SystemBackupJobStatus | null) => {
     systemExportStatusRef.current = next;
@@ -1500,6 +1669,98 @@ export function TaskTracker({
       ),
     });
   }
+
+  const loadTeamList = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++teamListGenerationRef.current;
+    setTeamListState((current) => ({
+      status: "loading",
+      value: current.value,
+      error: "",
+    }));
+    try {
+      const value = await requestTeamApi<TeamList>("/api/teams", { signal });
+      if (!teamRequestIsCurrent(
+        generation,
+        teamListGenerationRef.current,
+        signal?.aborted ?? false,
+      )) return null;
+      setTeamListState({ status: "ready", value, error: "" });
+      return value;
+    } catch (requestError) {
+      if (signal?.aborted || !teamRequestIsCurrent(
+        generation,
+        teamListGenerationRef.current,
+        false,
+      )) return null;
+      setTeamListState((current) => ({
+        status: "error",
+        value: current.value,
+        error: requestError instanceof Error
+          ? requestError.message
+          : "Teams could not be loaded",
+      }));
+      return null;
+    }
+  }, []);
+
+  const loadTeamDetail = useCallback(async (
+    teamPublicId: string,
+    signal?: AbortSignal,
+  ) => {
+    const generation = ++teamDetailGenerationRef.current;
+    const retained = teamDetailStateRef.current.value?.team.publicId === teamPublicId
+      ? teamDetailStateRef.current.value
+      : null;
+    const loadingState: AsyncValue<TeamDetail> = {
+      status: "loading",
+      value: retained,
+      error: "",
+    };
+    teamDetailStateRef.current = loadingState;
+    setTeamDetailState(loadingState);
+    try {
+      const value = await requestTeamApi<TeamDetail>(
+        `/api/teams/${encodeURIComponent(teamPublicId)}`,
+        { signal },
+      );
+      if (
+        activeTeamPublicIdRef.current !== teamPublicId ||
+        !teamRequestIsCurrent(
+          generation,
+          teamDetailGenerationRef.current,
+          signal?.aborted ?? false,
+        )
+      ) return null;
+      const readyState: AsyncValue<TeamDetail> = {
+        status: "ready",
+        value,
+        error: "",
+      };
+      teamDetailStateRef.current = readyState;
+      setTeamDetailState(readyState);
+      return value;
+    } catch (requestError) {
+      if (
+        signal?.aborted ||
+        activeTeamPublicIdRef.current !== teamPublicId ||
+        !teamRequestIsCurrent(generation, teamDetailGenerationRef.current, false)
+      ) return null;
+      const unavailable = requestError instanceof TeamRequestError &&
+        (requestError.status === 403 || requestError.status === 404);
+      const errorState: AsyncValue<TeamDetail> = {
+        status: "error",
+        value: unavailable ? null : retained,
+        error: unavailable
+          ? "Team unavailable"
+          : requestError instanceof Error
+            ? requestError.message
+            : "Team could not be loaded",
+      };
+      teamDetailStateRef.current = errorState;
+      setTeamDetailState(errorState);
+      return null;
+    }
+  }, []);
 
   const captureSyncCheckpoint = useCallback((): WorkspaceSyncCheckpoint => ({
     taskIds: new Set(dataRef.current.tasks.map((task) => task.id)),
@@ -1795,6 +2056,21 @@ export function TaskTracker({
   useEffect(() => {
     taskSearchRef.current = taskSearch;
   }, [taskSearch]);
+
+  useEffect(() => {
+    if (surface !== "teams") return;
+    const controller = new AbortController();
+    void loadTeamList(controller.signal);
+    return () => controller.abort();
+  }, [loadTeamList, surface]);
+
+  useEffect(() => {
+    if (!activeTeamPublicId) return;
+    const controller = new AbortController();
+    setTeamAlert("");
+    void loadTeamDetail(activeTeamPublicId, controller.signal);
+    return () => controller.abort();
+  }, [activeTeamPublicId, loadTeamDetail]);
 
   useEffect(() => {
     if (surface !== "shared") return;
@@ -2590,7 +2866,16 @@ export function TaskTracker({
         : null
     : null;
 
-  const breadcrumbs = surfaceBreadcrumbs(surface, data, activeSavedView);
+  const activeTeamDetail = activeTeamPublicId &&
+    teamDetailState.value?.team.publicId === activeTeamPublicId
+    ? teamDetailState.value
+    : null;
+  const breadcrumbs = surfaceBreadcrumbs(
+    surface,
+    data,
+    activeSavedView,
+    activeTeamDetail?.team.name,
+  );
   const activeTaskSummary = taskPool.find((task) => task.id === activeTaskId);
   const activeTask = taskDetail?.task.id === activeTaskId
     ? activeTaskSummary
@@ -2699,6 +2984,10 @@ export function TaskTracker({
       ? catalogPages.projects?.total ?? data.navigationCollections?.projects.total ?? data.projects.length
     : surface === "releases"
       ? catalogPages.releases?.total ?? data.navigationCollections?.releases.total ?? data.releases.length
+    : surface === "teams"
+      ? teamListState.value?.teams.length ?? ""
+    : activeTeamPublicId
+      ? activeTeamDetail?.members.filter((membership) => membership.status === "active").length ?? ""
     : surface === "admin" && data.admin
       ? data.admin.registeredUserCount
     : surface === "shared"
@@ -2800,7 +3089,7 @@ export function TaskTracker({
   );
   const keyboardTaskIdsKey = keyboardTaskIds.join("\u0000");
   const selectableTaskIdsKey = [...selectableTaskIds].join("\u0000");
-  const currentShareTarget = shareTarget(surface, activeTask, data);
+  const currentShareContext = resolveShareContext(surface, activeTask, data);
   const canCreateTask = contextProjectRecord
     ? !contextProjectRecord.archivedAt && canEditContent(contextProjectRecord.accessRole)
     : data.projects.some((project) => !project.archivedAt && canEditContent(project.accessRole));
@@ -2816,6 +3105,8 @@ export function TaskTracker({
       ? "Search releases"
       : surface === "views"
         ? "Search views"
+      : surface === "teams"
+        ? "Search teams"
         : "Search tasks";
   const hasTemporaryFilters = Boolean(
     search.trim() || canonicalTemporaryQuery.conditions.length,
@@ -3427,6 +3718,157 @@ export function TaskTracker({
       layout: nextLayout ?? defaultLayoutForSurface(nextSurface, data),
       taskId: null,
     });
+  }
+
+  async function createTeam(name: string) {
+    if (teamMutation) return false;
+    setTeamMutation({ kind: "create", key: "new" });
+    setTeamAlert("");
+    try {
+      const detail = await requestTeamApi<TeamDetail>("/api/teams", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      const nextState: AsyncValue<TeamDetail> = {
+        status: "ready",
+        value: detail,
+        error: "",
+      };
+      teamDetailStateRef.current = nextState;
+      setTeamDetailState(nextState);
+      activeTeamPublicIdRef.current = detail.team.publicId;
+      setDialog(null);
+      applyNavigation({
+        surface: `team:${detail.team.publicId}`,
+        layout: "list",
+        taskId: null,
+      });
+      void loadTeamList();
+      return true;
+    } catch (requestError) {
+      setTeamAlert(requestError instanceof Error
+        ? requestError.message
+        : "Team could not be created");
+      return false;
+    } finally {
+      setTeamMutation(null);
+    }
+  }
+
+  async function mutateActiveTeam(
+    kind: Exclude<TeamMutationKind, "create">,
+    key: string,
+    path: string,
+    method: "PATCH" | "POST" | "DELETE",
+    body: Record<string, unknown>,
+  ) {
+    const teamPublicId = activeTeamPublicIdRef.current;
+    if (!teamPublicId || teamMutation) return false;
+    setTeamMutation({ kind, key });
+    setTeamAlert("");
+    try {
+      const detail = await requestTeamApi<TeamDetail>(path, {
+        method,
+        body: JSON.stringify(body),
+      });
+      void loadTeamList();
+      if (activeTeamPublicIdRef.current !== teamPublicId) return true;
+      const nextState: AsyncValue<TeamDetail> = {
+        status: "ready",
+        value: detail,
+        error: "",
+      };
+      teamDetailStateRef.current = nextState;
+      setTeamDetailState(nextState);
+      return true;
+    } catch (requestError) {
+      if (activeTeamPublicIdRef.current !== teamPublicId) return false;
+      if (requestError instanceof TeamRequestError && requestError.status === 409) {
+        const latest = await loadTeamDetail(teamPublicId);
+        if (activeTeamPublicIdRef.current !== teamPublicId) return false;
+        if (dialog === "teamRename" || dialog === "teamMemberAdd" || dialog === "teamMemberDelete") {
+          setDialog(null);
+          setTeamMemberForDelete(null);
+        }
+        const unavailable = teamDetailStateRef.current.status === "error" &&
+          teamDetailStateRef.current.error === "Team unavailable";
+        setTeamAlert(teamConflictReadbackMessage(latest !== null, unavailable));
+        return false;
+      }
+      if (requestError instanceof TeamRequestError &&
+        (requestError.status === 403 || requestError.status === 404)) {
+        setTeamDetailState({
+          status: "error",
+          value: null,
+          error: "Team unavailable",
+        });
+        return false;
+      }
+      setTeamAlert(requestError instanceof Error
+        ? requestError.message
+        : "Team could not be updated");
+      return false;
+    } finally {
+      setTeamMutation(null);
+    }
+  }
+
+  async function renameTeam(name: string) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      "rename",
+      detail.team.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}`,
+      "PATCH",
+      { name, version: detail.team.version },
+    );
+  }
+
+  async function addTeamMember(email: string) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      "add",
+      detail.team.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}/members`,
+      "POST",
+      { email, teamVersion: detail.team.version },
+    );
+  }
+
+  async function changeTeamMembership(
+    membership: TeamMembershipRecord,
+    action: "deactivate" | "reactivate",
+  ) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      action,
+      membership.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}/members/${encodeURIComponent(membership.id)}`,
+      "PATCH",
+      {
+        action,
+        teamVersion: detail.team.version,
+        version: membership.version,
+      },
+    );
+  }
+
+  async function deleteTeamMembership(membership: TeamMembershipRecord) {
+    const detail = teamDetailStateRef.current.value;
+    if (!detail) return false;
+    return mutateActiveTeam(
+      "delete",
+      membership.id,
+      `/api/teams/${encodeURIComponent(detail.team.publicId)}/members/${encodeURIComponent(membership.id)}`,
+      "DELETE",
+      {
+        teamVersion: detail.team.version,
+        version: membership.version,
+      },
+    );
   }
 
   function closeMobileSidebar() {
@@ -4100,7 +4542,6 @@ export function TaskTracker({
 
   useEffect(() => {
     // Navigation changes deliberately reset ephemeral list state.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHighlightedTaskId(null);
     setSelected(new Set());
     setPendingProjectMove(null);
@@ -4208,6 +4649,7 @@ export function TaskTracker({
           <NavItem compact={sidebarCompact} icon={<PanelsTopLeft size={15} />} label="Workspace" active={surface === "workspace"} href="/workspace" onNavigate={() => navigateSurface("workspace", "list")} />
           <NavItem compact={sidebarCompact} icon={<Inbox size={15} />} label="My tasks" active={surface === "mine"} href="/issues" onNavigate={() => navigateSurface("mine", "list")} count={taskCountForView("mine", data, statusMap)} />
           <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Shared with me" active={surface === "shared"} href="/shared" onNavigate={() => navigateSurface("shared", "list")} />
+          <NavItem compact={sidebarCompact} icon={<UsersRound size={15} />} label="Teams" active={surface === "teams" || surface.startsWith("team:")} href="/teams" onNavigate={() => navigateSurface("teams", "list")} />
           {!sidebarCompact && (
             <>
               <SidebarSection title="Views" action={() => void openDialogWithCatalog("view", ["projects"])}>
@@ -4344,12 +4786,15 @@ export function TaskTracker({
               </span>
             )}
             <div className="title-actions">
+              {surface === "teams" && <button className="button primary" type="button" disabled={Boolean(teamMutation)} aria-busy={teamMutation?.kind === "create" || undefined} onClick={() => { setTeamAlert(""); setDialog("teamCreate"); }}><Plus size={14} />New Team</button>}
+              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button ghost" type="button" disabled={Boolean(teamMutation) || teamDetailState.status !== "ready"} onClick={() => { setTeamAlert(""); setDialog("teamRename"); }}><UsersRound size={14} />Rename Team</button>}
+              {activeTeamDetail?.currentMembership.role === "owner" && <button className="button primary" type="button" disabled={Boolean(teamMutation) || teamDetailState.status !== "ready"} onClick={() => { setTeamAlert(""); setDialog("teamMemberAdd"); }}><Plus size={14} />Add member</button>}
               {surface.startsWith("project:") && contextProjectRecord && <a className="button ghost" href={projectReleasesPath(contextProjectRecord.publicId)} onClick={(event) => handleLocalLink(event, () => navigateSurface(`project-releases:${contextProjectRecord.id}`, "list"))}><Rocket size={14} />Releases</a>}
               {surface.startsWith("project:") && contextProjectRecord && canEditContent(contextProjectRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("projectEdit")}><FolderKanban size={14} />Edit project</button>}
               {surface.startsWith("release:") && contextReleaseRecord && canEditContent(contextReleaseRecord.accessRole) && <button className="button ghost" onClick={() => setDialog("releaseEdit")}><Rocket size={14} />Edit release</button>}
               {activeSavedView && canEditContent(activeSavedView.accessRole) && <button className="button ghost" onClick={() => void openDialogWithCatalog("viewEdit", ["projects", "releases"])}><Zap size={14} />Edit view</button>}
               {surface.startsWith("project:") && contextProjectRecord?.accessRole === "owner" && <button className="button ghost" disabled={systemBackupBusy} onClick={() => void downloadProjectBackup(contextProjectRecord)}><Download size={14} />{systemBackupBusy ? "Exporting…" : "Backup"}</button>}
-              {currentShareTarget && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
+              {currentShareContext && <button className="button ghost" onClick={() => setDialog("share")}><Share2 size={14} />Members &amp; access</button>}
               {surfaceContextualEntity && canEditContent(surfaceContextualEntity.accessRole) && <button className="icon-button" type="button" aria-label={`Open contextual actions for ${surfaceContextualEntity.label}`} title="Actions (Cmd/Ctrl+K)" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); openContextualActions({ entities: [surfaceContextualEntity] }, rect.right, rect.bottom, event.currentTarget); }}><MoreHorizontal size={16} /></button>}
               <button className="icon-button" title="Copy direct link" onClick={() => void copyCurrentLink()}><Link2 size={16} /></button>
             </div>
@@ -4448,6 +4893,18 @@ export function TaskTracker({
           )}
         </header>
 
+        {surface === "teams" && (
+          <div className="toolbar-row catalog-toolbar teams-toolbar" aria-label="Teams catalog controls">
+            <div className="toolbar-left">
+              <div className="search-control">
+                <Search size={13} />
+                <input ref={searchRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search teams…" aria-label="Search teams" />
+                {search && <button type="button" aria-label="Clear Team search" onClick={() => setSearch("")}><X size={12} /></button>}
+              </div>
+            </div>
+          </div>
+        )}
+
         {(surface === "projects" || surface === "releases" || surface === "views") && (
           <div className="toolbar-row catalog-toolbar" aria-label={`${surface} catalog controls`}>
             <div className="toolbar-left">
@@ -4495,7 +4952,27 @@ export function TaskTracker({
 
         {surface.startsWith("project:") && contextProjectRecord && <ProjectOverview project={contextProjectRecord} lead={contextProjectRecord.leadUserId ? userMap.get(contextProjectRecord.leadUserId) : undefined} tasks={data.tasks.filter((task) => task.projectId === contextProjectRecord.id && !task.archivedAt)} statuses={statusMap} onEdit={canEditContent(contextProjectRecord.accessRole) ? () => setDialog("projectEdit") : undefined} />}
         {contextReleaseRecord && <ReleaseOverview release={contextReleaseRecord} project={projectMap.get(contextReleaseRecord.projectId)} tasks={data.tasks.filter((task) => task.releaseId === contextReleaseRecord.id && !task.archivedAt)} statuses={statusMap} onEdit={canEditContent(contextReleaseRecord.accessRole) ? () => setDialog("releaseEdit") : undefined} />}
-        {surface.startsWith("settings:") ? (
+        {surface === "teams" ? (
+          <TeamsSurface
+            state={teamListState}
+            query={search}
+            onRetry={() => void loadTeamList()}
+            onCreate={() => { setTeamAlert(""); setDialog("teamCreate"); }}
+            onOpen={(publicId) => navigateSurface(`team:${publicId}`, "list")}
+          />
+        ) : activeTeamPublicId ? (
+          <TeamDetailSurface
+            state={teamDetailState}
+            alert={teamAlert}
+            mutation={teamMutation}
+            onRetry={() => void loadTeamDetail(activeTeamPublicId)}
+            onMembershipAction={(membership, action) => void changeTeamMembership(membership, action)}
+            onDelete={(membership) => {
+              setTeamMemberForDelete(membership);
+              setDialog("teamMemberDelete");
+            }}
+          />
+        ) : surface.startsWith("settings:") ? (
           <SettingsSurface
             section={surface.slice("settings:".length)}
             data={data}
@@ -4596,7 +5073,7 @@ export function TaskTracker({
         onDismiss={() => setDeletionUndo(null)}
       />}
 
-      {activeTask && <div className={currentShareTarget ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} catalogReady={taskPropertyCatalogReady} onClose={closeTask} onOpenTask={openTask} onContextActions={(x, y, focus) => openContextualActions({ entities: [taskContextualEntity(activeTask)] }, x, y, focus)} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onRelationMutation={(tasks, dependencies) => reconcileSuccessfulTaskMutation(tasks, dataRef.current, dataRef.current, dependencies)} onShare={() => setDialog("share")} busy={busy} />}</div>}
+      {activeTask && <div className={currentShareContext ? undefined : "details-no-share"}>{activeTask.description === null ? <TaskDetailsLoading task={activeTask} onClose={closeTask} /> : <TaskDetails key={activeTask.id} task={activeTask} data={activeDetailsData} catalogReady={taskPropertyCatalogReady} onClose={closeTask} onOpenTask={openTask} onContextActions={(x, y, focus) => openContextualActions({ entities: [taskContextualEntity(activeTask)] }, x, y, focus)} onSave={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : activeTask.releaseId; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}`, "PATCH", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onMove={async (changes) => { const nextReleaseId = Object.hasOwn(changes, "releaseId") ? changes.releaseId as string | null : null; const confirmReleasedComposition = releasedCompositionNeedsConfirmation(activeTask.releaseId, nextReleaseId, data.releases); if (confirmReleasedComposition && !confirmReleasedCompositionChange()) return false; return mutate(`/api/tasks/${activeTask.id}/move`, "POST", { version: taskMutationVersion(activeTask), ...changes, ...(confirmReleasedComposition ? { confirmReleasedComposition: true } : {}) }); }} onSetParent={(parentTaskId) => mutate(`/api/tasks/${activeTask.id}/parent`, "PATCH", { version: taskMutationVersion(activeTask), parentTaskId })} onCreateSubtask={(title) => mutate(`/api/tasks/${activeTask.id}/subtasks`, "POST", { version: taskMutationVersion(activeTask), title })} onSetLabel={(labelId, active) => mutate(`/api/tasks/${activeTask.id}/labels`, "POST", { labelId, active })} onRebase={refreshTaskDetail} onRelationMutation={(tasks, dependencies) => reconcileSuccessfulTaskMutation(tasks, dataRef.current, dataRef.current, dependencies)} onShare={() => setDialog("share")} busy={busy} />}</div>}
       {pendingMoveTask && pendingMoveSourceProject && pendingMoveTargetProject && (
         <TaskMoveDialog
           task={pendingMoveTask}
@@ -4634,7 +5111,7 @@ export function TaskTracker({
       {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} onDelete={() => void openRecoverableDelete(releaseContextualEntity(contextReleaseRecord))} busy={busy} />}
       {dialog === "view" && canSaveView && <ViewDialog view={activeSavedView} editing={false} query={currentViewQuery} display={currentDisplay} data={data} initialScopeProjectId={activeSavedView?.scopeProjectId ?? contextProject} temporaryFilterCount={0} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/views", "POST", input); if (ok) setDialog(null); return ok; }} busy={busy} />}
       {dialog === "viewEdit" && activeSavedView && canSaveView && <ViewDialog key={activeSavedView.id} view={activeSavedView} editing query={activeSavedView.query} display={activeSavedView.display} data={data} initialScopeProjectId={activeSavedView.scopeProjectId} temporaryFilterCount={queryFilterCount(temporaryViewQuery)} submissionError={error} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/views/${activeSavedView.id}`, "PATCH", { version: activeSavedView.version, ...input }, { onConflict: refreshSavedViewsAfterConflict, conflictMessage: "This Saved View changed in another session. The latest saved version was reloaded; review it and try again." }); if (ok) { setDialog(null); setDisplayOverrides((current) => { const next = { ...current }; delete next[surface]; return next; }); const savedDisplay = input.display as ViewDisplay; if (savedDisplay.layout !== layout) changeLayout(savedDisplay.layout); } return ok; }} busy={busy} />}
-      {dialog === "share" && <ShareDialog target={currentShareTarget} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
+      {dialog === "share" && currentShareContext && <ShareDialog key={currentShareContext.key} context={currentShareContext} currentUser={data.user} users={data.users} collaborators={data.collaborators} onClose={() => setDialog(null)} onShare={(input) => mutate("/api/shares", "POST", input)} onRoleChange={(grantId, permission) => mutate("/api/shares", "PATCH", { grantId, permission })} onRevoke={(grantId) => mutate("/api/shares", "DELETE", { grantId })} onTransfer={(projectId, targetUserId) => mutate("/api/shares/transfer", "POST", { projectId, targetUserId })} busy={busy} />}
       {dialog === "systemExport" && <SystemBackupExportDialog
         status={systemExportStatus}
         busy={systemExportRunning || Boolean(systemExportStartFlightRef.current)}
@@ -4654,6 +5131,10 @@ export function TaskTracker({
       {dialog === "labelGroupSettings" && <LabelGroupSettingsDialog initialGroups={(data.labelGroups ?? []).filter((group) => group.ownerUserId === data.user.id)} initialLabels={data.labels.filter((label) => label.ownerUserId === data.user.id)} onClose={() => setDialog(null)} onGroups={(labelGroups) => setData((current) => ({ ...current, labelGroups: [...(current.labelGroups ?? []).filter((group) => group.ownerUserId !== current.user.id), ...labelGroups] }))} onLabels={(labels) => setData((current) => ({ ...current, labels: [...current.labels.filter((label) => label.ownerUserId !== current.user.id), ...labels] }))} />}
       {dialog === "bulkProject" && selectedTasks.length > 0 && <BulkProjectDialog data={data} tasks={selectedTasks} busy={busy} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "projectId", value: input.targetProjectId, clearRelease: input.clearRelease, clearAssignee: input.clearAssignee, confirmReleasedComposition: input.confirmReleasedComposition }); if (ok) { setDialog(null); setSelected(new Set()); } }} />}
       {dialog === "bulkRelease" && selectedTasks.length > 0 && <BulkReleaseDialog data={data} tasks={selectedTasks} busy={busy} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/tasks/bulk", "POST", { ids: [...selected], versions: selectedTaskVersions, field: "releaseId", value: input.releaseId, confirmReleasedComposition: input.confirmReleasedComposition }); if (ok) { setDialog(null); setSelected(new Set()); } }} />}
+      {dialog === "teamCreate" && <TeamNameDialog title="Create Team" submitLabel="Create Team" error={teamAlert} busy={teamMutation?.kind === "create"} onClose={() => setDialog(null)} onSubmit={createTeam} />}
+      {dialog === "teamRename" && activeTeamDetail?.currentMembership.role === "owner" && <TeamNameDialog title="Rename Team" submitLabel="Save name" initialName={activeTeamDetail.team.name} error={teamAlert} busy={teamMutation?.kind === "rename"} onClose={() => setDialog(null)} onSubmit={async (name) => { const ok = await renameTeam(name); if (ok) setDialog(null); return ok; }} />}
+      {dialog === "teamMemberAdd" && activeTeamDetail?.currentMembership.role === "owner" && <TeamMemberDialog error={teamAlert} busy={teamMutation?.kind === "add"} onClose={() => setDialog(null)} onSubmit={async (email) => { const ok = await addTeamMember(email); if (ok) setDialog(null); return ok; }} />}
+      {dialog === "teamMemberDelete" && activeTeamDetail?.currentMembership.role === "owner" && teamMemberForDelete && <TeamMemberDeleteDialog membership={teamMemberForDelete} error={teamAlert} busy={teamMutation?.kind === "delete" && teamMutation.key === teamMemberForDelete.id} onClose={() => { setDialog(null); setTeamMemberForDelete(null); }} onConfirm={async () => { const ok = await deleteTeamMembership(teamMemberForDelete); if (ok) { setDialog(null); setTeamMemberForDelete(null); } return ok; }} />}
     </main>
   );
 }
@@ -8136,35 +8617,513 @@ export function ViewDialog({ view, editing, query, display, data, initialScopePr
   </Modal>;
 }
 
-function ShareDialog({ target, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { target: ShareTarget | null; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
-  if (!target) return null;
-  const grants = collaborators.filter((grant) => grant.resourceType === target.resourceType && grant.resourceId === target.resourceId);
-  const assignableRoles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
-  const owner = target.ownerUserId === currentUser.id
-    ? currentUser
-    : users.find((user) => user.id === target.ownerUserId);
-  const ownerName = owner?.displayName ?? "Project owner";
-  const inheritanceCopy = target.inherited
-    ? "Access applies to every task, release, and project-scoped saved view."
-    : target.resourceType === "task"
-      ? "Access applies only to this standalone task."
-      : "A shared view still shows only tasks the person can already access.";
+function emptyAsyncValue<T>(): AsyncValue<T> {
+  return { status: "idle", value: null, error: "" };
+}
 
-  return <Modal onClose={onClose}><form onSubmit={async (event) => {
-    event.preventDefault();
-    const values = new FormData(event.currentTarget);
-    const ok = await onShare({
-      resourceType: target.resourceType,
-      resourceId: target.resourceId,
-      email: String(values.get("email") ?? ""),
-      permission: String(values.get("permission") ?? "viewer"),
+export function teamRouteRoles(route: TeamShareRoute): TeamGrantPermission[] {
+  return (["manager", "editor", "viewer"] as const).filter((permission) => {
+    if (permission === "manager" && route.resourceType !== "project") return false;
+    return canAssignRole(route.accessRole, route.resourceType, permission);
+  });
+}
+
+export function canManageTeamRouteGrant(
+  route: TeamShareRoute,
+  permission: TeamGrantPermission,
+) {
+  return canManageGrant(route.accessRole, route.resourceType, permission);
+}
+
+export function normalizedTeamSharePermission(
+  selected: TeamGrantPermission | "",
+  allowed: readonly TeamGrantPermission[],
+): TeamGrantPermission | "" {
+  return selected && allowed.includes(selected) ? selected : "";
+}
+
+function validShareEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
+function sharePersonOptions({ query, directTarget, directGrants, ownerEmail, currentUser, users, collaborators }: {
+  query: string;
+  directTarget: ShareContext["directTarget"];
+  directGrants: AppSnapshot["collaborators"];
+  ownerEmail?: string;
+  currentUser: AppSnapshot["user"];
+  users: AppSnapshot["users"];
+  collaborators: AppSnapshot["collaborators"];
+}): SharePersonOption[] {
+  if (!directTarget || !query.trim()) return [];
+  const needle = query.trim().toLocaleLowerCase();
+  const existingEmails = new Set(directGrants.map((grant) => grant.email.toLocaleLowerCase()));
+  if (ownerEmail) existingEmails.add(ownerEmail.toLocaleLowerCase());
+  existingEmails.add(currentUser.email.toLocaleLowerCase());
+  const candidates = new Map<string, SharePersonOption>();
+  for (const user of users) {
+    const email = user.email.toLocaleLowerCase();
+    if (existingEmails.has(email)) continue;
+    if (!user.displayName.toLocaleLowerCase().includes(needle) && !email.includes(needle)) continue;
+    candidates.set(email, { kind: "person", key: `person:${email}`, displayName: user.displayName, email: user.email });
+  }
+  for (const grant of collaborators) {
+    const email = grant.email.toLocaleLowerCase();
+    if (existingEmails.has(email) || candidates.has(email)) continue;
+    if (!grant.displayName.toLocaleLowerCase().includes(needle) && !email.includes(needle)) continue;
+    candidates.set(email, { kind: "person", key: `person:${email}`, displayName: grant.displayName, email: grant.email });
+  }
+  if (validShareEmail(needle) && !existingEmails.has(needle) && !candidates.has(needle)) {
+    candidates.set(needle, { kind: "person", key: `person:${needle}`, displayName: `Add ${needle}`, email: needle });
+  }
+  return [...candidates.values()].sort((left, right) =>
+    left.displayName.localeCompare(right.displayName, undefined, { sensitivity: "base" }) ||
+    left.email.localeCompare(right.email));
+}
+
+export function TeamGrantAccessRow({ route, grant, catalogEntry, busy, routeReady, onRoleChange, onRevoke }: {
+  route: TeamShareRoute;
+  grant: TeamGrantRecord;
+  catalogEntry?: TeamList["teams"][number];
+  busy: boolean;
+  routeReady: boolean;
+  onRoleChange: (permission: TeamGrantPermission) => void;
+  onRevoke: () => void;
+}) {
+  const roles = teamRouteRoles(route);
+  const active = grant.revokedAt === null;
+  const manageable = canManageTeamRouteGrant(route, grant.permission);
+  const availableRoles = manageable ? roles : [grant.permission];
+  return <div className={`access-row team-grant-row ${active ? "" : "revoked"}`}><span className="team-option-icon"><UsersRound size={15} /></span><span><b>{grant.teamName}</b><small>{catalogEntry ? `${catalogEntry.activeMemberCount} active · Your role: ${catalogEntry.currentMembership.role}` : active ? "Team route" : "Revoked Team route"}</small></span><span className="team-route-root">{active ? route.label : "Revoked"}</span><select aria-label={`Role for Team ${grant.teamName}`} value={grant.permission} disabled={busy || !active || !manageable || !routeReady || Boolean(grant.teamArchivedAt)} onChange={(event) => { if (manageable) onRoleChange(event.target.value as TeamGrantPermission); }}>{availableRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{active && manageable && <button type="button" disabled={busy || !routeReady} onClick={onRevoke}>Revoke</button>}</div></div>;
+}
+
+export function ShareDialog({ context, currentUser, users, collaborators, onClose, onShare, onRoleChange, onRevoke, onTransfer, busy }: { context: ShareContext; currentUser: AppSnapshot["user"]; users: AppSnapshot["users"]; collaborators: AppSnapshot["collaborators"]; onClose: () => void; onShare: (input: Record<string, unknown>) => Promise<boolean>; onRoleChange: (grantId: string, permission: "manager" | "editor" | "viewer") => Promise<boolean>; onRevoke: (grantId: string) => Promise<boolean>; onTransfer: (projectId: string, targetUserId: string) => Promise<boolean>; busy: boolean }) {
+  const [query, setQuery] = useState("");
+  const [comboOpen, setComboOpen] = useState(false);
+  const [highlighted, setHighlighted] = useState(0);
+  const [selectedPrincipal, setSelectedPrincipal] = useState<SharePrincipalOption | null>(null);
+  const [selectedPermission, setSelectedPermission] = useState<TeamGrantPermission | "">("");
+  const [selectedRouteKey, setSelectedRouteKey] = useState("");
+  const [directError, setDirectError] = useState("");
+  const [teamAlert, setTeamAlert] = useState<TeamGrantAlert>(null);
+  const [teamMutation, setTeamMutation] = useState<TeamGrantMutationState>(null);
+  const [teamCatalog, setTeamCatalog] = useState<AsyncValue<TeamList>>(() => emptyAsyncValue<TeamList>());
+  const teamCatalogRef = useRef(teamCatalog);
+  const [routeStates, setRouteStates] = useState<Record<string, AsyncValue<TeamGrantList>>>(() =>
+    Object.fromEntries(context.teamRoutes.map((route) => [route.key, emptyAsyncValue<TeamGrantList>()])),
+  );
+  const routeStatesRef = useRef(routeStates);
+  const catalogGenerationRef = useRef(0);
+  const routeGenerationRef = useRef<Record<string, number>>({});
+  const contextKeyRef = useRef(context.key);
+  const mountedRef = useRef(true);
+  const teamMutationRef = useRef(false);
+  const listboxId = useId();
+  const routeIdentity = teamShareRouteIdentity(context.teamRoutes);
+  const routesRef = useRef(context.teamRoutes);
+
+  const setCatalogState = useCallback((next: AsyncValue<TeamList>) => {
+    teamCatalogRef.current = next;
+    setTeamCatalog(next);
+  }, []);
+
+  const setRouteState = useCallback((routeKey: string, next: AsyncValue<TeamGrantList>) => {
+    const states = { ...routeStatesRef.current, [routeKey]: next };
+    routeStatesRef.current = states;
+    setRouteStates(states);
+  }, []);
+
+  const loadTeamCatalog = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++catalogGenerationRef.current;
+    const retained = teamCatalogRef.current.value;
+    setCatalogState({ status: "loading", value: retained, error: "" });
+    try {
+      const value = await requestTeamApi<TeamList>("/api/teams", { signal });
+      if (!mountedRef.current || !teamRequestIsCurrent(
+        generation,
+        catalogGenerationRef.current,
+        signal?.aborted ?? false,
+      )) return null;
+      setCatalogState({ status: "ready", value, error: "" });
+      return value;
+    } catch (requestError) {
+      if (!mountedRef.current || signal?.aborted || generation !== catalogGenerationRef.current) return null;
+      setCatalogState({
+        status: "error",
+        value: retained,
+        error: requestError instanceof Error ? requestError.message : "Teams could not be loaded",
+      });
+      return null;
+    }
+  }, [setCatalogState]);
+
+  const loadTeamGrantRoute = useCallback(async (
+    route: TeamShareRoute,
+    signal?: AbortSignal,
+  ) => {
+    const generation = (routeGenerationRef.current[route.key] ?? 0) + 1;
+    routeGenerationRef.current[route.key] = generation;
+    const retained = routeStatesRef.current[route.key]?.value ?? null;
+    setRouteState(route.key, { status: "loading", value: retained, error: "" });
+    const requestKey = `${contextKeyRef.current}|${route.key}`;
+    try {
+      const parameters = new URLSearchParams({
+        resource_type: route.resourceType,
+        resource_id: route.publicId,
+      });
+      const value = await requestTeamApi<TeamGrantList>(`/api/shares/teams?${parameters}`, { signal });
+      if (!mountedRef.current || !teamShareRequestIsCurrent(
+        generation,
+        routeGenerationRef.current[route.key] ?? 0,
+        requestKey,
+        `${contextKeyRef.current}|${route.key}`,
+        signal?.aborted ?? false,
+      )) return null;
+      if (!teamGrantResponseMatchesRoute(route, value)) {
+        throw new Error("Team access response did not match this route");
+      }
+      setRouteState(route.key, { status: "ready", value, error: "" });
+      return value;
+    } catch (requestError) {
+      if (
+        !mountedRef.current ||
+        signal?.aborted ||
+        !teamShareRequestIsCurrent(
+          generation,
+          routeGenerationRef.current[route.key] ?? 0,
+          requestKey,
+          `${contextKeyRef.current}|${route.key}`,
+          false,
+        )
+      ) return null;
+      const unavailable = requestError instanceof TeamRequestError &&
+        (requestError.status === 403 || requestError.status === 404);
+      setRouteState(route.key, {
+        status: "error",
+        value: unavailable ? null : retained,
+        error: unavailable
+          ? "Team access unavailable"
+          : requestError instanceof Error
+            ? requestError.message
+            : "Team access could not be loaded",
+      });
+      return null;
+    }
+  }, [setRouteState]);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    catalogGenerationRef.current += 1;
+    for (const route of routesRef.current) {
+      routeGenerationRef.current[route.key] = (routeGenerationRef.current[route.key] ?? 0) + 1;
+    }
+  }, []);
+
+  useEffect(() => {
+    const nextRoutes = context.teamRoutes;
+    const nextRouteIdentities = new Set(nextRoutes.map((route) => `${route.key}:${route.publicId}`));
+    for (const previousRoute of routesRef.current) {
+      if (nextRouteIdentities.has(`${previousRoute.key}:${previousRoute.publicId}`)) continue;
+      routeGenerationRef.current[previousRoute.key] =
+        (routeGenerationRef.current[previousRoute.key] ?? 0) + 1;
+    }
+    routesRef.current = nextRoutes;
+    contextKeyRef.current = context.key;
+  }, [context.key, context.teamRoutes]);
+
+  useEffect(() => {
+    if (!routesRef.current.length) return;
+    const catalogController = new AbortController();
+    const routeControllers = routesRef.current.map(() => new AbortController());
+    void loadTeamCatalog(catalogController.signal);
+    routesRef.current.forEach((route, index) => {
+      void loadTeamGrantRoute(route, routeControllers[index]?.signal);
     });
-    if (ok) event.currentTarget.reset();
-  }}><DialogHeader title={`Members & access · ${target.label}`} icon={<UsersRound size={17} />} onClose={onClose} /><p className="dialog-copy">Add a registered user by verified email. They must have signed in once; no email is sent. {inheritanceCopy}</p><div className="role-guide">{target.resourceType === "project" && <><span><b>Owner</b> has full control and can transfer ownership.</span><span><b>Manager</b> edits work and manages Editors/Viewers.</span></>}<span><b>Editor</b> creates, changes, moves, archives, and restores work.</span><span><b>Viewer</b> can only read.</span></div><div className="share-input"><input name="email" type="email" required placeholder="name@example.com" autoFocus /><select name="permission" defaultValue={assignableRoles.includes("editor") ? "editor" : assignableRoles[0]} aria-label="Role">{assignableRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><button className="button primary" disabled={busy || assignableRoles.length === 0}>{busy ? "Adding…" : "Add"}</button></div><div className="access-list"><div className="access-row"><span className="avatar">{initials(ownerName)}</span><span><b>{ownerName}</b><small>{owner?.email ?? "Current project owner"}</small></span><em>Owner</em></div>{grants.map((grant) => {
-    const manageable = canManageGrant(target.accessRole, target.resourceType, grant.permission);
-    const roles = (["manager", "editor", "viewer"] as const).filter((role) => canAssignRole(target.accessRole, target.resourceType, role));
-    return <div className="access-row" key={grant.grantId}><span className="avatar">{initials(grant.displayName)}</span><span><b>{grant.displayName}</b><small>{grant.email}</small></span><select aria-label={`Role for ${grant.displayName}`} value={grant.permission} disabled={busy || !manageable} onChange={(event) => void onRoleChange(grant.grantId, event.target.value as "manager" | "editor" | "viewer")}><option value={grant.permission}>{roleLabel(grant.permission)}</option>{roles.filter((role) => role !== grant.permission).map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{target.resourceType === "project" && target.accessRole === "owner" && <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Transfer ownership of ${target.label} to ${grant.displayName}? You will become Manager.`)) void onTransfer(target.resourceId, grant.userId); }}>Make owner</button>}{manageable && <button type="button" disabled={busy} onClick={() => void onRevoke(grant.grantId)}>Remove</button>}</div></div>;
-  })}</div></form></Modal>;
+    return () => {
+      catalogController.abort();
+      routeControllers.forEach((controller) => controller.abort());
+    };
+  }, [loadTeamCatalog, loadTeamGrantRoute, routeIdentity]);
+
+  const directTarget = context.directTarget;
+  const directGrants = directTarget
+    ? collaborators.filter((grant) =>
+        grant.resourceType === directTarget.resourceType &&
+        grant.resourceId === directTarget.resourceId)
+    : [];
+  const owner = directTarget?.ownerUserId === currentUser.id
+    ? currentUser
+    : users.find((user) => user.id === directTarget?.ownerUserId);
+  const ownerName = owner?.displayName ?? "Resource owner";
+  const directRoles = directTarget
+    ? (["manager", "editor", "viewer"] as const).filter((role) =>
+        canAssignRole(directTarget.accessRole, directTarget.resourceType, role))
+    : [];
+
+  const personOptions = sharePersonOptions({ query, directTarget, directGrants, ownerEmail: owner?.email, currentUser, users, collaborators });
+
+  const teamOptions = context.teamRoutes.length && teamCatalog.value
+    ? filterShareTeamOptions(teamCatalog.value, query).map<ShareTeamOption>((entry) => ({
+        kind: "team",
+        key: `team:${entry.team.id}`,
+        entry,
+      }))
+    : [];
+  const principalOptions: SharePrincipalOption[] = [...personOptions, ...teamOptions];
+  const activeOptionIndex = principalOptions.length
+    ? Math.min(highlighted, principalOptions.length - 1)
+    : -1;
+  const selectableTeamRoutes = context.teamRoutes.filter((route) => teamRouteRoles(route).length > 0);
+  const selectedRoute = selectedPrincipal?.kind === "team"
+    ? selectableTeamRoutes.find((route) =>
+        route.key === (context.teamRoutes.length === 1
+          ? selectableTeamRoutes[0]?.key
+          : selectedRouteKey)) ?? null
+    : null;
+  const selectedRouteState = selectedRoute ? routeStates[selectedRoute.key] : null;
+  const existingTeamGrant = selectedPrincipal?.kind === "team" && selectedRouteState?.value
+    ? selectedRouteState.value.grants.find((grant) =>
+        grant.teamId === selectedPrincipal.entry.team.id) ?? null
+    : null;
+  const selectedRoles = selectedPrincipal?.kind === "team"
+    ? selectedRoute
+      ? teamRouteRoles(selectedRoute)
+      : []
+    : directRoles;
+  const selectedPermissionValue = normalizedTeamSharePermission(selectedPermission, selectedRoles);
+  const selectedPermissionAllowed = selectedPermissionValue !== "";
+  const addDisabled = busy || Boolean(teamMutation) || !selectedPrincipal || !selectedPermissionAllowed ||
+    (selectedPrincipal.kind === "person" && !directTarget) ||
+    (selectedPrincipal.kind === "team" && (
+      !selectedRoute ||
+      selectedRouteState?.status !== "ready" ||
+      existingTeamGrant?.revokedAt === null
+    ));
+  const hasTeamRoutes = context.teamRoutes.length > 0;
+
+  function choosePrincipal(option: SharePrincipalOption) {
+    setSelectedPrincipal(option);
+    setSelectedPermission("");
+    setSelectedRouteKey(option.kind === "team" && context.teamRoutes.length === 1
+      ? selectableTeamRoutes[0]?.key ?? ""
+      : "");
+    setQuery(option.kind === "person" ? option.email : option.entry.team.name);
+    setComboOpen(false);
+    setHighlighted(0);
+    setDirectError("");
+    setTeamAlert(null);
+  }
+
+  async function mutateTeamGrantRoute(
+    route: TeamShareRoute,
+    method: "POST" | "PATCH" | "DELETE",
+    body: Record<string, unknown>,
+    mutationKey: string,
+  ) {
+    if (teamMutationRef.current) return false;
+    teamMutationRef.current = true;
+    routeGenerationRef.current[route.key] = (routeGenerationRef.current[route.key] ?? 0) + 1;
+    setTeamMutation({ routeKey: route.key, key: mutationKey });
+    setTeamAlert(null);
+    const routeIsCurrent = () => routesRef.current.some((currentRoute) =>
+      currentRoute.key === route.key &&
+      currentRoute.resourceType === route.resourceType &&
+      currentRoute.publicId === route.publicId);
+    try {
+      const value = await requestTeamApi<TeamGrantList>("/api/shares/teams", {
+        method,
+        body: JSON.stringify(body),
+      });
+      if (!mountedRef.current || contextKeyRef.current !== context.key || !routeIsCurrent()) return false;
+      if (!teamGrantResponseMatchesRoute(route, value)) {
+        throw new Error("Team access response did not match this route");
+      }
+      setRouteState(route.key, { status: "ready", value, error: "" });
+      return true;
+    } catch (requestError) {
+      if (!mountedRef.current || contextKeyRef.current !== context.key || !routeIsCurrent()) return false;
+      if (requestError instanceof TeamRequestError && requestError.status === 409) {
+        const latest = await loadTeamGrantRoute(route);
+        if (!mountedRef.current || contextKeyRef.current !== context.key || !routeIsCurrent()) return false;
+        setTeamAlert({
+          routeKey: route.key,
+          routePublicId: route.publicId,
+          message: teamGrantConflictReadbackMessage(latest !== null),
+        });
+        return false;
+      }
+      const retained = routeStatesRef.current[route.key]?.value ?? null;
+      const forbidden = requestError instanceof TeamRequestError && requestError.status === 403;
+      setRouteState(route.key, {
+        status: "error",
+        value: retained,
+        error: forbidden
+          ? "Your role cannot manage this Team grant"
+          : requestError instanceof Error
+            ? requestError.message
+            : "Team access could not be updated",
+      });
+      setTeamAlert({
+        routeKey: route.key,
+        routePublicId: route.publicId,
+        message: forbidden
+          ? "Your role cannot change or revoke this Team grant. Reload the route if your access changed."
+          : "Team access may have changed. Reload this route before trying again.",
+      });
+      return false;
+    } finally {
+      teamMutationRef.current = false;
+      if (mountedRef.current && contextKeyRef.current === context.key) setTeamMutation(null);
+    }
+  }
+
+  async function submitPrincipal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (addDisabled || !selectedPrincipal || !selectedPermission || !selectedPermissionAllowed) return;
+    if (selectedPrincipal.kind === "person") {
+      if (!directTarget) return;
+      setDirectError("");
+      const ok = await onShare({
+        resourceType: directTarget.resourceType,
+        resourceId: directTarget.resourceId,
+        email: selectedPrincipal.email,
+        permission: selectedPermission,
+      });
+      if (!mountedRef.current) return;
+      if (!ok) {
+        setDirectError("Person access could not be added. Review the email and try again.");
+        return;
+      }
+    } else {
+      if (!selectedRoute) return;
+      const body: Record<string, unknown> = {
+        teamId: selectedPrincipal.entry.team.publicId,
+        resourceType: selectedRoute.resourceType,
+        resourceId: selectedRoute.publicId,
+        permission: selectedPermission,
+      };
+      if (existingTeamGrant?.revokedAt) body.version = existingTeamGrant.version;
+      const ok = await mutateTeamGrantRoute(
+        selectedRoute,
+        "POST",
+        body,
+        `add:${selectedPrincipal.entry.team.id}`,
+      );
+      if (!ok) return;
+    }
+    setSelectedPrincipal(null);
+    setSelectedPermission("");
+    setSelectedRouteKey("");
+    setQuery("");
+  }
+
+  function handleComboboxKey(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape" && comboOpen) {
+      event.preventDefault();
+      event.stopPropagation();
+      setComboOpen(false);
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setComboOpen(true);
+      if (!principalOptions.length) return;
+      setHighlighted((current) => event.key === "ArrowDown"
+        ? (current + 1) % principalOptions.length
+        : (current - 1 + principalOptions.length) % principalOptions.length);
+      return;
+    }
+    if (event.key === "Enter" && comboOpen && activeOptionIndex >= 0) {
+      event.preventDefault();
+      choosePrincipal(principalOptions[activeOptionIndex]!);
+    }
+  }
+
+  const inheritanceCopy = directTarget?.inherited
+    ? "Direct People access applies to the Project and all inherited records."
+    : directTarget?.resourceType === "task"
+      ? "Direct People access applies only to this standalone Task."
+      : "A directly shared global View still shows only Tasks the person can already access.";
+  const visibleTeamAlert = teamAlert && context.teamRoutes.some((route) =>
+    route.key === teamAlert.routeKey && route.publicId === teamAlert.routePublicId)
+    ? teamAlert.message
+    : "";
+
+  return <Modal onClose={onClose} className="share-dialog" ariaLabel={`Members & access · ${context.label}`}>
+    <DialogHeader title={`Members & access · ${context.label}`} icon={<UsersRound size={17} />} onClose={onClose} />
+    <div className="share-dialog-body">
+      <p className="dialog-copy">{hasTeamRoutes ? "Choose a Person or one of your active Teams, then choose a role." : "Choose a Person, then choose a role."} Typing alone never grants access.</p>
+      <form className="share-principal-form" onSubmit={(event) => void submitPrincipal(event)} aria-busy={busy || Boolean(teamMutation) || undefined}>
+        <div className="share-combobox">
+          <label htmlFor={`${listboxId}-input`}>{hasTeamRoutes ? <>People &amp; Teams</> : "People"}</label>
+          <div className="share-combobox-control"><Search size={14} aria-hidden="true" /><input
+            id={`${listboxId}-input`}
+            type="search"
+            value={query}
+            placeholder={hasTeamRoutes ? "Search People or Teams…" : "Search People…"}
+            role="combobox"
+            aria-expanded={comboOpen}
+            aria-autocomplete="list"
+            aria-controls={listboxId}
+            aria-activedescendant={comboOpen && activeOptionIndex >= 0 ? `${listboxId}-option-${activeOptionIndex}` : undefined}
+            autoComplete="off"
+            autoFocus
+            disabled={busy || Boolean(teamMutation)}
+            onFocus={() => setComboOpen(true)}
+            onKeyDown={handleComboboxKey}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setSelectedPrincipal(null);
+              setSelectedPermission("");
+              setSelectedRouteKey("");
+              setHighlighted(0);
+              setComboOpen(true);
+            }}
+          /></div>
+          {comboOpen && <div className="share-combobox-list" id={listboxId} role="listbox" aria-label={hasTeamRoutes ? "People and Teams" : "People"}>
+            {personOptions.length > 0 && <div className="share-option-group" role="group" aria-label="People"><span>People</span>{personOptions.map((option) => {
+              const index = principalOptions.indexOf(option);
+              return <button id={`${listboxId}-option-${index}`} className={index === activeOptionIndex ? "highlighted" : ""} type="button" role="option" aria-selected={index === activeOptionIndex} key={option.key} onMouseEnter={() => setHighlighted(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => choosePrincipal(option)}><span className="avatar">{initials(option.displayName)}</span><span><b>{option.displayName}</b><small>{option.email}</small></span><em>Person</em></button>;
+            })}</div>}
+            {teamOptions.length > 0 && <div className="share-option-group" role="group" aria-label="Teams"><span>Teams</span>{teamOptions.map((option) => {
+              const index = principalOptions.indexOf(option);
+              return <button id={`${listboxId}-option-${index}`} className={index === activeOptionIndex ? "highlighted" : ""} type="button" role="option" aria-selected={index === activeOptionIndex} key={option.key} onMouseEnter={() => setHighlighted(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => choosePrincipal(option)}><span className="team-option-icon"><UsersRound size={15} /></span><span><b>{option.entry.team.name}</b><small>{option.entry.activeMemberCount} active · Your role: {option.entry.currentMembership.role}</small></span><em>Team</em></button>;
+            })}</div>}
+            {context.teamRoutes.length > 0 && (teamCatalog.status === "idle" || (teamCatalog.status === "loading" && !teamCatalog.value)) && <div className="share-combobox-state" aria-live="polite">Loading your Teams…</div>}
+            {context.teamRoutes.length > 0 && teamCatalog.status === "error" && !teamCatalog.value && <div className="share-combobox-state" role="alert"><span>Teams could not be loaded.</span><button type="button" className="button ghost compact" disabled={busy || Boolean(teamMutation)} onClick={() => void loadTeamCatalog()}>Retry</button></div>}
+            {teamCatalog.status === "ready" && !query.trim() && teamOptions.length === 0 && <div className="share-combobox-state">No active Teams available.</div>}
+            {query.trim() && principalOptions.length === 0 && teamCatalog.status !== "loading" && <div className="share-combobox-state">{hasTeamRoutes ? "No matching People or Teams." : "No matching People."}</div>}
+          </div>}
+        </div>
+
+        {selectedPrincipal?.kind === "team" && context.teamRoutes.length > 1 && selectableTeamRoutes.length > 0 && <fieldset className="team-route-choice"><legend>Choose where this Team gets access</legend>{selectableTeamRoutes.map((route, index) => {
+          const routeInputId = `${listboxId}-route-${index}`;
+          return <label key={route.key} htmlFor={routeInputId} aria-label={`${route.label}: ${route.explanation}`}><input id={routeInputId} type="radio" name="teamRoute" value={route.key} checked={selectedRouteKey === route.key} disabled={busy || Boolean(teamMutation)} onChange={() => { setSelectedRouteKey(route.key); setSelectedPermission(""); }} /><span><b>{route.label}</b><small>{route.explanation}</small></span></label>;
+        })}</fieldset>}
+
+        <label className="share-role-select" htmlFor={`${listboxId}-role`}><span>Role</span><select id={`${listboxId}-role`} aria-label="Role" value={selectedPermissionValue} disabled={busy || Boolean(teamMutation) || !selectedPrincipal || (selectedPrincipal.kind === "team" && !selectedRoute)} onChange={(event) => setSelectedPermission(event.target.value as TeamGrantPermission | "")}><option value="">Choose role…</option>{selectedRoles.map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select></label>
+        <button className="button primary share-add-button" disabled={addDisabled}>{busy || teamMutation ? "Saving…" : existingTeamGrant?.revokedAt ? "Restore access" : "Add access"}</button>
+        {selectedPrincipal?.kind === "team" && existingTeamGrant?.revokedAt === null && <p className="share-selection-note" role="status">This Team already has active access through the selected route.</p>}
+      </form>
+
+      {(directError || visibleTeamAlert) && <div className="team-local-alert" role="alert">{directError || visibleTeamAlert}</div>}
+      <p className="share-route-caveat" role="note"><b>Strongest route wins.</b> Direct People access, Project inheritance, explicit Task routes, and other Teams can preserve access after one route is changed or revoked.</p>
+
+      {directTarget && <section className="share-access-section" aria-labelledby={`${listboxId}-people-heading`}><header><div><h3 id={`${listboxId}-people-heading`}>People</h3><p>{inheritanceCopy}</p></div><span className="count-pill">{directGrants.length + 1}</span></header><div className="access-list people-access-list"><div className="access-row"><span className="avatar">{initials(ownerName)}</span><span><b>{ownerName}</b><small>{owner?.email ?? "Current resource owner"}</small></span><em>Owner</em></div>{directGrants.map((grant) => {
+        const manageable = canManageGrant(directTarget.accessRole, directTarget.resourceType, grant.permission);
+        return <div className="access-row" key={grant.grantId}><span className="avatar">{initials(grant.displayName)}</span><span><b>{grant.displayName}</b><small>{grant.email}</small></span><select aria-label={`Role for ${grant.displayName}`} value={grant.permission} disabled={busy || !manageable} onChange={(event) => void (async () => { setDirectError(""); const ok = await onRoleChange(grant.grantId, event.target.value as "manager" | "editor" | "viewer"); if (!ok) setDirectError("Person access could not be changed. Try again."); })()}><option value={grant.permission}>{roleLabel(grant.permission)}</option>{directRoles.filter((role) => role !== grant.permission).map((role) => <option key={role} value={role}>{roleLabel(role)}</option>)}</select><div className="access-actions">{directTarget.resourceType === "project" && directTarget.accessRole === "owner" && <button type="button" disabled={busy} onClick={() => { if (window.confirm(`Transfer ownership of ${directTarget.label} to ${grant.displayName}? You will become Manager.`)) void onTransfer(directTarget.resourceId, grant.userId); }}>Make owner</button>}{manageable && <button type="button" disabled={busy} onClick={() => void (async () => { setDirectError(""); const ok = await onRevoke(grant.grantId); if (!ok) setDirectError("Person access could not be removed. Try again."); })()}>Remove</button>}</div></div>;
+      })}</div></section>}
+
+      <section className="share-access-section team-access-section" aria-labelledby={`${listboxId}-teams-heading`}><header><div><h3 id={`${listboxId}-teams-heading`}>Teams</h3><p>Team routes are managed separately from direct People access.</p></div></header>{context.teamUnavailableCopy ? <div className="team-route-unavailable" role="note">{context.teamUnavailableCopy}</div> : context.teamRoutes.map((route) => {
+        const state = routeStates[route.key] ?? emptyAsyncValue<TeamGrantList>();
+        const grants = state.value?.grants ?? [];
+        return <article className="team-route-panel" key={route.key} aria-busy={state.status === "idle" || state.status === "loading" || undefined}><header><div><h4>{route.label}</h4><p>{route.explanation}</p></div>{state.value && <span className="count-pill">{grants.filter((grant) => grant.revokedAt === null).length}</span>}</header>{(state.status === "idle" || state.status === "loading") && !state.value && <div className="team-route-state" aria-live="polite">Loading Team access…</div>}{state.status === "error" && <div className="team-local-alert" role="alert"><span>{state.error}</span><button type="button" className="button ghost compact" disabled={busy || Boolean(teamMutation)} onClick={() => void loadTeamGrantRoute(route)}>Retry</button></div>}{state.status === "ready" && grants.length === 0 && <div className="team-route-state">No Team access through this route.</div>}{grants.length > 0 && <div className="access-list team-grant-list">{grants.map((grant) => {
+          const catalogEntry = teamCatalog.value?.teams.find((entry) => entry.team.id === grant.teamId);
+          return <TeamGrantAccessRow key={grant.id} route={route} grant={grant} catalogEntry={catalogEntry} busy={busy || Boolean(teamMutation)} routeReady={state.status === "ready"} onRoleChange={(permission) => void mutateTeamGrantRoute(route, "PATCH", { grantId: grant.id, version: grant.version, action: "role", permission }, `role:${grant.id}`)} onRevoke={() => void mutateTeamGrantRoute(route, "DELETE", { grantId: grant.id, version: grant.version }, `revoke:${grant.id}`)} />;
+        })}</div>}</article>;
+      })}</section>
+    </div>
+  </Modal>;
 }
 
 function roleLabel(role: "owner" | "manager" | "editor" | "viewer") {
@@ -9519,6 +10478,96 @@ export function ReleaseOverview({ release, project, tasks, statuses, onEdit }: {
   return <section className="project-overview release-overview" aria-label={`${fullName} release summary`}><div className="project-overview-heading"><span className="project-overview-icon release-overview-icon"><Rocket size={20} /></span><div><span className="project-code">Release</span><h2>{fullName}</h2><p>{release.description ? "Native release scope" : "No description yet"}</p></div><div className="project-overview-actions"><span className={`status-badge release-${release.status}`}>{projectStatusLabel(release.status)}</span>{onEdit && <button className="button ghost compact" onClick={onEdit}>Edit</button>}</div></div><div className="project-overview-metadata"><span><b>{tasks.length}</b> Tasks</span><span><b>{openTasks}</b> open</span><span><b>{progress}%</b> complete</span>{release.targetDate && <span>Target <b>{shortDate(release.targetDate)}</b></span>}{release.releasedAt && <span>Released <b>{shortDate(release.releasedAt.slice(0, 10))}</b></span>}</div>{release.description && <MarkdownBody body={release.description} className="project-description-markdown" />}{release.releaseNotes && <section className="release-notes"><h3>Release notes</h3><MarkdownBody body={release.releaseNotes} className="project-description-markdown" /></section>}</section>;
 }
 
+export function TeamsSurface({ state, query, onRetry, onCreate, onOpen }: {
+  state: AsyncValue<TeamList>;
+  query: string;
+  onRetry: () => void;
+  onCreate: () => void;
+  onOpen: (publicId: string) => void;
+}) {
+  if ((state.status === "idle" || state.status === "loading") && (!state.value || state.value.teams.length === 0)) {
+    return <TeamSurfaceState status="Loading Teams…" busy />;
+  }
+  if (state.status === "error" && (!state.value || state.value.teams.length === 0)) {
+    return <TeamSurfaceState status={state.error} onRetry={onRetry} />;
+  }
+
+  const visible = filterTeamList(state.value ?? { teams: [] }, query);
+  const empty = state.status === "ready" && state.value?.teams.length === 0;
+  const noMatch = state.status === "ready" && !empty && visible.length === 0;
+  const groups = [
+    {
+      id: "owned-teams",
+      title: "Owned by you",
+      description: "You manage these Team memberships.",
+      teams: visible.filter(({ currentMembership }) => currentMembership.role === "owner"),
+    },
+    {
+      id: "joined-teams",
+      title: "Joined",
+      description: "Teams where you are an active member.",
+      teams: visible.filter(({ currentMembership }) => currentMembership.role === "member"),
+    },
+  ].filter((group) => group.teams.length > 0);
+
+  return <div className="teams-surface" aria-busy={state.status === "loading" || undefined}>
+    <div className="team-live-region" role="status" aria-live="polite">{state.status === "loading" ? "Refreshing Teams…" : ""}</div>
+    {state.status === "error" && <div className="team-local-alert" role="alert"><span>{state.error}</span><button className="button ghost compact" type="button" onClick={onRetry}>Retry</button></div>}
+    {empty ? <section className="team-empty-state"><span className="empty-icon"><UsersRound size={20} /></span><h2>No Teams yet</h2><p>Create a Team to manage a reusable member list.</p><button className="button primary" type="button" onClick={onCreate}><Plus size={14} />New Team</button></section>
+      : noMatch ? <section className="team-empty-state"><Search size={20} /><h2>No Teams match “{query.trim()}”</h2><p>Try a different Team name.</p></section>
+      : <div className="teams-catalog-groups" aria-label="Teams">{groups.map((group) => <section className="team-members-section team-catalog-group" key={group.id} aria-labelledby={group.id}><header><div><h2 id={group.id}>{group.title}</h2><p>{group.description}</p></div><span className="count-pill">{group.teams.length}</span></header><div className="entity-grid team-grid">{group.teams.map(({ team, currentMembership, activeMemberCount }) => <a className="entity-card team-card" key={team.id} href={`/teams/${encodeURIComponent(team.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(team.publicId))}><div className="entity-icon team-icon"><UsersRound size={18} /></div><div className="entity-card-copy"><div><h2 title={team.name}>{team.name}</h2><span className="status-badge">{currentMembership.role}</span></div><p>{activeMemberCount} active member{activeMemberCount === 1 ? "" : "s"}</p><div className="progress-meta"><span>Your membership</span><span>{currentMembership.status}</span></div></div></a>)}</div></section>)}</div>}
+  </div>;
+}
+
+function TeamSurfaceState({ status, busy = false, onRetry }: { status: string; busy?: boolean; onRetry?: () => void }) {
+  return <section className="team-surface-state" aria-busy={busy || undefined}>{busy ? <RotateCw size={20} className="spin" aria-hidden="true" /> : <UsersRound size={20} aria-hidden="true" />}<h2>{status}</h2>{onRetry && <button className="button ghost" type="button" onClick={onRetry}>Retry</button>}</section>;
+}
+
+export function TeamDetailSurface({ state, alert, mutation, onRetry, onMembershipAction, onDelete }: {
+  state: AsyncValue<TeamDetail>;
+  alert: string;
+  mutation: TeamMutationState;
+  onRetry: () => void;
+  onMembershipAction: (membership: TeamMembershipRecord, action: "deactivate" | "reactivate") => void;
+  onDelete: (membership: TeamMembershipRecord) => void;
+}) {
+  if ((state.status === "idle" || state.status === "loading") && !state.value) return <TeamSurfaceState status="Loading Team…" busy />;
+  if (state.status === "error" && !state.value) return <TeamSurfaceState status={state.error === "Team unavailable" ? state.error : alert || state.error} onRetry={onRetry} />;
+  const detail = state.value;
+  if (!detail) return <TeamSurfaceState status="Team unavailable" onRetry={onRetry} />;
+
+  const isOwner = detail.currentMembership.role === "owner";
+  const activeMembers = detail.members.filter((membership) => membership.status === "active");
+  const inactiveMembers = detail.members.filter((membership) => membership.status === "inactive");
+  const memberRow = (membership: TeamMembershipRecord) => {
+    const isCurrent = membership.id === detail.currentMembership.id;
+    const mutable = isOwner && membership.role !== "owner";
+    const membershipBusy = mutation?.key === membership.id;
+    return <li className="team-member-row" key={membership.id} aria-busy={membershipBusy || undefined}><span className="avatar">{initials(membership.displayName)}</span><span className="team-member-identity"><span><b>{membership.displayName}</b>{isCurrent && <em>You</em>}</span><small>{membership.email}</small></span><span className="team-member-state"><span className="status-badge">{membership.role}</span><span className={`status-badge team-membership-${membership.status}`}>{membership.status}</span></span>{mutable && <span className="team-member-actions"><button className="button ghost compact" type="button" disabled={Boolean(mutation) || state.status !== "ready"} onClick={() => onMembershipAction(membership, membership.status === "active" ? "deactivate" : "reactivate")}>{membership.status === "active" ? "Deactivate" : "Reactivate"}</button><button className="button danger compact" type="button" disabled={Boolean(mutation) || state.status !== "ready"} onClick={() => onDelete(membership)}>Delete</button></span>}</li>;
+  };
+
+  return <div className="team-detail-surface" aria-busy={state.status === "loading" || undefined}>
+    <div className="team-live-region" role="status" aria-live="polite">{state.status === "loading" ? "Refreshing Team…" : ""}</div>
+    {alert && <div className="team-local-alert" role="alert">{alert}</div>}
+    {state.status === "error" && <div className="team-local-alert" role="alert"><span>{state.error}</span><button className="button ghost compact" type="button" onClick={onRetry}>Retry</button></div>}
+    <section className="team-overview" aria-labelledby="team-overview-heading"><span className="team-overview-icon"><UsersRound size={20} /></span><div><span className="project-code">Team</span><h2 id="team-overview-heading">{detail.team.name}</h2><p>{activeMembers.length} active member{activeMembers.length === 1 ? "" : "s"}</p></div><dl><div><dt>Your role</dt><dd>{detail.currentMembership.role}</dd></div><div><dt>Your state</dt><dd>{detail.currentMembership.status}</dd></div></dl></section>
+    <section className="team-members-section" aria-labelledby="active-team-members"><header><div><h2 id="active-team-members">Active members</h2><p>People currently included in this Team.</p></div><span className="count-pill">{activeMembers.length}</span></header><ul className="team-member-list">{activeMembers.map(memberRow)}</ul></section>
+    {inactiveMembers.length > 0 && <section className="team-members-section" aria-labelledby="inactive-team-members"><header><div><h2 id="inactive-team-members">Inactive members</h2><p>Reactivate or delete a previous membership.</p></div><span className="count-pill">{inactiveMembers.length}</span></header><ul className="team-member-list">{inactiveMembers.map(memberRow)}</ul></section>}
+  </div>;
+}
+
+export function TeamNameDialog({ title, submitLabel, initialName = "", error, busy, onClose, onSubmit }: { title: string; submitLabel: string; initialName?: string; error: string; busy: boolean; onClose: () => void; onSubmit: (name: string) => Promise<boolean> }) {
+  return <Modal onClose={onClose} className="team-dialog" ariaLabel={title}><DialogHeader title={title} icon={<UsersRound size={17} />} onClose={onClose} /><form className="form-stack team-dialog-form" aria-busy={busy || undefined} onSubmit={(event) => { event.preventDefault(); const input = new FormData(event.currentTarget); void onSubmit(String(input.get("name") ?? "")); }}><label><span>Name</span><input name="name" required maxLength={100} defaultValue={initialName} autoFocus /></label>{error && <div className="form-error" role="alert">{error}</div>}<div className="dialog-actions"><button className="button ghost" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}>{busy ? "Saving…" : submitLabel}</button></div></form></Modal>;
+}
+
+export function TeamMemberDialog({ error, busy, onClose, onSubmit }: { error: string; busy: boolean; onClose: () => void; onSubmit: (email: string) => Promise<boolean> }) {
+  return <Modal onClose={onClose} className="team-dialog" ariaLabel="Add Team member"><DialogHeader title="Add Team member" icon={<UserRound size={17} />} onClose={onClose} /><form className="form-stack team-dialog-form" aria-busy={busy || undefined} onSubmit={(event) => { event.preventDefault(); const input = new FormData(event.currentTarget); void onSubmit(String(input.get("email") ?? "")); }}><p className="dialog-copy">Add a registered user by verified email. They must have signed in once; no email is sent.</p><label><span>Email</span><input name="email" type="email" required autoComplete="off" placeholder="name@example.com" autoFocus /></label>{error && <div className="form-error" role="alert">{error}</div>}<div className="dialog-actions"><button className="button ghost" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button primary" disabled={busy}>{busy ? "Adding…" : "Add member"}</button></div></form></Modal>;
+}
+
+export function TeamMemberDeleteDialog({ membership, error, busy, onClose, onConfirm }: { membership: TeamMembershipRecord; error: string; busy: boolean; onClose: () => void; onConfirm: () => Promise<boolean> }) {
+  return <Modal onClose={onClose} className="team-dialog" ariaLabel="Delete Team membership"><DialogHeader title="Delete Team membership" icon={<Trash2 size={17} />} onClose={onClose} /><div className="team-delete-copy"><p>Delete the membership for <b>{membership.displayName}</b>?</p><small>{membership.email}</small><p>This removes the membership record. Use Deactivate when the membership may need to be restored later.</p></div>{error && <div className="form-error" role="alert">{error}</div>}<div className="dialog-actions team-delete-actions"><button className="button ghost" type="button" disabled={busy} onClick={onClose}>Cancel</button><button className="button danger" type="button" disabled={busy} aria-busy={busy || undefined} onClick={() => void onConfirm()}>{busy ? "Deleting…" : "Delete membership"}</button></div></Modal>;
+}
+
 function ProjectsSurface({ projects, tasks, statuses, users, onOpen, onContextActions, onCreate }: { projects: ProjectRecord[]; tasks: TaskRecord[]; statuses: WorkflowStatusRecord[]; users: Map<string, UserRecord>; onOpen: (id: string) => void; onContextActions: (project: ProjectRecord, x: number, y: number, restoreFocus: HTMLElement | null) => void; onCreate: () => void }) {
   if (!projects.length) return <EmptyState entity="project" onCreate={onCreate} />;
   return <div className="entity-grid">{projects.map((project) => {
@@ -9866,6 +10915,7 @@ function surfaceBreadcrumbs(
   surface: string,
   data: AppSnapshot,
   view?: SavedViewRecord,
+  teamName?: string,
 ): BreadcrumbItem[] {
   const workspace: BreadcrumbItem = {
     label: "Workspace",
@@ -9890,6 +10940,8 @@ function surfaceBreadcrumbs(
   if (surface === "views") return [workspace, current("Views")];
   if (surface === "projects") return [workspace, current("Projects")];
   if (surface === "releases") return [workspace, current("Releases")];
+  if (surface === "teams") return [workspace, current("Teams")];
+  if (surface.startsWith("team:")) return [workspace, ancestor("Teams", "teams"), current(teamName ?? "Team")];
   if (surface === "shared") return [workspace, current("Shared with me")];
 
   if (surface.startsWith("view:")) {
@@ -9942,7 +10994,7 @@ function surfaceBreadcrumbs(
   const builtIn = builtInViews.find((item) => item.id === surface);
   return [workspace, current(builtIn?.label ?? "My tasks")];
 }
-function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
+function isCollectionSurface(surface: string) { return surface === "workspace" || surface === "shared" || surface === "admin" || surface === "views" || surface === "projects" || surface === "releases" || surface === "teams" || surface.startsWith("team:") || surface.startsWith("project-releases:") || surface.startsWith("settings:"); }
 function taskContextualEntity(task: TaskRecord): ContextualActionEntity {
   return { kind: "task", id: task.id, label: task.identifier, accessRole: task.accessRole, archivedAt: task.archivedAt, version: taskMutationVersion(task) };
 }
@@ -9955,9 +11007,14 @@ function releaseContextualEntity(release: ReleaseRecord): ContextualActionEntity
 function viewContextualEntity(view: SavedViewRecord): ContextualActionEntity {
   return { kind: "saved_view", id: view.id, label: view.name, accessRole: view.accessRole, archivedAt: view.archivedAt ?? null, version: view.version };
 }
-function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSnapshot): ShareTarget | null {
+export function resolveShareContext(
+  surface: string,
+  activeTask: TaskRecord | null,
+  data: AppSnapshot,
+): ShareContext | null {
+  const canManage = (role: AccessRole) => role === "owner" || role === "manager";
   const projectTarget = (project: ProjectRecord | undefined): ShareTarget | null => {
-    if (!project || (project.accessRole !== "owner" && project.accessRole !== "manager")) return null;
+    if (!project || !canManage(project.accessRole)) return null;
     return {
       resourceType: "project",
       resourceId: project.id,
@@ -9967,12 +11024,50 @@ function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSn
       inherited: true,
     };
   };
+  const projectRoute = (project: ProjectRecord | undefined): TeamShareRoute | null => {
+    if (!project || !canManage(project.accessRole)) return null;
+    return {
+      key: `project:${project.id}`,
+      resourceType: "project",
+      resourceId: project.id,
+      publicId: project.publicId,
+      label: "Project access",
+      explanation: "Adds the Team to the Project. Every Task, Release, and Project-scoped View inherits this role.",
+      accessRole: project.accessRole,
+    };
+  };
+  const taskRoute = (task: TaskRecord): TeamShareRoute | null => {
+    if (!canManage(task.accessRole)) return null;
+    return {
+      key: `task:${task.id}`,
+      resourceType: "task",
+      resourceId: task.id,
+      publicId: task.publicId,
+      label: "This Task only",
+      explanation: "Adds an explicit route to this Task only. It does not expose the Project, sibling Tasks, or Releases.",
+      accessRole: task.accessRole,
+    };
+  };
 
   if (activeTask) {
     if (activeTask.projectId) {
-      return projectTarget(data.projects.find((item) => item.id === activeTask.projectId));
+      const project = data.projects.find((item) => item.id === activeTask.projectId);
+      if (!project) return null;
+      const directTarget = projectTarget(project);
+      const teamRoutes = [projectRoute(project), taskRoute(activeTask)].filter(
+        (route): route is TeamShareRoute => route !== null,
+      );
+      return directTarget || teamRoutes.length
+        ? {
+            key: `task:${activeTask.id}`,
+            label: activeTask.identifier,
+            directTarget,
+            teamRoutes,
+            teamUnavailableCopy: null,
+          }
+        : null;
     }
-    return activeTask.accessRole === "owner"
+    const directTarget: ShareTarget | null = activeTask.accessRole === "owner"
       ? {
           resourceType: "task",
           resourceId: activeTask.id,
@@ -9982,24 +11077,79 @@ function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSn
           inherited: false,
         }
       : null;
+    const route = taskRoute(activeTask);
+    return directTarget || route
+      ? {
+          key: `task:${activeTask.id}`,
+          label: activeTask.identifier,
+          directTarget,
+          teamRoutes: route ? [route] : [],
+          teamUnavailableCopy: null,
+        }
+      : null;
   }
   if (surface.startsWith("project:")) {
-    return projectTarget(data.projects.find((item) => item.id === surface.slice(8)));
+    const project = data.projects.find((item) => item.id === surface.slice(8));
+    const directTarget = projectTarget(project);
+    const route = projectRoute(project);
+    return directTarget && project
+      ? {
+          key: `project:${project.id}`,
+          label: project.name,
+          directTarget,
+          teamRoutes: route ? [route] : [],
+          teamUnavailableCopy: null,
+        }
+      : null;
   }
   if (surface.startsWith("project-releases:")) {
-    return projectTarget(data.projects.find((item) => item.id === surface.slice("project-releases:".length)));
+    const project = data.projects.find((item) => item.id === surface.slice("project-releases:".length));
+    const directTarget = projectTarget(project);
+    const route = projectRoute(project);
+    return directTarget && project
+      ? {
+          key: `project-releases:${project.id}`,
+          label: project.name,
+          directTarget,
+          teamRoutes: route ? [route] : [],
+          teamUnavailableCopy: null,
+        }
+      : null;
   }
   if (surface.startsWith("release:")) {
     const release = data.releases.find((item) => item.id === surface.slice(8));
-    return projectTarget(release ? data.projects.find((item) => item.id === release.projectId) : undefined);
+    const project = release
+      ? data.projects.find((item) => item.id === release.projectId)
+      : undefined;
+    const directTarget = projectTarget(project);
+    return release && directTarget
+      ? {
+          key: `release:${release.id}`,
+          label: formatReleaseName(project?.name, release.name),
+          directTarget,
+          teamRoutes: [],
+          teamUnavailableCopy: "Releases do not have a Team grant route. Manage Team access from the Project surface; direct People access here remains Project-based.",
+        }
+      : null;
   }
   if (surface.startsWith("view:")) {
     const view = data.views.find((item) => item.id === surface.slice(5));
     if (!view) return null;
     if (view.scopeProjectId) {
-      return projectTarget(data.projects.find((item) => item.id === view.scopeProjectId));
+      const project = data.projects.find((item) => item.id === view.scopeProjectId);
+      const directTarget = projectTarget(project);
+      const route = projectRoute(project);
+      return directTarget
+        ? {
+            key: `view:${view.id}`,
+            label: view.name,
+            directTarget,
+            teamRoutes: route ? [route] : [],
+            teamUnavailableCopy: null,
+          }
+        : null;
     }
-    return view.accessRole === "owner"
+    const directTarget: ShareTarget | null = view.accessRole === "owner"
       ? {
           resourceType: "saved_view",
           resourceId: view.id,
@@ -10007,6 +11157,26 @@ function shareTarget(surface: string, activeTask: TaskRecord | null, data: AppSn
           accessRole: view.accessRole,
           ownerUserId: view.ownerUserId,
           inherited: false,
+        }
+      : null;
+    const route = canManage(view.accessRole)
+      ? {
+          key: `saved_view:${view.id}`,
+          resourceType: "saved_view" as const,
+          resourceId: view.id,
+          publicId: view.publicId,
+          label: "This global View",
+          explanation: "Adds the Team to this global View. The View still returns only Tasks each member can already access.",
+          accessRole: view.accessRole,
+        }
+      : null;
+    return directTarget || route
+      ? {
+          key: `view:${view.id}`,
+          label: view.name,
+          directTarget,
+          teamRoutes: route ? [route] : [],
+          teamUnavailableCopy: null,
         }
       : null;
   }

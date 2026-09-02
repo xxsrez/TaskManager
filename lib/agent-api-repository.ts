@@ -2,8 +2,10 @@ import { getD1 } from "@/db";
 import { canEditContent } from "./access";
 import {
   projectAccessRoleSql,
+  projectEffectiveRoleRankSql,
   savedViewAccessRoleSql,
   taskAccessRoleSql,
+  taskEffectiveRoleRankSql,
 } from "./access-sql";
 import {
   AgentApiError,
@@ -151,6 +153,33 @@ const savedViewScopeCte = `WITH scoped_views AS (
     AND (v.scope_project_id IS NULL OR (p.id IS NOT NULL AND p.deleted_at IS NULL))
 ), visible_views AS (
   SELECT * FROM scoped_views WHERE access_role IS NOT NULL
+)`;
+
+const agentCatalogScopeCte = `WITH agent_actor(id) AS (VALUES (?)),
+wide_catalog_owners(owner_user_id) AS MATERIALIZED (
+  SELECT id FROM agent_actor
+  UNION
+  SELECT p.owner_user_id
+  FROM projects p CROSS JOIN agent_actor
+  WHERE p.deleted_at IS NULL
+    AND ${projectEffectiveRoleRankSql("p", "agent_actor.id")} > 0
+), visible_catalog_tasks(id) AS MATERIALIZED (
+  SELECT t.id
+  FROM tasks t
+  LEFT JOIN projects p ON p.id = t.project_id
+  CROSS JOIN agent_actor
+  WHERE t.deleted_at IS NULL
+    AND (t.project_id IS NULL OR p.deleted_at IS NULL)
+    AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
+), visible_catalog_assignments(task_id, label_id, group_id) AS MATERIALIZED (
+  SELECT DISTINCT task.id, assignment.label_id, label.group_id
+  FROM visible_catalog_tasks task
+  JOIN task_labels assignment ON assignment.task_id = task.id
+  JOIN labels label ON label.id = assignment.label_id
+), visible_catalog_group_values(task_id, group_id) AS MATERIALIZED (
+  SELECT DISTINCT task.id, value.group_id
+  FROM visible_catalog_tasks task
+  JOIN task_label_group_values value ON value.task_id = task.id
 )`;
 
 export async function listAgentTasks(
@@ -542,33 +571,25 @@ export async function getAgentWorkspace(
     getD1()
       .prepare(
         `SELECT DISTINCT s.* FROM workflow_statuses s
-         WHERE s.archived_at IS NULL AND (s.owner_user_id = ?
+         CROSS JOIN (SELECT ? AS id) agent_actor
+         WHERE s.archived_at IS NULL AND ((s.owner_user_id = agent_actor.id
             OR EXISTS (
               SELECT 1 FROM projects p
               WHERE p.owner_user_id = s.owner_user_id
-                AND p.deleted_at IS NULL AND (
-                p.owner_user_id = ? OR EXISTS (
-                  SELECT 1 FROM access_grants ag
-                  WHERE ag.resource_type = 'project'
-                    AND ag.resource_id = p.id
-                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                )
-              )
+                AND p.deleted_at IS NULL
+                AND ${projectEffectiveRoleRankSql("p", "agent_actor.id")} > 0
             ))
             OR EXISTS (
               SELECT 1 FROM tasks t
-              WHERE t.status_id = s.id AND t.project_id IS NULL
-                AND t.deleted_at IS NULL AND (
-                t.owner_user_id = ? OR EXISTS (
-                  SELECT 1 FROM access_grants ag
-                  WHERE ag.resource_type = 'task' AND ag.resource_id = t.id
-                    AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-                )
-              )
-            )
-         ORDER BY s.owner_user_id = ? DESC, s.position, s.name`,
+              LEFT JOIN projects p ON p.id = t.project_id
+              WHERE t.status_id = s.id
+                AND t.deleted_at IS NULL
+                AND (t.project_id IS NULL OR p.deleted_at IS NULL)
+                AND ${taskEffectiveRoleRankSql("t", "p", "agent_actor.id")} > 0
+            ))
+         ORDER BY s.owner_user_id = agent_actor.id DESC, s.position, s.name`,
       )
-      .bind(user.id, user.id, user.id, user.id, user.id, user.id)
+      .bind(user.id)
       .all<DbRow>(),
   ]);
 
@@ -834,30 +855,25 @@ export async function listAgentLabels(
   includeArchived = false,
 ) {
   const rows = await getD1().prepare(
-    `SELECT DISTINCT l.*, g.name AS group_name FROM labels l
+    `${agentCatalogScopeCte}
+     SELECT DISTINCT l.*, g.name AS group_name FROM labels l
      LEFT JOIN label_groups g ON g.id = l.group_id
+     CROSS JOIN agent_actor
      WHERE (? = 1 OR l.archived_at IS NULL) AND (
-       l.owner_user_id = ? OR EXISTS (
-         SELECT 1 FROM projects p
-         WHERE p.owner_user_id = l.owner_user_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag
-             WHERE ag.resource_type = 'project' AND ag.resource_id = p.id
-               AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           )
-         )
+       EXISTS (
+         SELECT 1 FROM wide_catalog_owners owner
+         WHERE owner.owner_user_id = l.owner_user_id
+       ) OR EXISTS (
+         SELECT 1 FROM visible_catalog_assignments visible
+         WHERE visible.label_id = l.id
        )
      )
-     ORDER BY l.owner_user_id = ? DESC, l.archived_at IS NOT NULL,
+     ORDER BY l.owner_user_id = agent_actor.id DESC, l.archived_at IS NOT NULL,
        lower(l.name), l.id
      LIMIT 201`,
   ).bind(
+    currentUser.id,
     includeArchived ? 1 : 0,
-    currentUser.id,
-    currentUser.id,
-    currentUser.id,
-    currentUser.id,
   ).all<DbRow>();
   const visible = rows.results.slice(0, 200);
   return {
@@ -880,22 +896,43 @@ export async function listAgentLabels(
 
 export async function listAgentLabelGroups(currentUser: UserRecord, includeArchived = false) {
   const rows = await getD1().prepare(
-    `SELECT DISTINCT g.*,
-       (SELECT COUNT(*) FROM labels l WHERE l.group_id = g.id) AS label_count,
-       (SELECT COUNT(DISTINCT value.task_id) FROM task_label_group_values value WHERE value.group_id = g.id) AS task_count
+    `${agentCatalogScopeCte}
+     SELECT DISTINCT g.*,
+       CASE WHEN EXISTS (
+         SELECT 1 FROM wide_catalog_owners owner
+         WHERE owner.owner_user_id = g.owner_user_id
+       ) THEN (
+         SELECT COUNT(*) FROM labels label WHERE label.group_id = g.id
+       ) ELSE (
+         SELECT COUNT(DISTINCT visible.label_id)
+         FROM visible_catalog_assignments visible
+         WHERE visible.group_id = g.id
+       ) END AS label_count,
+       CASE WHEN EXISTS (
+         SELECT 1 FROM wide_catalog_owners owner
+         WHERE owner.owner_user_id = g.owner_user_id
+       ) THEN (
+         SELECT COUNT(DISTINCT value.task_id)
+         FROM task_label_group_values value
+         WHERE value.group_id = g.id
+       ) ELSE (
+         SELECT COUNT(DISTINCT visible.task_id)
+         FROM visible_catalog_group_values visible
+         WHERE visible.group_id = g.id
+       ) END AS task_count
      FROM label_groups g
+     CROSS JOIN agent_actor
      WHERE (? = 1 OR g.archived_at IS NULL) AND (
-       g.owner_user_id = ? OR EXISTS (
-         SELECT 1 FROM projects p WHERE p.owner_user_id = g.owner_user_id
-           AND p.deleted_at IS NULL AND (
-           p.owner_user_id = ? OR EXISTS (
-             SELECT 1 FROM access_grants ag WHERE ag.resource_type = 'project'
-               AND ag.resource_id = p.id AND ag.grantee_user_id = ? AND ag.revoked_at IS NULL
-           )
-         )
+       EXISTS (
+         SELECT 1 FROM wide_catalog_owners owner
+         WHERE owner.owner_user_id = g.owner_user_id
+       ) OR EXISTS (
+         SELECT 1 FROM visible_catalog_assignments visible
+         WHERE visible.group_id = g.id
        )
-     ) ORDER BY g.owner_user_id = ? DESC, g.archived_at IS NOT NULL, g.position, lower(g.name), g.id LIMIT 201`,
-  ).bind(includeArchived ? 1 : 0, currentUser.id, currentUser.id, currentUser.id, currentUser.id).all<DbRow>();
+     ) ORDER BY g.owner_user_id = agent_actor.id DESC, g.archived_at IS NOT NULL,
+       g.position, lower(g.name), g.id LIMIT 201`,
+  ).bind(currentUser.id, includeArchived ? 1 : 0).all<DbRow>();
   return {
     items: await Promise.all(rows.results.slice(0, 200).map(async (row) => ({
       ref: await catalogReference("label-group", String(row.id)),

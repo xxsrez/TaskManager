@@ -74,6 +74,12 @@ export function metadataForNavigation(
   } else if (navigation.surface === "releases") {
     title = "Releases – Task Manager";
     description = "Project releases and their progress in Task Manager.";
+  } else if (navigation.surface === "teams") {
+    title = "Teams – Task Manager";
+    description = "Teams you actively belong to in Task Manager.";
+  } else if (navigation.surface.startsWith("team:")) {
+    title = "Team – Task Manager";
+    description = "Team membership details in Task Manager.";
   } else if (navigation.surface === "shared") {
     title = "Shared with me – Task Manager";
     description = "Task Manager resources shared with the current user.";

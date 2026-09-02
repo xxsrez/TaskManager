@@ -11,8 +11,11 @@ import type {
   WorkspaceSyncResponse,
 } from "./types";
 import {
-  decodeWorkspaceSyncCursor,
+  currentTeamAccessFingerprint,
+  decodeWorkspaceSyncCursorState,
+  EMPTY_TEAM_ACCESS_FINGERPRINT,
   encodeWorkspaceSyncCursor,
+  workspaceSyncCursorGeneration,
 } from "./workspace-sync-cursor";
 
 type ChangeRow = {
@@ -39,19 +42,40 @@ export async function getWorkspaceSync(
     workspaceScope && workspaceScope.ownerUserId !== user.id,
   );
   await pruneWorkspaceSyncEvents(db);
-  const state = await db
-    .prepare(
+  const [state, teamAccessFingerprint] = await Promise.all([
+    db.prepare(
       `SELECT last_sequence FROM workspace_sync_sequences
        WHERE audience_user_id = ?`,
-    )
-    .bind(user.id)
-    .first<{ last_sequence: number }>();
+    ).bind(user.id).first<{ last_sequence: number }>(),
+    currentTeamAccessFingerprint(db, user.id),
+  ]);
   const lastSequence = Number(state?.last_sequence ?? 0);
-  if (workspaceScope?.fallback) return resetResponse(lastSequence);
-  const cursor = decodeWorkspaceSyncCursor(cursorValue);
-  if (cursor === null || cursor > lastSequence) {
-    return resetResponse(lastSequence);
+  if (workspaceScope?.fallback) {
+    return resetResponse(lastSequence, teamAccessFingerprint);
   }
+  const cursorState = decodeWorkspaceSyncCursorState(cursorValue);
+  const currentCursorGeneration = workspaceSyncCursorGeneration();
+  // v1/v2 cursors have no retention generation. Stale and future generations
+  // use the same one-reset recovery path, then remain stable inside the bucket.
+  if (
+    cursorState === null ||
+    cursorState.sequence > lastSequence ||
+    cursorState.issuedGeneration !== currentCursorGeneration
+  ) {
+    return resetResponse(lastSequence, teamAccessFingerprint);
+  }
+  if (
+    (
+      cursorState.teamAccessFingerprint !== null &&
+      cursorState.teamAccessFingerprint !== teamAccessFingerprint
+    ) || (
+      cursorState.teamAccessFingerprint === null &&
+      teamAccessFingerprint !== EMPTY_TEAM_ACCESS_FINGERPRINT
+    )
+  ) {
+    return resetResponse(lastSequence, teamAccessFingerprint);
+  }
+  const cursor = cursorState.sequence;
 
   const earliest = await db
     .prepare(
@@ -64,7 +88,7 @@ export async function getWorkspaceSync(
     ? null
     : Number(earliest.sequence);
   if (earliestSequence !== null && cursor < earliestSequence - 1) {
-    return resetResponse(lastSequence);
+    return resetResponse(lastSequence, teamAccessFingerprint);
   }
 
   const page = await db
@@ -79,16 +103,16 @@ export async function getWorkspaceSync(
     .all<ChangeRow>();
   const rows = page.results.slice(0, SYNC_PAGE_SIZE);
   if (rows.length === 0 && cursor < lastSequence) {
-    return resetResponse(lastSequence);
+    return resetResponse(lastSequence, teamAccessFingerprint);
   }
   if (!hasContinuousSequence(rows, cursor)) {
-    return resetResponse(lastSequence);
+    return resetResponse(lastSequence, teamAccessFingerprint);
   }
   if (rows.some((row) => row.entity_type === "workspace" || row.operation === "reset")) {
-    return resetResponse(lastSequence);
+    return resetResponse(lastSequence, teamAccessFingerprint);
   }
   if (rows.some((row) => !isIncrementalEntity(row.entity_type))) {
-    return resetResponse(lastSequence);
+    return resetResponse(lastSequence, teamAccessFingerprint);
   }
   if (rows.length === 0) {
     const changes = emptyChanges();
@@ -109,7 +133,7 @@ export async function getWorkspaceSync(
       changes.labelGroups = projection.labelGroups;
     }
     return {
-      cursor: cursorValue,
+      cursor: encodeWorkspaceSyncCursor(cursor, teamAccessFingerprint),
       resetRequired: false,
       hasMore: false,
       changes,
@@ -142,7 +166,7 @@ export async function getWorkspaceSync(
       : Promise.resolve(undefined),
   ]);
   return {
-    cursor: encodeWorkspaceSyncCursor(processedSequence),
+    cursor: encodeWorkspaceSyncCursor(processedSequence, teamAccessFingerprint),
     resetRequired: false,
     hasMore: page.results.length > SYNC_PAGE_SIZE,
     changes: buildChanges(projection, touched),
@@ -159,9 +183,12 @@ function hasContinuousSequence(rows: ChangeRow[], cursor: number): boolean {
   return true;
 }
 
-function resetResponse(sequence: number): WorkspaceSyncResponse {
+function resetResponse(
+  sequence: number,
+  teamAccessFingerprint: string,
+): WorkspaceSyncResponse {
   return {
-    cursor: encodeWorkspaceSyncCursor(sequence),
+    cursor: encodeWorkspaceSyncCursor(sequence, teamAccessFingerprint),
     resetRequired: true,
     hasMore: false,
     changes: emptyChanges(),

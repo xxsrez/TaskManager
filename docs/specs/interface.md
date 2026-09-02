@@ -815,15 +815,24 @@ Linear, но они обязаны использовать тот же visual l
 - Loading, provider error и retry показаны внутри panel; identity никогда не
   запрашивается произвольным email/password form.
 
-### 12.2 Share dialog
+### 12.2 People & Teams
 
-- Trigger `Share` находится в header Project и global SavedView. Для Task,
-  Release и project-scoped SavedView он открывает
-  access surface родительского Project либо не дублируется.
-- Compact dialog `Members & access` содержит verified-email input, role picker,
-  Owner отдельной первой строкой и список active grants с inline role picker.
-- Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView —
-  `Editor`, `Viewer`. Copy рядом с email явно говорит, что
+- Отдельная surface `/teams` группирует active Teams в `Owned by you` и
+  `Joined`, не смешивая владение Team с ролью на расшаренных resources.
+  Обычный участник видит только active memberships; email показывается Owner
+  для управления составом и самому соответствующему участнику, но не peers.
+- Trigger `Share` находится в header Project, Task и global SavedView. Для
+  Release и project-scoped SavedView он открывает access surface родительского
+  Project либо не дублируется. В Task dialog прямой User grant доступен только
+  через Project route; для Team можно выбрать Project route либо Task-only.
+- Compact dialog `People & Teams` содержит поиск People и active Teams текущего
+  пользователя, явный выбор principal, role picker, Owner отдельной первой
+  строкой и раздельные списки direct User grants и Team grants.
+- До ввода запроса предлагаются собственные Teams. Team result показывает имя,
+  число active members и роль текущего пользователя; выбор результата сам по
+  себе доступа не выдаёт.
+- Для Project доступны `Manager`, `Editor`, `Viewer`; для global SavedView и
+  Team Task-only route — `Editor`, `Viewer`. Copy рядом с email явно говорит, что
   User должен уже войти и письмо не отправляется.
 - Manager видит и изменяет только Editor/Viewer. Owner может назначать Manager,
   Editor, Viewer и получает action `Transfer ownership` только для уже
@@ -835,6 +844,16 @@ Linear, но они обязаны использовать тот же visual l
 - Project dialog объясняет inheritance к Tasks, Releases и project-scoped
   SavedViews; global SavedView dialog — что view не расширяет доступ к
   underlying data.
+- Для Task пользователь явно выбирает Project route либо Task-only route.
+  Project route меняет доступ ко всему Project; Task-only route сохраняет
+  обязательный Project задачи, но не открывает его, Releases или соседние
+  Tasks. Project-scoped SavedView направляет sharing к Project, а Release не
+  предлагает отдельный Team grant.
+- Несколько access routes показываются одновременно; copy не обещает полного
+  закрытия доступа после revoke одного Team или User route.
+- Loading, empty, error и version-conflict остаются внутри dialog. После 409
+  authoritative read-back заменяет grants только при успешном ответе; поздний
+  ответ предыдущего route или principal не может перезаписать текущий state.
 - Revoke требует подтверждения только когда последствия могут оборвать текущую
   работу; результат обновляется после server response.
 
@@ -1066,8 +1085,8 @@ Tooltip и menus показывают platform-appropriate symbols (`⌘` на m
 
 | Surface/паттерн Linear | Task Manager | Статус MVP | Осознанное отличие |
 |---|---|---|---|
-| Left application sidebar | My tasks, Shared, Views, Projects, Releases | Берём | Без teams/inbox/initiatives |
-| Workspace overview | User-scoped work, projects, releases, views и shared summaries | Адаптируем | Одна personal workspace без teams, initiatives и cross-user analytics |
+| Left application sidebar | My tasks, Shared, Views, Projects, Releases, Teams | Берём | Без inbox/initiatives |
+| Workspace overview | User-scoped work, projects, releases, views, Teams и shared summaries | Адаптируем | Одна personal workspace; Team — ACL-принципал, а не отдельный workspace; без initiatives и cross-user analytics |
 | Dense issue list | Dense task list и grouped headers | Берём | Только наши metadata |
 | Board layout | Kanban как layout того же view | Берём | Без swimlanes в первом UI |
 | Filters | Searchable property formula | Берём ядро | Только `AND` |

@@ -1,5 +1,6 @@
 import { getD1 } from "@/db";
 import { canEditContent } from "./access";
+import { taskEffectiveRoleRankSql } from "./access-sql";
 import {
   ConflictError,
   NotFoundError,
@@ -7,7 +8,7 @@ import {
   ValidationError,
   statusTimestamps,
 } from "./domain";
-import { getTask } from "./repository";
+import { getTaskForMutation } from "./repository";
 import type { TaskRecord, TaskRelationRecord, UserRecord } from "./types";
 import {
   activityBatchAssertion,
@@ -42,8 +43,8 @@ export async function createTaskRelation(
   const targetTaskId = requiredString(input.targetTaskId, "Target task");
   const idempotencyKey = boundedKey(input.idempotencyKey);
   const [anchor, peer] = await Promise.all([
-    getTask(currentUser, taskId),
-    getTask(currentUser, targetTaskId),
+    getTaskForMutation(currentUser, taskId),
+    getTaskForMutation(currentUser, targetTaskId),
   ]);
   const semantic = normalizeRelation(
     anchor.id,
@@ -104,9 +105,7 @@ export async function createTaskRelation(
       now,
       semantic.sourceTaskId,
       currentUser.id,
-      currentUser.id,
       semantic.targetTaskId,
-      currentUser.id,
       currentUser.id,
       ...(semantic.type === "duplicate_of"
         ? [
@@ -196,12 +195,12 @@ export async function updateTaskRelation(
   input: Record<string, unknown>,
 ): Promise<TaskRelationRecord> {
   assertOnlyKeys(input, ["version", "type", "direction", "taskVersion"]);
-  const anchor = await getTask(currentUser, taskId);
+  const anchor = await getTaskForMutation(currentUser, taskId);
   const current = await loadTaskRelation(relationId, anchor.id);
   const peerId = current.sourceTaskId === anchor.id
     ? current.targetTaskId
     : current.sourceTaskId;
-  const peer = await getTask(currentUser, peerId);
+  const peer = await getTaskForMutation(currentUser, peerId);
   assertEditableProjectTasks(anchor, peer);
   const expectedVersion = positiveInteger(input.version, "Relation version");
   if (expectedVersion !== current.version) {
@@ -251,9 +250,7 @@ export async function updateTaskRelation(
       expectedVersion,
       semantic.sourceTaskId,
       currentUser.id,
-      currentUser.id,
       semantic.targetTaskId,
-      currentUser.id,
       currentUser.id,
       ...(semantic.type === "duplicate_of"
         ? [
@@ -341,9 +338,9 @@ export async function deleteTaskRelation(
   input: Record<string, unknown>,
 ): Promise<{ deleted: true; relation: TaskRelationRecord }> {
   assertOnlyKeys(input, ["version"]);
-  const anchor = await getTask(currentUser, taskId);
+  const anchor = await getTaskForMutation(currentUser, taskId);
   const relation = await loadTaskRelation(relationId, anchor.id);
-  const peer = await getTask(
+  const peer = await getTaskForMutation(
     currentUser,
     relation.sourceTaskId === anchor.id
       ? relation.targetTaskId
@@ -377,9 +374,7 @@ export async function deleteTaskRelation(
       expectedVersion,
       relation.sourceTaskId,
       currentUser.id,
-      currentUser.id,
       relation.targetTaskId,
-      currentUser.id,
       currentUser.id,
       ),
       activityBatchAssertion(db, `activity_assert_${crypto.randomUUID()}`, now),
@@ -560,7 +555,6 @@ function duplicateStatusUpdate(
       taskId,
       expectedVersion,
       currentUserId,
-      currentUserId,
     );
 }
 
@@ -583,21 +577,16 @@ function sameProjectParticipants() {
 }
 
 function editableProjectTask(alias: string) {
-  return `(
-    ${alias}.project_id IS NOT NULL AND (
-      EXISTS (
-        SELECT 1 FROM projects editable_project
-        WHERE editable_project.id = ${alias}.project_id
-          AND editable_project.owner_user_id = ?
-      ) OR EXISTS (
-        SELECT 1 FROM access_grants editable_grant
-        WHERE editable_grant.resource_type = 'project'
-          AND editable_grant.resource_id = ${alias}.project_id
-          AND editable_grant.grantee_user_id = ?
-          AND editable_grant.revoked_at IS NULL
-          AND editable_grant.permission IN ('editor', 'manager', 'full_access')
-      )
-    )
+  return `EXISTS (
+    SELECT 1 FROM projects editable_project
+    CROSS JOIN (SELECT ? AS id) relation_actor
+    WHERE editable_project.id = ${alias}.project_id
+      AND editable_project.deleted_at IS NULL
+      AND ${taskEffectiveRoleRankSql(
+        alias,
+        "editable_project",
+        "relation_actor.id",
+      )} >= 2
   )`;
 }
 

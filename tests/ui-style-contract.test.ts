@@ -51,6 +51,30 @@ test("share member actions keep a padded desktop hit target", () => {
   assert.match(rule, /padding:\s*0\s+[1-9][0-9]*px\s*;/);
 });
 
+test("People and Teams sharing stays focus-visible, bounded, and touch-safe", () => {
+  const modal = declarations(".modal.share-dialog");
+  assert.match(modal, /max-height:\s*min\(860px,\s*calc\(100dvh\s*-\s*28px\)\)\s*;/);
+  assert.match(modal, /overflow:\s*hidden\s*;/);
+  const list = declarations(".share-combobox-list");
+  assert.match(list, /max-height:\s*min\(310px,\s*45dvh\)\s*;/);
+  assert.match(list, /overflow-y:\s*auto\s*;/);
+  assert.match(declarations(".share-option-group > button:focus-visible"), /outline:\s*2px\s+solid\s+var\(--accent\)\s*;/);
+  assert.match(declarations(".team-route-choice label:focus-within"), /outline:\s*2px\s+solid\s+var\(--accent\)\s*;/);
+  assert.match(declarations(".share-option-group > button"), /min-height:\s*44px\s*;/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.share-principal-form\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.share-combobox-control,\s*\.share-role-select select,\s*\.share-add-button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.team-grant-row > select\s*\{[^}]*width:\s*100%\s*;[^}]*min-height:\s*44px\s*;/,
+  );
+});
+
 test("entity deletion entrypoints stay touch-visible with 44px targets", () => {
   assert.match(declarations(".entity-card-shell"), /position:\s*relative\s*;/);
   assert.match(declarations(".release-row-shell"), /position:\s*relative\s*;/);
@@ -340,6 +364,27 @@ test("workspace overview collapses to one column without horizontal overflow", (
   assert.match(
     css,
     /@media\s*\(max-width:\s*640px\)[\s\S]*?\.workspace-metrics\s*\{[^}]*grid-template-columns:\s*1fr\s*;/,
+  );
+});
+
+test("Teams catalog and membership lifecycle stay focus-visible and phone-safe", () => {
+  assert.match(declarations(".teams-surface, .team-detail-surface"), /overflow-x:\s*hidden\s*;/);
+  assert.match(declarations(".team-card"), /min-width:\s*0\s*;/);
+  assert.match(declarations(".team-member-row"), /grid-template-columns:\s*32px\s+minmax\(0,\s*1fr\)\s+auto\s+auto\s*;/);
+  assert.match(taskTracker, /className="team-live-region" role="status" aria-live="polite"/);
+  assert.match(taskTracker, /className="team-local-alert" role="alert"/);
+  assert.match(taskTracker, /href=\{`\/teams\/\$\{encodeURIComponent\(team\.publicId\)\}`\}/);
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.team-member-row\s*\{[^}]*grid-template-columns:\s*44px\s+minmax\(0,\s*1fr\)\s+auto\s*;[^}]*overflow:\s*hidden\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.team-member-actions \.button\s*\{[^}]*min-height:\s*44px\s*;/,
+  );
+  assert.match(
+    css,
+    /@media\s*\(max-width:\s*640px\)[\s\S]*?\.team-dialog-form input,\s*\.team-dialog \.dialog-actions \.button\s*\{[^}]*min-height:\s*44px\s*;/,
   );
 });
 
