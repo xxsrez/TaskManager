@@ -67,9 +67,9 @@ test("a reset response captures local IDs before one authoritative bootstrap", a
   ]);
 });
 
-test("a scoped sync cycle keeps the opaque owner token on incremental and reset requests", async () => {
+test("the ACL-complete sync cycle keeps All accessible on incremental and reset requests", async () => {
   const requests: string[] = [];
-  const token = `wso_${"A".repeat(43)}`;
+  const token = "wsa";
   const snapshot = { syncCursor: "scoped-bootstrap" } as AppSnapshot;
 
   const cursor = await runWorkspaceSyncCycle({

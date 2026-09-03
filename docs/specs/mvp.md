@@ -39,9 +39,9 @@ MVP должен позволить вести задачи от backlog до п
   thread, reply принадлежит ровно одному root thread.
 - **Attachment** — приватный файл или raster image одной Task: metadata
   хранится в D1, body — в environment-isolated R2 и не имеет публичного URL.
-- **Owner workspace scope** — UI-проекция доступных records по владельцу,
-  применяемая только как дополнительное сужение уже вычисленного ACL; это не
-  entity, tenant, grant или источник authorization.
+- **Workspace focus** — локальная UI-проекция содержимого `/workspace` с двумя
+  режимами: `My` (ресурсы current User) и `All accessible` (полный ACL-набор).
+  Это не entity, tenant, grant или источник authorization.
 - **Team** — групповой ACL-принципал поверх неизменяемых таблиц `teams`,
   `team_memberships` и `team_grants`. Team не владеет пользовательскими
   ресурсами и не является workspace или tenant boundary.
@@ -150,32 +150,27 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 
 - Канонический корень авторизованного продукта — `/workspace`; прежний `/`
   перенаправляется туда. `My tasks` остаётся отдельной task surface `/issues`.
-- В header доступен owner workspace selector: по умолчанию выбран текущий User,
-  далее доступны владельцы хотя бы одного уже доступного root и `All
-  accessible`. Для Project, Task, Release и project-scoped SavedView владельцем
-  этой проекции всегда считается current Project owner; для global SavedView —
-  собственный owner View. Исторический `owner_user_id` project child не
-  определяет UI scope.
-- Scope применяется на сервере после ownership/ACL predicate, но до totals,
-  recents, task query, pagination и Project/Release/SavedView/Label catalogs.
-  Поэтому selector не расширяет права и не может сделать видимым недоступный
-  record. Agent API и прочие не-UI callers, не передавшие UI scope, сохраняют
-  прежнее ACL-union поведение.
-- Selector получает только compact opaque tokens и display labels без email и
-  внутренних IDs. Выбор сохраняется для User в browser storage и history state,
-  но не меняет canonical public-ID URL. Reload и Back/Forward восстанавливают
-  доступный выбор; forged, stale, revoked или исчезнувший после ownership
-  transfer token атомарно сбрасывается на scope текущего User.
+- Внутри содержимого `/workspace` расположен selector ровно с двумя режимами:
+  `My` и `All accessible`. По умолчанию допускается `My`; выбор сохраняется для
+  User в browser storage и только в history state записей `/workspace`, не
+  меняя canonical URL. Reload и Back/Forward восстанавливают доступный выбор;
+  forged или stale token атомарно сбрасывается на `My`.
+- Focus применяется на сервере после ownership/ACL predicate, но только к
+  компактной проекции Workspace: totals, recents и его Project/Release/View
+  summaries. Он не расширяет права и не может сделать видимым недоступный record.
+- Sidebar, global search, `/issues`, `/shared`, `/views`, `/projects`,
+  `/releases`, прямые entity routes, picker catalogs и фоновой sync всегда
+  используют `All accessible`. Переход из Workspace на любую из этих surface
+  не переносит локальный focus и не показывает ложный ноль для shared resources.
 - Прямой доступный deep link остаётся открываемым независимо от сохранённого
-  фильтра и показывает owner context адресованного resource. Создание Project в
-  чужом owner scope всё равно создаёт Project текущего User, переключает scope
-  на текущего User и открывает канонический URL созданного Project.
-- Overview показывает только доступные текущему User компактные итоги: active и
-  backlog Tasks, последние Tasks, Projects и их progress, Releases с Project
-  context, SavedViews и верхнеуровневые ресурсы `Shared with me`.
-- Recent Projects, Releases и SavedViews используют тот же bounded contract,
-  что sidebar: максимум три записи в порядке `updatedAt DESC, id DESC`; полные
-  ACL-scoped коллекции остаются доступны через свои index surfaces.
+  Workspace focus. Создание Project всегда создаёт Project текущего User и
+  открывает его канонический URL.
+- Overview показывает компактные итоги выбранного focus: active и backlog
+  Tasks, последние Tasks, Projects и их progress, Releases с Project context и
+  SavedViews. Summary `Shared with me` всегда считается по полному ACL-набору.
+- Recent Projects, Releases и SavedViews используют bounded contract: максимум
+  три записи в порядке `updatedAt DESC, id DESC`. Полные ACL-scoped коллекции
+  всегда доступны через свои `All accessible` index surfaces.
 - Bounded navigation projection не является каталогом picker-ов. Composer,
   filters, move/bulk dialogs, Saved View scope и Release create лениво
   дочитывают полный ACL-scoped Project/Release catalog по keyset pages.
@@ -183,9 +178,9 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
   record в bounded payload не означает revoke/delete и не удаляет уже
   загруженный direct-route/catalog context; removal требует explicit change,
   targeted not-found либо authoritative complete snapshot.
-- Overview строится из того же server-authorized ACL-scoped snapshot. Он не
-  загружает task descriptions, labels, relations, unified comments,
-  migration metadata или admin aggregates и не вводит отдельный unscoped query.
+- Overview сочетает отдельную server-authorized focus projection с общим
+  ACL-снимком оболочки. Он не загружает task descriptions, labels, relations,
+  unified comments, migration metadata или admin aggregates.
 - Create actions показываются только там, где User может создать ресурс: Task
   и Release требуют редактируемый Project, а новый Project доступен
   авторизованному User.
@@ -234,10 +229,10 @@ accessibility и ограничения ChatGPT Sites. Функции Linear в�
 - `Shared with me` перечисляет только top-level Projects с явным Project grant
   и напрямую расшаренные global SavedViews. Унаследованные Tasks, Releases и
   project-scoped SavedViews не становятся отдельными строками этой surface.
-  Открытие этой специальной collection использует `All accessible` и полные
-  server-paginated Project/View catalogs, а не bounded snapshot `Your work`.
+  Эта специальная collection всегда использует `All accessible` и полные
+  server-paginated Project/View catalogs, независимо от Workspace focus.
 - Доступность Viewer/Editor/Manager/Owner controls определяется только
-  server-derived `accessRole`; owner workspace scope не повышает role и не
+  server-derived `accessRole`; Workspace focus не повышает role и не
   служит условием показа mutation controls.
 - Archive и delete — разные lifecycle. Archive обратимо убирает record из
   обычной работы без запуска retention; `Delete` помещает Task, Project,

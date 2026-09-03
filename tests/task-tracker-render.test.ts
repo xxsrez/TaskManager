@@ -1239,9 +1239,51 @@ test("bulk Project and Release dialogs preview every explicit consequence", () =
 });
 
 test("workspace overview is a distinct linked surface", () => {
+  const currentToken = `wso_${"A".repeat(43)}`;
+  const sharedProject = {
+    ...snapshot.projects[0]!,
+    id: "project-shared-workspace",
+    publicId: "88888888-8888-4888-8888-888888888888",
+    ownerUserId: "user-2",
+    name: "Shared navigation project",
+    taskCode: "SNP",
+    accessRole: "viewer" as const,
+  };
+  const sharedTask = {
+    ...snapshot.tasks[0]!,
+    id: "task-shared-workspace",
+    publicId: "99999999-9999-4999-8999-999999999999",
+    identifier: "SNP-1",
+    ownerUserId: "user-2",
+    projectId: sharedProject.id,
+    accessRole: "viewer" as const,
+  };
+  const globalData: AppSnapshot = {
+    ...snapshot,
+    projects: [...snapshot.projects, sharedProject],
+    tasks: [...snapshot.tasks, sharedTask],
+    workspaceScope: {
+      selectedToken: "wsa",
+      selectedLabel: "All accessible",
+      fallback: false,
+      options: [
+        { token: currentToken, kind: "owner", label: "My", current: true },
+        { token: "wsa", kind: "all", label: "All accessible", current: false },
+      ],
+    },
+  };
+  const focusedData: AppSnapshot = {
+    ...snapshot,
+    workspaceScope: {
+      ...globalData.workspaceScope!,
+      selectedToken: currentToken,
+      selectedLabel: "My",
+    },
+  };
   const markup = renderToStaticMarkup(
     createElement(TaskTracker, {
-      initialData: snapshot,
+      initialData: globalData,
+      initialWorkspaceData: focusedData,
       initialNavigation: {
         surface: "workspace",
         layout: "list",
@@ -1252,16 +1294,48 @@ test("workspace overview is a distinct linked surface", () => {
   );
 
   assert.match(markup, /<div class="breadcrumb-step" aria-current="page"><h1 class="breadcrumb-current" title="Workspace">Workspace<\/h1>/);
-  assert.match(markup, /My work/);
+  assert.match(markup, /Focused work/);
   assert.match(markup, /Recent tasks/);
   assert.match(markup, /workspace-record-icon"><span[^>]*aria-hidden="true"/);
-  assert.match(markup, /href="\/issues\/active"/);
+  assert.match(markup, /<div class="workspace-metric"><span class="workspace-metric-icon"/);
   assert.match(markup, /href="\/issues\/33333333-3333-4333-8333-333333333333"/);
   assert.match(markup, /Projects/);
   assert.match(markup, /Releases/);
   assert.match(markup, /Saved views/);
   assert.match(markup, /Shared with me/);
+  assert.match(markup, /Shared navigation project/);
+  assert.match(markup, /<b>1<\/b><small>Shared with me<\/small>/);
+  assert.match(markup, /<div class="workspace-overview">[\s\S]*class="workspace-scope-selector"/);
+  const header = markup.match(/<header class="surface-header">([\s\S]*?)<\/header>/)?.[1] ?? "";
+  assert.doesNotMatch(header, /workspace-scope-selector/);
+  assert.match(markup, /aria-label="Workspace focus"/);
+  assert.match(markup, />My<\/option><option value="wsa">All accessible<\/option>/);
+  assert.doesNotMatch(markup, /Owner:/);
   assert.doesNotMatch(markup, /Search tasks…/);
+});
+
+test("workspace focus control is absent outside Workspace", () => {
+  const currentToken = `wso_${"B".repeat(43)}`;
+  const data: AppSnapshot = {
+    ...snapshot,
+    workspaceScope: {
+      selectedToken: "wsa",
+      selectedLabel: "All accessible",
+      fallback: false,
+      options: [
+        { token: currentToken, kind: "owner", label: "My", current: true },
+        { token: "wsa", kind: "all", label: "All accessible", current: false },
+      ],
+    },
+  };
+  const markup = renderToStaticMarkup(createElement(TaskTracker, {
+    initialData: data,
+    initialNavigation: { surface: "mine", layout: "list", taskId: null },
+    signOutPath: "/sign-out",
+  }));
+
+  assert.doesNotMatch(markup, /workspace-scope-selector/);
+  assert.doesNotMatch(markup, /Owner:/);
 });
 
 test("global search renders an accessible overlay without replacing local task search", () => {

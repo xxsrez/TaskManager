@@ -142,7 +142,6 @@ import {
 } from "@/lib/workspace-sync-contract";
 import {
   ALL_ACCESSIBLE_WORKSPACE_SCOPE,
-  opaqueWorkspaceOwnerToken,
   parseWorkspaceScopeToken,
   resolveWorkspaceScopeMembership,
   sharedWithMeRoots,
@@ -568,6 +567,15 @@ export function navigationStateWithWorkspaceScope(
     ...navigationHistoryState(navigation),
     [workspaceScopeHistoryKey]: workspaceScope,
   };
+}
+
+export function navigationStateForWorkspaceScope(
+  navigation: ResolvedNavigation,
+  workspaceScope: string,
+) {
+  return navigation.surface === "workspace"
+    ? navigationStateWithWorkspaceScope(navigation, workspaceScope)
+    : navigationHistoryState(navigation);
 }
 
 export function workspaceScopeFromHistory(state: unknown): string | null {
@@ -1363,20 +1371,29 @@ export function AccountMenu({
 
 export function TaskTracker({
   initialData,
+  initialWorkspaceData = null,
   initialNavigation,
   signOutPath,
 }: {
   initialData: AppSnapshot;
+  initialWorkspaceData?: AppSnapshot | null;
   initialNavigation: ResolvedNavigation;
   signOutPath: string;
 }) {
   const [data, setData] = useState(initialData);
   const dataRef = useRef(data);
-  const initialWorkspaceScopeToken = initialData.workspaceScope?.selectedToken ?? "";
-  const [workspaceScopeToken, setWorkspaceScopeToken] = useState(initialWorkspaceScopeToken);
-  const workspaceScopeTokenRef = useRef(initialWorkspaceScopeToken);
+  const workspaceScopeToken = ALL_ACCESSIBLE_WORKSPACE_SCOPE;
+  const workspaceScopeTokenRef = useRef(ALL_ACCESSIBLE_WORKSPACE_SCOPE);
+  const initialWorkspaceProjection = initialWorkspaceData ?? initialData;
+  const initialWorkspaceFocusToken = initialWorkspaceData?.workspaceScope?.selectedToken ??
+    initialData.workspaceScope?.options.find((option) => option.current)?.token ??
+    ALL_ACCESSIBLE_WORKSPACE_SCOPE;
+  const [workspaceData, setWorkspaceData] = useState(initialWorkspaceProjection);
+  const workspaceDataRef = useRef(initialWorkspaceProjection);
+  const [workspaceFocusToken, setWorkspaceFocusToken] = useState(initialWorkspaceFocusToken);
+  const workspaceFocusTokenRef = useRef(initialWorkspaceFocusToken);
+  const workspaceSyncRefreshReadyRef = useRef(false);
   const [workspaceScopeLoading, setWorkspaceScopeLoading] = useState(false);
-  const [resourceOwnerLabel, setResourceOwnerLabel] = useState<string | null>(null);
   const [surface, setSurface] = useState(initialNavigation.surface);
   const [layout, setLayout] = useState<Layout>(initialNavigation.layout);
   const [search, setSearch] = useState("");
@@ -1838,9 +1855,9 @@ export function TaskTracker({
       dataRef.current,
     );
     window.history.replaceState(
-      navigationStateWithWorkspaceScope(
+      navigationStateForWorkspaceScope(
         { surface: "workspace", layout: "list", taskId: null },
-        workspaceScopeTokenRef.current,
+        workspaceFocusTokenRef.current,
       ),
       "",
       taskReturnPath.current,
@@ -2013,45 +2030,49 @@ export function TaskTracker({
   }, [data]);
 
   useEffect(() => {
-    workspaceScopeTokenRef.current = workspaceScopeToken;
-  }, [workspaceScopeToken]);
+    workspaceDataRef.current = workspaceData;
+  }, [workspaceData]);
 
   useEffect(() => {
-    const projected = data.workspaceScope?.selectedToken;
-    if (!projected || projected === workspaceScopeTokenRef.current) return;
-    workspaceScopeTokenRef.current = projected;
-    setWorkspaceScopeToken(projected);
-    window.localStorage.setItem(workspaceScopeStorageKey(data.user.id), projected);
-    const resolved: ResolvedNavigation = { surface, layout, taskId: activeTaskId };
-    window.history.replaceState(
-      navigationStateWithWorkspaceScope(resolved, projected),
-      "",
-      window.location.href,
-    );
-  }, [activeTaskId, data.user.id, data.workspaceScope?.selectedToken, layout, surface]);
+    workspaceFocusTokenRef.current = workspaceFocusToken;
+  }, [workspaceFocusToken]);
 
   useEffect(() => {
-    if (!initialData.workspaceScope || initialNavigation.taskId ||
-      initialNavigation.surface.startsWith("project:") ||
-      initialNavigation.surface.startsWith("project-releases:") ||
-      initialNavigation.surface.startsWith("release:") ||
-      initialNavigation.surface.startsWith("view:")) return;
+    if (initialNavigation.surface !== "workspace" || !initialWorkspaceProjection.workspaceScope) {
+      return;
+    }
     const persisted = window.localStorage.getItem(
       workspaceScopeStorageKey(initialData.user.id),
     );
     const membership = resolveWorkspaceScopeMembership(
       persisted,
-      initialData.workspaceScope.options,
-      initialData.workspaceScope.options.find((option) => option.current)?.token ??
-        initialData.workspaceScope.selectedToken,
+      initialWorkspaceProjection.workspaceScope.options,
+      initialWorkspaceProjection.workspaceScope.options.find((option) => option.current)?.token ??
+        initialWorkspaceProjection.workspaceScope.selectedToken,
     );
-    if (!persisted || membership.fallback || membership.token === workspaceScopeTokenRef.current) {
+    if (!persisted || membership.fallback || membership.token === workspaceFocusTokenRef.current) {
       return;
     }
     void loadWorkspaceScopeSnapshot(membership.token, "replace", false);
     // Initial hydration intentionally uses the server-projected option set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (surface !== "workspace") return;
+    if (!workspaceSyncRefreshReadyRef.current) {
+      workspaceSyncRefreshReadyRef.current = true;
+      return;
+    }
+    if (workspaceFocusTokenRef.current === ALL_ACCESSIBLE_WORKSPACE_SCOPE) {
+      workspaceDataRef.current = data;
+      setWorkspaceData(data);
+      return;
+    }
+    void loadWorkspaceScopeSnapshot(workspaceFocusTokenRef.current, "none", false);
+    // A global sync/mutation changes the ACL-complete source; refresh the local focus.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.syncCursor, surface]);
 
   useEffect(() => {
     taskSearchRef.current = taskSearch;
@@ -2215,9 +2236,9 @@ export function TaskTracker({
 
   useEffect(() => {
     window.history.replaceState(
-      navigationStateWithWorkspaceScope(
+      navigationStateForWorkspaceScope(
         initialNavigation,
-        workspaceScopeTokenRef.current,
+        workspaceFocusTokenRef.current,
       ),
       "",
       window.location.href,
@@ -3000,31 +3021,6 @@ export function TaskTracker({
   const contextProjectRecord = contextProject
     ? data.projects.find((project) => project.id === contextProject)
     : undefined;
-  const resourceOwnerUserId = activeTask
-    ? activeTask.projectId
-      ? data.projects.find((project) => project.id === activeTask.projectId)?.ownerUserId
-      : activeTask.ownerUserId
-    : contextProjectRecord?.ownerUserId ?? (
-        activeSavedView?.scopeProjectId
-          ? data.projects.find((project) => project.id === activeSavedView.scopeProjectId)?.ownerUserId
-          : activeSavedView?.ownerUserId
-      );
-  useEffect(() => {
-    let current = true;
-    if (!resourceOwnerUserId || !data.workspaceScope) {
-      queueMicrotask(() => {
-        if (current) setResourceOwnerLabel(null);
-      });
-      return () => { current = false; };
-    }
-    void opaqueWorkspaceOwnerToken(resourceOwnerUserId).then((token) => {
-      if (!current) return;
-      setResourceOwnerLabel(
-        data.workspaceScope?.options.find((option) => option.token === token)?.label ?? null,
-      );
-    });
-    return () => { current = false; };
-  }, [data.workspaceScope, resourceOwnerUserId]);
   const surfaceContextualEntity = contextReleaseRecord
     ? releaseContextualEntity(contextReleaseRecord)
     : activeSavedView
@@ -3234,18 +3230,20 @@ export function TaskTracker({
       }
       const before = dataRef.current;
       const after = applyMutationResult(before, value);
-      if ("workspaceScope" in value && value.workspaceScope) {
-        const selectedToken = value.workspaceScope.selectedToken;
-        workspaceScopeTokenRef.current = selectedToken;
-        setWorkspaceScopeToken(selectedToken);
-        window.localStorage.setItem(workspaceScopeStorageKey(value.user.id), selectedToken);
-      }
       dataRef.current = after;
       setData((current) => {
         const next = applyMutationResult(current, value);
         dataRef.current = next;
         return next;
       });
+      if (surface === "workspace") {
+        if (workspaceFocusTokenRef.current === ALL_ACCESSIBLE_WORKSPACE_SCOPE) {
+          workspaceDataRef.current = after;
+          setWorkspaceData(after);
+        } else {
+          void loadWorkspaceScopeSnapshot(workspaceFocusTokenRef.current, "none", false);
+        }
+      }
       if ("taskIds" in value && "taskLabels" in value) {
         const replaced = new Set(value.taskIds);
         setTaskDetail((current) => current && replaced.has(current.task.id)
@@ -3596,7 +3594,7 @@ export function TaskTracker({
     historyMode: "push" | "replace" | "none" = "push",
     goToWorkspace = true,
   ) {
-    const scope = dataRef.current.workspaceScope;
+    const scope = workspaceDataRef.current.workspaceScope ?? dataRef.current.workspaceScope;
     if (!scope) return false;
     const currentToken = scope.options.find((option) => option.current)?.token ??
       scope.selectedToken;
@@ -3610,26 +3608,17 @@ export function TaskTracker({
     try {
       const incoming = await fetchTaskSnapshot(fetch, membership.token);
       const selectedToken = incoming.workspaceScope?.selectedToken ?? currentToken;
-      workspaceScopeTokenRef.current = selectedToken;
-      setWorkspaceScopeToken(selectedToken);
-      dataRef.current = incoming;
-      setData(incoming);
-      completeCatalogFlights.current = {};
-      setCatalogPages({});
-      setCatalogEpoch((current) => current + 1);
-      setTaskSearch(null);
-      setSelected(new Set());
-      setPeekTaskId(null);
-      setTaskDetail(null);
-      setForcedTaskDetailId(null);
-      taskQueryGenerationRef.current += 1;
+      workspaceFocusTokenRef.current = selectedToken;
+      setWorkspaceFocusToken(selectedToken);
+      workspaceDataRef.current = incoming;
+      setWorkspaceData(incoming);
       window.localStorage.setItem(
         workspaceScopeStorageKey(incoming.user.id),
         selectedToken,
       );
       const next: ResolvedNavigation = goToWorkspace
         ? { surface: "workspace", layout: "list", taskId: null }
-        : { surface, layout, taskId: activeTaskId };
+        : { surface: "workspace", layout: "list", taskId: null };
       if (goToWorkspace) {
         setSurface(next.surface);
         setLayout(next.layout);
@@ -3638,7 +3627,7 @@ export function TaskTracker({
       }
       if (historyMode !== "none") {
         window.history[historyMode === "push" ? "pushState" : "replaceState"](
-          navigationStateWithWorkspaceScope(next, selectedToken),
+          navigationStateForWorkspaceScope(next, selectedToken),
           "",
           goToWorkspace ? "/workspace" : window.location.href,
         );
@@ -3647,7 +3636,7 @@ export function TaskTracker({
     } catch (requestError) {
       setError(requestError instanceof Error
         ? requestError.message
-        : "Workspace scope could not be loaded");
+        : "Workspace focus could not be loaded");
       return false;
     } finally {
       setWorkspaceScopeLoading(false);
@@ -3674,13 +3663,13 @@ export function TaskTracker({
     if (!next.taskId) taskReturnPath.current = nextPath;
     if (historyMode === "push") {
       window.history.pushState(
-        navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current),
+        navigationStateForWorkspaceScope(next, workspaceFocusTokenRef.current),
         "",
         nextPath,
       );
     } else if (historyMode === "replace") {
       window.history.replaceState(
-        navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current),
+        navigationStateForWorkspaceScope(next, workspaceFocusTokenRef.current),
         "",
         nextPath,
       );
@@ -3698,19 +3687,18 @@ export function TaskTracker({
       window.location.assign("/admin");
       return;
     }
-    if (
-      nextSurface === "shared" &&
-      workspaceScopeTokenRef.current !== ALL_ACCESSIBLE_WORKSPACE_SCOPE
-    ) {
-      void (async () => {
-        if (await loadWorkspaceScopeSnapshot(
-          ALL_ACCESSIBLE_WORKSPACE_SCOPE,
-          "none",
-          false,
-        )) {
-          applyNavigation({ surface: "shared", layout: "list", taskId: null });
-        }
-      })();
+    if (nextSurface === "workspace" && surface !== "workspace") {
+      const scope = workspaceDataRef.current.workspaceScope ?? dataRef.current.workspaceScope;
+      const currentToken = scope?.options.find((option) => option.current)?.token;
+      const persisted = window.localStorage.getItem(workspaceScopeStorageKey(data.user.id));
+      const requested = scope && currentToken
+        ? resolveWorkspaceScopeMembership(
+            persisted ?? workspaceFocusTokenRef.current,
+            scope.options,
+            currentToken,
+          ).token
+        : ALL_ACCESSIBLE_WORKSPACE_SCOPE;
+      void loadWorkspaceScopeSnapshot(requested);
       return;
     }
     applyNavigation({
@@ -3944,7 +3932,7 @@ export function TaskTracker({
     const next = target ? resolveNavigationTarget(target, data) : null;
     window.history.replaceState(
       next
-        ? navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current)
+        ? navigationStateForWorkspaceScope(next, workspaceFocusTokenRef.current)
         : null,
       "",
       taskReturnPath.current,
@@ -4291,10 +4279,6 @@ export function TaskTracker({
   useEffect(() => {
     function handlePopState(event: PopStateEvent) {
       void (async () => {
-        const historyScope = workspaceScopeFromHistory(event.state);
-        if (historyScope && historyScope !== workspaceScopeTokenRef.current) {
-          await loadWorkspaceScopeSnapshot(historyScope, "none", false);
-        }
         const currentData = dataRef.current;
         const target = parseNavigationPath(window.location.pathname);
         const resolved =
@@ -4304,6 +4288,12 @@ export function TaskTracker({
             currentData,
           ) ?? (target ? resolveNavigationTarget(target, currentData) : null);
         if (resolved) {
+          const historyScope = resolved.surface === "workspace"
+            ? workspaceScopeFromHistory(event.state)
+            : null;
+          if (historyScope && historyScope !== workspaceFocusTokenRef.current) {
+            await loadWorkspaceScopeSnapshot(historyScope, "none", false);
+          }
           setSurface(resolved.surface);
           setLayout(resolved.layout);
           setActiveTaskId(resolved.taskId);
@@ -4316,7 +4306,6 @@ export function TaskTracker({
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
     // The handler intentionally resolves the latest loader inputs through refs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
   useEffect(() => {
@@ -4490,7 +4479,7 @@ export function TaskTracker({
         setActiveTaskId(null);
         taskReturnPath.current = navigationPath(next, data);
         window.history.pushState(
-          navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current),
+          navigationStateForWorkspaceScope(next, workspaceFocusTokenRef.current),
           "",
           navigationPath(next, data),
         );
@@ -4772,19 +4761,6 @@ export function TaskTracker({
               </nav>
               <span className="count-pill">{surfaceCount}</span>
             </div>
-            {data.workspaceScope && (
-              <WorkspaceScopeSelector
-                value={workspaceScopeToken}
-                options={data.workspaceScope.options}
-                busy={workspaceScopeLoading}
-                onChange={(token) => void loadWorkspaceScopeSnapshot(token)}
-              />
-            )}
-            {resourceOwnerLabel && (
-              <span className="workspace-resource-owner" title={`Resource owner: ${resourceOwnerLabel}`}>
-                Owner: {resourceOwnerLabel}
-              </span>
-            )}
             <div className="title-actions">
               {surface === "teams" && <button className="button primary" type="button" disabled={Boolean(teamMutation)} aria-busy={teamMutation?.kind === "create" || undefined} onClick={() => { setTeamAlert(""); setDialog("teamCreate"); }}><Plus size={14} />New Team</button>}
               {activeTeamDetail?.currentMembership.role === "owner" && <button className="button ghost" type="button" disabled={Boolean(teamMutation) || teamDetailState.status !== "ready"} onClick={() => { setTeamAlert(""); setDialog("teamRename"); }}><UsersRound size={14} />Rename Team</button>}
@@ -4991,8 +4967,12 @@ export function TaskTracker({
         ) : surface === "workspace" ? (
           <WorkspaceOverviewSurface
             data={data}
+            focusedData={workspaceData}
             statusMap={statusMap}
             projectMap={projectMap}
+            workspaceScopeToken={workspaceFocusToken}
+            workspaceScopeLoading={workspaceScopeLoading}
+            onWorkspaceScopeChange={(token) => void loadWorkspaceScopeSnapshot(token)}
             onOpen={(nextSurface, nextLayout = "list") => navigateSurface(nextSurface, nextLayout)}
             onOpenTask={openTask}
             onCreateTask={() => void openCreate()}
@@ -5105,7 +5085,7 @@ export function TaskTracker({
       )}
       {peekTask && <Peek task={peekTask} status={statusMap.get(peekTask.statusId)} project={peekTask.projectId ? projectMap.get(peekTask.projectId) : undefined} labels={labelsForTask(data, peekTask.id)} hierarchy={taskHierarchySummary(peekTask, data.tasks)} onClose={() => setPeekTaskId(null)} onOpen={() => { openTask(peekTask.id); setPeekTaskId(null); }} />}
       {dialog === "task" && canCreateTask && <TaskComposer data={data} contextProject={contextProject} contextRelease={contextRelease} defaults={createDefaults} onClose={() => setDialog(null)} onSubmit={createTaskForComposer} busy={busy} />}
-      {dialog === "project" && <ProjectDialog currentUser={data.user} leadOptions={[data.user]} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const before = new Set(dataRef.current.projects.map((project) => project.id)); const ok = await mutate("/api/projects", "POST", input); if (!ok) return; const created = dataRef.current.projects.find((project) => !before.has(project.id)); setDialog(null); if (created) { const next = { surface: `project:${created.id}`, layout: "list" as const, taskId: null }; setSurface(next.surface); setLayout(next.layout); setActiveTaskId(null); const path = `/projects/${encodeURIComponent(created.publicId)}`; taskReturnPath.current = path; window.history.pushState(navigationStateWithWorkspaceScope(next, workspaceScopeTokenRef.current), "", path); } }} busy={busy} />}
+      {dialog === "project" && <ProjectDialog currentUser={data.user} leadOptions={[data.user]} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const before = new Set(dataRef.current.projects.map((project) => project.id)); const ok = await mutate("/api/projects", "POST", input); if (!ok) return; const created = dataRef.current.projects.find((project) => !before.has(project.id)); setDialog(null); if (created) { const next = { surface: `project:${created.id}`, layout: "list" as const, taskId: null }; setSurface(next.surface); setLayout(next.layout); setActiveTaskId(null); const path = `/projects/${encodeURIComponent(created.publicId)}`; taskReturnPath.current = path; window.history.pushState(navigationStateForWorkspaceScope(next, workspaceFocusTokenRef.current), "", path); } }} busy={busy} />}
       {dialog === "projectEdit" && contextProjectRecord && <ProjectDialog project={contextProjectRecord} currentUser={data.user} leadOptions={projectMemberOptions(data, contextProjectRecord)} openTaskCount={openProjectTaskCount(contextProjectRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, ...input }); if (ok) setDialog(null); }} onArchive={async () => { const ok = await mutate(`/api/projects/${contextProjectRecord.id}`, "PATCH", { version: contextProjectRecord.version, archived: !contextProjectRecord.archivedAt }); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "release" && <ReleaseDialog projects={data.projects.filter((project) => !project.archivedAt && canEditContent(project.accessRole))} initialProjectId={contextProject} openTaskCount={0} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate("/api/releases", "POST", input); if (ok) setDialog(null); }} busy={busy} />}
       {dialog === "releaseEdit" && contextReleaseRecord && <ReleaseDialog release={contextReleaseRecord} projects={data.projects.filter((project) => project.id === contextReleaseRecord.projectId)} initialProjectId={contextReleaseRecord.projectId} openTaskCount={openReleaseTaskCount(contextReleaseRecord.id, data.tasks, statusMap)} onClose={() => setDialog(null)} onSubmit={async (input) => { const ok = await mutate(`/api/releases/${contextReleaseRecord.id}`, "PATCH", { version: contextReleaseRecord.version, ...input }); if (ok) setDialog(null); }} onDelete={() => void openRecoverableDelete(releaseContextualEntity(contextReleaseRecord))} busy={busy} />}
@@ -5166,11 +5146,11 @@ function WorkspaceScopeSelector({ value, options, busy, onChange }: {
   return (
     <label className="workspace-scope-selector">
       <UsersRound size={14} aria-hidden="true" />
-      <span>Owner workspace</span>
+      <span>Workspace focus</span>
       <select
         value={value}
         disabled={busy}
-        aria-label="Owner workspace"
+        aria-label="Workspace focus"
         onChange={(event) => onChange(event.target.value)}
       >
         {options.map((option) => (
@@ -10132,8 +10112,12 @@ export function GlobalSearchOverlay({
 
 function WorkspaceOverviewSurface({
   data,
+  focusedData,
   statusMap,
   projectMap,
+  workspaceScopeToken,
+  workspaceScopeLoading,
+  onWorkspaceScopeChange,
   onOpen,
   onOpenTask,
   onCreateTask,
@@ -10141,45 +10125,66 @@ function WorkspaceOverviewSurface({
   onCreateRelease,
 }: {
   data: AppSnapshot;
+  focusedData: AppSnapshot;
   statusMap: Map<string, WorkflowStatusRecord>;
   projectMap: Map<string, ProjectRecord>;
+  workspaceScopeToken: string;
+  workspaceScopeLoading: boolean;
+  onWorkspaceScopeChange: (token: string) => void;
   onOpen: (surface: string, layout?: Layout) => void;
   onOpenTask: (taskId: string) => void;
   onCreateTask: () => void;
   onCreateProject: () => void;
   onCreateRelease: () => void;
 }) {
-  const openTasks = data.tasks.filter((task) => !task.archivedAt);
-  const activeCount = data.workspaceMetrics?.taskCounts.active ?? openTasks.filter((task) => {
+  const openTasks = focusedData.tasks.filter((task) => !task.archivedAt);
+  const activeCount = focusedData.workspaceMetrics?.taskCounts.active ?? openTasks.filter((task) => {
     const category = statusMap.get(task.statusId)?.category;
     return category === "unstarted" || category === "started";
   }).length;
-  const backlogCount = data.workspaceMetrics?.taskCounts.backlog ?? openTasks.filter(
+  const backlogCount = focusedData.workspaceMetrics?.taskCounts.backlog ?? openTasks.filter(
     (task) => statusMap.get(task.statusId)?.category === "backlog",
   ).length;
   const recentTasks = [...openTasks]
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 5);
   const recentProjects = selectRecentNavigation(
-    data.navigationCollections?.projects.items ?? data.projects,
+    focusedData.navigationCollections?.projects.items ?? focusedData.projects,
   );
   const recentReleases = selectRecentNavigation(
-    data.navigationCollections?.releases.items ?? data.releases,
+    focusedData.navigationCollections?.releases.items ?? focusedData.releases,
   );
   const recentViews = selectRecentNavigation(
-    data.navigationCollections?.views.items ?? data.views,
+    focusedData.navigationCollections?.views.items ?? focusedData.views,
   );
   const { projects: sharedProjects, views: sharedViews } = sharedWithMeRoots(data);
   const sharedCount = sharedProjects.length + sharedViews.length;
   const isEmpty =
     openTasks.length === 0 &&
-    (data.navigationCollections?.projects.total ?? data.projects.length) === 0 &&
-    (data.navigationCollections?.releases.total ?? data.releases.length) === 0 &&
-    (data.navigationCollections?.views.total ?? data.views.length) === 0;
-  const canCreateRelease = data.projects.some((project) => canEditContent(project.accessRole));
+    (focusedData.navigationCollections?.projects.total ?? focusedData.projects.length) === 0 &&
+    (focusedData.navigationCollections?.releases.total ?? focusedData.releases.length) === 0 &&
+    (focusedData.navigationCollections?.views.total ?? focusedData.views.length) === 0 &&
+    sharedCount === 0;
+  const canCreateRelease = focusedData.projects.some((project) => canEditContent(project.accessRole));
+  const scopeOptions = focusedData.workspaceScope?.options ?? data.workspaceScope?.options ?? [];
+  const scopeLabel = scopeOptions.find((option) => option.token === workspaceScopeToken)?.label ?? "My";
 
   return (
     <div className="workspace-overview">
+      {scopeOptions.length > 0 && (
+        <div className="workspace-focus-row">
+          <div>
+            <b>Workspace focus</b>
+            <span>{scopeLabel === "My" ? "Only resources you own" : "Every resource you can access"}</span>
+          </div>
+          <WorkspaceScopeSelector
+            value={workspaceScopeToken}
+            options={scopeOptions}
+            busy={workspaceScopeLoading}
+            onChange={onWorkspaceScopeChange}
+          />
+        </div>
+      )}
       {isEmpty && (
         <section className="workspace-empty-banner" aria-labelledby="workspace-empty-title">
           <span className="workspace-empty-icon"><Boxes size={20} /></span>
@@ -10197,16 +10202,16 @@ function WorkspaceOverviewSurface({
       <section className="workspace-section" aria-labelledby="workspace-my-work">
         <WorkspaceSectionHeader
           id="workspace-my-work"
-          title="My work"
-          description="A compact view of the tasks available to you."
+          title="Focused work"
+          description={`${scopeLabel} resources inside Workspace only.`}
           href="/issues"
           label="My tasks"
           onOpen={() => onOpen("mine")}
         />
         <div className="workspace-metrics">
-          <WorkspaceMetric href="/issues/active" label="Active" value={activeCount} icon={<Zap size={16} />} onOpen={() => onOpen("active")} />
-          <WorkspaceMetric href="/issues/backlog" label="Backlog" value={backlogCount} icon={<Inbox size={16} />} onOpen={() => onOpen("backlog")} />
-          <WorkspaceMetric href="/projects" label="Projects" value={data.navigationCollections?.projects.total ?? data.projects.length} icon={<FolderKanban size={16} />} onOpen={() => onOpen("projects")} />
+          <WorkspaceMetric label="Active" value={activeCount} icon={<Zap size={16} />} />
+          <WorkspaceMetric label="Backlog" value={backlogCount} icon={<Inbox size={16} />} />
+          <WorkspaceMetric label="Projects" value={focusedData.navigationCollections?.projects.total ?? focusedData.projects.length} icon={<FolderKanban size={16} />} />
           <WorkspaceMetric href="/shared" label="Shared with me" value={sharedCount} icon={<UsersRound size={16} />} onOpen={() => onOpen("shared")} />
         </div>
         <div className="workspace-panel workspace-recent-panel">
@@ -10244,7 +10249,7 @@ function WorkspaceOverviewSurface({
                   <li key={project.id}>
                     <a href={`/projects/${encodeURIComponent(project.publicId)}`} onClick={(event) => handleLocalLink(event, () => onOpen(`project:${project.id}`))}>
                       <span className="workspace-record-icon" style={{ color: project.color }}><FolderKanban size={15} /></span>
-                      <span className="workspace-record-copy"><b>{project.name}</b><small>{tasks.length} tasks · {completion(tasks, data.statuses)}% complete</small></span>
+                      <span className="workspace-record-copy"><b>{project.name}</b><small>{tasks.length} tasks · {completion(tasks, focusedData.statuses)}% complete</small></span>
                       {project.accessRole !== "owner" && <span className="status-badge">Shared</span>}
                       <ChevronRight size={14} aria-hidden="true" />
                     </a>
@@ -10268,7 +10273,7 @@ function WorkspaceOverviewSurface({
                   <li key={release.id}>
                     <a href={href} onClick={(event) => handleLocalLink(event, () => onOpen(`release:${release.id}`))}>
                       <span className="workspace-record-icon"><Rocket size={15} /></span>
-                      <span className="workspace-record-copy"><b>{formatReleaseName(project?.name, release.name)}</b><small>{tasks.length} tasks · {completion(tasks, data.statuses)}% complete</small></span>
+                      <span className="workspace-record-copy"><b>{formatReleaseName(project?.name, release.name)}</b><small>{tasks.length} tasks · {completion(tasks, focusedData.statuses)}% complete</small></span>
                       <span className={`status-badge release-${release.status}`}>{release.status}</span>
                       <ChevronRight size={14} aria-hidden="true" />
                     </a>
@@ -10317,8 +10322,11 @@ function WorkspaceSectionHeader({ id, title, description, href, label, onOpen }:
   return <header className="workspace-section-header"><div><h2 id={id}>{title}</h2><p>{description}</p></div><a href={href} onClick={(event) => handleLocalLink(event, onOpen)}>{label}<ChevronRight size={13} aria-hidden="true" /></a></header>;
 }
 
-function WorkspaceMetric({ href, label, value, icon, onOpen }: { href: string; label: string; value: number; icon: React.ReactNode; onOpen: () => void }) {
-  return <a className="workspace-metric" href={href} onClick={(event) => handleLocalLink(event, onOpen)}><span className="workspace-metric-icon">{icon}</span><span><b>{value}</b><small>{label}</small></span><ChevronRight size={14} aria-hidden="true" /></a>;
+function WorkspaceMetric({ href, label, value, icon, onOpen }: { href?: string; label: string; value: number; icon: React.ReactNode; onOpen?: () => void }) {
+  const content = <><span className="workspace-metric-icon">{icon}</span><span><b>{value}</b><small>{label}</small></span>{href && <ChevronRight size={14} aria-hidden="true" />}</>;
+  return href && onOpen
+    ? <a className="workspace-metric" href={href} onClick={(event) => handleLocalLink(event, onOpen)}>{content}</a>
+    : <div className="workspace-metric">{content}</div>;
 }
 
 function WorkspaceSectionEmpty({ title, description }: { title: string; description: string }) {

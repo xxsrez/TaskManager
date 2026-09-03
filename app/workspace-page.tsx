@@ -28,8 +28,6 @@ import { RECENT_NAVIGATION_LIMIT } from "@/lib/recent-navigation";
 import { NotFoundError } from "@/lib/domain";
 import {
   ALL_ACCESSIBLE_WORKSPACE_SCOPE,
-  opaqueWorkspaceOwnerToken,
-  workspaceOwnerUserId,
 } from "@/lib/workspace-scope";
 
 const loadWorkspaceSnapshot = cache(async (includeAdminOverview: boolean) => {
@@ -40,7 +38,7 @@ const loadWorkspaceSnapshot = cache(async (includeAdminOverview: boolean) => {
     includeAdminOverview,
     taskLimit: INITIAL_UI_SNAPSHOT_TASKS,
     navigationLimit: RECENT_NAVIGATION_LIMIT,
-    workspaceScope: null,
+    workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
   });
 });
 
@@ -50,26 +48,25 @@ export async function WorkspacePage({ pathname }: { pathname: string }) {
 
   const loadedSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!loadedSnapshot) return <SignInPage returnTo={pathname} />;
-  const baseSnapshot = target.kind === "shared"
-    ? await getSnapshot(loadedSnapshot.user, {
-        taskLimit: INITIAL_UI_SNAPSHOT_TASKS,
-        navigationLimit: RECENT_NAVIGATION_LIMIT,
-        workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
-      })
-    : loadedSnapshot;
-
-  const contextSnapshot = await withAddressedEntityContext(baseSnapshot, target);
+  const contextSnapshot = await withAddressedEntityContext(loadedSnapshot, target);
   const addressableSnapshot = await withAddressedTaskDetail(contextSnapshot, target);
   const navigation = resolveNavigationTarget(target, addressableSnapshot);
   if (!navigation) notFound();
   const redirectTo = legacyRedirectPath(target, addressableSnapshot);
   if (redirectTo) redirect(redirectTo);
   const selectedSnapshot = await withSelectedTaskDetail(addressableSnapshot, navigation);
-  const snapshot = await withAddressedWorkspaceScope(selectedSnapshot, navigation);
+  const workspaceSnapshot = navigation.surface === "workspace"
+    ? await getSnapshot(selectedSnapshot.user, {
+        taskLimit: INITIAL_UI_SNAPSHOT_TASKS,
+        navigationLimit: RECENT_NAVIGATION_LIMIT,
+        workspaceScope: null,
+      })
+    : null;
 
   return (
     <TaskTracker
-      initialData={snapshot}
+      initialData={selectedSnapshot}
+      initialWorkspaceData={workspaceSnapshot}
       initialNavigation={navigation}
       signOutPath={chatGPTSignOutPath("/")}
     />
@@ -82,90 +79,12 @@ export async function workspaceMetadata(pathname: string): Promise<Metadata> {
 
   const loadedSnapshot = await loadWorkspaceSnapshot(target.kind === "admin");
   if (!loadedSnapshot) return signedOutMetadata();
-  const baseSnapshot = target.kind === "shared"
-    ? await getSnapshot(loadedSnapshot.user, {
-        taskLimit: INITIAL_UI_SNAPSHOT_TASKS,
-        navigationLimit: RECENT_NAVIGATION_LIMIT,
-        workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
-      })
-    : loadedSnapshot;
-  const contextSnapshot = await withAddressedEntityContext(baseSnapshot, target);
+  const contextSnapshot = await withAddressedEntityContext(loadedSnapshot, target);
   const addressableSnapshot = await withAddressedTaskDetail(contextSnapshot, target);
   const navigation = resolveNavigationTarget(target, addressableSnapshot);
   if (!navigation) return notFoundMetadata();
   const selectedSnapshot = await withSelectedTaskDetail(addressableSnapshot, navigation);
-  const snapshot = await withAddressedWorkspaceScope(selectedSnapshot, navigation);
-  return metadataForNavigation(navigation, snapshot);
-}
-
-async function withAddressedWorkspaceScope(
-  snapshot: AppSnapshot,
-  navigation: ResolvedNavigation,
-): Promise<AppSnapshot> {
-  if (!snapshot.workspaceScope) return snapshot;
-  const projects = new Map(snapshot.projects.map((project) => [project.id, project]));
-  const task = navigation.taskId
-    ? snapshot.tasks.find((item) => item.id === navigation.taskId)
-    : undefined;
-  const record = task ?? (
-    navigation.surface.startsWith("project:")
-      ? snapshot.projects.find((item) => item.id === navigation.surface.slice(8))
-      : navigation.surface.startsWith("project-releases:")
-        ? snapshot.projects.find((item) => item.id === navigation.surface.slice("project-releases:".length))
-        : navigation.surface.startsWith("release:")
-          ? snapshot.releases.find((item) => item.id === navigation.surface.slice(8))
-          : navigation.surface.startsWith("view:")
-            ? snapshot.views.find((item) => item.id === navigation.surface.slice(5))
-            : undefined
-  );
-  if (!record) return snapshot;
-  const ownerUserId = workspaceOwnerUserId(record, projects);
-  if (!ownerUserId) return snapshot;
-  const token = await opaqueWorkspaceOwnerToken(ownerUserId);
-  const option = snapshot.workspaceScope.options.find((item) => item.token === token);
-  if (!option || option.token === snapshot.workspaceScope.selectedToken) return snapshot;
-
-  const scoped = await getSnapshot(snapshot.user, {
-    taskLimit: INITIAL_UI_SNAPSHOT_TASKS,
-    navigationLimit: RECENT_NAVIGATION_LIMIT,
-    workspaceScope: option.token,
-  });
-  return mergeAddressedContext(scoped, snapshot, navigation);
-}
-
-function mergeAddressedContext(
-  scoped: AppSnapshot,
-  addressed: AppSnapshot,
-  navigation: ResolvedNavigation,
-): AppSnapshot {
-  const task = navigation.taskId
-    ? addressed.tasks.find((item) => item.id === navigation.taskId)
-    : undefined;
-  const view = navigation.surface.startsWith("view:")
-    ? addressed.views.find((item) => item.id === navigation.surface.slice(5))
-    : undefined;
-  const release = navigation.surface.startsWith("release:")
-    ? addressed.releases.find((item) => item.id === navigation.surface.slice(8))
-    : task?.releaseId
-      ? addressed.releases.find((item) => item.id === task.releaseId)
-      : undefined;
-  const projectId = task?.projectId ?? release?.projectId ?? view?.scopeProjectId ?? (
-    navigation.surface.startsWith("project:")
-      ? navigation.surface.slice(8)
-      : navigation.surface.startsWith("project-releases:")
-        ? navigation.surface.slice("project-releases:".length)
-        : null
-  );
-  const project = projectId
-    ? addressed.projects.find((item) => item.id === projectId)
-    : undefined;
-  return {
-    ...scoped,
-    tasks: task ? prependUnique(task, scoped.tasks) : scoped.tasks,
-    projects: project ? prependUnique(project, scoped.projects) : scoped.projects,
-    releases: release ? prependUnique(release, scoped.releases) : scoped.releases,
-    views: view ? prependUnique(view, scoped.views) : scoped.views,
-  };
+  return metadataForNavigation(navigation, selectedSnapshot);
 }
 
 async function withAddressedEntityContext(

@@ -16,12 +16,14 @@ import {
   transferProjectOwnership,
 } from "../lib/repository";
 import {
+  navigationStateForWorkspaceScope,
   navigationStateWithWorkspaceScope,
   scopedUiApiPath,
   taskDetailUiApiPath,
   taskRelationSearchUiApiPath,
   workspaceScopeFromHistory,
 } from "../components/task-tracker";
+import { GET as getBootstrapRoute } from "../app/api/bootstrap/route";
 import { GET as searchTasksRoute } from "../app/api/tasks/route";
 import { GET as getTaskRoute } from "../app/api/tasks/[id]/route";
 import {
@@ -34,6 +36,7 @@ import {
 } from "../lib/workspace-scope";
 import { defaultViewDisplay, emptyViewQuery } from "../lib/view-contract";
 import type {
+  AppSnapshot,
   ProjectRecord,
   SavedViewRecord,
   TaskRecord,
@@ -53,12 +56,11 @@ before(async () => {
 after(async () => dispose?.());
 afterEach(() => configureActorResolverForTests(null));
 
-test("workspace scope tokens are opaque, bounded, and fail closed to the current user", async () => {
+test("workspace focus exposes only My and All accessible and stays out of non-workspace history", async () => {
   const currentToken = await opaqueWorkspaceOwnerToken("usr_current-internal");
   const otherToken = await opaqueWorkspaceOwnerToken("usr_other-internal");
   const descriptors: WorkspaceScopeDescriptor[] = [
-    { token: currentToken, kind: "owner", label: "Your work", current: true },
-    { token: otherToken, kind: "owner", label: "Other Owner", current: false },
+    { token: currentToken, kind: "owner", label: "My", current: true },
     { token: ALL_ACCESSIBLE_WORKSPACE_SCOPE, kind: "all", label: "All accessible", current: false },
   ];
 
@@ -74,11 +76,23 @@ test("workspace scope tokens are opaque, bounded, and fail closed to the current
   assert.equal(parseWorkspaceScopeToken("other@example.test"), null);
   assert.equal(parseWorkspaceScopeToken("owner:../../usr_other-internal"), null);
   assert.equal(currentToken.includes("usr_current"), false);
-  const historyState = navigationStateWithWorkspaceScope(
+  const historyState = navigationStateForWorkspaceScope(
     { surface: "projects", layout: "list", taskId: null },
     otherToken,
   );
-  assert.equal(workspaceScopeFromHistory(historyState), otherToken);
+  assert.equal(workspaceScopeFromHistory(historyState), null);
+  const workspaceHistoryState = navigationStateForWorkspaceScope(
+    { surface: "workspace", layout: "list", taskId: null },
+    currentToken,
+  );
+  assert.equal(workspaceScopeFromHistory(workspaceHistoryState), currentToken);
+  assert.equal(
+    workspaceScopeFromHistory(navigationStateWithWorkspaceScope(
+      { surface: "workspace", layout: "list", taskId: null },
+      currentToken,
+    )),
+    currentToken,
+  );
   assert.equal(workspaceScopeFromHistory({ taskManagerWorkspaceScope: "usr_other-internal" }), null);
   assert.equal(
     scopedUiApiPath("/api/tasks?cursor=next", otherToken),
@@ -95,7 +109,7 @@ test("workspace scope tokens are opaque, bounded, and fail closed to the current
 
   assert.deepEqual(
     resolveWorkspaceScopeMembership(otherToken, descriptors, currentToken),
-    { token: otherToken, fallback: false },
+    { token: currentToken, fallback: true },
   );
   assert.deepEqual(
     resolveWorkspaceScopeMembership("wso_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", descriptors, currentToken),
@@ -307,7 +321,7 @@ test("project children use the current Project owner while global views use thei
   assert.equal(workspaceOwnerUserId(globalView, projects), "view-owner");
 });
 
-test("scoped snapshot, task query, catalogs, metrics, and shared roots narrow after ACL", async () => {
+test("workspace focus supports only My or the complete ACL union across grant changes", async () => {
   const current = await getOrCreateUser({
     provider: "chatgpt",
     providerAccountKey: "workspace-scope-current",
@@ -369,14 +383,17 @@ test("scoped snapshot, task query, catalogs, metrics, and shared roots narrow af
     workspaceScope: sharedToken,
     navigationLimit: 3,
   });
-  assert.deepEqual(sharedSnapshot.projects.map((item) => item.name), ["Shared Project"]);
-  assert.deepEqual(sharedSnapshot.tasks.map((item) => item.title), ["Shared Task"]);
-  assert.deepEqual(sharedSnapshot.views.map((item) => item.name), ["Shared global view"]);
+  assert.deepEqual(sharedSnapshot.projects.map((item) => item.name), ["Current Project"]);
+  assert.deepEqual(sharedSnapshot.tasks.map((item) => item.title), ["Current Task"]);
+  assert.deepEqual(sharedSnapshot.views, []);
   assert.equal(sharedSnapshot.workspaceMetrics?.taskCounts.all, 1);
   assert.equal(sharedSnapshot.navigationCollections?.projects.total, 1);
-  assert.equal(sharedSnapshot.workspaceScope?.selectedToken, sharedToken);
-  assert.equal(sharedSnapshot.workspaceScope?.fallback, false);
-  assert.ok(sharedSnapshot.workspaceScope?.options.some((item) => item.label === "Shared Owner"));
+  assert.equal(sharedSnapshot.workspaceScope?.selectedToken, await opaqueWorkspaceOwnerToken(current.id));
+  assert.equal(sharedSnapshot.workspaceScope?.fallback, true);
+  assert.deepEqual(sharedSnapshot.workspaceScope?.options.map((item) => item.label), [
+    "My",
+    "All accessible",
+  ]);
   assert.equal(JSON.stringify(sharedSnapshot.workspaceScope).includes(sharedOwner.id), false);
   assert.equal(JSON.stringify(sharedSnapshot.workspaceScope).includes(sharedOwner.email), false);
 
@@ -384,16 +401,17 @@ test("scoped snapshot, task query, catalogs, metrics, and shared roots narrow af
     surface: "all",
     query: emptyViewQuery(),
     display: defaultViewDisplay(),
-    workspaceScope: sharedToken,
+    workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
   });
-  assert.deepEqual(query.tasks.map((item) => item.title), ["Shared Task"]);
+  assert.deepEqual(new Set(query.tasks.map((item) => item.title)), new Set(["Current Task", "Shared Task"]));
   const catalog = await getWorkspaceCatalogPage(current, {
     kind: "projects",
-    workspaceScope: sharedToken,
+    workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
   });
-  assert.deepEqual(catalog.projects.map((item) => item.name), ["Shared Project"]);
+  assert.deepEqual(new Set(catalog.projects.map((item) => item.name)), new Set(["Current Project", "Shared Project"]));
 
-  const sharedRoots = sharedWithMeRoots(sharedSnapshot);
+  const union = await getSnapshot(current, { workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE });
+  const sharedRoots = sharedWithMeRoots(union);
   assert.deepEqual(sharedRoots.projects.map((item) => item.name), ["Shared Project"]);
   assert.deepEqual(sharedRoots.views.map((item) => item.name), ["Shared global view"]);
   assert.equal("tasks" in sharedRoots, false);
@@ -403,16 +421,27 @@ test("scoped snapshot, task query, catalogs, metrics, and shared roots narrow af
   assert.equal(forged.workspaceScope?.selectedToken, await opaqueWorkspaceOwnerToken(current.id));
   assert.deepEqual(forged.projects.map((item) => item.name), ["Current Project"]);
 
-  const union = await getSnapshot(current);
   assert.ok(union.projects.some((item) => item.name === "Current Project"));
   assert.ok(union.projects.some((item) => item.name === "Shared Project"));
   assert.equal(union.projects.some((item) => item.name === "Hidden Project"), false);
 
+  configureActorResolverForTests(async () => ({
+    provider: "chatgpt" as const,
+    providerAccountKey: "workspace-scope-current",
+    displayName: "Current Person",
+    email: "workspace-current@example.test",
+  }));
+  const defaultBootstrapResponse = await getBootstrapRoute(new Request("https://example.test/api/bootstrap"));
+  assert.equal(defaultBootstrapResponse.status, 200);
+  const defaultBootstrap = await defaultBootstrapResponse.json() as AppSnapshot;
+  assert.ok(defaultBootstrap.projects.some((item) => item.name === "Shared Project"));
+  assert.equal(defaultBootstrap.workspaceScope, undefined);
+
   await transferProjectOwnership(sharedOwner, sharedProject.id, current.id);
   const afterTransferOldScope = await getSnapshot(current, { workspaceScope: sharedToken });
-  assert.equal(afterTransferOldScope.projects.some((item) => item.name === "Shared Project"), false);
-  assert.equal(afterTransferOldScope.tasks.some((item) => item.title === "Shared Task"), false);
-  assert.deepEqual(afterTransferOldScope.views.map((item) => item.name), ["Shared global view"]);
+  assert.equal(afterTransferOldScope.workspaceScope?.fallback, true);
+  assert.equal(afterTransferOldScope.projects.some((item) => item.name === "Shared Project"), true);
+  assert.equal(afterTransferOldScope.tasks.some((item) => item.title === "Shared Task"), true);
   const afterTransferCurrentScope = await getSnapshot(current, { workspaceScope: null });
   assert.equal(afterTransferCurrentScope.projects.some((item) => item.name === "Shared Project"), true);
   const transferredTask = afterTransferCurrentScope.tasks.find((item) => item.title === "Shared Task");

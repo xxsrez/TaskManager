@@ -50,7 +50,7 @@ export function workspaceScopeContextLabel(
   token: string,
   options: readonly WorkspaceScopeDescriptor[],
 ): string {
-  return options.find((option) => option.token === token)?.label ?? "Your work";
+  return options.find((option) => option.token === token)?.label ?? "My";
 }
 
 type WorkspaceOwnedRecord =

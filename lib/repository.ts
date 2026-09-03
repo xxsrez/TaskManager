@@ -148,14 +148,11 @@ const defaultStatuses: Array<[
 
 const editableTaskPredicate = editableTaskWhere("tasks");
 
-type WorkspaceOwnerCandidate = { id: string; displayName: string };
-
 type ResolvedWorkspaceScope = {
   ownerUserId: string | null;
   selectedToken: string;
   currentToken: string;
   fallback: boolean;
-  candidates?: WorkspaceOwnerCandidate[];
 };
 
 async function resolveWorkspaceScope(
@@ -191,16 +188,11 @@ async function resolveWorkspaceScope(
       fallback: false,
     };
   }
-  const candidates = await loadAccessibleWorkspaceOwners(user.id);
-  const descriptors = await workspaceScopeDescriptors(user, candidates);
-  const membership = resolveWorkspaceScopeMembership(requested, descriptors, currentToken);
-  const selectedCandidate = await candidateForWorkspaceToken(candidates, membership.token);
   return {
-    ownerUserId: selectedCandidate?.id ?? user.id,
-    selectedToken: selectedCandidate ? membership.token : currentToken,
+    ownerUserId: user.id,
+    selectedToken: currentToken,
     currentToken,
-    fallback: membership.fallback || !selectedCandidate,
-    candidates,
+    fallback: true,
   };
 }
 
@@ -267,36 +259,17 @@ export async function getWorkspaceTaskMetrics(
   };
 }
 
-async function candidateForWorkspaceToken(
-  candidates: readonly WorkspaceOwnerCandidate[],
-  token: string,
-) {
-  const matches = await Promise.all(candidates.map(async (candidate) => ({
-    candidate,
-    token: await opaqueWorkspaceOwnerToken(candidate.id),
-  })));
-  return matches.find((match) => match.token === token)?.candidate ?? null;
-}
-
 async function workspaceScopeDescriptors(
   user: UserRecord,
-  candidates: readonly WorkspaceOwnerCandidate[],
 ): Promise<WorkspaceScopeDescriptor[]> {
-  const distinct = [...new Map([
-    { id: user.id, displayName: user.displayName },
-    ...candidates,
-  ].map((candidate) => [candidate.id, candidate])).values()];
-  const owners = await Promise.all(distinct.map(async (candidate) => ({
-    token: await opaqueWorkspaceOwnerToken(candidate.id),
+  const current = {
+    token: await opaqueWorkspaceOwnerToken(user.id),
     kind: "owner" as const,
-    label: candidate.id === user.id ? "Your work" : candidate.displayName,
-    current: candidate.id === user.id,
-  })));
-  owners.sort((left, right) =>
-    Number(right.current) - Number(left.current) || left.label.localeCompare(right.label),
-  );
+    label: "My",
+    current: true,
+  };
   return [
-    ...owners,
+    current,
     {
       token: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
       kind: "all" as const,
@@ -309,9 +282,8 @@ async function workspaceScopeDescriptors(
 async function workspaceScopeState(
   user: UserRecord,
   scope: ResolvedWorkspaceScope,
-  candidates: readonly WorkspaceOwnerCandidate[],
 ): Promise<WorkspaceScopeState> {
-  const options = await workspaceScopeDescriptors(user, candidates);
+  const options = await workspaceScopeDescriptors(user);
   const membership = resolveWorkspaceScopeMembership(
     scope.selectedToken,
     options,
@@ -323,46 +295,6 @@ async function workspaceScopeState(
     fallback: scope.fallback || membership.fallback,
     options,
   };
-}
-
-async function loadAccessibleWorkspaceOwners(userId: string) {
-  const rows = await accessibleWorkspaceOwnersStatement(getD1(), userId).all<DbRow>();
-  return rows.results.map((row) => ({
-    id: String(row.id),
-    displayName: String(row.display_name),
-  }));
-}
-
-function accessibleWorkspaceOwnersStatement(db: D1Database, userId: string) {
-  return db.prepare(
-    `WITH principal AS (SELECT ? AS id), owner_ids AS (
-       SELECT id FROM principal
-       UNION
-       SELECT p.owner_user_id FROM projects p
-       JOIN principal
-       WHERE p.deleted_at IS NULL
-         AND ${projectEffectiveRoleRankSql("p", "principal.id")} > 0
-       UNION
-       SELECT CASE WHEN t.project_id IS NOT NULL THEN p.owner_user_id
-         ELSE t.owner_user_id END FROM tasks t
-       LEFT JOIN projects p ON p.id = t.project_id
-       JOIN principal
-       WHERE t.deleted_at IS NULL
-         AND (t.project_id IS NULL OR p.deleted_at IS NULL)
-         AND ${taskEffectiveRoleRankSql("t", "p", "principal.id")} > 0
-       UNION
-       SELECT v.owner_user_id FROM saved_views v
-       LEFT JOIN projects p ON p.id = v.scope_project_id
-       JOIN principal
-       WHERE v.deleted_at IS NULL
-         AND (v.scope_project_id IS NULL OR p.deleted_at IS NULL)
-         AND ${savedViewEffectiveRoleRankSql("v", "p", "principal.id")} > 0
-     )
-     SELECT u.id, u.display_name FROM users u JOIN owner_ids ON owner_ids.id = u.id
-     CROSS JOIN principal
-     ORDER BY CASE WHEN u.id = principal.id THEN 0 ELSE 1 END,
-       lower(u.display_name), u.id`,
-  ).bind(userId);
 }
 
 function workspacePredicate(
@@ -1029,7 +961,6 @@ export async function getSnapshot(
            ORDER BY provider, provider_account_key`,
         )
         .bind(user.id),
-      accessibleWorkspaceOwnersStatement(db, user.id),
       db
         .prepare(
           `WITH scoped AS (
@@ -1081,7 +1012,6 @@ export async function getSnapshot(
     taskLabels,
     relations,
     identities,
-    workspaceOwners,
     workspaceMetrics,
   ] = snapshotResults;
   const teamAccessFingerprint = await teamAccessFingerprintFromRows(
@@ -1100,12 +1030,8 @@ export async function getSnapshot(
   const navigationProjectRecords = recentNavigationRecords(projectRecords, navigationLimit);
   const navigationReleaseRecords = recentNavigationRecords(releaseRecords, navigationLimit);
   const navigationViewRecords = recentNavigationRecords(viewRecords, navigationLimit);
-  const ownerCandidates = workspaceOwners.results.map((row) => ({
-    id: String(row.id),
-    displayName: String(row.display_name),
-  }));
   const resolvedWorkspaceScope = workspaceScope
-    ? await workspaceScopeState(user, workspaceScope, ownerCandidates)
+    ? await workspaceScopeState(user, workspaceScope)
     : undefined;
   const metrics = workspaceMetrics.results[0] ?? {};
 

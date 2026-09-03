@@ -363,30 +363,25 @@ journal rows старше 30 дней удаляются не чаще раза 
 переиспользуется; cursor до retention boundary образует обнаруживаемый gap и
 приводит к full bootstrap.
 
-## Owner workspace scope (UI projection)
+## Workspace focus (UI projection)
 
-Owner workspace scope не хранится в D1 и не добавляет `Workspace` entity,
-grant, migration или tenant boundary. Это transient browser/server read model,
-который принимает только opaque token и возвращает compact descriptors:
-`token`, `kind`, user-facing `label`, `current`. Descriptor не содержит email,
-internal User ID или reversible owner claim.
+Workspace focus не хранится в D1 и не добавляет `Workspace` entity, grant,
+migration или tenant boundary. Это transient browser/server read model только
+для `/workspace` с двумя compact descriptors: `My` и `All accessible`.
+Descriptor содержит opaque `token`, `kind`, user-facing `label` и `current`, но
+не email, internal User ID или reversible owner claim.
 
-Effective owner для этой проекции определяется так:
+`My` выбирает ресурсы current User. Для Project это current `owner_user_id`; для
+Task, Release и project-scoped SavedView — current owner связанного Project;
+для global SavedView — собственный `owner_user_id`. `All accessible` оставляет
+полный ACL union. Repository сначала материализует ownership/active-grant ACL,
+затем применяет focus как дополнительный predicate к Workspace summaries.
+Любой иной owner token fail-closed выбирает `My` и помечает fallback.
 
-- `Project` — его current `owner_user_id`;
-- `Task`, `Release` и project-scoped `SavedView` — current owner связанного
-  Project, независимо от исторического child `owner_user_id`;
-- global `SavedView` — собственный `owner_user_id`.
-
-Набор options строится только из current User и владельцев уже доступных
-Project/global SavedView roots; `All accessible` обозначает прежний ACL union.
-Repository сначала материализует ownership/active-grant ACL, затем применяет
-scope как дополнительный equality predicate до count/order/page. Неизвестный,
-подменённый или переставший быть доступным owner token fail-closed выбирает
-current User и помечает fallback. Scope не участвует в `accessRole`: Viewer,
-Editor, Manager и Owner controls продолжают выводиться только из effective
-resource role. Omitted scope у Agent API и внутренних non-UI callers сохраняет
-ACL union и не меняет их семантику.
+Focus не участвует в `accessRole`: Viewer, Editor, Manager и Owner controls
+продолжают выводиться только из effective resource role. Sidebar, global search,
+catalogs, entity routes, Agent API и внутренние non-UI callers используют ACL
+union и не меняют семантику из-за выбранного Workspace focus.
 
 ## Recoverable deletion
 

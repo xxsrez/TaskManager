@@ -104,7 +104,7 @@ test("the application owns its reset without Tailwind Preflight", () => {
   assert.match(declarations("button"), /padding:\s*0\s*;/);
 });
 
-test("owner workspace selector stays bounded at 390x844 and 844x390", () => {
+test("Workspace-local focus selector stays bounded at 390x844 and 844x390", () => {
   const selector = declarations(".workspace-scope-selector");
   assert.match(selector, /min-width:\s*0\s*;/);
   assert.match(selector, /overflow:\s*hidden\s*;/);

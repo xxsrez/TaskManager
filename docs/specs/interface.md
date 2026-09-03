@@ -83,15 +83,8 @@ Desktop-first shell повторяет композицию Linear:
 
 - Первая строка: breadcrumb/context, title, optional favorite, share, overflow
   и details/sidebar toggle.
-- Между title context и actions расположен компактный owner workspace selector:
-  `Your work`, доступные владельцы по display name и `All accessible`. Его
-  option value — opaque token; email, internal User ID и другие identity hints
-  не выводятся в DOM или URL. Busy state блокирует повторное переключение до
-  authoritative scoped bootstrap.
-- На прямой Project/Release/Task/SavedView route рядом показывается компактный
-  resource-owner context. Для project child это current Project owner, а не
-  исторический child owner. Контекст не заменяет breadcrumb и не определяет
-  доступность actions: controls выводятся только из `accessRole`.
+- Глобальная верхняя панель не содержит Workspace focus selector или owner
+  context: они не должны влиять на sidebar, поиск и остальные routes.
 - Вторая строка или продолжение первой: tabs, `Filter`, layout switch,
   `Display`, save/update view и primary contextual create action.
 - Порядок и группировка не меняются произвольно между list и board.
@@ -137,12 +130,11 @@ Desktop-first shell повторяет композицию Linear:
 - Переключение list/board меняет path через browser history. Back/forward
   восстанавливают entity, layout и открытую Task без повторного входа через
   sidebar.
-- Owner workspace scope хранится отдельно в user-scoped browser storage и
-  `history.state`: переключение не добавляет query/path segment и не меняет
-  canonical public-ID URL. Back/Forward и reload восстанавливают выбор, а
-  открытие доступного deep link показывает owner context самого resource. Если
-  token больше не входит в server-projected options после revoke/transfer,
-  client одной заменой snapshot/history/storage возвращается в `Your work`.
+- Workspace focus хранится в user-scoped browser storage и только в
+  `history.state` записей `/workspace`: переключение не добавляет query/path
+  segment и не меняет canonical public-ID URL. Back/Forward и reload
+  восстанавливают `My` либо `All accessible`; invalid/stale token одной заменой
+  projection/history/storage возвращается в `My`.
 - Навигационные items и ссылки на records остаются настоящими anchors: их
   можно копировать, открыть в новой вкладке или активировать modifier-click.
 - Collection surfaces `/views`, `/projects` и `/releases` не ограничены
@@ -192,16 +184,18 @@ Desktop-first shell повторяет композицию Linear:
 - Full reset после ACL change или cursor gap сохраняет загруженный Task body и
   более новые подтверждённые локальные mutations, но удаляет недоступные
   records из всех UI contexts.
-- Sync и reset передают текущий opaque owner scope на сервер. Scope membership
-  перепроверяется до incremental projection; forged/stale token требует reset,
-  а bootstrap возвращает безопасный fallback и новый согласованный selector
-  state без промежуточного показа records прежнего scope.
+- Sync и reset оболочки всегда используют полный ACL-набор. При изменении
+  общего cursor открытый `/workspace` отдельно обновляет текущую focus
+  projection; forged/stale focus token получает безопасный fallback `My`.
 
 ### 3.5 Workspace overview
 
 - Overview — самостоятельная landing surface, а не переименованный task list.
   Он использует спокойную Linear-like hierarchy: compact metrics, Recent tasks
   и отдельные sections Projects, Releases, Saved views и Shared with me.
+- В начале содержимого расположен единственный Workspace focus selector с
+  режимами `My` и `All accessible`. Selector отсутствует в global header и на
+  всех остальных routes; смена focus меняет только Workspace summaries.
 - Все links остаются настоящими anchors и ведут в существующие canonical
   surfaces. Current breadcrumb segment статичен, а product mark и ancestor
   `Workspace` ведут обратно на `/workspace`.
@@ -214,15 +208,14 @@ Desktop-first shell повторяет композицию Linear:
 - `/shared` показывает две root-коллекции: Projects с явным Project grant и
   напрямую расшаренные global SavedViews. Tasks, Releases и project-scoped
   SavedViews доступны через свой Project, но не появляются отдельными shared
-  cards. Открытие этой специальной collection переключает selector на `All
-  accessible` и server-side дочитывает полные Project/View catalogs, чтобы
-  default `Your work` не скрывал саму поверхность shared roots.
+  cards. Открытие этой специальной collection не меняет Workspace focus и
+  server-side дочитывает полные `All accessible` Project/View catalogs.
 - На mobile metrics и sections складываются в одну колонку, строки переносят
   текст, а overview не создаёт horizontal overflow. Empty sections и общий
   empty state имеют явные headings и доступные create/navigation actions.
-- На viewport `390×844` selector ограничен шириной header и скрывает
-  второстепенную подпись/icon; на `844×390` остаётся touch-height `40px` и
-  занимает не больше `34vw`. Header/main surface используют `min-width: 0` и
+- На viewport `390×844` selector занимает доступную ширину content row и
+  скрывает второстепенную подпись/icon; на `844×390` остаётся touch-height
+  `40px` и занимает не больше `34vw`. Main surface использует `min-width: 0` и
   clipping, поэтому selector не создаёт горизонтальную прокрутку.
 
 ## 4. Visual system

@@ -280,7 +280,7 @@ test("owner Label Group catalog mutations advance bounded incremental sync", asy
   assert.deepEqual(outsiderSync.changes.labelGroups, []);
 });
 
-test("foreign-owner Label Group changes replace scoped collaborator state", async () => {
+test("foreign-owner scope fails closed while All accessible refreshes collaborator catalogs", async () => {
   const owner = await getOrCreateUser({
     ...ownerActor,
     providerAccountKey: "sync-label-group-foreign-owner",
@@ -306,7 +306,8 @@ test("foreign-owner Label Group changes replace scoped collaborator state", asyn
   const allInitial = await getSnapshot(collaborator, {
     workspaceScope: ALL_ACCESSIBLE_WORKSPACE_SCOPE,
   });
-  assert.equal(initial.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
+  assert.equal(initial.workspaceScope?.fallback, true);
+  assert.equal(initial.labelGroups?.find((item) => item.id === group.id), undefined);
   assert.equal(allInitial.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
 
   catalog = await updateLabelGroup(owner, group.id, {
@@ -323,15 +324,13 @@ test("foreign-owner Label Group changes replace scoped collaborator state", asyn
   );
   const omittedRenamed = await getWorkspaceSync(collaborator, initial.syncCursor!);
   assert.deepEqual(omittedRenamed.changes.labelGroups, []);
-  assert.equal(
-    renamed.changes.labelGroups?.find((item) => item.id === group.id)?.name,
-    group.name,
-  );
+  assert.equal(renamed.resetRequired, true);
+  assert.deepEqual(renamed.changes.labelGroups, []);
   assert.equal(
     allRenamed.changes.labelGroups?.find((item) => item.id === group.id)?.name,
     group.name,
   );
-  let client = applyWorkspaceSync(initial, renamed);
+  let client = applyWorkspaceSync(allInitial, allRenamed);
   assert.equal(client.labelGroups?.find((item) => item.id === group.id)?.name, group.name);
 
   catalog = await updateLabelGroup(owner, group.id, {
@@ -345,9 +344,10 @@ test("foreign-owner Label Group changes replace scoped collaborator state", asyn
     allRenamed.cursor,
     ALL_ACCESSIBLE_WORKSPACE_SCOPE,
   );
-  assert.ok(archived.changes.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
+  assert.equal(archived.resetRequired, true);
+  assert.deepEqual(archived.changes.labelGroups, []);
   assert.ok(allArchived.changes.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
-  client = applyWorkspaceSync(client, archived);
+  client = applyWorkspaceSync(client, allArchived);
   assert.ok(client.labelGroups?.find((item) => item.id === group.id)?.archivedAt);
 
   const grant = (await getSnapshot(owner)).collaborators.find(
