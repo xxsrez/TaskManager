@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readTaskTrackerSource } from "./helpers/task-tracker-source";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -469,7 +469,7 @@ test("export progress and dialog describe the resumable app-level coordinator ho
 });
 
 test("Administration source has no monolithic system backup blob/text path", async () => {
-  const source = await readFile(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   assert.doesNotMatch(source, /function downloadSystemBackup/);
   assert.doesNotMatch(source, /await file\.text\(\)/);
   assert.doesNotMatch(source, /Backup file is larger than 10 MB/);
@@ -486,7 +486,7 @@ test("Administration source has no monolithic system backup blob/text path", asy
 });
 
 test("committed import verification failure is rendered as terminal and not retryable", async () => {
-  const source = await readFile(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   const importDialogSource = source.slice(source.indexOf("export function SystemImportDialog"));
   assert.match(importDialogSource, /status\?\.phase === "verification_failed"/);
   assert.match(importDialogSource, /D1 уже заменена, но post-restore проверка не прошла/);

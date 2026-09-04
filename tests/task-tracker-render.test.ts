@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readTaskTrackerSource } from "./helpers/task-tracker-source";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -384,44 +384,44 @@ test("TaskTracker exposes Teams routes without snapshot projection or false empt
 });
 
 test("Team mutations keep authoritative read-back and composition CAS contracts", () => {
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
-  assert.match(source, /teamListGenerationRef/);
-  assert.match(source, /teamDetailGenerationRef/);
+  const source = readTaskTrackerSource(import.meta.url);
+  assert.match(source, /listGenerationRef/);
+  assert.match(source, /detailGenerationRef/);
   assert.match(source, /controller\.abort\(\)/);
-  assert.match(source, /setTeamDetailState\(nextState\)/);
-  assert.match(source, /void loadTeamList\(\)/);
+  assert.match(source, /setDetailState\(nextState\)/);
+  assert.match(source, /void loadList\(\)/);
   assert.match(source, /\{ name, version: detail\.team\.version \}/);
   assert.match(source, /\{ email, teamVersion: detail\.team\.version \}/);
   assert.match(source, /action,[\s\S]{0,120}teamVersion: detail\.team\.version,[\s\S]{0,120}version: membership\.version/);
   assert.match(source, /method: "DELETE"|"DELETE",[\s\S]{0,160}teamVersion/);
-  assert.match(source, /requestError\.status === 409[\s\S]{0,220}const latest = await loadTeamDetail\(teamPublicId\)/);
+  assert.match(source, /requestError\.status === 409[\s\S]{0,220}const latest = await loadDetail\(teamPublicId\)/);
   assert.match(source, /The latest details were loaded; review them and try again/);
   assert.match(source, /latest details could not be loaded\. Retry/);
   assert.doesNotMatch(source, /AppSnapshot[^\n]*(?:TeamList|TeamDetail)|(?:TeamList|TeamDetail)[^\n]*AppSnapshot/);
 });
 
 test("Team re-entry and concurrent navigation retain authoritative convergence", () => {
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   const reentryStart = source.indexOf("useEffect(() => {\n    if (!activeTeamPublicId) return;");
   const reentryEnd = source.indexOf(
-    "}, [activeTeamPublicId, loadTeamDetail]);",
+    "}, [activeTeamPublicId, loadDetail]);",
     reentryStart,
   );
   assert.ok(reentryStart > 0 && reentryEnd > reentryStart);
   const reentryEffect = source.slice(reentryStart, reentryEnd);
-  assert.match(reentryEffect, /loadTeamDetail\(activeTeamPublicId, controller\.signal\)/);
+  assert.match(reentryEffect, /loadDetail\(activeTeamPublicId, controller\.signal\)/);
   assert.doesNotMatch(reentryEffect, /status === "ready"/);
 
   const mutationStart = source.indexOf("async function mutateActiveTeam(");
   const mutationCatch = source.indexOf("} catch (requestError) {", mutationStart);
   const mutationSuccess = source.slice(mutationStart, mutationCatch);
-  assert.ok(mutationSuccess.indexOf("void loadTeamList();") >= 0);
+  assert.ok(mutationSuccess.indexOf("void loadList();") >= 0);
   assert.ok(
-    mutationSuccess.indexOf("void loadTeamList();") <
+    mutationSuccess.indexOf("void loadList();") <
       mutationSuccess.indexOf("activeTeamPublicIdRef.current !== teamPublicId"),
   );
   assert.match(mutationSuccess, /activeTeamPublicIdRef\.current !== teamPublicId\) return true/);
-  assert.match(source, /const latest = await loadTeamDetail\(teamPublicId\)[\s\S]{0,420}teamConflictReadbackMessage\(latest !== null, unavailable\)/);
+  assert.match(source, /const latest = await loadDetail\(teamPublicId\)[\s\S]{0,420}teamConflictReadbackMessage\(latest !== null, unavailable\)/);
   assert.match(source, /disabled=\{Boolean\(teamMutation\) \|\| teamDetailState\.status !== "ready"\}/);
   assert.match(source, /disabled=\{Boolean\(mutation\) \|\| state\.status !== "ready"\}/);
 
@@ -583,7 +583,7 @@ test("People and Teams sharing reloads a changed Project route for the same Task
     teamShareRouteIdentity(beforeMove.teamRoutes),
     teamShareRouteIdentity(afterMove.teamRoutes),
   );
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   const syncIndex = source.indexOf("const nextRoutes = context.teamRoutes");
   const loadIndex = source.indexOf("if (!routesRef.current.length) return", syncIndex);
   assert.ok(syncIndex >= 0 && loadIndex > syncIndex);
@@ -669,7 +669,7 @@ test("Project managers cannot create or manage an explicit Task-only Team grant"
   assert.match(markup, /<select[^>]*disabled=""/);
   assert.doesNotMatch(markup, />Revoke<\/button>/);
 
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   assert.doesNotMatch(source, /route\.resourceType === "task" && route\.accessRole === "manager"/);
   assert.match(source, /selectableTeamRoutes = context\.teamRoutes\.filter\(\(route\) => teamRouteRoles\(route\)\.length > 0\)/);
 });
@@ -684,7 +684,7 @@ test("a stale Manager selection is reset and blocked after authority drops to ma
   assert.equal(normalizedTeamSharePermission("editor", managerRoles), "editor");
   assert.equal(normalizedTeamSharePermission("viewer", managerRoles), "viewer");
 
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   assert.match(source, /selectedPermissionValue = normalizedTeamSharePermission\(selectedPermission, selectedRoles\)/);
   assert.match(source, /const addDisabled =[^;]*!selectedPermissionAllowed/);
   assert.match(source, /if \(addDisabled \|\| !selectedPrincipal \|\| !selectedPermission \|\| !selectedPermissionAllowed\) return/);
@@ -692,7 +692,7 @@ test("a stale Manager selection is reset and blocked after authority drops to ma
 });
 
 test("a forbidden Team mutation retains the authoritative route for review", () => {
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   assert.match(source, /const forbidden = requestError instanceof TeamRequestError && requestError\.status === 403;[\s\S]{0,180}value: retained/);
   assert.match(source, /Your role cannot change or revoke this Team grant/);
 });
@@ -721,7 +721,7 @@ test("People and Teams dialog separates routes and requires principal, role, and
   assert.match(markup, /Loading Team access/);
   assert.match(markup, /Strongest route wins/);
 
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   assert.match(source, /role="listbox" aria-label=\{hasTeamRoutes \? "People and Teams" : "People"\}/);
   assert.match(source, /role="group" aria-label="People"/);
   assert.match(source, /role="group" aria-label="Teams"/);
@@ -734,7 +734,7 @@ test("People and Teams dialog separates routes and requires principal, role, and
 });
 
 test("Team sharing uses exact CAS payloads and authoritative route replacement", () => {
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
+  const source = readTaskTrackerSource(import.meta.url);
   assert.match(source, /requestTeamApi<TeamList>\("\/api\/teams"/);
   assert.match(source, /resource_type: route\.resourceType,[\s\S]{0,100}resource_id: route\.publicId/);
   assert.match(source, /requestTeamApi<TeamGrantList>\(`\/api\/shares\/teams\?\$\{parameters\}`/);
@@ -3314,15 +3314,16 @@ test("system backup actions exist only inside the server-authorized Administrati
   assert.doesNotMatch(commonMarkup, />Экспорт<\/button>|>Импорт<\/button>/);
 });
 
-test("system export coordination belongs to TaskTracker rather than the closable dialog", () => {
-  const source = readFileSync(new URL("../components/task-tracker.tsx", import.meta.url), "utf8");
-  const trackerState = source.indexOf("const [systemExportStatus");
+test("system export coordination belongs to a persistent application controller rather than the closable dialog", () => {
+  const source = readTaskTrackerSource(import.meta.url);
+  const trackerState = source.indexOf("const [status, setStatus] = useState<SystemBackupJobStatus | null>");
   const exportDialog = source.indexOf("export function SystemBackupExportDialog");
   assert.ok(trackerState > 0 && trackerState < exportDialog);
+  assert.match(source, /useSystemExportController\(\{/);
   assert.match(source, /getCurrentSystemBackupExport\(\)/);
-  assert.match(source, /systemExportAbortRef\.current\?\.abort\(\)/);
+  assert.match(source, /abortRef\.current\?\.abort\(\)/);
   assert.match(source, /<Modal onClose=\{onClose\} className="system-import-modal system-export-modal">/);
-  assert.match(source, /dialog !== "systemImport" \|\| !systemBackupBusy/);
+  assert.match(source, /layers\.dialog !== "systemImport" \|\| !layers\.systemBackupBusy/);
   assert.match(source, /При полностью закрытой вкладке он безопасно приостановится/);
   assert.match(source, /onClick=\{\(\) => onStart\(true\)\}/);
   assert.doesNotMatch(source, /readBackupCheckpoint\(storage, systemBackupExportCheckpointKey\)/);
@@ -3696,10 +3697,7 @@ test("filter picker Escape closes only the picker and stops Modal propagation", 
 });
 
 test("Modal lets nested Escape handlers stop propagation before dialog close", () => {
-  const source = readFileSync(
-    new URL("../components/task-tracker.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readTaskTrackerSource(import.meta.url);
   const modalSource = source.slice(source.indexOf("function Modal("), source.indexOf("const globalSearchSections"));
 
   assert.doesNotMatch(modalSource, /addEventListener\("keydown"/);
@@ -4390,10 +4388,7 @@ test("Project edit dialog exposes every lifecycle field and reversible archive",
   assert.match(createMarkup, /1–12 characters/);
   assert.doesNotMatch(createMarkup, /<input[^>]*maxLength=[^>]*name="taskCode"/);
 
-  const source = readFileSync(
-    new URL("../components/task-tracker.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readTaskTrackerSource(import.meta.url);
   assert.match(
     source,
     /name="taskCode"[\s\S]*?setTaskCode\(normalizeProjectTaskCodeDraft\(event\.target\.value\)\)/,

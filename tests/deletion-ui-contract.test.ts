@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readTaskTrackerSource } from "./helpers/task-tracker-source";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -462,25 +462,19 @@ test("a failed post-mutation refresh is visible and retries only convergence", a
 });
 
 test("stale lifecycle failures close obsolete dialog and Undo controls before refetch", () => {
-  const source = readFileSync(
-    new URL("../components/task-tracker.tsx", import.meta.url),
-    "utf8",
+  const source = readTaskTrackerSource(import.meta.url);
+  assert.match(
+    source,
+    /async function selfHealStaleDeletionState\(\) \{\s*setPending\(null\);\s*setUndo\(null\);\s*await convergeDeletionState\(\);\s*\}/,
   );
   assert.match(
     source,
-    /async function selfHealStaleDeletionState\(\) \{\s*setRecoverableDeletion\(null\);\s*setDeletionUndo\(null\);\s*await convergeDeletionState\(\);\s*\}/,
-  );
-  assert.match(
-    source,
-    /if \(deletionErrorRequiresRefetch\(requestError\)\) \{\s*await selfHealStaleDeletionState\(\);\s*\}/,
+    /if \(deletionErrorRequiresRefetch\(requestError\)\) await selfHealStaleDeletionState\(\);/,
   );
 });
 
 test("preview failures preserve edit state and successful deletion invalidates catalog pages", () => {
-  const source = readFileSync(
-    new URL("../components/task-tracker.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readTaskTrackerSource(import.meta.url);
   const openStart = source.indexOf("async function openRecoverableDelete");
   const releaseStart = source.indexOf('if (entity.kind === "release")', openStart);
   const projectStart = source.indexOf('if (entity.kind === "project")', releaseStart);
@@ -488,14 +482,14 @@ test("preview failures preserve edit state and successful deletion invalidates c
   const releaseBranch = source.slice(releaseStart, taskStart);
   const projectBranch = source.slice(projectStart, source.indexOf("const view =", projectStart));
   assert.ok(releaseBranch.indexOf("await fetchReleaseDeletionPreview") >= 0);
-  assert.ok(releaseBranch.indexOf("setDialog(null)") > releaseBranch.indexOf("await fetchReleaseDeletionPreview"));
+  assert.ok(releaseBranch.indexOf("onDismissDialog()") > releaseBranch.indexOf("await fetchReleaseDeletionPreview"));
   assert.ok(projectBranch.indexOf("await fetchProjectDeletionPreview") >= 0);
-  assert.ok(projectBranch.indexOf("setDialog(null)") > projectBranch.indexOf("await fetchProjectDeletionPreview"));
-  assert.doesNotMatch(releaseBranch.slice(0, releaseBranch.indexOf("await fetchReleaseDeletionPreview")), /setDialog\(null\)/);
-  assert.doesNotMatch(projectBranch.slice(0, projectBranch.indexOf("await fetchProjectDeletionPreview")), /setDialog\(null\)/);
+  assert.ok(projectBranch.indexOf("onDismissDialog()") > projectBranch.indexOf("await fetchProjectDeletionPreview"));
+  assert.doesNotMatch(releaseBranch.slice(0, releaseBranch.indexOf("await fetchReleaseDeletionPreview")), /onDismissDialog\(\)/);
+  assert.doesNotMatch(projectBranch.slice(0, projectBranch.indexOf("await fetchProjectDeletionPreview")), /onDismissDialog\(\)/);
   assert.match(
     source,
-    /function applyImmediateDeletionPrune[\s\S]*?setCatalogPages\(\{\}\);[\s\S]*?async function deleteRecoverably/,
+    /function applyImmediateDeletionPrune[\s\S]*?invalidateCatalogs\(true\)[\s\S]*?async function deleteRecoverably/,
   );
 });
 

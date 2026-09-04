@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
+import { readTaskTrackerSource } from "./helpers/task-tracker-source";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-const taskTracker = readFileSync(
-  new URL("../components/task-tracker.tsx", import.meta.url),
-  "utf8",
-);
+const taskTracker = readTaskTrackerSource(import.meta.url);
 const taskAttachments = readFileSync(
   new URL("../components/task-attachments.tsx", import.meta.url),
   "utf8",
@@ -228,7 +226,7 @@ test("list and board expose the same keyboard highlight and selection semantics"
   assert.match(taskTracker, /aria-current=\{highlighted \? "true" : undefined\}/);
   assert.match(taskTracker, /onSelect\(event\.shiftKey\)/);
   assert.match(taskTracker, /dispatchTaskKeyboardIntegrationCommand/);
-  assert.match(taskTracker, /if \(command === "global-search"\)[\s\S]*?if \(!claimed\) openGlobalSearch\(\)/);
+  assert.match(taskTracker, /if \(command === "global-search"\)[\s\S]*?if \(!claimed\) actions\.openGlobalSearch\(\)/);
   assert.match(taskTracker, /event\.target === event\.currentTarget && event\.key === "Enter"[\s\S]*?onOpen\(\)/);
   assert.doesNotMatch(taskTracker, /event\.key === "Enter" \|\| event\.key === " "/);
   assert.match(taskTracker, /addEventListener\("keydown", handleKey\)/);
@@ -732,5 +730,5 @@ test("Recently deleted stays action-visible and overflow-safe at 390x844 and 844
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.recently-deleted-actions \.button\s*\{[^}]*min-height:\s*44px/);
   assert.match(css, /@media\s*\(max-width:\s*640px\)[\s\S]*?\.modal\.deletion-dialog\s*\{[^}]*width:\s*100%;[^}]*overflow-y:\s*auto/);
   assert.match(css, /\.deletion-confirmation input\s*\{[^}]*min-width:\s*0;[^}]*width:\s*100%/);
-  assert.match(taskTracker, /async function refreshAfterDeletionMutation\(\)[\s\S]*?setCatalogPages\(\{\}\)[\s\S]*?setCatalogEpoch[\s\S]*?setRecentlyDeletedEpoch[\s\S]*?await refreshTaskList\(\)/);
+  assert.match(taskTracker, /async function refreshAfterDeletionMutation\(\)[\s\S]*?invalidateCatalogs\(true\)[\s\S]*?setRecentlyDeletedEpoch[\s\S]*?await refreshTaskList\(\)/);
 });

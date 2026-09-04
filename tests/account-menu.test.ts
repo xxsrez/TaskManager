@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readTaskTrackerSource } from "./helpers/task-tracker-source";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { createElement } from "react";
@@ -59,10 +60,7 @@ test("account menu keyboard navigation wraps and supports Home and End", () => {
 });
 
 test("account menu keeps canonical browser anchors and local history integration", () => {
-  const source = readFileSync(
-    new URL("../components/task-tracker.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readTaskTrackerSource(import.meta.url);
 
   assert.match(source, /<AccountMenu[\s\S]*?onNavigate=\{\(event, nextSurface\) => handleLocalLink\(event, \(\) => \{[\s\S]*?navigateSurface\(nextSurface, "list"\)/);
   assert.match(source, /accountMenuOpen[\s\S]*?accountTriggerRef\.current\?\.focus\(\)/);
@@ -70,10 +68,7 @@ test("account menu keeps canonical browser anchors and local history integration
 });
 
 test("Administration navigation reloads the server-projected admin surface", () => {
-  const source = readFileSync(
-    new URL("../components/task-tracker.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = readTaskTrackerSource(import.meta.url);
 
   assert.match(
     source,
