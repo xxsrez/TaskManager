@@ -3,6 +3,12 @@ import { readFileSync } from "node:fs";
 const taskTrackerModules = [
   "../components/task-tracker.tsx",
   "../components/task-tracker-state.tsx",
+  "../components/task-tracker-client-state.ts",
+  "../components/task-tracker-navigation-state.ts",
+  "../components/task-tracker-shared-types.ts",
+  "../components/task-tracker-snapshot-state.ts",
+  "../components/task-tracker-team-state.ts",
+  "../components/task-tracker-ui-state.tsx",
   "../components/task-tracker-system-export.ts",
   "../components/task-tracker-teams-controller.ts",
   "../components/task-tracker-catalog-controller.ts",

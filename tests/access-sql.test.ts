@@ -97,12 +97,19 @@ test("legacy standalone Task owner and direct grants remain queryable and mutabl
 });
 
 test("repository fallback and Agent catalogs preserve ACL-scoped Tasks", () => {
-  const repository = readFileSync(new URL("../lib/repository.ts", import.meta.url), "utf8");
+  const repository = [
+    "../lib/repository.ts",
+    "../lib/repository-views.ts",
+    "../lib/repository-workspace.ts",
+  ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8")).join("\n");
   const agent = readFileSync(
     new URL("../lib/agent-api-repository.ts", import.meta.url),
     "utf8",
   );
-  assert.match(repository, /SELECT CASE WHEN t\.project_id IS NOT NULL THEN p\.owner_user_id\s+ELSE t\.owner_user_id END FROM tasks t\s+LEFT JOIN projects p/);
+  assert.match(
+    repository,
+    /CASE WHEN t\.project_id IS NOT NULL THEN p\.owner_user_id\s+ELSE t\.owner_user_id END AS workspace_owner_user_id/,
+  );
   assert.match(repository, /FROM tasks t\s+LEFT JOIN projects p ON p\.id = t\.project_id\s+LEFT JOIN releases r/);
   assert.match(repository, /LEFT JOIN projects catalog_task_project\s+ON catalog_task_project\.id = catalog_task\.project_id/);
   assert.match(agent, /SELECT 1 FROM tasks t\s+LEFT JOIN projects p ON p\.id = t\.project_id\s+WHERE t\.status_id = s\.id/);
